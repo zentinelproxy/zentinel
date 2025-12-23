@@ -19,7 +19,7 @@
     <img alt="Pingora" src="https://img.shields.io/badge/Built%20on-Pingora-F38020?style=for-the-badge">
   </a>
   <a href="LICENSE">
-    <img alt="License" src="https://img.shields.io/badge/License-Open--Source-4CAF50?style=for-the-badge">
+    <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-805569?style=for-the-badge">
   </a>
 </p>
 
