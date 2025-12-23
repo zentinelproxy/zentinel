@@ -1,6 +1,41 @@
-# Sentinel
+<div align="center">
 
-**Sentinel is a security-first reverse proxy built to guard the free web.**
+<h1 align="center">
+  <!-- Optional brandmark. Safe to remove until you have one. -->
+  <!--
+  <img src=".github/static/sentinel-mark.svg" alt="sentinel mark" width="96" />
+  <br>
+  -->
+  Sentinel
+</h1>
+
+<p align="center">
+  <em>A security-first reverse proxy built to guard the free web.</em><br>
+  <em>Sleepable ops at the edge.</em>
+</p>
+
+<p align="center">
+  <a href="https://www.rust-lang.org/">
+    <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white&style=for-the-badge">
+  </a>
+  <a href="https://github.com/cloudflare/pingora">
+    <img alt="Pingora" src="https://img.shields.io/badge/Built%20on-Pingora-F38020?style=for-the-badge">
+  </a>
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/License-Open--Source-4CAF50?style=for-the-badge">
+  </a>
+</p>
+
+<p align="center">
+  <a href="MANIFESTO.md">Manifesto</a> •
+  <a href="docs/why-sentinel.md">Why Sentinel</a> •
+  <a href="docs/">Documentation</a> •
+  <a href="CONTRIBUTING.md">Contributing</a> •
+</p>
+
+<hr />
+
+</div>
 
 It is designed for explicit limits, predictable behavior, and production environments where operators are expected to sleep.
 
