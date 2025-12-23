@@ -186,8 +186,12 @@ pub struct RouteConfig {
     /// Match conditions
     pub matches: Vec<MatchCondition>,
 
-    /// Target upstream
-    pub upstream: String,
+    /// Target upstream (optional for static file serving)
+    pub upstream: Option<String>,
+
+    /// Service type for this route
+    #[serde(default = "default_service_type")]
+    pub service_type: ServiceType,
 
     /// Route-specific policies
     #[serde(default)]
@@ -208,6 +212,18 @@ pub struct RouteConfig {
     /// Retry policy
     #[serde(default)]
     pub retry_policy: Option<RetryPolicy>,
+
+    /// Static file serving configuration (for service_type = Static)
+    #[serde(default)]
+    pub static_files: Option<StaticFileConfig>,
+
+    /// API schema validation configuration (for service_type = Api)
+    #[serde(default)]
+    pub api_schema: Option<ApiSchemaConfig>,
+
+    /// Error page configuration
+    #[serde(default)]
+    pub error_pages: Option<ErrorPageConfig>,
 }
 
 /// Match condition for route selection
@@ -234,6 +250,135 @@ pub enum MatchCondition {
 
     /// Match by query parameter
     QueryParam { name: String, value: Option<String> },
+}
+
+/// Service type for route handling
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceType {
+    /// Traditional web service (default)
+    Web,
+    /// REST API service with JSON responses
+    Api,
+    /// Static file hosting
+    Static,
+}
+
+impl Default for ServiceType {
+    fn default() -> Self {
+        ServiceType::Web
+    }
+}
+
+/// Static file serving configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticFileConfig {
+    /// Root directory for static files
+    pub root: PathBuf,
+
+    /// Index file name (default: index.html)
+    #[serde(default = "default_index_file")]
+    pub index: String,
+
+    /// Enable directory listing
+    #[serde(default)]
+    pub directory_listing: bool,
+
+    /// Cache control header value
+    #[serde(default = "default_cache_control")]
+    pub cache_control: String,
+
+    /// Compress responses
+    #[serde(default = "default_true")]
+    pub compress: bool,
+
+    /// Additional MIME type mappings
+    #[serde(default)]
+    pub mime_types: HashMap<String, String>,
+
+    /// Fallback file for SPA routing (e.g., index.html)
+    pub fallback: Option<String>,
+}
+
+/// API schema validation configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiSchemaConfig {
+    /// OpenAPI/Swagger schema file path
+    pub schema_file: Option<PathBuf>,
+
+    /// JSON Schema for request validation
+    pub request_schema: Option<serde_json::Value>,
+
+    /// JSON Schema for response validation
+    pub response_schema: Option<serde_json::Value>,
+
+    /// Validate requests against schema
+    #[serde(default = "default_true")]
+    pub validate_requests: bool,
+
+    /// Validate responses against schema
+    #[serde(default)]
+    pub validate_responses: bool,
+
+    /// Strict validation mode (fail on additional properties)
+    #[serde(default)]
+    pub strict_mode: bool,
+}
+
+/// Error page configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorPageConfig {
+    /// Custom error pages by status code
+    #[serde(default)]
+    pub pages: HashMap<u16, ErrorPage>,
+
+    /// Default error page format
+    #[serde(default = "default_error_format")]
+    pub default_format: ErrorFormat,
+
+    /// Include stack traces in errors (development only)
+    #[serde(default)]
+    pub include_stack_trace: bool,
+
+    /// Custom error template directory
+    pub template_dir: Option<PathBuf>,
+}
+
+/// Individual error page configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorPage {
+    /// Error page format
+    pub format: ErrorFormat,
+
+    /// Custom template or static file path
+    pub template: Option<PathBuf>,
+
+    /// Custom error message
+    pub message: Option<String>,
+
+    /// Additional headers to include
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+/// Error response format
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorFormat {
+    /// HTML error page
+    Html,
+    /// JSON error response
+    Json,
+    /// Plain text error
+    Text,
+    /// XML error response
+    Xml,
+}
+
+impl Default for ErrorFormat {
+    fn default() -> Self {
+        ErrorFormat::Html
+    }
 }
 
 /// Route-specific policies
@@ -962,6 +1107,18 @@ fn default_sampling_rate() -> f64 {
 }
 fn default_service_name() -> String {
     "sentinel".to_string()
+}
+fn default_service_type() -> ServiceType {
+    ServiceType::Web
+}
+fn default_index_file() -> String {
+    "index.html".to_string()
+}
+fn default_cache_control() -> String {
+    "public, max-age=3600".to_string()
+}
+fn default_error_format() -> ErrorFormat {
+    ErrorFormat::Html
 }
 
 // Validation functions

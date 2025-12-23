@@ -18,14 +18,18 @@ use uuid::Uuid;
 mod agents;
 mod app;
 mod config;
+mod errors;
 mod health;
 mod metrics;
 mod reload;
 mod routing;
+mod static_files;
 mod upstream;
+mod validation;
 
 use crate::agents::{AgentCallContext, AgentDecision, AgentManager};
 use crate::app::{AppState, HealthCheck, ReadinessCheck};
+use crate::errors::ErrorHandler;
 use crate::health::{HealthChecker, PassiveHealthChecker};
 use crate::metrics::Metrics;
 use crate::reload::{
@@ -33,7 +37,9 @@ use crate::reload::{
     UpstreamValidator,
 };
 use crate::routing::{RequestInfo, RouteMatcher};
+use crate::static_files::StaticFileServer;
 use crate::upstream::UpstreamPool;
+use crate::validation::SchemaValidator;
 
 use sentinel_common::{
     observability::{init_tracing, RequestMetrics},

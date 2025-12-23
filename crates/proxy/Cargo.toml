@@ -57,6 +57,16 @@ regex = "1.10"
 urlencoding = "2.1"
 once_cell = "1.20"
 
+# Schema validation
+jsonschema = "0.17"
+serde_yaml = "0.9"
+
+# Static file serving
+mime_guess = "2.0"
+http-body-util = "0.1"
+httpdate = "1.0"
+html-escape = "0.8"
+
 # System
 nix = { version = "0.29", features = ["signal"] }
 libc = "0.2"

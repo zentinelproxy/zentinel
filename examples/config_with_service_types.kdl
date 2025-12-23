@@ -1,0 +1,467 @@
+// Sentinel Configuration Example with Service Types
+// This example demonstrates web, API, and static file serving routes
+
+server {
+    worker_threads 4
+    max_connections 10000
+    graceful_shutdown_timeout_secs 30
+}
+
+listeners {
+    listener "main" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request_timeout_secs 30
+        keepalive_timeout_secs 60
+    }
+
+    listener "https" {
+        address "0.0.0.0:8443"
+        protocol "https"
+        tls {
+            cert_file "/etc/sentinel/certs/server.crt"
+            key_file "/etc/sentinel/certs/server.key"
+            min_version "TLSv1.2"
+        }
+    }
+}
+
+// Traditional web application route
+routes {
+    route "web-app" {
+        id "web-app-route"
+        priority 100
+        service_type "web"  // Default type - serves HTML
+
+        matches {
+            host "www.example.com"
+            path_prefix "/app"
+        }
+
+        upstream "web-backend"
+
+        // HTML error pages for web service
+        error_pages {
+            default_format "html"
+            template_dir "/etc/sentinel/error-templates"
+
+            pages {
+                404 {
+                    format "html"
+                    template "404.html"
+                    message "The page you're looking for doesn't exist"
+                }
+                500 {
+                    format "html"
+                    template "500.html"
+                    message "We're experiencing technical difficulties"
+                }
+            }
+        }
+
+        policies {
+            timeout_secs 30
+            max_body_size "10MB"
+            buffer_responses true
+        }
+    }
+
+    // REST API route with schema validation
+    route "api-v1" {
+        id "api-v1-route"
+        priority 90
+        service_type "api"  // API service - JSON responses
+
+        matches {
+            host "api.example.com"
+            path_prefix "/v1"
+        }
+
+        upstream "api-backend"
+
+        // JSON Schema validation for API
+        api_schema {
+            schema_file "/etc/sentinel/schemas/api-v1-openapi.yaml"
+            validate_requests true
+            validate_responses false  // Enable in development
+            strict_mode false
+
+            // Override for specific endpoint
+            request_schema {
+                type "object"
+                properties {
+                    api_key {
+                        type "string"
+                        pattern "^[A-Za-z0-9]{32}$"
+                    }
+                }
+                required ["api_key"]
+            }
+        }
+
+        // JSON error responses for API
+        error_pages {
+            default_format "json"
+            include_stack_trace false  // Never in production
+
+            pages {
+                400 {
+                    format "json"
+                    message "Bad Request - Invalid input"
+                    headers {
+                        "X-Error-Code" "INVALID_INPUT"
+                    }
+                }
+                401 {
+                    format "json"
+                    message "Authentication required"
+                    headers {
+                        "WWW-Authenticate" "Bearer"
+                    }
+                }
+                429 {
+                    format "json"
+                    message "Rate limit exceeded"
+                    headers {
+                        "X-RateLimit-Limit" "100"
+                        "X-RateLimit-Remaining" "0"
+                        "X-RateLimit-Reset" "3600"
+                    }
+                }
+                500 {
+                    format "json"
+                    message "Internal server error"
+                }
+            }
+        }
+
+        policies {
+            timeout_secs 10
+            max_body_size "1MB"
+            rate_limit {
+                requests_per_second 100
+                burst 200
+                key "client_ip"
+            }
+        }
+    }
+
+    // GraphQL API with different validation
+    route "graphql" {
+        id "graphql-route"
+        priority 85
+        service_type "api"
+
+        matches {
+            path "/graphql"
+        }
+
+        upstream "graphql-backend"
+
+        api_schema {
+            // GraphQL has its own validation, so we just check structure
+            request_schema {
+                type "object"
+                properties {
+                    query { type "string" }
+                    variables { type "object" }
+                    operationName { type "string" }
+                }
+                required ["query"]
+            }
+        }
+
+        error_pages {
+            default_format "json"
+        }
+
+        policies {
+            max_body_size "5MB"  // GraphQL queries can be larger
+            timeout_secs 30      // Complex queries might take time
+        }
+    }
+
+    // Static file serving route
+    route "static-assets" {
+        id "static-assets-route"
+        priority 80
+        service_type "static"  // Static file serving
+
+        matches {
+            path_prefix "/static"
+        }
+
+        // No upstream needed for static files
+        upstream null
+
+        static_files {
+            root "/var/www/static"
+            index "index.html"
+            directory_listing false  // Security: don't expose directory structure
+            cache_control "public, max-age=86400"  // Cache for 1 day
+            compress true
+
+            // Custom MIME types
+            mime_types {
+                "wasm" "application/wasm"
+                "mjs" "application/javascript"
+                "webmanifest" "application/manifest+json"
+            }
+
+            // No fallback for regular static assets
+            fallback null
+        }
+
+        error_pages {
+            default_format "html"
+            pages {
+                404 {
+                    format "html"
+                    template "static-404.html"
+                }
+            }
+        }
+    }
+
+    // SPA (Single Page Application) route
+    route "spa" {
+        id "spa-route"
+        priority 70
+        service_type "static"
+
+        matches {
+            host "app.example.com"
+            path_prefix "/"
+        }
+
+        upstream null
+
+        static_files {
+            root "/var/www/spa"
+            index "index.html"
+            directory_listing false
+            cache_control "public, max-age=3600"
+            compress true
+
+            // Important for SPA: fallback to index.html for client-side routing
+            fallback "index.html"
+        }
+
+        error_pages {
+            default_format "html"
+            pages {
+                404 {
+                    format "html"
+                    // For SPA, 404s should usually return the app
+                    template "index.html"
+                }
+            }
+        }
+    }
+
+    // Documentation site with directory listing
+    route "docs" {
+        id "docs-route"
+        priority 60
+        service_type "static"
+
+        matches {
+            host "docs.example.com"
+        }
+
+        upstream null
+
+        static_files {
+            root "/var/www/docs"
+            index "index.html"
+            directory_listing true  // Allow browsing documentation
+            cache_control "public, max-age=7200"
+            compress true
+        }
+    }
+
+    // Health check endpoint (API type)
+    route "health" {
+        id "health-route"
+        priority 100
+        service_type "api"
+
+        matches {
+            path "/health"
+        }
+
+        upstream "health-backend"
+
+        error_pages {
+            default_format "json"
+            pages {
+                503 {
+                    format "json"
+                    message "Service Unavailable"
+                    headers {
+                        "Retry-After" "30"
+                    }
+                }
+            }
+        }
+
+        policies {
+            timeout_secs 5
+            failure_mode "closed"  // Fail closed for health checks
+        }
+    }
+
+    // WebSocket route (web type)
+    route "websocket" {
+        id "ws-route"
+        priority 95
+        service_type "web"
+
+        matches {
+            path_prefix "/ws"
+            header {
+                name "Upgrade"
+                value "websocket"
+            }
+        }
+
+        upstream "ws-backend"
+
+        policies {
+            // WebSocket connections are long-lived
+            timeout_secs 3600
+            buffer_requests false
+            buffer_responses false
+        }
+    }
+}
+
+// Upstream configurations
+upstreams {
+    upstream "web-backend" {
+        targets [
+            { address "10.0.1.10:8080" weight 1 }
+            { address "10.0.1.11:8080" weight 1 }
+        ]
+
+        health_check {
+            check_type { http { path "/health" } }
+            interval_secs 10
+            timeout_secs 3
+            healthy_threshold 2
+            unhealthy_threshold 3
+        }
+    }
+
+    upstream "api-backend" {
+        targets [
+            { address "10.0.2.10:8080" weight 1 }
+            { address "10.0.2.11:8080" weight 1 }
+            { address "10.0.2.12:8080" weight 2 }  // Higher capacity server
+        ]
+
+        health_check {
+            check_type { http { path "/api/health" expected_status 200 } }
+            interval_secs 5
+            timeout_secs 2
+        }
+    }
+
+    upstream "graphql-backend" {
+        targets [
+            { address "10.0.3.10:8080" weight 1 }
+        ]
+    }
+
+    upstream "ws-backend" {
+        targets [
+            { address "10.0.4.10:8080" weight 1 }
+            { address "10.0.4.11:8080" weight 1 }
+        ]
+
+        // WebSocket health check
+        health_check {
+            check_type { tcp }
+            interval_secs 10
+            timeout_secs 3
+        }
+    }
+
+    upstream "health-backend" {
+        // Local health check service
+        targets [
+            { address "127.0.0.1:9090" weight 1 }
+        ]
+    }
+}
+
+// WAF configuration with different rules per service type
+waf {
+    engine "modsecurity"
+    mode "prevention"
+
+    ruleset {
+        crs_version "4.0.0"
+        paranoia_level 1
+        anomaly_threshold 5
+
+        // Exclude certain rules for API endpoints
+        exclusions [
+            {
+                rule_ids [920420, 920320]  // JSON content-type rules
+                scope { path "/api" }
+            }
+            {
+                rule_ids [920350]  // GraphQL specific
+                scope { path "/graphql" }
+            }
+        ]
+    }
+
+    body_inspection {
+        inspect_request_body true
+        inspect_response_body false
+        max_inspection_bytes 131072  // 128KB
+
+        // Only inspect these content types
+        content_types [
+            "application/x-www-form-urlencoded"
+            "multipart/form-data"
+            "application/json"
+            "application/xml"
+            "text/xml"
+        ]
+
+        decompress true
+        max_decompression_ratio 10
+    }
+}
+
+// Observability configuration
+observability {
+    metrics {
+        enabled true
+        address "0.0.0.0:9090"
+        path "/metrics"
+        high_cardinality false
+    }
+
+    logging {
+        level "info"
+        format "json"
+        timestamps true
+
+        access_log {
+            enabled true
+            file "/var/log/sentinel/access.log"
+            format "json"
+            buffer_size 8192
+        }
+    }
+
+    tracing {
+        backend { otlp { endpoint "http://localhost:4317" } }
+        sampling_rate 0.01
+        service_name "sentinel-proxy"
+    }
+}
