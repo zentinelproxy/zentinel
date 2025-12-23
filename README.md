@@ -1,11 +1,8 @@
 <div align="center">
 
 <h1 align="center">
-  <!-- Optional brandmark. Safe to remove until you have one. -->
-  <!--
-  <img src=".github/static/sentinel-mark.svg" alt="sentinel mark" width="96" />
+  <img src=".github/static/sentinel-mascot.png" alt="sentinel mascot" width="96" />
   <br>
-  -->
   Sentinel
 </h1>
 
