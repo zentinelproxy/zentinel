@@ -1,0 +1,111 @@
+// HTTP Listener Configuration
+// This file defines the main HTTP listener for Sentinel
+
+listener "http" {
+    address "0.0.0.0:80"
+    protocol "http"
+
+    // Connection settings
+    backlog 1024
+    nodelay true
+    keepalive true
+    keepalive-timeout "60s"
+
+    // Buffer sizes
+    read-buffer-size "64KB"
+    write-buffer-size "64KB"
+
+    // HTTP/1.1 settings
+    http1 {
+        enabled true
+        max-headers 100
+        max-header-size "16KB"
+        pipeline-requests false
+    }
+
+    // HTTP/2 settings
+    http2 {
+        enabled true
+        max-concurrent-streams 100
+        initial-window-size "65535"
+        max-frame-size "16384"
+        header-table-size "4096"
+        enable-push false
+    }
+
+    // Request handling
+    request {
+        read-timeout "30s"
+        header-timeout "10s"
+        body-timeout "60s"
+
+        // Maximum request size
+        max-body-size "10MB"
+
+        // Enable request buffering for small requests
+        buffer-threshold "64KB"
+    }
+
+    // Response handling
+    response {
+        write-timeout "30s"
+        flush-interval "100ms"
+
+        // Compression
+        compression {
+            enabled true
+            level 6
+            min-size "1KB"
+            types [
+                "text/html"
+                "text/css"
+                "text/javascript"
+                "application/javascript"
+                "application/json"
+                "application/xml"
+                "text/plain"
+            ]
+        }
+    }
+
+    // Access control
+    access {
+        // Allow all by default
+        default-action "allow"
+
+        // IP-based access control
+        allow-ips [
+            "10.0.0.0/8"
+            "172.16.0.0/12"
+            "192.168.0.0/16"
+        ]
+
+        deny-ips [
+            // Add blocked IPs here
+        ]
+
+        // Rate limiting per IP
+        rate-limit {
+            enabled true
+            requests-per-second 100
+            burst 200
+        }
+    }
+
+    // Security headers added to all responses
+    security-headers {
+        "X-Frame-Options" "DENY"
+        "X-Content-Type-Options" "nosniff"
+        "X-XSS-Protection" "1; mode=block"
+        "Referrer-Policy" "strict-origin-when-cross-origin"
+        "Permissions-Policy" "geolocation=(), microphone=(), camera=()"
+    }
+
+    // Custom error pages
+    error-pages {
+        404 "/errors/404.html"
+        500 "/errors/500.html"
+        502 "/errors/502.html"
+        503 "/errors/503.html"
+    }
+}

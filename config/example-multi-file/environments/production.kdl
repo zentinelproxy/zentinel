@@ -1,0 +1,587 @@
+// Production Environment Configuration Overrides
+// This file contains production-specific settings that override base configuration
+// Load this with: sentinel --config-dir /etc/sentinel --environment production
+
+metadata {
+    environment "production"
+    deployment-id "$DEPLOYMENT_ID"
+    region "$AWS_REGION"
+    last-updated "2024-01-15"
+}
+
+// Production server settings
+server {
+    worker-threads 16  // More workers for production
+    graceful-shutdown-timeout "60s"  // Longer graceful shutdown
+    pid-file "/var/run/sentinel/sentinel.pid"
+
+    // Production process limits
+    rlimits {
+        nofile 65536  // Max file descriptors
+        nproc 32768   // Max processes
+    }
+}
+
+// Production TLS settings
+tls {
+    min-version "TLS1.2"
+
+    // Production cipher suites (more restrictive)
+    cipher-suites [
+        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256"
+    ]
+
+    // Production certificates from secrets management
+    default-cert "/etc/sentinel/certs/prod/default.crt"
+    default-key "/etc/sentinel/certs/prod/default.key"
+
+    // Certificate rotation
+    cert-watch {
+        enabled true
+        check-interval "1h"
+        reload-on-change true
+    }
+
+    // OCSP settings
+    ocsp-stapling true
+    ocsp-staple-cache-size 10000
+    ocsp-staple-timeout "2h"
+
+    // Session cache (larger for production)
+    session-cache-size 100000
+    session-timeout "24h"
+}
+
+// Production resource limits
+limits {
+    max-header-count 200
+    max-header-size "128KB"
+    max-body-size "500MB"  // Higher for production APIs
+    max-connections 100000  // Much higher connection limit
+    max-connections-per-ip 1000
+
+    // Production timeouts
+    request-timeout "60s"
+    idle-timeout "120s"
+    keepalive-timeout "90s"
+
+    // Rate limiting (more aggressive)
+    rate-limit {
+        enabled true
+
+        // Default limits
+        default {
+            requests-per-second 500
+            burst 1000
+        }
+
+        // Per-tier limits
+        tiers {
+            "free" {
+                requests-per-second 10
+                burst 20
+            }
+            "basic" {
+                requests-per-second 100
+                burst 200
+            }
+            "premium" {
+                requests-per-second 1000
+                burst 2000
+            }
+            "enterprise" {
+                requests-per-second 10000
+                burst 20000
+            }
+        }
+
+        // DDoS protection
+        ddos-protection {
+            enabled true
+            threshold 10000
+            ban-duration "1h"
+        }
+    }
+}
+
+// Production logging
+logging {
+    level "warn"  // Less verbose in production
+    format "json"
+
+    outputs {
+        stdout {
+            enabled false  // Disable stdout in production
+        }
+
+        file {
+            enabled true
+            path "/var/log/sentinel/sentinel.log"
+            rotation "hourly"
+            max-size "1GB"
+            max-backups 24
+            compress true
+        }
+
+        syslog {
+            enabled true
+            address "syslog.internal:514"
+            facility "local0"
+            tag "sentinel"
+        }
+
+        // External logging service
+        external {
+            enabled true
+            type "datadog"  // or "elastic", "splunk", etc.
+            endpoint "$DATADOG_LOGS_ENDPOINT"
+            api-key "$DATADOG_API_KEY"
+
+            // Add metadata to all logs
+            tags [
+                "env:production"
+                "service:sentinel"
+                "version:$VERSION"
+            ]
+        }
+    }
+
+    // Production access log
+    access-log {
+        enabled true
+        path "/var/log/sentinel/access.log"
+        format "json"
+        buffer-size "256KB"
+
+        // Log sampling for high traffic
+        sampling {
+            enabled true
+            rate 0.1  // Log 10% of requests
+            always-log-errors true
+        }
+
+        // Fields to include
+        fields [
+            "timestamp"
+            "request_id"
+            "method"
+            "path"
+            "status"
+            "latency"
+            "bytes_sent"
+            "user_agent"
+            "remote_addr"
+            "upstream"
+            "cache_status"
+        ]
+    }
+
+    // Audit logging for compliance
+    audit-log {
+        enabled true
+        path "/var/log/sentinel/audit.log"
+
+        // What to audit
+        events [
+            "config_change"
+            "auth_failure"
+            "rate_limit_exceeded"
+            "waf_block"
+            "admin_access"
+        ]
+    }
+}
+
+// Production metrics
+metrics {
+    enabled true
+
+    prometheus {
+        enabled true
+        port 9090
+        path "/metrics"
+
+        // Authentication for metrics endpoint
+        auth {
+            type "basic"
+            username "$METRICS_USERNAME"
+            password "$METRICS_PASSWORD"
+        }
+
+        // Production histogram buckets (more granular)
+        latency-buckets [
+            0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
+            0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0
+        ]
+
+        // Cardinality limits
+        max-cardinality 10000
+        cardinality-limit-action "drop"
+    }
+
+    // Push metrics to monitoring system
+    push {
+        enabled true
+        type "prometheus-pushgateway"
+        endpoint "https://pushgateway.monitoring.internal:9091"
+        interval "10s"
+
+        // Add labels
+        labels {
+            environment "production"
+            region "$AWS_REGION"
+            instance "$INSTANCE_ID"
+        }
+    }
+
+    // Custom business metrics
+    custom {
+        enabled true
+
+        // Track business KPIs
+        track [
+            "api_calls_by_customer"
+            "api_calls_by_endpoint"
+            "error_rate_by_service"
+            "p99_latency_by_route"
+        ]
+    }
+}
+
+// Production health checks
+health {
+    // Readiness probe
+    readiness {
+        path "/ready"
+
+        // Checks before marking ready
+        checks [
+            "config_loaded"
+            "upstreams_available"
+            "agents_connected"
+            "tls_certificates_valid"
+        ]
+    }
+
+    // Liveness probe
+    liveness {
+        path "/alive"
+
+        // Basic checks
+        checks [
+            "memory_usage < 90%"
+            "goroutines < 10000"
+            "error_rate < 1%"
+        ]
+    }
+}
+
+// Production-specific listeners
+listener "https" {
+    // Override HTTPS settings for production
+
+    tls {
+        // Require TLS 1.2 minimum
+        min-version "TLS1.2"
+
+        // Production certificates from AWS Secrets Manager
+        certificates {
+            provider "aws-secrets-manager"
+
+            default {
+                secret-name "prod/sentinel/default-cert"
+                auto-rotate true
+            }
+
+            sni {
+                "api.example.com" {
+                    secret-name "prod/sentinel/api-cert"
+                }
+                "*.app.example.com" {
+                    secret-name "prod/sentinel/wildcard-app-cert"
+                }
+            }
+        }
+
+        // Enable client certificate validation for admin endpoints
+        client-auth {
+            enabled true
+            mode "optional"
+
+            // Different CA for different paths
+            paths {
+                "/admin/*" {
+                    mode "require"
+                    ca-file "/etc/sentinel/certs/prod/admin-ca.crt"
+                }
+                "/internal/*" {
+                    mode "require"
+                    ca-file "/etc/sentinel/certs/prod/internal-ca.crt"
+                }
+            }
+        }
+    }
+
+    // Production HTTP/2 settings
+    http2 {
+        max-concurrent-streams 256
+        initial-window-size "1048576"  // 1MB
+        max-frame-size "16777215"      // 16MB
+    }
+
+    // Production security headers
+    security-headers {
+        "Strict-Transport-Security" "max-age=63072000; includeSubDomains; preload"
+        "X-Frame-Options" "DENY"
+        "X-Content-Type-Options" "nosniff"
+        "X-XSS-Protection" "0"  // Disabled in modern browsers
+        "Referrer-Policy" "strict-origin-when-cross-origin"
+        "Permissions-Policy" "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+        "Content-Security-Policy" "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    }
+}
+
+// Production upstream overrides
+upstream "api-backend-v1" {
+    // Production backend servers
+    targets [
+        {
+            address "api-prod-1.internal.example.com"
+            port 8080
+            weight 100
+            metadata {
+                az "us-east-1a"
+                instance-type "c5.4xlarge"
+            }
+        }
+        {
+            address "api-prod-2.internal.example.com"
+            port 8080
+            weight 100
+            metadata {
+                az "us-east-1b"
+                instance-type "c5.4xlarge"
+            }
+        }
+        {
+            address "api-prod-3.internal.example.com"
+            port 8080
+            weight 100
+            metadata {
+                az "us-east-1c"
+                instance-type "c5.4xlarge"
+            }
+        }
+        // ... more production servers
+    ]
+
+    // Production health checks (more aggressive)
+    health-check {
+        interval "2s"
+        timeout "1s"
+        healthy-threshold 3
+        unhealthy-threshold 2
+    }
+
+    // Production connection pool
+    connection-pool {
+        max-connections 5000
+        max-idle-connections 500
+        idle-timeout "300s"
+        max-lifetime "1h"
+    }
+
+    // Production circuit breaker (more sensitive)
+    circuit-breaker {
+        failure-threshold 3
+        success-threshold 3
+        timeout "10s"
+    }
+}
+
+// WAF configuration for production
+waf {
+    enabled true
+    mode "enforce"  // Block in production
+
+    // CRS settings
+    crs {
+        paranoia-level 2  // Higher paranoia in production
+        anomaly-threshold 5  // Lower threshold
+
+        // Production rule exclusions
+        exclusions {
+            // Known false positives
+            rules [942440, 942450]  // SQL injection false positives
+
+            // Path-specific exclusions
+            paths {
+                "/api/v1/upload" {
+                    rules [200002, 200003]  // File upload rules
+                }
+            }
+        }
+    }
+
+    // Custom rules for production
+    custom-rules {
+        enabled true
+        path "/etc/sentinel/waf/custom-rules.conf"
+    }
+
+    // WAF logging
+    audit-log {
+        enabled true
+        path "/var/log/sentinel/waf-audit.log"
+        format "json"
+
+        // Log all blocks and a sample of allows
+        log-level "block"
+        sample-rate 0.01  // 1% of allowed requests
+    }
+}
+
+// Production caching
+cache {
+    enabled true
+
+    // In-memory cache
+    memory {
+        enabled true
+        max-size "4GB"
+        max-entries 100000
+        ttl "5m"
+    }
+
+    // Redis cache
+    redis {
+        enabled true
+
+        // Redis cluster
+        cluster {
+            endpoints [
+                "redis-cache-1.prod.internal:6379"
+                "redis-cache-2.prod.internal:6379"
+                "redis-cache-3.prod.internal:6379"
+            ]
+
+            password "$REDIS_PASSWORD"
+        }
+
+        // Cache key prefix
+        key-prefix "sentinel:prod:"
+
+        // Default TTL
+        default-ttl "10m"
+    }
+
+    // Cache rules
+    rules {
+        // Cache static assets aggressively
+        "static-assets" {
+            path-pattern "\\.(js|css|png|jpg|jpeg|gif|ico|woff|woff2|ttf|svg)$"
+            ttl "1h"
+            cache-control "public, max-age=3600"
+        }
+
+        // Cache API responses selectively
+        "api-responses" {
+            path-pattern "^/api/v1/public/"
+            methods ["GET"]
+            ttl "1m"
+            vary ["Accept", "Accept-Language"]
+        }
+    }
+}
+
+// Production monitoring and alerting
+monitoring {
+    // APM integration
+    apm {
+        enabled true
+        provider "datadog"  // or "new-relic", "elastic-apm"
+
+        service-name "sentinel"
+        environment "production"
+
+        // Trace sampling
+        sampling-rate 0.1  // 10% of requests
+
+        // Always trace slow requests
+        slow-request-threshold "1s"
+        always-trace-slow true
+    }
+
+    // Alerting rules
+    alerts {
+        // High error rate
+        "high-error-rate" {
+            condition "error_rate > 1%"
+            window "5m"
+            severity "critical"
+            notify ["pagerduty", "slack-oncall"]
+        }
+
+        // High latency
+        "high-latency" {
+            condition "p99_latency > 1s"
+            window "5m"
+            severity "warning"
+            notify ["slack-engineering"]
+        }
+
+        // Circuit breaker open
+        "circuit-breaker-open" {
+            condition "circuit_breaker_open == true"
+            severity "critical"
+            notify ["pagerduty"]
+        }
+
+        // Certificate expiry
+        "certificate-expiring" {
+            condition "certificate_expiry_days < 7"
+            severity "warning"
+            notify ["slack-security"]
+        }
+    }
+}
+
+// Production backup and disaster recovery
+backup {
+    config-backup {
+        enabled true
+        interval "1h"
+
+        // Backup to S3
+        destination "s3://sentinel-backups-prod/configs/"
+
+        // Keep last 30 days
+        retention "30d"
+
+        // Encrypt backups
+        encryption {
+            enabled true
+            kms-key "$KMS_KEY_ARN"
+        }
+    }
+}
+
+// Feature flags for production
+features {
+    // Gradual rollout of new features
+    "new-load-balancer" {
+        enabled true
+        percentage 10  // Roll out to 10% of traffic
+    }
+
+    "enhanced-waf" {
+        enabled false  // Not yet ready for production
+    }
+
+    "http3-support" {
+        enabled false  // Experimental
+    }
+}

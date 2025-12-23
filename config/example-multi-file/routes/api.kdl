@@ -1,0 +1,453 @@
+// API Routes Configuration
+// This file defines all API-related routes and their handling rules
+
+// Public API endpoints
+route "api-public" {
+    id "api-public-v1"
+    priority 100
+
+    // Path matching
+    path {
+        prefix "/api/v1/public"
+        // Can also use:
+        // exact "/api/v1/status"
+        // regex "^/api/v[0-9]+/.*"
+    }
+
+    // HTTP methods allowed
+    methods ["GET", "POST", "PUT", "DELETE", "PATCH"]
+
+    // Select upstream
+    upstream "api-backend-v1"
+
+    // Load balancing override for this route
+    load-balancing {
+        algorithm "consistent-hash"
+        hash-on "header:X-Session-Id"
+    }
+
+    // Request modifications
+    request {
+        // Add headers
+        add-headers {
+            "X-Route-Id" "api-public-v1"
+            "X-Real-IP" "$remote_addr"
+            "X-Forwarded-Proto" "$scheme"
+        }
+
+        // Remove sensitive headers
+        remove-headers [
+            "X-Internal-Token"
+            "X-Debug-Mode"
+        ]
+
+        // Timeout settings
+        timeout "30s"
+        body-timeout "60s"
+
+        // Size limits
+        max-body-size "10MB"
+    }
+
+    // Response modifications
+    response {
+        // Add CORS headers
+        add-headers {
+            "Access-Control-Allow-Origin" "*"
+            "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE, OPTIONS"
+            "Access-Control-Allow-Headers" "Content-Type, Authorization"
+            "Access-Control-Max-Age" "86400"
+        }
+
+        // Cache control
+        cache {
+            enabled true
+            key ["method", "uri", "header:Accept"]
+            ttl "5m"
+            respect-cache-control true
+        }
+    }
+
+    // Agents to apply
+    agents [
+        "rate-limiter"
+        "cors-handler"
+    ]
+}
+
+// Authenticated API endpoints
+route "api-authenticated" {
+    id "api-auth-v1"
+    priority 90
+
+    path {
+        prefix "/api/v1/user"
+    }
+
+    methods ["GET", "POST", "PUT", "DELETE", "PATCH"]
+
+    upstream "api-backend-v1"
+
+    // Authentication required
+    agents [
+        "auth-jwt"       // JWT validation
+        "rate-limiter"   // Rate limiting
+        "waf"           // WAF protection
+    ]
+
+    // Auth agent configuration
+    agent-config "auth-jwt" {
+        required true
+        fail-action "deny"
+
+        jwt {
+            issuer "https://auth.example.com"
+            audience "api.example.com"
+            algorithms ["RS256", "ES256"]
+
+            // Extract claims to headers
+            claims-to-headers {
+                "sub" "X-User-Id"
+                "email" "X-User-Email"
+                "roles" "X-User-Roles"
+            }
+        }
+    }
+
+    // Rate limiting per user
+    agent-config "rate-limiter" {
+        key "header:X-User-Id"
+        limits {
+            "default" {
+                requests-per-second 50
+                burst 100
+            }
+            "premium" {
+                requests-per-second 500
+                burst 1000
+            }
+        }
+    }
+
+    request {
+        add-headers {
+            "X-Route-Id" "api-authenticated"
+        }
+
+        timeout "45s"
+        max-body-size "50MB"
+    }
+
+    // Circuit breaker for this route
+    circuit-breaker {
+        enabled true
+        failure-threshold 5
+        success-threshold 2
+        timeout "30s"
+        half-open-max-requests 3
+    }
+
+    // Retry policy
+    retry {
+        enabled true
+        max-attempts 3
+        backoff "exponential"
+        base-delay "100ms"
+        max-delay "2s"
+
+        // Retry on these status codes
+        retry-on [502, 503, 504]
+
+        // Don't retry on these methods
+        skip-methods ["POST", "PUT", "DELETE"]
+    }
+}
+
+// GraphQL endpoint
+route "graphql" {
+    id "graphql-api"
+    priority 95
+
+    path {
+        exact "/graphql"
+    }
+
+    methods ["POST", "GET"]
+
+    upstream "graphql-backend"
+
+    agents [
+        "auth-jwt"
+        "graphql-validator"
+        "rate-limiter"
+    ]
+
+    // GraphQL-specific configuration
+    agent-config "graphql-validator" {
+        max-depth 10
+        max-complexity 1000
+        introspection-enabled false
+
+        // Rate limit by query complexity
+        complexity-based-rate-limit true
+    }
+
+    request {
+        // GraphQL queries can be large
+        max-body-size "1MB"
+        timeout "60s"
+
+        // Parse GraphQL query for logging
+        parse-graphql true
+    }
+
+    response {
+        // Add GraphQL-specific headers
+        add-headers {
+            "X-GraphQL-Complexity" "$graphql_complexity"
+            "X-GraphQL-Depth" "$graphql_depth"
+        }
+    }
+}
+
+// WebSocket API endpoint
+route "websocket-api" {
+    id "ws-api"
+    priority 85
+
+    path {
+        prefix "/api/v1/ws"
+    }
+
+    // WebSocket upgrade required
+    websocket {
+        enabled true
+
+        // WebSocket configuration
+        max-frame-size "1MB"
+        max-message-size "10MB"
+        idle-timeout "5m"
+        ping-interval "30s"
+
+        // Compression
+        compression true
+
+        // Origin validation
+        allowed-origins [
+            "https://app.example.com"
+            "https://mobile.example.com"
+            "http://localhost:3000"  // Development
+        ]
+    }
+
+    upstream "websocket-backend"
+
+    // Use sticky sessions for WebSocket
+    load-balancing {
+        algorithm "ip-hash"
+    }
+
+    agents [
+        "auth-jwt"
+        "websocket-filter"
+    ]
+
+    request {
+        timeout "120s"  // Longer timeout for WebSocket upgrade
+    }
+}
+
+// Admin API (internal only)
+route "admin-api" {
+    id "admin-api"
+    priority 50
+
+    path {
+        prefix "/admin/api"
+    }
+
+    methods ["GET", "POST", "PUT", "DELETE"]
+
+    upstream "admin-backend"
+
+    // Restrict to internal IPs only
+    access {
+        allow-ips [
+            "10.0.0.0/8"
+            "127.0.0.1/32"
+        ]
+
+        deny-all true
+    }
+
+    agents [
+        "auth-mtls"     // mTLS authentication
+        "audit-logger"  // Audit all admin actions
+        "waf"
+    ]
+
+    // mTLS configuration
+    agent-config "auth-mtls" {
+        required true
+        ca-file "/etc/sentinel/certs/admin-ca.crt"
+        verify-depth 2
+
+        // Extract certificate info to headers
+        cert-to-headers {
+            "CN" "X-Client-CN"
+            "O" "X-Client-Org"
+        }
+    }
+
+    // Audit logging
+    agent-config "audit-logger" {
+        log-level "info"
+        include-body true
+        include-response true
+
+        // Mask sensitive fields
+        mask-fields [
+            "password"
+            "token"
+            "api_key"
+        ]
+    }
+
+    request {
+        timeout "60s"
+        max-body-size "100MB"
+    }
+}
+
+// Health check endpoint
+route "health" {
+    id "health-check"
+    priority 200  // High priority for fast processing
+
+    path {
+        exact "/health"
+    }
+
+    methods ["GET"]
+
+    // Direct response without upstream
+    direct-response {
+        status 200
+        body "{\"status\":\"healthy\"}"
+        headers {
+            "Content-Type" "application/json"
+            "Cache-Control" "no-cache"
+        }
+    }
+
+    // No agents needed for health checks
+    agents []
+
+    // No rate limiting for health checks from monitoring
+    rate-limit {
+        exclude-ips [
+            "10.0.0.0/8"     // Internal monitoring
+            "172.16.0.0/12"  // Docker/K8s
+        ]
+    }
+}
+
+// Metrics endpoint
+route "metrics" {
+    id "metrics"
+    priority 199
+
+    path {
+        exact "/metrics"
+    }
+
+    methods ["GET"]
+
+    // Prometheus metrics endpoint
+    metrics-handler {
+        enabled true
+        format "prometheus"
+    }
+
+    // Basic auth for metrics
+    agents ["auth-basic"]
+
+    agent-config "auth-basic" {
+        realm "Metrics"
+        users-file "/etc/sentinel/metrics-users.txt"
+    }
+}
+
+// API documentation
+route "api-docs" {
+    id "api-documentation"
+    priority 150
+
+    path {
+        prefix "/api/docs"
+    }
+
+    methods ["GET"]
+
+    // Serve static files
+    static-files {
+        root "/var/www/api-docs"
+        index "index.html"
+        try-files ["$uri", "$uri/", "/index.html"]
+    }
+
+    response {
+        // Cache documentation
+        add-headers {
+            "Cache-Control" "public, max-age=3600"
+        }
+    }
+}
+
+// API versioning with deprecation
+route "api-v2" {
+    id "api-v2"
+    priority 95
+
+    path {
+        prefix "/api/v2"
+    }
+
+    upstream "api-backend-v2"
+
+    request {
+        add-headers {
+            "X-API-Version" "2.0"
+        }
+    }
+
+    response {
+        // Add deprecation headers for old endpoints
+        add-headers-conditional {
+            condition "path ~ /api/v2/legacy"
+            headers {
+                "Sunset" "Sat, 1 Jan 2025 00:00:00 GMT"
+                "Deprecation" "true"
+                "Link" "</api/v3/new-endpoint>; rel=\"successor-version\""
+            }
+        }
+    }
+}
+
+// Catch-all for undefined API routes
+route "api-404" {
+    id "api-not-found"
+    priority 10  // Lowest priority
+
+    path {
+        prefix "/api"
+    }
+
+    direct-response {
+        status 404
+        body "{\"error\":\"API endpoint not found\",\"code\":\"ROUTE_NOT_FOUND\"}"
+        headers {
+            "Content-Type" "application/json"
+        }
+    }
+}

@@ -20,6 +20,9 @@ use sentinel_common::{
     },
 };
 
+mod multi_file;
+pub use multi_file::{ConfigDirectory, MultiFileLoader};
+
 /// Main configuration structure for Sentinel proxy
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct Config {

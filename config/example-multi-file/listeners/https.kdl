@@ -1,0 +1,203 @@
+// HTTPS Listener Configuration
+// This file defines the secure HTTPS listener for Sentinel
+
+listener "https" {
+    address "0.0.0.0:443"
+    protocol "https"
+
+    // Connection settings
+    backlog 1024
+    nodelay true
+    keepalive true
+    keepalive-timeout "120s"
+
+    // Buffer sizes
+    read-buffer-size "64KB"
+    write-buffer-size "64KB"
+
+    // TLS Configuration
+    tls {
+        enabled true
+
+        // Certificate configuration
+        certificates {
+            // Default certificate
+            default {
+                cert "/etc/sentinel/certs/default.crt"
+                key "/etc/sentinel/certs/default.key"
+            }
+
+            // SNI-based certificates
+            sni {
+                "api.example.com" {
+                    cert "/etc/sentinel/certs/api.example.com.crt"
+                    key "/etc/sentinel/certs/api.example.com.key"
+                }
+
+                "*.app.example.com" {
+                    cert "/etc/sentinel/certs/wildcard.app.example.com.crt"
+                    key "/etc/sentinel/certs/wildcard.app.example.com.key"
+                }
+            }
+        }
+
+        // Protocol versions
+        min-version "TLS1.2"
+        max-version "TLS1.3"
+
+        // Cipher suites (TLS 1.2)
+        cipher-suites [
+            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+            "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+        ]
+
+        // TLS 1.3 cipher suites
+        tls13-cipher-suites [
+            "TLS_AES_256_GCM_SHA384"
+            "TLS_AES_128_GCM_SHA256"
+            "TLS_CHACHA20_POLY1305_SHA256"
+        ]
+
+        // ECDH curves
+        curves [
+            "X25519"
+            "P-256"
+            "P-384"
+        ]
+
+        // Session resumption
+        session-cache {
+            enabled true
+            size 20000
+            timeout "24h"
+        }
+
+        // OCSP stapling
+        ocsp-stapling {
+            enabled true
+            verify true
+            cache-size 1000
+            cache-timeout "1h"
+        }
+
+        // Client certificates (mTLS)
+        client-auth {
+            enabled false
+            mode "optional"  // none, optional, require
+            ca-file "/etc/sentinel/certs/client-ca.crt"
+            verify-depth 2
+        }
+    }
+
+    // HTTP/1.1 settings
+    http1 {
+        enabled true
+        max-headers 100
+        max-header-size "16KB"
+        pipeline-requests false
+    }
+
+    // HTTP/2 settings
+    http2 {
+        enabled true
+        max-concurrent-streams 128
+        initial-window-size "65535"
+        max-frame-size "16384"
+        header-table-size "4096"
+        enable-push false
+
+        // HTTP/2 specific timeouts
+        ping-interval "30s"
+        ping-timeout "15s"
+    }
+
+    // HTTP/3 settings (QUIC)
+    http3 {
+        enabled false  // Experimental
+        port 443
+        max-idle-timeout "30s"
+        initial-max-data "10MB"
+        initial-max-stream-data "1MB"
+        initial-max-streams-bidi 100
+        initial-max-streams-uni 100
+    }
+
+    // Request handling
+    request {
+        read-timeout "30s"
+        header-timeout "10s"
+        body-timeout "60s"
+        max-body-size "50MB"
+        buffer-threshold "64KB"
+    }
+
+    // Response handling
+    response {
+        write-timeout "30s"
+        flush-interval "100ms"
+
+        // Compression
+        compression {
+            enabled true
+            level 6
+            min-size "1KB"
+            types [
+                "text/html"
+                "text/css"
+                "text/javascript"
+                "application/javascript"
+                "application/json"
+                "application/xml"
+                "text/plain"
+                "image/svg+xml"
+            ]
+        }
+    }
+
+    // HSTS (HTTP Strict Transport Security)
+    hsts {
+        enabled true
+        max-age "31536000"  // 1 year
+        include-subdomains true
+        preload true
+    }
+
+    // Security headers
+    security-headers {
+        "Strict-Transport-Security" "max-age=31536000; includeSubDomains; preload"
+        "X-Frame-Options" "DENY"
+        "X-Content-Type-Options" "nosniff"
+        "X-XSS-Protection" "1; mode=block"
+        "Referrer-Policy" "strict-origin-when-cross-origin"
+        "Permissions-Policy" "geolocation=(), microphone=(), camera=()"
+        "Content-Security-Policy" "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+    }
+
+    // Access control
+    access {
+        default-action "allow"
+
+        // Rate limiting
+        rate-limit {
+            enabled true
+            requests-per-second 200
+            burst 400
+        }
+
+        // Geographic restrictions (requires GeoIP database)
+        geo-blocking {
+            enabled false
+            database "/etc/sentinel/GeoLite2-Country.mmdb"
+            allow-countries ["US", "CA", "GB", "DE", "FR"]
+            deny-countries []
+        }
+    }
+
+    // Redirect HTTP to HTTPS
+    redirect-http {
+        enabled true
+        status-code 301
+        port 80
+    }
+}

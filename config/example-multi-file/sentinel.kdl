@@ -1,0 +1,119 @@
+// Main Sentinel configuration file
+// This file contains core server settings and global defaults
+// Additional configurations are loaded from subdirectories
+
+metadata {
+    version "1.0.0"
+    environment "production"
+    description "Main Sentinel configuration"
+}
+
+// Global server configuration
+server {
+    worker-threads 4
+    graceful-shutdown-timeout "30s"
+    pid-file "/var/run/sentinel.pid"
+}
+
+// Global TLS configuration
+tls {
+    min-version "TLS1.2"
+
+    cipher-suites [
+        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+    ]
+
+    // Default certificate paths
+    default-cert "/etc/sentinel/certs/default.crt"
+    default-key "/etc/sentinel/certs/default.key"
+
+    // OCSP stapling
+    ocsp-stapling true
+
+    // Session cache
+    session-cache-size 10000
+    session-timeout "4h"
+}
+
+// Global limits and safety settings
+limits {
+    max-header-count 100
+    max-header-size "64KB"
+    max-body-size "100MB"
+    max-connections 50000
+    max-connections-per-ip 100
+
+    request-timeout "30s"
+    idle-timeout "60s"
+
+    // Rate limiting defaults
+    rate-limit {
+        requests-per-second 100
+        burst 200
+    }
+}
+
+// Logging configuration
+logging {
+    level "info"
+    format "json"
+
+    // Output destinations
+    outputs {
+        stdout {
+            enabled true
+            filter "level >= info"
+        }
+
+        file {
+            enabled true
+            path "/var/log/sentinel/sentinel.log"
+            rotation "daily"
+            max-size "100MB"
+            max-backups 7
+            compress true
+        }
+    }
+
+    // Access log
+    access-log {
+        enabled true
+        path "/var/log/sentinel/access.log"
+        format "combined"
+        buffer-size "64KB"
+    }
+}
+
+// Metrics and monitoring
+metrics {
+    enabled true
+
+    prometheus {
+        enabled true
+        port 9090
+        path "/metrics"
+
+        // Histogram buckets for latency
+        latency-buckets [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+    }
+
+    statsd {
+        enabled false
+        host "localhost"
+        port 8125
+        prefix "sentinel"
+    }
+}
+
+// Include additional configuration files
+// These are loaded automatically from subdirectories:
+// - listeners/*.kdl
+// - routes/*.kdl
+// - upstreams/*.kdl
+// - agents/*.kdl
+// - environments/{environment}.kdl
+
+// You can also explicitly include files
+include "custom/*.kdl"

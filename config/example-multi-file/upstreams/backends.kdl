@@ -1,0 +1,511 @@
+// Backend Upstream Configurations
+// This file defines all upstream backend pools and their settings
+
+// Main API backend cluster
+upstream "api-backend-v1" {
+    description "Primary API backend cluster v1"
+
+    // Backend targets
+    targets [
+        {
+            address "10.0.1.10"
+            port 8080
+            weight 100
+            metadata {
+                dc "us-east-1a"
+                version "1.5.2"
+            }
+        }
+        {
+            address "10.0.1.11"
+            port 8080
+            weight 100
+            metadata {
+                dc "us-east-1b"
+                version "1.5.2"
+            }
+        }
+        {
+            address "10.0.1.12"
+            port 8080
+            weight 50  // Lower weight for canary
+            metadata {
+                dc "us-east-1c"
+                version "1.6.0-beta"
+                canary true
+            }
+        }
+    ]
+
+    // Load balancing configuration
+    load-balancing {
+        algorithm "adaptive"  // or "round-robin", "least-connections", "ip-hash", "consistent-hash", "p2c"
+
+        // Adaptive algorithm settings
+        adaptive {
+            adjustment-interval "10s"
+            error-threshold 0.05  // 5% error rate
+            latency-threshold "500ms"
+            min-weight-ratio 0.1
+            max-weight-ratio 2.0
+        }
+    }
+
+    // Health check configuration
+    health-check {
+        enabled true
+        type "http"  // or "tcp", "grpc"
+
+        // HTTP health check settings
+        http {
+            path "/health"
+            method "GET"
+            host "api.internal"
+            expected-status [200, 204]
+            expected-body-regex "\"status\":\\s*\"healthy\""
+        }
+
+        // Check intervals
+        interval "5s"
+        timeout "3s"
+
+        // Thresholds
+        healthy-threshold 2      // Checks to mark healthy
+        unhealthy-threshold 3    // Checks to mark unhealthy
+
+        // Jitter to avoid thundering herd
+        jitter "1s"
+    }
+
+    // Connection pooling
+    connection-pool {
+        max-connections 1000
+        max-idle-connections 100
+        idle-timeout "90s"
+        max-lifetime "30m"
+
+        // Connection reuse
+        keepalive true
+        keepalive-timeout "60s"
+        keepalive-requests 1000
+    }
+
+    // Circuit breaker
+    circuit-breaker {
+        enabled true
+        failure-threshold 5
+        success-threshold 2
+        timeout "30s"
+        half-open-max-requests 3
+
+        // What counts as a failure
+        failure-conditions {
+            status-codes [500, 502, 503, 504]
+            timeout true
+            connection-error true
+        }
+    }
+
+    // Retry policy
+    retry {
+        enabled true
+        max-attempts 3
+
+        // Backoff strategy
+        backoff {
+            type "exponential"  // or "linear", "fixed"
+            base-delay "100ms"
+            max-delay "5s"
+            multiplier 2.0
+        }
+
+        // Retry conditions
+        retry-on {
+            status-codes [502, 503, 504]
+            timeout true
+            connection-error true
+        }
+
+        // Don't retry these
+        skip-on {
+            status-codes [400, 401, 403, 404]
+            methods ["POST", "PATCH"]  // Unless idempotent
+        }
+    }
+
+    // Timeouts
+    timeouts {
+        connect "5s"
+        read "30s"
+        write "30s"
+        idle "60s"
+    }
+
+    // TLS configuration for upstream connections
+    tls {
+        enabled false
+        verify-hostname true
+        sni "api.backend.internal"
+
+        // Client certificates for mTLS
+        client-cert "/etc/sentinel/certs/upstream-client.crt"
+        client-key "/etc/sentinel/certs/upstream-client.key"
+
+        // CA for verification
+        ca-cert "/etc/sentinel/certs/upstream-ca.crt"
+
+        // Protocol settings
+        min-version "TLS1.2"
+        cipher-suites [
+            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+        ]
+    }
+}
+
+// API v2 backend (newer version)
+upstream "api-backend-v2" {
+    description "API backend cluster v2"
+
+    targets [
+        {
+            address "10.0.2.10"
+            port 8080
+            weight 100
+        }
+        {
+            address "10.0.2.11"
+            port 8080
+            weight 100
+        }
+        {
+            address "10.0.2.12"
+            port 8080
+            weight 100
+        }
+    ]
+
+    load-balancing {
+        algorithm "p2c"  // Power of two choices
+
+        p2c {
+            load-metric "combined"  // connections, latency, combined, cpu, request-rate
+            power-of-three false
+        }
+    }
+
+    health-check {
+        enabled true
+        type "http"
+
+        http {
+            path "/health/ready"
+            expected-status [200]
+        }
+
+        interval "10s"
+        timeout "5s"
+    }
+
+    // Simpler configuration for v2
+    connection-pool {
+        max-connections 2000
+        max-idle-connections 200
+    }
+
+    circuit-breaker {
+        enabled true
+        failure-threshold 10
+    }
+}
+
+// GraphQL backend
+upstream "graphql-backend" {
+    description "GraphQL API servers"
+
+    targets [
+        {
+            address "graphql-1.internal"
+            port 4000
+            weight 100
+        }
+        {
+            address "graphql-2.internal"
+            port 4000
+            weight 100
+        }
+    ]
+
+    load-balancing {
+        algorithm "least-connections"
+    }
+
+    // GraphQL-specific health check
+    health-check {
+        enabled true
+        type "graphql"
+
+        graphql {
+            query "{ __typename }"
+            expected-response "{\"data\":{\"__typename\":\"Query\"}}"
+        }
+
+        interval "10s"
+        timeout "5s"
+    }
+
+    // Higher limits for GraphQL
+    timeouts {
+        connect "10s"
+        read "60s"    // GraphQL queries can be slow
+        write "60s"
+    }
+
+    connection-pool {
+        max-connections 500
+        max-idle-connections 50
+    }
+}
+
+// WebSocket backend
+upstream "websocket-backend" {
+    description "WebSocket servers"
+
+    targets [
+        {
+            address "ws-1.internal"
+            port 8080
+            weight 100
+        }
+        {
+            address "ws-2.internal"
+            port 8080
+            weight 100
+        }
+        {
+            address "ws-3.internal"
+            port 8080
+            weight 100
+        }
+    ]
+
+    // Use IP hash for sticky sessions
+    load-balancing {
+        algorithm "ip-hash"
+    }
+
+    // WebSocket-specific settings
+    websocket {
+        enabled true
+        ping-interval "30s"
+        pong-timeout "10s"
+        max-frame-size "1MB"
+        max-message-size "10MB"
+    }
+
+    health-check {
+        enabled true
+        type "websocket"
+
+        websocket {
+            path "/health/ws"
+            message "ping"
+            expected-response "pong"
+        }
+
+        interval "15s"
+        timeout "5s"
+    }
+
+    // Longer timeouts for WebSocket
+    timeouts {
+        connect "10s"
+        read "300s"    // 5 minutes for long-lived connections
+        write "300s"
+        idle "600s"    // 10 minutes
+    }
+}
+
+// Admin backend (internal only)
+upstream "admin-backend" {
+    description "Admin panel backend"
+
+    targets [
+        {
+            address "admin.internal"
+            port 9000
+            weight 100
+        }
+    ]
+
+    // Simple round-robin for admin
+    load-balancing {
+        algorithm "round-robin"
+    }
+
+    health-check {
+        enabled true
+        type "tcp"  // Simple TCP check
+
+        tcp {
+            send "PING\r\n"
+            expect "PONG\r\n"
+        }
+
+        interval "30s"
+    }
+
+    // Require mTLS for admin connections
+    tls {
+        enabled true
+        verify-hostname true
+
+        client-cert "/etc/sentinel/certs/admin-client.crt"
+        client-key "/etc/sentinel/certs/admin-client.key"
+        ca-cert "/etc/sentinel/certs/admin-ca.crt"
+
+        min-version "TLS1.3"  // Higher security for admin
+    }
+}
+
+// Cache servers
+upstream "cache-backend" {
+    description "Redis cache cluster"
+
+    targets [
+        {
+            address "redis-1.internal"
+            port 6379
+            weight 100
+            metadata {
+                role "primary"
+            }
+        }
+        {
+            address "redis-2.internal"
+            port 6379
+            weight 0  // Standby, promoted on primary failure
+            metadata {
+                role "replica"
+            }
+        }
+    ]
+
+    load-balancing {
+        algorithm "consistent-hash"
+
+        consistent-hash {
+            hash-on "uri"
+            virtual-nodes 150
+            bounded-loads true
+        }
+    }
+
+    health-check {
+        enabled true
+        type "redis"
+
+        redis {
+            command "PING"
+            expected-response "PONG"
+
+            // Check role for primary/replica
+            check-role true
+            expected-role "master"  // For primary
+        }
+
+        interval "5s"
+        timeout "2s"
+    }
+
+    connection-pool {
+        max-connections 1000
+        max-idle-connections 100
+        idle-timeout "300s"
+    }
+}
+
+// Static content servers
+upstream "static-backend" {
+    description "Static file servers"
+
+    targets [
+        {
+            address "cdn-origin-1.internal"
+            port 80
+            weight 100
+        }
+        {
+            address "cdn-origin-2.internal"
+            port 80
+            weight 100
+        }
+    ]
+
+    load-balancing {
+        algorithm "round-robin"
+    }
+
+    // Simple health check for static servers
+    health-check {
+        enabled true
+        type "http"
+
+        http {
+            path "/health.txt"
+            expected-status [200]
+        }
+
+        interval "30s"
+    }
+
+    // Aggressive caching for static content
+    caching {
+        enabled true
+        key ["method", "uri"]
+        ttl "1h"
+
+        // Cache successful responses
+        cache-status [200, 301, 308]
+
+        // Respect cache headers
+        respect-headers true
+
+        // Stale content handling
+        stale-while-revalidate "5m"
+        stale-if-error "1h"
+    }
+}
+
+// Fallback/maintenance backend
+upstream "maintenance-backend" {
+    description "Maintenance page server"
+
+    targets [
+        {
+            address "127.0.0.1"
+            port 8888
+            weight 100
+        }
+    ]
+
+    // No load balancing needed for single server
+    load-balancing {
+        algorithm "round-robin"
+    }
+
+    // Always healthy (local static server)
+    health-check {
+        enabled false
+    }
+
+    // Direct response option
+    direct-response {
+        status 503
+        body-file "/var/www/maintenance.html"
+        headers {
+            "Content-Type" "text/html; charset=utf-8"
+            "Retry-After" "3600"
+        }
+    }
+}
