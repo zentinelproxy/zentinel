@@ -1,0 +1,82 @@
+apiVersion: v2
+name: sentinel
+description: A production-grade reverse proxy platform with WAF, rate limiting, and extensible agent architecture
+type: application
+
+# Chart version - follows SemVer
+version: 1.0.0
+
+# Application version
+appVersion: "0.1.0"
+
+# Keywords for searching
+keywords:
+  - reverse-proxy
+  - load-balancer
+  - waf
+  - security
+  - rate-limiting
+  - pingora
+  - rust
+
+# Project home and sources
+home: https://github.com/raskell-io/sentinel
+sources:
+  - https://github.com/raskell-io/sentinel
+
+# Maintainers
+maintainers:
+  - name: Sentinel Team
+    email: sentinel@raskell.io
+    url: https://github.com/raskell-io
+
+# Icon (optional)
+icon: https://raw.githubusercontent.com/raskell-io/sentinel/main/docs/logo.png
+
+# Minimum Kubernetes version
+kubeVersion: ">=1.21.0-0"
+
+# Dependencies (if using external charts)
+dependencies:
+  # Optional: Prometheus operator for monitoring
+  - name: kube-prometheus-stack
+    version: "~45.0.0"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: monitoring.enabled
+    tags:
+      - monitoring
+
+  # Optional: Jaeger for distributed tracing
+  - name: jaeger
+    version: "~0.71.0"
+    repository: https://jaegertracing.github.io/helm-charts
+    condition: tracing.enabled
+    tags:
+      - tracing
+
+# Annotations for additional metadata
+annotations:
+  # Artifacthub annotations
+  artifacthub.io/category: web-servers
+  artifacthub.io/license: MIT
+  artifacthub.io/signKey: |
+    fingerprint: <signing-key-fingerprint>
+    url: https://keybase.io/sentinel
+  artifacthub.io/recommendations: |
+    - url: https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
+    - url: https://artifacthub.io/packages/helm/jaeger/jaeger
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial release of Sentinel Helm chart
+    - kind: added
+      description: Support for proxy, rate limiting, and WAF agents
+    - kind: added
+      description: Horizontal pod autoscaling support
+    - kind: added
+      description: Prometheus metrics and Grafana dashboards
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/prerelease: "false"
+
+  # Chart documentation
+  documentation.url: https://sentinel.rs/docs/deployment/helm
+  support.url: https://github.com/raskell-io/sentinel/issues

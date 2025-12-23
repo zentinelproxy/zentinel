@@ -1,0 +1,109 @@
+[package]
+name = "sentinel-auth-agent"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sentinel Team"]
+description = "Authentication and authorization agent for Sentinel proxy"
+license = "Apache-2.0"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+
+# HTTP and web
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+hyper = { version = "1.0", features = ["full"] }
+
+# JWT and crypto
+jsonwebtoken = "9.2"
+ring = "0.17"
+rustls = "0.22"
+rustls-pemfile = "2.0"
+base64 = "0.21"
+
+# OAuth/OIDC
+openidconnect = "3.4"
+oauth2 = "4.4"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Agent protocol
+prost = "0.12"
+tonic = { version = "0.10", features = ["tls"] }
+
+# Caching
+moka = { version = "0.12", features = ["future"] }
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"], optional = true }
+
+# Policy evaluation
+rego = { version = "0.1", optional = true }
+oso = { version = "0.27", optional = true }
+
+# Validation
+validator = { version = "0.16", features = ["derive"] }
+regex = "1.10"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Metrics
+prometheus = "0.13"
+opentelemetry = { version = "0.21", optional = true }
+opentelemetry-prometheus = { version = "0.14", optional = true }
+
+# Configuration
+config = "0.13"
+kdl = "4.6"
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# Testing
+mockito = { version = "1.2", optional = true }
+wiremock = { version = "0.5", optional = true }
+
+# Common types from the main project
+sentinel-common = { path = "../../crates/common" }
+sentinel-agent-protocol = { path = "../../crates/agent-protocol" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+pretty_assertions = "1.4"
+proptest = "1.4"
+criterion = "0.5"
+tempfile = "3.8"
+
+[features]
+default = ["redis-cache", "opa-policy"]
+redis-cache = ["redis"]
+opa-policy = ["rego"]
+oso-policy = ["oso"]
+distributed = ["redis"]
+testing = ["mockito", "wiremock"]
+metrics = ["opentelemetry", "opentelemetry-prometheus"]
+
+[[bin]]
+name = "auth-agent"
+path = "src/main.rs"
+
+[[bench]]
+name = "jwt_verification"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

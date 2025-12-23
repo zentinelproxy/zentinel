@@ -1,0 +1,655 @@
+# Default values for sentinel helm chart.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+## Global configuration
+global:
+  # Registry for all images
+  imageRegistry: ""
+  # Pull secrets for all images
+  imagePullSecrets: []
+  # Storage class for all PVCs
+  storageClass: ""
+
+  # Security context for all pods
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: "OnRootMismatch"
+
+## Proxy configuration
+proxy:
+  enabled: true
+
+  # Number of proxy replicas
+  replicaCount: 3
+
+  image:
+    repository: sentinel/proxy
+    pullPolicy: IfNotPresent
+    tag: ""  # Defaults to chart appVersion
+
+  # Service configuration
+  service:
+    type: LoadBalancer
+    annotations: {}
+
+    # HTTP port
+    httpPort: 80
+    httpTargetPort: 8080
+    httpNodePort: ""
+
+    # HTTPS port
+    httpsPort: 443
+    httpsTargetPort: 8443
+    httpsNodePort: ""
+
+    # Metrics port
+    metricsPort: 9090
+
+    # Load balancer configuration
+    loadBalancerIP: ""
+    loadBalancerSourceRanges: []
+    externalTrafficPolicy: Local
+    sessionAffinity: ClientIP
+    sessionAffinityConfig:
+      clientIP:
+        timeoutSeconds: 10800
+
+  # Ingress configuration
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+      # kubernetes.io/ingress.class: nginx
+      # kubernetes.io/tls-acme: "true"
+      # cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: sentinel.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    #  - secretName: sentinel-tls
+    #    hosts:
+    #      - sentinel.example.com
+
+  # Configuration
+  config:
+    # KDL configuration (multiline string)
+    kdl: |
+      listener "http" {
+          address "0.0.0.0:8080"
+          protocol "http"
+      }
+
+      listener "https" {
+          address "0.0.0.0:8443"
+          protocol "https"
+          tls {
+              cert "/etc/sentinel/tls/tls.crt"
+              key "/etc/sentinel/tls/tls.key"
+          }
+      }
+
+      upstream "default" {
+          endpoint "backend.default.svc.cluster.local:80"
+          health-check {
+              path "/health"
+              interval 10
+              timeout 3
+          }
+      }
+
+      route "default" {
+          matches { all true }
+          upstream "default"
+      }
+
+      metrics {
+          enabled true
+          port 9090
+          path "/metrics"
+      }
+
+    # External configuration
+    externalConfig:
+      enabled: false
+      configMap: ""
+      secret: ""
+
+  # Resources
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+  # Autoscaling
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+      scaleUp:
+        stabilizationWindowSeconds: 60
+        policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+
+  # Pod configuration
+  podAnnotations: {}
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+      add:
+      - NET_BIND_SERVICE
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+
+  # Probes
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: metrics
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: metrics
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # Node selection
+  nodeSelector: {}
+  tolerations: []
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - sentinel-proxy
+          topologyKey: kubernetes.io/hostname
+
+  # Persistence
+  persistence:
+    enabled: false
+    accessMode: ReadWriteOnce
+    size: 1Gi
+    storageClass: ""
+    existingClaim: ""
+
+  # Extra environment variables
+  extraEnvVars: []
+  # - name: RUST_LOG
+  #   value: debug
+
+  # Extra volumes
+  extraVolumes: []
+  # - name: extra-config
+  #   configMap:
+  #     name: extra-config
+
+  # Extra volume mounts
+  extraVolumeMounts: []
+  # - name: extra-config
+  #   mountPath: /etc/extra-config
+  #   readOnly: true
+
+## Rate Limiting Agent
+ratelimit:
+  enabled: true
+
+  replicaCount: 2
+
+  image:
+    repository: sentinel/ratelimit-agent
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 9092
+
+  config:
+    yaml: |
+      default:
+        key: "client_ip"
+        requests_per_second: 100
+        burst: 200
+
+      rules:
+        - name: "api-strict"
+          key: "client_ip"
+          requests_per_second: 10
+          burst: 20
+          conditions:
+            - path_prefix: "/api/"
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 1Gi
+    storageClass: ""
+
+## WAF Agent
+waf:
+  enabled: true
+
+  replicaCount: 2
+
+  image:
+    repository: sentinel/waf-agent
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 9094
+
+  config:
+    yaml: |
+      engine:
+        enabled: true
+        detection_only: false
+        paranoia_level: 1
+        anomaly_threshold: 5
+
+      rules:
+        load_crs: true
+        crs_version: "4.0.0"
+
+      body_inspection:
+        max_request_body_size: 10485760
+
+      audit:
+        enabled: true
+        log_relevant: true
+        format: json
+
+      performance:
+        max_concurrent_transactions: 10000
+        worker_threads: 4
+
+  # ModSecurity CRS
+  crs:
+    enabled: true
+    version: "4.0.0"
+    downloadUrl: "https://github.com/coreruleset/coreruleset/archive/v4.0.0.tar.gz"
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+  persistence:
+    audit:
+      enabled: true
+      accessMode: ReadWriteOnce
+      size: 10Gi
+      storageClass: ""
+
+    rules:
+      enabled: true
+      accessMode: ReadWriteOnce
+      size: 100Mi
+      storageClass: ""
+
+## Denylist Agent
+denylist:
+  enabled: false
+
+  replicaCount: 1
+
+  image:
+    repository: sentinel/denylist-agent
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 9093
+
+  config:
+    yaml: |
+      lists:
+        - name: "bad-ips"
+          type: "ip"
+          entries:
+            - "192.168.1.100"
+            - "10.0.0.0/8"
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+## Echo Agent (for testing)
+echo:
+  enabled: false
+
+  replicaCount: 1
+
+  image:
+    repository: sentinel/echo-agent
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 50m
+      memory: 32Mi
+
+## Agent communication
+agents:
+  # Unix socket configuration
+  unixSocket:
+    enabled: true
+    directory: /var/run/sentinel
+    permissions: "0660"
+
+  # Network configuration (alternative to unix socket)
+  network:
+    enabled: false
+    protocol: grpc
+    tls:
+      enabled: false
+      certSecret: ""
+
+## Monitoring
+monitoring:
+  enabled: true
+
+  # ServiceMonitor for Prometheus Operator
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
+    relabelings: []
+    metricRelabelings: []
+
+  # PrometheusRule for alerts
+  prometheusRule:
+    enabled: true
+    additionalLabels: {}
+    rules:
+      - alert: SentinelProxyDown
+        expr: up{job="sentinel-proxy"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sentinel proxy is down"
+          description: "Sentinel proxy {{ $labels.instance }} has been down for more than 5 minutes."
+
+      - alert: SentinelHighLatency
+        expr: histogram_quantile(0.99, rate(sentinel_request_duration_seconds_bucket[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "99th percentile latency is above 500ms for more than 10 minutes."
+
+      - alert: SentinelHighErrorRate
+        expr: rate(sentinel_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 5% for more than 5 minutes."
+
+      - alert: SentinelWAFHighBlockRate
+        expr: rate(waf_requests_blocked_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High WAF block rate"
+          description: "WAF is blocking more than 10 requests per second."
+
+  # Grafana dashboards
+  grafana:
+    enabled: true
+    dashboards:
+      proxy: true
+      waf: true
+      ratelimit: true
+      system: true
+
+## Tracing
+tracing:
+  enabled: false
+
+  # Jaeger configuration
+  jaeger:
+    enabled: false
+    agent:
+      host: jaeger-agent
+      port: 6831
+
+    # Or use collector endpoint
+    collector:
+      endpoint: "http://jaeger-collector:14268/api/traces"
+
+  # OpenTelemetry configuration
+  opentelemetry:
+    enabled: false
+    endpoint: "http://otel-collector:4317"
+    headers: {}
+    tls:
+      enabled: false
+      insecure: true
+
+  # Sampling configuration
+  sampling:
+    type: probabilistic
+    param: 0.001  # Sample 0.1% of requests
+
+## Security
+security:
+  # Network policies
+  networkPolicy:
+    enabled: false
+    policyTypes:
+      - Ingress
+      - Egress
+    ingress:
+      - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinel
+    egress:
+      - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      - to:
+        - namespaceSelector: {}
+        ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+
+  # Pod security policy
+  podSecurityPolicy:
+    enabled: false
+    spec:
+      privileged: false
+      allowPrivilegeEscalation: false
+      requiredDropCapabilities:
+        - ALL
+      volumes:
+        - 'configMap'
+        - 'emptyDir'
+        - 'projected'
+        - 'secret'
+        - 'downwardAPI'
+        - 'persistentVolumeClaim'
+      hostNetwork: false
+      hostIPC: false
+      hostPID: false
+      runAsUser:
+        rule: 'MustRunAsNonRoot'
+      seLinux:
+        rule: 'RunAsAny'
+      supplementalGroups:
+        rule: 'RunAsAny'
+      fsGroup:
+        rule: 'RunAsAny'
+
+  # TLS configuration
+  tls:
+    enabled: false
+    certManager:
+      enabled: false
+      issuerRef:
+        name: letsencrypt-prod
+        kind: ClusterIssuer
+    existingSecret: ""
+    cert: ""
+    key: ""
+    ca: ""
+
+## Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+  automountServiceAccountToken: true
+
+## RBAC
+rbac:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["configmaps", "secrets"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["endpoints", "services"]
+      verbs: ["get", "list", "watch"]
+
+## Priority class
+priorityClassName: ""
+
+## Disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: 1
+
+## Update strategy
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+
+## Lifecycle hooks
+lifecycle: {}
+  # preStop:
+  #   exec:
+  #     command:
+  #     - /bin/sh
+  #     - -c
+  #     - sleep 15
+
+## Init containers
+initContainers: []
+# - name: init-myservice
+#   image: busybox:1.28
+#   command: ['sh', '-c', "until nslookup myservice.namespace.svc.cluster.local; do echo waiting for myservice; sleep 2; done"]
+
+## Sidecar containers
+sidecars: []
+# - name: log-proxy
+#   image: fluent/fluent-bit:latest
+#   volumeMounts:
+#   - name: logs
+#     mountPath: /var/log
+
+## Extra manifests to deploy
+extraManifests: []
+# - apiVersion: v1
+#   kind: ConfigMap
+#   metadata:
+#     name: extra-config
+#   data:
+#     key: value
+
+## Tests
+tests:
+  enabled: true
+  image:
+    repository: curlimages/curl
+    tag: latest
+    pullPolicy: IfNotPresent

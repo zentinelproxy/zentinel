@@ -47,17 +47,41 @@ pub struct UpstreamPool {
     stats: Arc<PoolStats>,
 }
 
+/// Request context for load balancer decisions
+#[derive(Debug, Clone)]
+pub struct RequestContext {
+    pub client_ip: Option<std::net::SocketAddr>,
+    pub headers: HashMap<String, String>,
+    pub path: String,
+    pub method: String,
+}
+
 /// Load balancer trait for different algorithms
 #[async_trait]
 pub trait LoadBalancer: Send + Sync {
     /// Select next upstream target
-    async fn select(&self, key: Option<&[u8]>) -> Option<TargetSelection>;
+    async fn select(&self, context: Option<&RequestContext>) -> SentinelResult<TargetSelection>;
 
     /// Report target health status
-    async fn report_health(&self, target: &str, healthy: bool);
+    async fn report_health(&self, address: &str, healthy: bool);
 
     /// Get all healthy targets
     async fn healthy_targets(&self) -> Vec<String>;
+
+    /// Release connection (for connection tracking)
+    async fn release(&self, selection: &TargetSelection) {
+        // Default implementation - no-op
+    }
+
+    /// Report request result (for adaptive algorithms)
+    async fn report_result(
+        &self,
+        selection: &TargetSelection,
+        success: bool,
+        latency: Option<Duration>,
+    ) {
+        // Default implementation - no-op
+    }
 }
 
 /// Selected upstream target
@@ -81,7 +105,7 @@ struct RoundRobinBalancer {
 /// Weighted load balancer implementation
 #[async_trait]
 impl LoadBalancer for WeightedBalancer {
-    async fn select(&self, _key: Option<&[u8]>) -> Option<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
         let health = self.health_status.read().await;
         let healthy_indices: Vec<_> = self
             .targets
@@ -92,7 +116,7 @@ impl LoadBalancer for WeightedBalancer {
             .collect();
 
         if healthy_indices.is_empty() {
-            return None;
+            return Err(SentinelError::NoHealthyUpstream);
         }
 
         // Simple weighted selection - rotate through weighted targets
@@ -100,18 +124,18 @@ impl LoadBalancer for WeightedBalancer {
         let target_idx = healthy_indices[idx];
         let target = &self.targets[target_idx];
 
-        Some(TargetSelection {
-            address: target.address.clone(),
+        Ok(TargetSelection {
+            address: format!("{}:{}", target.address, target.port),
             weight: self.weights.get(target_idx).copied().unwrap_or(1),
             metadata: HashMap::new(),
         })
     }
 
-    async fn report_health(&self, target: &str, healthy: bool) {
+    async fn report_health(&self, address: &str, healthy: bool) {
         self.health_status
             .write()
             .await
-            .insert(target.to_string(), healthy);
+            .insert(address.to_string(), healthy);
     }
 
     async fn healthy_targets(&self) -> Vec<String> {
@@ -135,16 +159,17 @@ impl LoadBalancer for WeightedBalancer {
 /// IP Hash load balancer implementation
 #[async_trait]
 impl LoadBalancer for IpHashBalancer {
-    async fn select(&self, key: Option<&[u8]>) -> Option<TargetSelection> {
+    async fn select(&self, context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
         let health = self.health_status.read().await;
         let healthy_targets: Vec<_> = self
             .targets
             .iter()
             .filter(|t| *health.get(&t.address).unwrap_or(&true))
+            })
             .collect();
 
         if healthy_targets.is_empty() {
-            return None;
+            return Err(SentinelError::NoHealthyUpstream);
         }
 
         // Hash the key to select a target
@@ -159,18 +184,18 @@ impl LoadBalancer for IpHashBalancer {
         let idx = (hash as usize) % healthy_targets.len();
         let target = healthy_targets[idx];
 
-        Some(TargetSelection {
-            address: target.address.clone(),
+        Ok(TargetSelection {
+            address: format!("{}:{}", target.address, target.port),
             weight: target.weight,
             metadata: HashMap::new(),
         })
     }
 
-    async fn report_health(&self, target: &str, healthy: bool) {
+    async fn report_health(&self, address: &str, healthy: bool) {
         self.health_status
             .write()
             .await
-            .insert(target.to_string(), healthy);
+            .insert(address.to_string(), healthy);
     }
 
     async fn healthy_targets(&self) -> Vec<String> {
@@ -411,6 +436,12 @@ impl UpstreamPool {
         algorithm: &LoadBalancingAlgorithm,
         targets: &[UpstreamTarget],
     ) -> SentinelResult<Arc<dyn LoadBalancer>> {
+        use crate::upstream::{
+            adaptive::{AdaptiveBalancer, AdaptiveConfig},
+            consistent_hash::{ConsistentHashBalancer, ConsistentHashConfig},
+            p2c::{P2cBalancer, P2cConfig},
+        };
+
         let balancer: Arc<dyn LoadBalancer> = match algorithm {
             LoadBalancingAlgorithm::RoundRobin => {
                 Arc::new(RoundRobinBalancer::new(targets.to_vec()))
@@ -437,12 +468,23 @@ impl UpstreamPool {
                 // Use round-robin with random start
                 Arc::new(RoundRobinBalancer::new(targets.to_vec()))
             }
+            LoadBalancingAlgorithm::ConsistentHash => Arc::new(ConsistentHashBalancer::new(
+                targets.to_vec(),
+                ConsistentHashConfig::default(),
+            )),
+            LoadBalancingAlgorithm::PowerOfTwoChoices => {
+                Arc::new(P2cBalancer::new(targets.to_vec(), P2cConfig::default()))
+            }
+            LoadBalancingAlgorithm::Adaptive => Arc::new(AdaptiveBalancer::new(
+                targets.to_vec(),
+                AdaptiveConfig::default(),
+            )),
         };
         Ok(balancer)
     }
 
     /// Select next upstream peer
-    pub async fn select_peer(&self, key: Option<&[u8]>) -> SentinelResult<HttpPeer> {
+    pub async fn select_peer(&self, context: Option<&RequestContext>) -> SentinelResult<PeerAddress> {
         self.stats.requests.fetch_add(1, Ordering::Relaxed);
 
         // Try to select a healthy target
@@ -560,7 +602,7 @@ impl RoundRobinBalancer {
 
 #[async_trait]
 impl LoadBalancer for RoundRobinBalancer {
-    async fn select(&self, _key: Option<&[u8]>) -> Option<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
         let health = self.health_status.read().await;
         let healthy_targets: Vec<_> = self
             .targets
@@ -569,24 +611,24 @@ impl LoadBalancer for RoundRobinBalancer {
             .collect();
 
         if healthy_targets.is_empty() {
-            return None;
+            return Err(SentinelError::NoHealthyUpstream);
         }
 
         let index = self.current.fetch_add(1, Ordering::Relaxed) % healthy_targets.len();
         let target = &healthy_targets[index];
 
-        Some(TargetSelection {
-            address: target.address.clone(),
+        Ok(TargetSelection {
+            address: format!("{}:{}", target.address, target.port),
             weight: target.weight,
             metadata: HashMap::new(),
         })
     }
 
-    async fn report_health(&self, target: &str, healthy: bool) {
+    async fn report_health(&self, address: &str, healthy: bool) {
         self.health_status
             .write()
             .await
-            .insert(target.to_string(), healthy);
+            .insert(address.to_string(), healthy);
     }
 
     async fn healthy_targets(&self) -> Vec<String> {
@@ -627,7 +669,7 @@ impl LeastConnectionsBalancer {
 
 #[async_trait]
 impl LoadBalancer for LeastConnectionsBalancer {
-    async fn select(&self, _key: Option<&[u8]>) -> Option<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
         let health = self.health_status.read().await;
         let conns = self.connections.read().await;
 
@@ -659,11 +701,11 @@ impl LoadBalancer for LeastConnectionsBalancer {
         })
     }
 
-    async fn report_health(&self, target: &str, healthy: bool) {
+    async fn report_health(&self, address: &str, healthy: bool) {
         self.health_status
             .write()
             .await
-            .insert(target.to_string(), healthy);
+            .insert(address.to_string(), healthy);
     }
 
     async fn healthy_targets(&self) -> Vec<String> {

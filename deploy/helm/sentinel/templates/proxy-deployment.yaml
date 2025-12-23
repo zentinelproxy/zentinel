@@ -1,0 +1,227 @@
+{{- if .Values.proxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel.fullname" . }}-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+    {{- with .Values.proxy.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  annotations:
+    {{- with .Values.proxy.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if not .Values.proxy.autoscaling.enabled }}
+  replicas: {{ .Values.proxy.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.proxy.revisionHistoryLimit | default 10 }}
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
+  {{- with .Values.proxy.updateStrategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/proxy-configmap.yaml") . | sha256sum }}
+        {{- if .Values.monitoring.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.proxy.service.metricsPort }}"
+        prometheus.io/path: "/metrics"
+        {{- end }}
+        {{- with .Values.proxy.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+        {{- with .Values.proxy.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
+      {{- with .Values.proxy.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.proxy.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
+      {{- with .Values.proxy.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: proxy
+        image: {{ include "sentinel.proxyImage" . }}
+        imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+        {{- with .Values.proxy.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.proxy.service.httpTargetPort }}
+          protocol: TCP
+        - name: https
+          containerPort: {{ .Values.proxy.service.httpsTargetPort }}
+          protocol: TCP
+        - name: metrics
+          containerPort: {{ .Values.proxy.service.metricsPort }}
+          protocol: TCP
+        env:
+        - name: RUST_LOG
+          value: {{ .Values.proxy.logLevel | default "info,sentinel_proxy=info" }}
+        - name: SENTINEL_CONFIG
+          value: /etc/sentinel/config.kdl
+        - name: SENTINEL_DATA_DIR
+          value: /var/lib/sentinel
+        - name: SENTINEL_LOG_DIR
+          value: /var/log/sentinel
+        - name: SENTINEL_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: SENTINEL_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: SENTINEL_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: SENTINEL_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        {{- with .Values.proxy.extraEnvVars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.proxy.envFrom }}
+        envFrom:
+        {{- toYaml .Values.proxy.envFrom | nindent 8 }}
+        {{- end }}
+        {{- with .Values.proxy.resources }}
+        resources:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- with .Values.proxy.livenessProbe }}
+        livenessProbe:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- with .Values.proxy.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- with .Values.proxy.startupProbe }}
+        startupProbe:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- with .Values.proxy.lifecycle }}
+        lifecycle:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+        volumeMounts:
+        - name: config
+          mountPath: /etc/sentinel
+          readOnly: true
+        {{- if .Values.agents.unixSocket.enabled }}
+        - name: agent-sockets
+          mountPath: {{ .Values.agents.unixSocket.directory }}
+        {{- end }}
+        {{- if .Values.proxy.persistence.enabled }}
+        - name: data
+          mountPath: /var/lib/sentinel
+        {{- end }}
+        - name: logs
+          mountPath: /var/log/sentinel
+        - name: tmp
+          mountPath: /tmp
+        {{- if .Values.security.tls.enabled }}
+        - name: tls
+          mountPath: /etc/sentinel/tls
+          readOnly: true
+        {{- end }}
+        {{- with .Values.proxy.extraVolumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        command:
+        - /usr/local/bin/sentinel-proxy
+        args:
+        - -c
+        - /etc/sentinel/config.kdl
+        {{- with .Values.proxy.extraArgs }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.proxy.sidecars }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "sentinel.fullname" . }}-proxy-config
+          defaultMode: 0644
+      {{- if .Values.agents.unixSocket.enabled }}
+      - name: agent-sockets
+        emptyDir: {}
+      {{- end }}
+      {{- if .Values.proxy.persistence.enabled }}
+      - name: data
+        {{- if .Values.proxy.persistence.existingClaim }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.proxy.persistence.existingClaim }}
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      {{- else }}
+      - name: data
+        emptyDir: {}
+      {{- end }}
+      - name: logs
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+      {{- if .Values.security.tls.enabled }}
+      - name: tls
+        secret:
+          {{- if .Values.security.tls.existingSecret }}
+          secretName: {{ .Values.security.tls.existingSecret }}
+          {{- else }}
+          secretName: {{ include "sentinel.fullname" . }}-tls
+          {{- end }}
+          defaultMode: 0400
+      {{- end }}
+      {{- with .Values.proxy.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.proxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
