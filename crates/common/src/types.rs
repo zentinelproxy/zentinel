@@ -225,6 +225,9 @@ pub enum LoadBalancingAlgorithm {
     Random,
     IpHash,
     Weighted,
+    ConsistentHash,
+    PowerOfTwoChoices,
+    Adaptive,
 }
 
 /// Health check type
@@ -464,7 +467,10 @@ mod tests {
     fn test_byte_size_parsing() {
         assert_eq!(ByteSize::from_str("1024").unwrap().0, 1024);
         assert_eq!(ByteSize::from_str("10KB").unwrap().0, 10 * 1024);
-        assert_eq!(ByteSize::from_str("5.5MB").unwrap().0, (5.5 * 1024.0 * 1024.0) as usize);
+        assert_eq!(
+            ByteSize::from_str("5.5MB").unwrap().0,
+            (5.5 * 1024.0 * 1024.0) as usize
+        );
         assert_eq!(ByteSize::from_str("2GB").unwrap().0, 2 * 1024 * 1024 * 1024);
         assert_eq!(ByteSize::from_str("100 B").unwrap().0, 100);
     }
