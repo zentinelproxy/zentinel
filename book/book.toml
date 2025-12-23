@@ -15,10 +15,9 @@ use-default-preprocessors = true
 [preprocessor.links]
 
 [output.html]
-theme = "latte"
-default-theme = "mocha"
-preferred-dark-theme = "mocha"
-curly-quotes = true
+default-theme = "latte"
+preferred-dark-theme = "macchiato"
+smart-punctuation = true
 no-section-label = false
 additional-css = ["./theme/catppuccin.css"]
 additional-js = []
