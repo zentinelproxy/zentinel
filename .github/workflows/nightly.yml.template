@@ -1,0 +1,76 @@
+# Nightly build workflow (TEMPLATE - not yet active)
+# Rename to nightly.yml when ready to enable
+#
+# Builds nightly artifacts with date-based versioning
+# Version format: YY.MM.0-nightly.YYYYMMDD
+
+name: Nightly
+
+on:
+  schedule:
+    # Run at 2 AM UTC every day
+    - cron: '0 2 * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Generate nightly version
+  version:
+    name: Generate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      date: ${{ steps.version.outputs.date }}
+    steps:
+      - name: Generate version
+        id: version
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          CALVER_BASE=$(date -u +%y.%m)
+          VERSION="${CALVER_BASE}.0-nightly.${DATE}"
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+          echo "Nightly version: $VERSION"
+
+  # Build using reusable workflow
+  build:
+    name: Build
+    needs: version
+    uses: ./.github/workflows/_build.yml
+    with:
+      profile: release
+      upload-artifacts: true
+      artifact-prefix: sentinel-nightly-${{ needs.version.outputs.date }}
+      version: ${{ needs.version.outputs.version }}
+      targets: |
+        [
+          {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"},
+          {"os": "macos-latest", "target": "x86_64-apple-darwin", "suffix": "darwin-amd64"},
+          {"os": "macos-latest", "target": "aarch64-apple-darwin", "suffix": "darwin-arm64"}
+        ]
+
+  # Optional: Create/update nightly release
+  # publish:
+  #   name: Publish Nightly
+  #   needs: [version, build]
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: write
+  #   steps:
+  #     - name: Download artifacts
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         path: artifacts
+  #
+  #     - name: Create nightly release
+  #       uses: softprops/action-gh-release@v1
+  #       with:
+  #         tag_name: nightly
+  #         name: Nightly Build (${{ needs.version.outputs.date }})
+  #         prerelease: true
+  #         files: artifacts/**/*

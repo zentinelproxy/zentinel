@@ -1,0 +1,146 @@
+# Release workflow - builds and publishes release artifacts
+# Triggered on new releases with CalVer tags (YY.MM.PATCH format)
+#
+# CalVer format: YY.MM.PATCH
+# Examples: 24.12.0, 25.01.1, 25.06.12
+# Similar to Ubuntu release cycles (YY.MM)
+
+name: Release
+
+on:
+  release:
+    types: [published]
+
+  # Allow manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (CalVer: YY.MM.PATCH)'
+        required: true
+        type: string
+      dry-run:
+        description: 'Dry run (do not upload to release)'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Validate version format
+  validate:
+    name: Validate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+
+          # Remove 'v' prefix if present
+          VERSION="${VERSION#v}"
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Validate CalVer format
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # CalVer regex: YY.MM.PATCH (e.g., 24.12.0, 25.01.15)
+          if ! echo "$VERSION" | grep -qE '^[0-9]{2}\.(0[1-9]|1[0-2])\.[0-9]+$'; then
+            echo "::error::Invalid CalVer format: $VERSION"
+            echo "Expected format: YY.MM.PATCH (e.g., 24.12.0, 25.01.1)"
+            exit 1
+          fi
+
+          echo "Valid CalVer version: $VERSION"
+
+  # Build for all platforms
+  build:
+    name: Build
+    needs: validate
+    uses: ./.github/workflows/_build.yml
+    with:
+      profile: release
+      upload-artifacts: true
+      artifact-prefix: sentinel-${{ needs.validate.outputs.version }}
+      version: ${{ needs.validate.outputs.version }}
+      targets: |
+        [
+          {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"},
+          {"os": "macos-latest", "target": "x86_64-apple-darwin", "suffix": "darwin-amd64"},
+          {"os": "macos-latest", "target": "aarch64-apple-darwin", "suffix": "darwin-arm64"}
+        ]
+
+  # Package and upload release assets
+  publish:
+    name: Publish
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false)
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release archives
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          mkdir -p release
+
+          for dir in artifacts/sentinel-${VERSION}-*/; do
+            if [ -d "$dir" ]; then
+              SUFFIX=$(basename "$dir" | sed "s/sentinel-${VERSION}-//")
+              ARCHIVE_NAME="sentinel-${VERSION}-${SUFFIX}.tar.gz"
+
+              echo "Creating $ARCHIVE_NAME from $dir"
+              tar -czvf "release/$ARCHIVE_NAME" -C "$dir" .
+
+              # Generate checksum
+              cd release
+              sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+              cd ..
+            fi
+          done
+
+          echo "Release archives:"
+          ls -la release/
+
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          fail_on_unmatched_files: true
+
+  # Summary
+  summary:
+    name: Summary
+    needs: [validate, build, publish]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Validate: ${{ needs.validate.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Publish: ${{ needs.publish.result }}" >> $GITHUB_STEP_SUMMARY

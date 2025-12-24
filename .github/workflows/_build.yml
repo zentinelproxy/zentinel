@@ -1,0 +1,118 @@
+# Reusable build workflow for Sentinel
+# Called by: ci.yml, release.yml, nightly.yml (future)
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: 'Build profile (debug or release)'
+        required: false
+        default: 'release'
+        type: string
+      upload-artifacts:
+        description: 'Upload build artifacts'
+        required: false
+        default: false
+        type: boolean
+      artifact-prefix:
+        description: 'Prefix for artifact names'
+        required: false
+        default: 'sentinel'
+        type: string
+      version:
+        description: 'Version string to embed (optional)'
+        required: false
+        default: ''
+        type: string
+      targets:
+        description: 'JSON array of target configs'
+        required: false
+        default: '[{"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"}]'
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build (${{ matrix.config.suffix }})
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJson(inputs.targets) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.config.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ inputs.profile }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-${{ inputs.profile }}-
+
+      - name: Build workspace
+        run: |
+          if [ "${{ inputs.profile }}" = "release" ]; then
+            cargo build --release --workspace
+          else
+            cargo build --workspace
+          fi
+
+      - name: Strip binaries (Linux)
+        if: matrix.config.os == 'ubuntu-latest' && inputs.profile == 'release'
+        run: |
+          strip target/release/sentinel-proxy || true
+          strip target/release/echo-agent || true
+          strip target/release/denylist-agent || true
+          strip target/release/ratelimit-agent || true
+
+      - name: Prepare artifacts
+        if: inputs.upload-artifacts
+        run: |
+          mkdir -p artifacts
+          if [ "${{ inputs.profile }}" = "release" ]; then
+            BUILD_DIR="target/release"
+          else
+            BUILD_DIR="target/debug"
+          fi
+
+          # Copy binaries
+          cp "$BUILD_DIR/sentinel-proxy" artifacts/ 2>/dev/null || true
+          cp "$BUILD_DIR/echo-agent" artifacts/ 2>/dev/null || true
+          cp "$BUILD_DIR/denylist-agent" artifacts/ 2>/dev/null || true
+          cp "$BUILD_DIR/ratelimit-agent" artifacts/ 2>/dev/null || true
+
+          # Create version file if version provided
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "${{ inputs.version }}" > artifacts/VERSION
+          fi
+
+      - name: Upload artifacts
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-${{ matrix.config.suffix }}
+          path: artifacts/
+          retention-days: 30
