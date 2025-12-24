@@ -1,23 +1,21 @@
 name: Documentation
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
     paths:
-      - 'book/**'
-      - '.github/workflows/docs.yml'
+      - "book/**"
+      - ".github/workflows/docs.yml"
+      - ".mise/tasks/book-*"
+      - "mise.toml"
   pull_request:
     paths:
-      - 'book/**'
-      - '.github/workflows/docs.yml'
-  workflow_dispatch:
-    inputs:
-      force_deploy:
-        description: 'Force deployment even without changes'
-        required: false
-        default: false
-        type: boolean
+      - "book/**"
+      - ".github/workflows/docs.yml"
+      - ".mise/tasks/book-*"
+      - "mise.toml"
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
@@ -31,9 +29,6 @@ concurrency:
   group: "pages"
   cancel-in-progress: false
 
-env:
-  MDBOOK_VERSION: '0.4.37'
-
 jobs:
   # Build job
   build:
@@ -44,42 +39,43 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup mdBook
-        uses: peaceiris/actions-mdbook@v1
+      - name: Setup mise
+        uses: jdx/mise-action@v2
         with:
-          mdbook-version: ${{ env.MDBOOK_VERSION }}
+          version: latest
+          cache: true
+          experimental: false
 
-      - name: Cache mdBook plugins
-        uses: actions/cache@v3
-        id: mdbook-plugins-cache
-        with:
-          path: ~/.cargo/bin
-          key: mdbook-plugins-${{ runner.os }}-${{ hashFiles('book/book.toml') }}
-          restore-keys: |
-            mdbook-plugins-${{ runner.os }}-
-
-      - name: Install mdBook plugins (optional)
-        if: steps.mdbook-plugins-cache.outputs.cache-hit != 'true'
+      - name: Install tools via mise
         run: |
-          # Install optional plugins if needed in the future
-          # cargo install mdbook-mermaid || true
-          # cargo install mdbook-admonish || true
-          # cargo install mdbook-linkcheck || true
-          echo "No plugins configured for installation"
+          echo "Installing tools defined in mise.toml..."
+          mise install
+          mise list
+          echo "mdBook version: $(mdbook --version)"
 
       - name: Build documentation
-        working-directory: ./book
         run: |
-          echo "Building documentation..."
-          mdbook build
-          echo "Documentation built successfully"
+          echo "Building documentation with mise..."
+          mise run book-build
+
+          # Get build statistics
+          echo "## 📊 Build Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **HTML files:** $(find book/book -name "*.html" -type f | wc -l)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total size:** $(du -sh book/book | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Chapters:** $(grep -c '^-' book/src/SUMMARY.md || echo 0)" >> $GITHUB_STEP_SUMMARY
+          echo "- **mdBook version:** $(mdbook --version)" >> $GITHUB_STEP_SUMMARY
 
       - name: Test documentation
-        working-directory: ./book
         run: |
           echo "Testing documentation..."
-          mdbook test
-          echo "Documentation tests passed"
+          mise run book-test
+          echo "✅ Documentation tests passed"
+
+      - name: Generate documentation statistics
+        run: |
+          echo "Generating documentation statistics..."
+          mise run book-stats || true
 
       - name: Upload artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -107,6 +103,30 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Documentation deployed successfully**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Determine the documentation URL
+          REPO="${{ github.repository }}"
+          OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${REPO#*/}"
+
+          if [[ "$REPO_NAME" == "${OWNER}.github.io" ]]; then
+            DOC_URL="https://${OWNER}.github.io/"
+          else
+            DOC_URL="https://${OWNER}.github.io/${REPO_NAME}/"
+          fi
+
+          echo "### 🔗 Access Documentation" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** $DOC_URL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment ID:** \`${{ steps.deployment.outputs.deployment_id || 'N/A' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "ℹ️ _It may take a few minutes for changes to be visible._" >> $GITHUB_STEP_SUMMARY
 
   # Comment on PR with preview information
   comment:
@@ -146,12 +166,13 @@ jobs:
             **To preview locally:**
             \`\`\`bash
             git checkout ${{ github.event.pull_request.head.ref }}
-            cd book
-            mdbook serve
+            mise run book-serve
             \`\`\`
 
             **Files changed in documentation:**
-            View the Files tab to see all documentation changes.`;
+            View the Files tab to see all documentation changes.
+
+            _Built with mise and mdBook_`;
 
             if (botComment) {
               // Update existing comment
@@ -190,23 +211,90 @@ jobs:
           # Count TODO markers
           TODO_COUNT=$(find src -name "*.md" -type f -exec grep -l "TODO\|FIXME\|XXX" {} \; | wc -l)
 
+          # Count actual content files (more than 10 lines)
+          CONTENT_FILES=$(find src -name "*.md" -type f -exec sh -c 'test $(wc -l < "$1") -gt 10' _ {} \; -print | wc -l)
+
+          # Total markdown files
+          TOTAL_FILES=$(find src -name "*.md" -type f | wc -l)
+
           echo "Empty/placeholder files: $EMPTY_FILES"
           echo "Files with TODO markers: $TODO_COUNT"
+          echo "Files with content: $CONTENT_FILES"
+          echo "Total files: $TOTAL_FILES"
 
           # Create summary
-          echo "## Documentation Quality Report" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Documentation Quality Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### File Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total markdown files:** $TOTAL_FILES" >> $GITHUB_STEP_SUMMARY
+          echo "- **Files with content:** $CONTENT_FILES" >> $GITHUB_STEP_SUMMARY
           echo "- **Empty/Placeholder files:** $EMPTY_FILES" >> $GITHUB_STEP_SUMMARY
           echo "- **Files with TODO markers:** $TODO_COUNT" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ $EMPTY_FILES -gt 100 ]; then
-            echo "⚠️ **Warning:** Many files still need content." >> $GITHUB_STEP_SUMMARY
+          # Calculate percentage of documented files
+          if [ $TOTAL_FILES -gt 0 ]; then
+            PERCENT_DOCUMENTED=$((CONTENT_FILES * 100 / TOTAL_FILES))
+            echo "### Coverage" >> $GITHUB_STEP_SUMMARY
+            echo "- **Documentation coverage:** ${PERCENT_DOCUMENTED}%" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            if [ $PERCENT_DOCUMENTED -lt 20 ]; then
+              echo "⚠️ **Warning:** Less than 20% of files have meaningful content." >> $GITHUB_STEP_SUMMARY
+            elif [ $PERCENT_DOCUMENTED -lt 50 ]; then
+              echo "📝 **Note:** Documentation is ${PERCENT_DOCUMENTED}% complete." >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **Good:** Documentation is ${PERCENT_DOCUMENTED}% complete." >> $GITHUB_STEP_SUMMARY
+            fi
           fi
 
           if [ $TODO_COUNT -gt 50 ]; then
-            echo "⚠️ **Warning:** Many TODO markers found." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Warning:** Many TODO markers found ($TODO_COUNT files)." >> $GITHUB_STEP_SUMMARY
           fi
 
           # Don't fail the check, just report
           exit 0
+
+  # Optional: Install and run with plugins (can be enabled by setting up mise plugins)
+  build-with-plugins:
+    if: false # Set to true when you want to enable plugin builds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+        with:
+          version: latest
+          cache: true
+
+      - name: Setup Rust for plugins
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: cargo
+
+      - name: Install tools and plugins
+        run: |
+          mise install
+          INSTALL_PLUGINS=true mise run book-install
+
+      - name: Build with plugins
+        run: |
+          mise run book-build
+
+          # If linkcheck plugin is installed
+          if command -v mdbook-linkcheck &> /dev/null; then
+            echo "Checking for broken links..."
+            cd book && mdbook-linkcheck || echo "⚠️ Some links may be broken"
+          fi
+
+      - name: Upload enhanced build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-enhanced
+          path: ./book/book
+          retention-days: 30
