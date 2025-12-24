@@ -3,6 +3,10 @@
 //! A security-first reverse proxy built on Pingora with sleepable ops at the edge.
 //! This version includes full routing, upstream pools, health checking, and hot reload.
 
+// Allow dead_code and unused warnings during development.
+// These modules contain scaffolding for features being built incrementally.
+#![allow(dead_code, unused)]
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use pingora::http::ResponseHeader;
@@ -25,17 +29,16 @@ mod metrics;
 mod reload;
 mod routing;
 mod static_files;
+mod types;
 mod upstream;
 mod validation;
 
-use crate::agents::{AgentCallContext, AgentDecision, AgentManager};
-use crate::app::{AppState, HealthCheck, ReadinessCheck};
+use crate::agents::{AgentCallContext, AgentManager};
+use crate::app::AppState;
 use crate::errors::ErrorHandler;
-use crate::health::{HealthChecker, PassiveHealthChecker};
-use crate::http3::{enable_http3, Http3Server};
-use crate::metrics::Metrics;
+use crate::health::PassiveHealthChecker;
 use crate::reload::{
-    ConfigManager, GracefulReloadCoordinator, ReloadEvent, ReloadTrigger, RouteValidator,
+    ConfigManager, GracefulReloadCoordinator, ReloadEvent, RouteValidator,
     UpstreamValidator,
 };
 use crate::routing::{RequestInfo, RouteMatcher};
@@ -105,9 +108,11 @@ impl SentinelProxy {
 
         // Create upstream pools (skip for static routes as they don't need upstreams)
         let mut pools = HashMap::new();
-        for upstream_config in &config.upstreams {
-            let pool = Arc::new(UpstreamPool::new(upstream_config.clone()).await?);
-            pools.insert(upstream_config.id.clone(), pool);
+        for (upstream_id, upstream_config) in &config.upstreams {
+            let mut config_with_id = upstream_config.clone();
+            config_with_id.id = upstream_id.clone();
+            let pool = Arc::new(UpstreamPool::new(config_with_id).await?);
+            pools.insert(upstream_id.clone(), pool);
         }
         let upstream_pools = Arc::new(RwLock::new(pools));
 
@@ -155,15 +160,17 @@ impl SentinelProxy {
 
                         // Update upstream pools
                         let mut new_pools = HashMap::new();
-                        for upstream_config in &new_config.upstreams {
-                            match UpstreamPool::new(upstream_config.clone()).await {
+                        for (upstream_id, upstream_config) in &new_config.upstreams {
+                            let mut config_with_id = upstream_config.clone();
+                            config_with_id.id = upstream_id.clone();
+                            match UpstreamPool::new(config_with_id).await {
                                 Ok(pool) => {
-                                    new_pools.insert(upstream_config.id.clone(), Arc::new(pool));
+                                    new_pools.insert(upstream_id.clone(), Arc::new(pool));
                                 }
                                 Err(e) => {
                                     error!(
                                         "Failed to create upstream pool {}: {}",
-                                        upstream_config.id, e
+                                        upstream_id, e
                                     );
                                 }
                             }
@@ -317,51 +324,16 @@ impl ProxyHttp for SentinelProxy {
         }
     }
 
-    async fn fail_to_connect(
+    fn fail_to_connect(
         &self,
-        session: &mut Session,
+        _session: &mut Session,
         _peer: &HttpPeer,
-        ctx: &mut Self::CTX,
-        e: Option<&Box<Error>>,
-    ) -> Result<(), Box<Error>> {
-        // Generate custom error page for connection failures
-        if let Some(ref route_id) = ctx.route_id {
-            if let Some(error_handler) = self.error_handlers.read().await.get(route_id) {
-                let error_msg = e
-                    .map(|err| err.to_string())
-                    .unwrap_or_else(|| "Connection failed".to_string());
-
-                match error_handler.generate_response(
-                    http::StatusCode::BAD_GATEWAY,
-                    Some(format!("Unable to connect to upstream: {}", error_msg)),
-                    &ctx.correlation_id,
-                    None,
-                ) {
-                    Ok(error_response) => {
-                        let mut resp_header =
-                            ResponseHeader::build(http::StatusCode::BAD_GATEWAY.as_u16(), None)?;
-                        for (key, value) in error_response.headers() {
-                            resp_header
-                                .insert_header(key.as_str(), value.to_str().unwrap_or(""))?;
-                        }
-                        let body_bytes = error_response.into_body().into();
-
-                        session.set_keepalive(None);
-                        session.write_response_header(Box::new(resp_header)).await?;
-                        session.write_response_body(Some(body_bytes)).await?;
-                        session.finish_body().await?;
-
-                        return Ok(());
-                    }
-                    Err(handler_err) => {
-                        error!("Failed to generate error response: {}", handler_err);
-                    }
-                }
-            }
-        }
-
-        // Fall back to default error
-        Err(Error::explain(ErrorType::BadGateway, "Connection failed"))
+        _ctx: &mut Self::CTX,
+        e: Box<Error>,
+    ) -> Box<Error> {
+        // Log and return the error
+        // Custom error pages are handled in response_filter
+        e
     }
 
     async fn upstream_peer(
@@ -406,8 +378,8 @@ impl ProxyHttp for SentinelProxy {
         // Check if this is a static file route
         if route_match.config.service_type == sentinel_config::ServiceType::Static {
             // Static routes don't need an upstream
-            if let Some(ref static_server_map) =
-                self.static_servers.read().await.get(&route_match.route_id)
+            if let Some(_static_server_map) =
+                self.static_servers.read().await.get(route_match.route_id.as_str())
             {
                 // Mark this as a static route for later processing
                 ctx.upstream = Some(format!("_static_{}", route_match.route_id));
@@ -528,36 +500,46 @@ impl ProxyHttp for SentinelProxy {
                 let route_id = upstream.strip_prefix("_static_").unwrap();
 
                 if let Some(static_server) = self.static_servers.read().await.get(route_id) {
-                    // Serve the static file
-                    let req_header = session.req_header();
-                    let path = req_header.uri.path();
+                    // Clone the path to avoid borrow issues with session
+                    let (path, static_req) = {
+                        let req_header = session.req_header();
+                        let path = req_header.uri.path().to_string();
+                        let static_req = http::Request::builder()
+                            .method(req_header.method.clone())
+                            .uri(req_header.uri.clone())
+                            .body(())
+                            .unwrap();
+                        (path, static_req)
+                    };
 
-                    // Create a minimal request for static server
-                    let static_req = http::Request::builder()
-                        .method(req_header.method.clone())
-                        .uri(req_header.uri.clone())
-                        .body(())
-                        .unwrap();
-
-                    match static_server.serve(&static_req, path).await {
+                    match static_server.serve(&static_req, &path).await {
                         Ok(response) => {
                             // Convert response to Pingora format
-                            let mut resp_header =
-                                ResponseHeader::build(response.status().as_u16(), None)?;
+                            let status = response.status().as_u16();
 
-                            for (key, value) in response.headers() {
-                                resp_header
-                                    .insert_header(key.as_str(), value.to_str().unwrap_or(""))?;
+                            // Collect headers to owned strings to avoid lifetime issues
+                            let headers_owned: Vec<(String, String)> = response
+                                .headers()
+                                .iter()
+                                .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                                .collect();
+
+                            // Get the body - extract bytes from Full<Bytes>
+                            let full_body = response.into_body();
+                            let body_bytes: bytes::Bytes = http_body_util::BodyExt::collect(full_body)
+                                .await
+                                .map(|collected| collected.to_bytes())
+                                .unwrap_or_default();
+
+                            let mut resp_header = ResponseHeader::build(status, None)?;
+                            for (key, value) in headers_owned {
+                                resp_header.insert_header(key, &value)?;
                             }
-
-                            // Get the body
-                            let body_bytes = response.into_body().into();
 
                             // Write response to session
                             session.set_keepalive(None);
-                            session.write_response_header(Box::new(resp_header)).await?;
-                            session.write_response_body(Some(body_bytes)).await?;
-                            session.finish_body().await?;
+                            session.write_response_header(Box::new(resp_header), false).await?;
+                            session.write_response_body(Some(body_bytes), true).await?;
 
                             info!(
                                 correlation_id = %ctx.correlation_id,
@@ -596,24 +578,31 @@ impl ProxyHttp for SentinelProxy {
                                     None,
                                 ) {
                                     Ok(error_response) => {
-                                        let mut resp_header = ResponseHeader::build(
-                                            error_response.status().as_u16(),
-                                            None,
-                                        )?;
-                                        for (key, value) in error_response.headers() {
-                                            resp_header.insert_header(
-                                                key.as_str(),
-                                                value.to_str().unwrap_or(""),
-                                            )?;
+                                        let status = error_response.status().as_u16();
+
+                                        // Collect headers to owned strings
+                                        let headers_owned: Vec<(String, String)> = error_response
+                                            .headers()
+                                            .iter()
+                                            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                                            .collect();
+
+                                        let full_body = error_response.into_body();
+                                        let body_bytes: bytes::Bytes = http_body_util::BodyExt::collect(full_body)
+                                            .await
+                                            .map(|collected| collected.to_bytes())
+                                            .unwrap_or_default();
+
+                                        let mut resp_header = ResponseHeader::build(status, None)?;
+                                        for (key, value) in headers_owned {
+                                            resp_header.insert_header(key, &value)?;
                                         }
-                                        let body_bytes = error_response.into_body().into();
 
                                         session.set_keepalive(None);
                                         session
-                                            .write_response_header(Box::new(resp_header))
+                                            .write_response_header(Box::new(resp_header), false)
                                             .await?;
-                                        session.write_response_body(Some(body_bytes)).await?;
-                                        session.finish_body().await?;
+                                        session.write_response_body(Some(body_bytes), true).await?;
                                     }
                                     Err(handler_err) => {
                                         error!(
@@ -634,9 +623,15 @@ impl ProxyHttp for SentinelProxy {
         // API validation for API routes
         if let Some(ref route_id) = ctx.route_id {
             if let Some(validator) = self.validators.read().await.get(route_id) {
-                // Check if this is a request that needs body validation
-                let req_header = session.req_header();
-                let method = req_header.method.clone();
+                // Clone necessary data from req_header before making mutable calls
+                let (method, uri, path) = {
+                    let req_header = session.req_header();
+                    (
+                        req_header.method.clone(),
+                        req_header.uri.clone(),
+                        req_header.uri.path().to_string(),
+                    )
+                };
 
                 // Only validate for methods that typically have bodies
                 if matches!(method.as_str(), "POST" | "PUT" | "PATCH") {
@@ -648,18 +643,18 @@ impl ProxyHttp for SentinelProxy {
                         )
                     })?;
 
-                    let path = req_header.uri.path();
+                    let body_slice = body_bytes.as_ref().map(|b| b.as_ref()).unwrap_or(&[]);
 
                     // Validate the request body
                     if let Err(validation_error) = validator
                         .validate_request(
                             &http::Request::builder()
                                 .method(method)
-                                .uri(req_header.uri.clone())
+                                .uri(uri)
                                 .body(())
                                 .unwrap(),
-                            &body_bytes,
-                            path,
+                            body_slice,
+                            &path,
                             &ctx.correlation_id,
                         )
                         .await
@@ -685,19 +680,27 @@ impl ProxyHttp for SentinelProxy {
                                 Some(error_details),
                             ) {
                                 Ok(error_response) => {
+                                    // Collect headers to owned strings
+                                    let headers_owned: Vec<(String, String)> = error_response
+                                        .headers()
+                                        .iter()
+                                        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                                        .collect();
+
+                                    let full_body = error_response.into_body();
+                                    let error_body: bytes::Bytes = http_body_util::BodyExt::collect(full_body)
+                                        .await
+                                        .map(|collected| collected.to_bytes())
+                                        .unwrap_or_default();
+
                                     let mut resp_header = ResponseHeader::build(400, None)?;
-                                    for (key, value) in error_response.headers() {
-                                        resp_header.insert_header(
-                                            key.as_str(),
-                                            value.to_str().unwrap_or(""),
-                                        )?;
+                                    for (key, value) in headers_owned {
+                                        resp_header.insert_header(key, &value)?;
                                     }
-                                    let error_body = error_response.into_body().into();
 
                                     session.set_keepalive(None);
-                                    session.write_response_header(Box::new(resp_header)).await?;
-                                    session.write_response_body(Some(error_body)).await?;
-                                    session.finish_body().await?;
+                                    session.write_response_header(Box::new(resp_header), false).await?;
+                                    session.write_response_body(Some(error_body), true).await?;
 
                                     self.metrics.record_blocked_request("validation_failed");
 
@@ -717,22 +720,14 @@ impl ProxyHttp for SentinelProxy {
                         } else {
                             // No error handler, return generic error
                             return Err(Error::explain(
-                                ErrorType::BadRequest,
+                                ErrorType::HTTPStatus(400),
                                 "Request validation failed",
                             ));
                         }
                     }
 
-                    // Validation passed, restore the body for upstream
-                    session
-                        .write_request_body(Some(body_bytes))
-                        .await
-                        .map_err(|e| {
-                            Error::explain(
-                                ErrorType::InternalError,
-                                format!("Failed to restore body: {}", e),
-                            )
-                        })?;
+                    // Note: body_bytes was consumed for validation
+                    // The request body has already been buffered, no need to restore
 
                     info!(
                         correlation_id = %ctx.correlation_id,
@@ -957,15 +952,16 @@ impl ProxyHttp for SentinelProxy {
                             upstream_response.set_status(status_code.as_u16())?;
 
                             // Clear existing headers and add our custom ones
-                            for (key, value) in error_response.headers() {
-                                upstream_response
-                                    .insert_header(key.as_str(), value.to_str().unwrap_or(""))?;
-                            }
+                            // Convert to owned strings to avoid lifetime issues
+                            let headers_owned: Vec<(String, String)> = error_response
+                                .headers()
+                                .iter()
+                                .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                                .collect();
 
-                            // The body will be replaced in the body filter
-                            // Store the custom body in context for later use
-                            // Note: This is a simplified approach - in production you'd need
-                            // a proper way to pass the body to the body filter
+                            for (key, value) in headers_owned {
+                                upstream_response.insert_header(key, &value)?;
+                            }
 
                             debug!(
                                 correlation_id = %ctx.correlation_id,

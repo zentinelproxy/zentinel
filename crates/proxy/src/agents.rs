@@ -4,11 +4,12 @@
 //! auth, rate limiting, and custom logic. It implements the SPOE-inspired
 //! protocol with bounded behavior and failure isolation.
 
-use async_trait::async_trait;
+#![allow(dead_code)]
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sentinel_agent_protocol::{
-    AgentClient, AgentRequest, AgentResponse, Decision, EventType, HeaderOp,
-    RequestHeadersEvent, RequestBodyChunkEvent, ResponseHeadersEvent,
-    ResponseBodyChunkEvent, RequestCompleteEvent, RequestMetadata, AuditMetadata,
+    AgentClient, AgentResponse, Decision, EventType, HeaderOp,
+    RequestHeadersEvent, RequestBodyChunkEvent, ResponseHeadersEvent, RequestMetadata, AuditMetadata,
 };
 use sentinel_common::{
     errors::{SentinelError, SentinelResult},
@@ -17,7 +18,6 @@ use sentinel_common::{
 use sentinel_config::{AgentConfig, AgentEvent, AgentTransport, FailureMode};
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -233,7 +233,7 @@ impl AgentManager {
 
         let event = RequestBodyChunkEvent {
             correlation_id: ctx.correlation_id.to_string(),
-            data: base64::encode(data),
+            data: STANDARD.encode(data),
             is_last,
             total_size: ctx.request_body.as_ref().map(|b| b.len()),
         };

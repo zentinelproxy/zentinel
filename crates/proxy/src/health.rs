@@ -12,11 +12,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::time;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use sentinel_common::{
-    errors::{SentinelError, SentinelResult},
-    types::{HealthCheckType, UpstreamId},
+    errors::SentinelResult,
+    types::HealthCheckType,
 };
 use sentinel_config::{HealthCheck as HealthCheckConfig, UpstreamTarget};
 

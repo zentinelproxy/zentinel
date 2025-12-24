@@ -65,12 +65,19 @@ serde_yaml = "0.9"
 mime_guess = "2.0"
 http-body-util = "0.1"
 httpdate = "1.0"
-html-escape = "0.8"
+html-escape = "0.2"
 
 # System
 nix = { version = "0.29", features = ["signal"] }
 libc = "0.2"
 signal-hook = "0.3"
+
+# Random number generation
+rand = "0.8"
+
+# Hashing
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+murmur3 = "0.5"
 
 # File watching for hot reload
 notify = "6.1"

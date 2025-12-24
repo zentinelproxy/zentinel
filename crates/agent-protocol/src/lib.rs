@@ -6,22 +6,18 @@
 //! The protocol is inspired by SPOE (Stream Processing Offload Engine) and Envoy's ext_proc,
 //! designed for bounded, predictable behavior with strong failure isolation.
 
+#![allow(dead_code)]
+
 use async_trait::async_trait;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
-use sentinel_common::{
-    errors::{SentinelError, SentinelResult},
-    types::CorrelationId,
-};
 
 /// Agent protocol version
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -403,7 +399,7 @@ impl AgentClient {
     }
 
     /// Close the agent connection
-    pub async fn close(mut self) -> Result<(), AgentProtocolError> {
+    pub async fn close(self) -> Result<(), AgentProtocolError> {
         match self.connection {
             AgentConnection::UnixSocket(mut stream) => {
                 stream.shutdown().await?;

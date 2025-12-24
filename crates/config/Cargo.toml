@@ -25,6 +25,12 @@ miette = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
+# Logging
+tracing = { workspace = true }
+
+# File globbing
+glob = "0.3"
+
 # File watching for hot reload
 notify = "6.1"
 

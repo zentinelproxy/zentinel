@@ -3,6 +3,8 @@
 //! This module provides JSON Schema validation for API routes,
 //! supporting both request and response validation with OpenAPI integration.
 
+#![allow(dead_code, unused_imports)]
+
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -13,7 +15,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use sentinel_config::ApiSchemaConfig;
 

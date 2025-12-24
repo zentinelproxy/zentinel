@@ -5,16 +5,15 @@
 
 use anyhow::{anyhow, Context, Result};
 use glob::glob;
-use kdl::{KdlDocument, KdlEntry, KdlNode};
-use serde::{Deserialize, Serialize};
+use kdl::{KdlDocument, KdlNode};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use crate::{
-    AgentConfig, Config, LimitsConfig, ListenerConfig, LoggingConfig, MetricsConfig, RouteConfig,
-    TlsConfig, UpstreamConfig,
+    AgentConfig, Config, Limits, ListenerConfig, ObservabilityConfig, RouteConfig, ServerConfig,
+    UpstreamConfig, WafConfig,
 };
 
 /// Multi-file configuration loader
@@ -136,19 +135,23 @@ impl MultiFileLoader {
 
             for entry in glob(pattern_str).context("Failed to read glob pattern")? {
                 match entry {
-                    Ok(path) if path.is_file() => {
-                        // Check exclusions
-                        if self.should_exclude(&path) {
-                            debug!("Excluding file: {:?}", path);
-                            continue;
-                        }
+                    Ok(path) => {
+                        if path.is_file() {
+                            // Check exclusions
+                            if self.should_exclude(&path) {
+                                debug!("Excluding file: {:?}", path);
+                                continue;
+                            }
 
-                        if seen.insert(path.clone()) {
-                            files.push(path);
+                            if seen.insert(path.clone()) {
+                                files.push(path);
+                            }
                         }
+                        // Skip directories
                     }
-                    Ok(_) => {} // Skip directories
-                    Err(e) => warn!("Error scanning files: {}", e),
+                    Err(e) => {
+                        warn!("Error accessing path: {}", e);
+                    }
                 }
             }
         }
@@ -194,16 +197,14 @@ impl MultiFileLoader {
 #[derive(Debug, Default)]
 struct PartialConfig {
     source_file: PathBuf,
+    server: Option<ServerConfig>,
     listeners: Vec<ListenerConfig>,
     routes: Vec<RouteConfig>,
     upstreams: HashMap<String, UpstreamConfig>,
     agents: Vec<AgentConfig>,
-    tls: Option<TlsConfig>,
-    limits: Option<LimitsConfig>,
-    logging: Option<LoggingConfig>,
-    metrics: Option<MetricsConfig>,
-    includes: Vec<String>,
-    metadata: HashMap<String, String>,
+    waf: Option<WafConfig>,
+    limits: Option<Limits>,
+    observability: Option<ObservabilityConfig>,
 }
 
 impl PartialConfig {
@@ -217,10 +218,11 @@ impl PartialConfig {
         for node in doc.nodes() {
             match node.name().value() {
                 "include" => {
-                    // Handle include directives
-                    if let Some(path) = node.entries().first().and_then(|e| e.value().as_string()) {
-                        config.includes.push(path.to_string());
-                    }
+                    // Handle include directives - currently ignored
+                    // TODO: Implement include processing
+                }
+                "server" if config.server.is_none() => {
+                    config.server = Some(parse_server(node)?);
                 }
                 "listener" => {
                     config.listeners.push(parse_listener(node)?);
@@ -235,27 +237,17 @@ impl PartialConfig {
                 "agent" => {
                     config.agents.push(parse_agent(node)?);
                 }
-                "tls" if config.tls.is_none() => {
-                    config.tls = Some(parse_tls(node)?);
+                "waf" if config.waf.is_none() => {
+                    config.waf = Some(parse_waf(node)?);
                 }
                 "limits" if config.limits.is_none() => {
                     config.limits = Some(parse_limits(node)?);
                 }
-                "logging" if config.logging.is_none() => {
-                    config.logging = Some(parse_logging(node)?);
-                }
-                "metrics" if config.metrics.is_none() => {
-                    config.metrics = Some(parse_metrics(node)?);
+                "observability" if config.observability.is_none() => {
+                    config.observability = Some(parse_observability(node)?);
                 }
                 "metadata" => {
-                    // Store metadata for debugging
-                    for entry in node.entries() {
-                        if let (Some(name), value) = (entry.name(), entry.value().as_string()) {
-                            config
-                                .metadata
-                                .insert(name.value().to_string(), value.to_string());
-                        }
-                    }
+                    // Skip metadata for now - not part of the main config structure
                 }
                 _ => {
                     debug!(
@@ -272,14 +264,14 @@ impl PartialConfig {
 
 /// Configuration builder for merging multiple partial configs
 struct ConfigBuilder {
+    server: Option<ServerConfig>,
     listeners: Vec<ListenerConfig>,
     routes: Vec<RouteConfig>,
     upstreams: HashMap<String, UpstreamConfig>,
     agents: Vec<AgentConfig>,
-    tls: Option<TlsConfig>,
-    limits: Option<LimitsConfig>,
-    logging: Option<LoggingConfig>,
-    metrics: Option<MetricsConfig>,
+    waf: Option<WafConfig>,
+    limits: Option<Limits>,
+    observability: Option<ObservabilityConfig>,
 
     // Tracking for duplicates
     listener_ids: HashSet<String>,
@@ -290,14 +282,14 @@ struct ConfigBuilder {
 impl ConfigBuilder {
     fn new() -> Self {
         Self {
+            server: None,
             listeners: Vec::new(),
             routes: Vec::new(),
             upstreams: HashMap::new(),
             agents: Vec::new(),
-            tls: None,
+            waf: None,
             limits: None,
-            logging: None,
-            metrics: None,
+            observability: None,
             listener_ids: HashSet::new(),
             route_ids: HashSet::new(),
             agent_ids: HashSet::new(),
@@ -354,13 +346,23 @@ impl ConfigBuilder {
         }
 
         // Merge singleton configs (last wins)
-        if partial.tls.is_some() {
-            if self.tls.is_some() {
-                warn!("Overriding TLS config from {:?}", partial.source_file);
+        // Merge server (warn on override)
+        if partial.server.is_some() {
+            if self.server.is_some() {
+                warn!("Overriding server config from {:?}", partial.source_file);
             }
-            self.tls = partial.tls;
+            self.server = partial.server;
         }
 
+        // Merge WAF (warn on override)
+        if partial.waf.is_some() {
+            if self.waf.is_some() {
+                warn!("Overriding WAF config from {:?}", partial.source_file);
+            }
+            self.waf = partial.waf;
+        }
+
+        // Merge limits (warn on override)
         if partial.limits.is_some() {
             if self.limits.is_some() {
                 warn!("Overriding limits config from {:?}", partial.source_file);
@@ -368,18 +370,15 @@ impl ConfigBuilder {
             self.limits = partial.limits;
         }
 
-        if partial.logging.is_some() {
-            if self.logging.is_some() {
-                warn!("Overriding logging config from {:?}", partial.source_file);
+        // Merge observability (warn on override)
+        if partial.observability.is_some() {
+            if self.observability.is_some() {
+                warn!(
+                    "Overriding observability config from {:?}",
+                    partial.source_file
+                );
             }
-            self.logging = partial.logging;
-        }
-
-        if partial.metrics.is_some() {
-            if self.metrics.is_some() {
-                warn!("Overriding metrics config from {:?}", partial.source_file);
-            }
-            self.metrics = partial.metrics;
+            self.observability = partial.observability;
         }
 
         Ok(())
@@ -388,19 +387,26 @@ impl ConfigBuilder {
     /// Build the final configuration
     fn build(self) -> Result<Config> {
         Ok(Config {
+            server: self
+                .server
+                .ok_or_else(|| anyhow!("Server configuration is required"))?,
             listeners: self.listeners,
             routes: self.routes,
             upstreams: self.upstreams,
             agents: self.agents,
-            tls: self.tls.unwrap_or_default(),
+            waf: self.waf,
             limits: self.limits.unwrap_or_default(),
-            logging: self.logging.unwrap_or_default(),
-            metrics: self.metrics.unwrap_or_default(),
+            observability: self.observability.unwrap_or_default(),
+            default_upstream: None,
         })
     }
 }
 
 // Parsing helper functions (stubs - would be implemented based on actual schema)
+fn parse_server(_node: &KdlNode) -> Result<ServerConfig> {
+    todo!("Implement server parsing")
+}
+
 fn parse_listener(_node: &KdlNode) -> Result<ListenerConfig> {
     todo!("Implement listener parsing")
 }
@@ -417,20 +423,16 @@ fn parse_agent(_node: &KdlNode) -> Result<AgentConfig> {
     todo!("Implement agent parsing")
 }
 
-fn parse_tls(_node: &KdlNode) -> Result<TlsConfig> {
-    todo!("Implement TLS parsing")
+fn parse_waf(_node: &KdlNode) -> Result<WafConfig> {
+    todo!("Implement WAF parsing")
 }
 
-fn parse_limits(_node: &KdlNode) -> Result<LimitsConfig> {
+fn parse_limits(_node: &KdlNode) -> Result<Limits> {
     todo!("Implement limits parsing")
 }
 
-fn parse_logging(_node: &KdlNode) -> Result<LoggingConfig> {
-    todo!("Implement logging parsing")
-}
-
-fn parse_metrics(_node: &KdlNode) -> Result<MetricsConfig> {
-    todo!("Implement metrics parsing")
+fn parse_observability(_node: &KdlNode) -> Result<ObservabilityConfig> {
+    todo!("Implement observability parsing")
 }
 
 /// Configuration directory structure support

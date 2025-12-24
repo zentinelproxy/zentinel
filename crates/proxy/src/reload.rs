@@ -8,13 +8,11 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 
 use sentinel_common::errors::{SentinelError, SentinelResult};
 use sentinel_config::Config;
-use crate::routing::RouteMatcher;
-use crate::upstream::UpstreamPool;
 
 /// Configuration manager with hot reload support
 pub struct ConfigManager {
@@ -45,24 +43,13 @@ pub enum ReloadEvent {
         trigger: ReloadTrigger,
     },
     /// Configuration validated successfully
-    Validated {
-        timestamp: Instant,
-    },
+    Validated { timestamp: Instant },
     /// Configuration applied successfully
-    Applied {
-        timestamp: Instant,
-        version: String,
-    },
+    Applied { timestamp: Instant, version: String },
     /// Configuration reload failed
-    Failed {
-        timestamp: Instant,
-        error: String,
-    },
+    Failed { timestamp: Instant, error: String },
     /// Configuration rolled back
-    RolledBack {
-        timestamp: Instant,
-        reason: String,
-    },
+    RolledBack { timestamp: Instant, reason: String },
 }
 
 /// Reload trigger source
@@ -125,7 +112,10 @@ pub struct ReloadStats {
 
 impl ConfigManager {
     /// Create new configuration manager
-    pub async fn new(config_path: impl AsRef<Path>, initial_config: Config) -> SentinelResult<Self> {
+    pub async fn new(
+        config_path: impl AsRef<Path>,
+        initial_config: Config,
+    ) -> SentinelResult<Self> {
         let config_path = config_path.as_ref().to_path_buf();
         let (reload_tx, _) = broadcast::channel(100);
 
@@ -151,22 +141,25 @@ impl ConfigManager {
     /// Start watching configuration file for changes
     pub async fn start_watching(&mut self) -> SentinelResult<()> {
         let config_path = self.config_path.clone();
-        let reload_tx = self.reload_tx.clone();
+        let _reload_tx = self.reload_tx.clone();
 
         // Create file watcher
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
 
-        let mut watcher = notify::recommended_watcher(move |event: Result<Event, notify::Error>| {
-            if let Ok(event) = event {
-                let _ = tx.blocking_send(event);
-            }
-        }).map_err(|e| SentinelError::Config {
-            message: format!("Failed to create file watcher: {}", e),
-            source: None,
-        })?;
+        let mut watcher =
+            notify::recommended_watcher(move |event: Result<Event, notify::Error>| {
+                if let Ok(event) = event {
+                    let _ = tx.blocking_send(event);
+                }
+            })
+            .map_err(|e| SentinelError::Config {
+                message: format!("Failed to create file watcher: {}", e),
+                source: None,
+            })?;
 
         // Watch config file
-        watcher.watch(&config_path, RecursiveMode::NonRecursive)
+        watcher
+            .watch(&config_path, RecursiveMode::NonRecursive)
             .map_err(|e| SentinelError::Config {
                 message: format!("Failed to watch config file: {}", e),
                 source: None,
@@ -191,14 +184,19 @@ impl ConfigManager {
             }
         });
 
-        info!("Started watching configuration file: {:?}", self.config_path);
+        info!(
+            "Started watching configuration file: {:?}",
+            self.config_path
+        );
         Ok(())
     }
 
     /// Reload configuration
     pub async fn reload(&self, trigger: ReloadTrigger) -> SentinelResult<()> {
         let start = Instant::now();
-        self.stats.total_reloads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.stats
+            .total_reloads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         info!("Starting configuration reload (trigger: {:?})", trigger);
 
@@ -214,7 +212,9 @@ impl ConfigManager {
             Err(e) => {
                 let error_msg = format!("Failed to load configuration: {}", e);
                 error!("{}", error_msg);
-                self.stats.failed_reloads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.stats
+                    .failed_reloads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 *self.stats.last_failure.write().await = Some(Instant::now());
 
                 let _ = self.reload_tx.send(ReloadEvent::Failed {
@@ -232,7 +232,9 @@ impl ConfigManager {
         // Validate new configuration
         if let Err(e) = self.validate_config(&new_config).await {
             error!("Configuration validation failed: {}", e);
-            self.stats.failed_reloads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.stats
+                .failed_reloads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             *self.stats.last_failure.write().await = Some(Instant::now());
 
             let _ = self.reload_tx.send(ReloadEvent::Failed {
@@ -271,13 +273,18 @@ impl ConfigManager {
 
         // Update statistics
         let duration = start.elapsed();
-        self.stats.successful_reloads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.stats
+            .successful_reloads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         *self.stats.last_success.write().await = Some(Instant::now());
 
         // Update average duration
         {
             let mut avg = self.stats.avg_duration_ms.write().await;
-            let total = self.stats.successful_reloads.load(std::sync::atomic::Ordering::Relaxed) as f64;
+            let total = self
+                .stats
+                .successful_reloads
+                .load(std::sync::atomic::Ordering::Relaxed) as f64;
             *avg = (*avg * (total - 1.0) + duration.as_millis() as f64) / total;
         }
 
@@ -309,7 +316,9 @@ impl ConfigManager {
 
             // Apply previous configuration
             self.current_config.store(prev_config);
-            self.stats.rollbacks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.stats
+                .rollbacks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             let _ = self.reload_tx.send(ReloadEvent::RolledBack {
                 timestamp: Instant::now(),
@@ -335,11 +344,10 @@ impl ConfigManager {
         // Run custom validators
         for validator in self.validators.read().await.iter() {
             debug!("Running validator: {}", validator.name());
-            validator.validate(config).await
-                .map_err(|e| {
-                    error!("Validator '{}' failed: {}", validator.name(), e);
-                    e
-                })?;
+            validator.validate(config).await.map_err(|e| {
+                error!("Validator '{}' failed: {}", validator.name(), e);
+                e
+            })?;
         }
 
         Ok(())
@@ -401,14 +409,16 @@ impl ConfigValidator for RouteValidator {
 
         // Check that all routes reference valid upstreams
         for route in &config.routes {
-            if !config.upstreams.contains_key(&route.upstream) {
-                return Err(SentinelError::Config {
-                    message: format!(
-                        "Route '{}' references non-existent upstream '{}'",
-                        route.id, route.upstream
-                    ),
-                    source: None,
-                });
+            if let Some(upstream) = &route.upstream {
+                if !config.upstreams.contains_key(upstream) {
+                    return Err(SentinelError::Config {
+                        message: format!(
+                            "Route '{}' references non-existent upstream '{}'",
+                            route.id, upstream
+                        ),
+                        source: None,
+                    });
+                }
             }
         }
 
@@ -476,23 +486,30 @@ impl GracefulReloadCoordinator {
 
     /// Increment active request count
     pub fn inc_requests(&self) {
-        self.active_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.active_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Decrement active request count
     pub fn dec_requests(&self) {
-        self.active_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.active_requests
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Wait for active requests to drain
     pub async fn wait_for_drain(&self) -> bool {
         let start = Instant::now();
 
-        while self.active_requests.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+        while self
+            .active_requests
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+        {
             if start.elapsed() > self.max_drain_time {
                 warn!(
                     "Drain timeout reached, {} requests still active",
-                    self.active_requests.load(std::sync::atomic::Ordering::Relaxed)
+                    self.active_requests
+                        .load(std::sync::atomic::Ordering::Relaxed)
                 );
                 return false;
             }
@@ -506,7 +523,8 @@ impl GracefulReloadCoordinator {
 
     /// Get active request count
     pub fn active_count(&self) -> usize {
-        self.active_requests.load(std::sync::atomic::Ordering::Relaxed)
+        self.active_requests
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -526,9 +544,7 @@ mod tests {
         std::fs::write(&config_path, "test config").unwrap();
 
         // Create config manager
-        let manager = ConfigManager::new(&config_path, config)
-            .await
-            .unwrap();
+        let manager = ConfigManager::new(&config_path, config).await.unwrap();
 
         // Test reload
         // Note: This would fail in test because we're not writing valid config

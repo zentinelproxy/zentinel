@@ -1,14 +1,16 @@
 use async_trait::async_trait;
-use rand::prelude::*;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+
+use tracing::{debug, info};
 
 use crate::types::{SentinelError, SentinelResult, UpstreamTarget};
-use crate::upstream::{LoadBalancer, TargetSelection};
+use super::{LoadBalancer, RequestContext, TargetSelection};
 
 /// Load metric type for P2C selection
 #[derive(Debug, Clone, Copy)]
@@ -162,8 +164,8 @@ pub struct P2cBalancer {
     health_status: Arc<RwLock<HashMap<String, bool>>>,
     /// Metrics per target
     metrics: Vec<TargetMetrics>,
-    /// Random number generator
-    rng: Arc<RwLock<ThreadRng>>,
+    /// Random number generator (thread-safe)
+    rng: Arc<RwLock<StdRng>>,
     /// Cumulative weights for weighted selection
     cumulative_weights: Vec<u32>,
 }
@@ -189,7 +191,7 @@ impl P2cBalancer {
             targets,
             health_status: Arc::new(RwLock::new(HashMap::new())),
             metrics,
-            rng: Arc::new(RwLock::new(thread_rng())),
+            rng: Arc::new(RwLock::new(StdRng::from_entropy())),
             cumulative_weights,
         }
     }
@@ -304,7 +306,7 @@ impl P2cBalancer {
 impl LoadBalancer for P2cBalancer {
     async fn select(
         &self,
-        _context: Option<&crate::upstream::RequestContext>,
+        _context: Option<&RequestContext>,
     ) -> SentinelResult<TargetSelection> {
         // Select candidates
         let num_choices = if self.config.power_of_three { 3 } else { 2 };

@@ -3,6 +3,8 @@
 //! This agent provides distributed rate limiting using token bucket algorithm
 //! with support for multiple rate limit keys and configurable limits.
 
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use clap::Parser;
@@ -16,17 +18,14 @@ use nonzero_ext::nonzero;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use sentinel_agent_protocol::{
-    AgentHandler, AgentResponse, AgentServer, AuditMetadata, Decision, HeaderOp,
-    RequestBodyChunkEvent, RequestCompleteEvent, RequestHeadersEvent, ResponseBodyChunkEvent,
-    ResponseHeadersEvent,
+    AgentHandler, AgentResponse, AgentServer, AuditMetadata, Decision, HeaderOp, RequestHeadersEvent,
 };
 
 /// Rate limit agent command-line arguments

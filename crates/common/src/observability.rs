@@ -5,9 +5,8 @@
 
 use anyhow::{Context, Result};
 use prometheus::{
-    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec,
-    register_int_counter_vec, register_int_gauge, register_int_gauge_vec, CounterVec, Gauge,
-    GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec,
+    register_counter_vec, register_gauge, register_histogram_vec,
+    register_int_counter_vec, register_int_gauge, register_int_gauge_vec, CounterVec, Gauge, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec,
 };
 use std::time::Duration;
 use tracing::{error, info};

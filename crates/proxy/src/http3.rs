@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use sentinel_config::{ListenerConfig, TlsConfig};
 
@@ -721,14 +721,16 @@ pub async fn enable_http3(
             key_file: PathBuf::from(&tls.key_file),
             alpn_protocols: vec!["h3".to_string()],
             min_version: TlsVersion::Tls13,
-            cipher_suites: tls.cipher_suites.clone().unwrap_or_else(|| {
+            cipher_suites: if tls.cipher_suites.is_empty() {
                 vec![
                     "TLS_AES_128_GCM_SHA256".to_string(),
                     "TLS_AES_256_GCM_SHA384".to_string(),
                 ]
-            }),
-            ocsp_stapling: tls.ocsp_stapling.unwrap_or(true),
-            session_tickets: tls.session_resumption.unwrap_or(true),
+            } else {
+                tls.cipher_suites.clone()
+            },
+            ocsp_stapling: tls.ocsp_stapling,
+            session_tickets: tls.session_resumption,
         },
         transport: QuicTransportConfig::default(),
         http3: Http3Settings::default(),
