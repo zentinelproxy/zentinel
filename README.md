@@ -16,17 +16,17 @@
     <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white&style=for-the-badge">
   </a>
   <a href="https://github.com/cloudflare/pingora">
-    <img alt="Pingora" src="https://img.shields.io/badge/Built%20on-Pingora-F38020?style=for-the-badge">
+    <img alt="Pingora" src="https://img.shields.io/badge/Built%20on-Pingora-f5a97f?style=for-the-badge">
   </a>
   <a href="LICENSE">
-    <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-805569?style=for-the-badge">
+    <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-c6a0f6?style=for-the-badge">
   </a>
 </p>
 
 <p align="center">
   <a href="MANIFESTO.md">Manifesto</a> •
   <a href="docs/why-sentinel.md">Why Sentinel</a> •
-  <a href="docs/">Documentation</a> •
+  <a href="https://raskell-io.github.io/sentinel/">Documentation</a> •
   <a href="CONTRIBUTING.md">Contributing</a> •
 </p>
 
