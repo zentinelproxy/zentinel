@@ -42,7 +42,6 @@ jobs:
       - name: Setup mise
         uses: jdx/mise-action@v3
         with:
-          version: latest
           cache: true
           experimental: false
 
@@ -268,7 +267,6 @@ jobs:
       - name: Setup mise
         uses: jdx/mise-action@v3
         with:
-          version: latest
           cache: true
 
       - name: Setup Rust for plugins
