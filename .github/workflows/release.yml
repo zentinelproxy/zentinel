@@ -80,6 +80,19 @@ jobs:
           {"os": "macos-latest", "target": "aarch64-apple-darwin", "suffix": "darwin-arm64"}
         ]
 
+  # Build and push Docker images
+  docker:
+    name: Docker
+    needs: validate
+    uses: ./.github/workflows/_docker.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
+      push: ${{ github.event_name == 'release' }}
+      latest: true
+    permissions:
+      contents: read
+      packages: write
+
   # Package and upload release assets
   publish:
     name: Publish
@@ -130,7 +143,7 @@ jobs:
   # Summary
   summary:
     name: Summary
-    needs: [validate, build, publish]
+    needs: [validate, build, docker, publish]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -143,4 +156,10 @@ jobs:
           echo "### Build Status" >> $GITHUB_STEP_SUMMARY
           echo "- Validate: ${{ needs.validate.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker: ${{ needs.docker.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Publish: ${{ needs.publish.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Container Images" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ github.repository }}/proxy:${{ needs.validate.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ github.repository }}/echo-agent:${{ needs.validate.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ github.repository }}/ratelimit-agent:${{ needs.validate.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
