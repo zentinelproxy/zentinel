@@ -1,8 +1,8 @@
 # Release workflow - builds and publishes release artifacts
-# Triggered on new releases with CalVer tags (YY.MM.PATCH format)
+# Triggered on new releases with CalVer tags (YY.MM_PATCH format)
 #
-# CalVer format: YY.MM.PATCH
-# Examples: 24.12.0, 25.01.1, 25.06.12
+# CalVer format: YY.MM_PATCH
+# Examples: 24.12_0, 25.01_1, 25.06_12
 # Similar to Ubuntu release cycles (YY.MM)
 
 name: Release
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build (CalVer: YY.MM.PATCH)'
+        description: 'Version to build (CalVer: YY.MM_PATCH)'
         required: true
         type: string
       dry-run:
@@ -54,10 +54,10 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
-          # CalVer regex: YY.MM.PATCH (e.g., 24.12.0, 25.01.15)
-          if ! echo "$VERSION" | grep -qE '^[0-9]{2}\.(0[1-9]|1[0-2])\.[0-9]+$'; then
+          # CalVer regex: YY.MM_PATCH (e.g., 24.12_0, 25.01_15)
+          if ! echo "$VERSION" | grep -qE '^[0-9]{2}\.(0[1-9]|1[0-2])_[0-9]+$'; then
             echo "::error::Invalid CalVer format: $VERSION"
-            echo "Expected format: YY.MM.PATCH (e.g., 24.12.0, 25.01.1)"
+            echo "Expected format: YY.MM_PATCH (e.g., 24.12_0, 25.01_1)"
             exit 1
           fi
 
