@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Internal dependencies
-agent-protocol = { path = "../../crates/agent-protocol" }
+sentinel-agent-protocol = { path = "../../crates/agent-protocol" }
 sentinel-common = { path = "../../crates/common" }
 
 # Async runtime

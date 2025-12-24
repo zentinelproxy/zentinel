@@ -2,6 +2,8 @@
 //!
 //! This module contains application-level logic and utilities for the proxy.
 
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use parking_lot::RwLock;
 use tracing::{info, warn, error};

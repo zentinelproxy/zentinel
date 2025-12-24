@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::types::{SentinelError, SentinelResult, UpstreamTarget};
-use crate::upstream::{LoadBalancer, RequestContext, TargetSelection};
+use super::{LoadBalancer, RequestContext, TargetSelection};
 
 /// Configuration for adaptive load balancing
 #[derive(Debug, Clone)]

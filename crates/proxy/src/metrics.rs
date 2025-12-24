@@ -6,7 +6,6 @@ use prometheus::{
     register_histogram_vec, register_int_counter_vec, register_int_gauge,
     HistogramVec, IntCounterVec, IntGauge,
 };
-use std::sync::Arc;
 
 /// Metrics collector for the proxy
 pub struct Metrics {

@@ -149,6 +149,10 @@ pub enum SentinelError {
         window_seconds: u32,
         retry_after_seconds: Option<u32>,
     },
+
+    /// No healthy upstream available
+    #[error("No healthy upstream available")]
+    NoHealthyUpstream,
 }
 
 /// Types of limits that can be exceeded
@@ -246,6 +250,7 @@ impl SentinelError {
             Self::Parse { .. } => 400,
             Self::ServiceUnavailable { .. } => 503,
             Self::RateLimit { .. } => 429,
+            Self::NoHealthyUpstream => 503,
         }
     }
 
@@ -273,6 +278,7 @@ impl SentinelError {
                 format!("Service '{}' temporarily unavailable", service)
             }
             Self::RateLimit { .. } => "Rate limit exceeded".to_string(),
+            Self::NoHealthyUpstream => "No healthy upstream available".to_string(),
         }
     }
 

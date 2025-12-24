@@ -7,7 +7,7 @@ members = [
     "agents/echo",
     "agents/denylist",
     "agents/ratelimit",
-    "agents/waf",
+    
 ]
 resolver = "2"
 

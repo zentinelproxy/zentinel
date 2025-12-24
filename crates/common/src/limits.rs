@@ -386,7 +386,7 @@ impl ConnectionLimiter {
     }
 
     /// Try to acquire a connection slot
-    pub fn try_acquire(&self, client_id: &str, route: &str) -> SentinelResult<ConnectionGuard> {
+    pub fn try_acquire(&self, client_id: &str, route: &str) -> SentinelResult<ConnectionGuard<'_>> {
         // Check total connections
         {
             let mut total = self.total.write();

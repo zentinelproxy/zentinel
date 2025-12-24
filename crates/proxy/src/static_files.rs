@@ -3,18 +3,16 @@
 //! This module provides high-performance static file serving with
 //! support for compression, caching, directory listing, and SPA routing.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use http::{header, Method, Request, Response, StatusCode};
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use mime_guess::from_path;
-use pingora_core::prelude::*;
-use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
-use tracing::{debug, error, info, warn};
+use tracing::error;
 
 use sentinel_config::StaticFileConfig;
 
@@ -76,7 +74,7 @@ impl StaticFileServer {
                 // Try fallback if configured (for SPA routing)
                 if let Some(ref fallback) = self.config.fallback {
                     let fallback_path = self.config.root.join(fallback);
-                    if let Ok(m) = fs::metadata(&fallback_path).await {
+                    if let Ok(_m) = fs::metadata(&fallback_path).await {
                         return self.serve_file(req, &fallback_path).await;
                     }
                 }
@@ -233,7 +231,7 @@ impl StaticFileServer {
         // Build response
         let mut response = Response::builder()
             .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CONTENT_TYPE, &content_type)
             .header(header::CONTENT_LENGTH, content.len())
             .header(header::ETAG, etag)
             .header(header::CACHE_CONTROL, &self.config.cache_control)

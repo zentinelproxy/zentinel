@@ -8,10 +8,8 @@ use tokio::sync::RwLock;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::types::{SentinelError, SentinelResult, UpstreamTarget};
-use crate::upstream::{LoadBalancer, TargetSelection};
+use super::{LoadBalancer, RequestContext, TargetSelection};
 use async_trait::async_trait;
-use pingora::lb::selection::BackendSelection;
-use pingora::protocols::l4::socket::SocketAddr;
 use tracing::{debug, info, warn};
 
 /// Hash function types supported by the consistent hash balancer
@@ -50,7 +48,7 @@ impl Default for ConsistentHashConfig {
 }
 
 /// Defines how to extract the hash key from a request
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum HashKeyExtractor {
     ClientIp,
     Header(String),
@@ -58,12 +56,15 @@ pub enum HashKeyExtractor {
     Custom(Arc<dyn Fn(&RequestContext) -> Option<String> + Send + Sync>),
 }
 
-/// Request context for hash key extraction
-pub struct RequestContext {
-    pub client_ip: Option<SocketAddr>,
-    pub headers: HashMap<String, String>,
-    pub path: String,
-    pub method: String,
+impl std::fmt::Debug for HashKeyExtractor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClientIp => write!(f, "ClientIp"),
+            Self::Header(h) => write!(f, "Header({})", h),
+            Self::Cookie(c) => write!(f, "Cookie({})", c),
+            Self::Custom(_) => write!(f, "Custom"),
+        }
+    }
 }
 
 /// Virtual node in the consistent hash ring
@@ -104,7 +105,7 @@ impl ConsistentHashBalancer {
             .map(|_| Arc::new(AtomicU64::new(0)))
             .collect();
 
-        let mut balancer = Self {
+        let balancer = Self {
             config,
             targets: targets.clone(),
             ring: Arc::new(RwLock::new(BTreeMap::new())),
@@ -219,7 +220,7 @@ impl ConsistentHashBalancer {
         }
 
         // Find the first virtual node with hash >= key_hash
-        let candidates = if let Some((&node_hash, vnode)) = ring.range(key_hash..).next() {
+        let candidates = if let Some((&_node_hash, vnode)) = ring.range(key_hash..).next() {
             vec![vnode.clone()]
         } else {
             // Wrap around to the first node
@@ -462,7 +463,7 @@ mod tests {
 
         for i in 0..10000 {
             let context = RequestContext {
-                client_ip: Some(format!("192.168.1.{}", i % 256).parse().unwrap()),
+                client_ip: Some(format!("192.168.1.{}:1234", i % 256).parse().unwrap()),
                 headers: HashMap::new(),
                 path: "/".to_string(),
                 method: "GET".to_string(),

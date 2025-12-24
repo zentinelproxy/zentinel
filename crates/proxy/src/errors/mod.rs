@@ -9,9 +9,8 @@ use http::{Response, StatusCode};
 use http_body_util::Full;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use sentinel_config::{ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType};
 

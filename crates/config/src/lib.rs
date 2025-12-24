@@ -1187,15 +1187,17 @@ impl Config {
 
     fn validate_routes(&self) -> SentinelResult<()> {
         for route in &self.routes {
-            // Check that upstream exists
-            if !self.upstreams.contains_key(&route.upstream) {
-                return Err(SentinelError::Config {
-                    message: format!(
-                        "Route '{}' references non-existent upstream '{}'",
-                        route.id, route.upstream
-                    ),
-                    source: None,
-                });
+            // Check that upstream exists (if specified)
+            if let Some(upstream) = &route.upstream {
+                if !self.upstreams.contains_key(upstream) {
+                    return Err(SentinelError::Config {
+                        message: format!(
+                            "Route '{}' references non-existent upstream '{}'",
+                            route.id, upstream
+                        ),
+                        source: None,
+                    });
+                }
             }
 
             // Check that referenced agents exist
@@ -1301,12 +1303,16 @@ impl Config {
                 id: "default".to_string(),
                 priority: Priority::Normal,
                 matches: vec![MatchCondition::PathPrefix("/".to_string())],
-                upstream: "default".to_string(),
+                upstream: Some("default".to_string()),
+                service_type: ServiceType::Web,
                 policies: RoutePolicies::default(),
                 agents: vec![],
                 waf_enabled: false,
                 circuit_breaker: None,
                 retry_policy: None,
+                static_files: None,
+                api_schema: None,
+                error_pages: None,
             }],
             upstreams,
             agents: vec![],
