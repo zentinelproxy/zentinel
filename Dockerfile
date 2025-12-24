@@ -253,7 +253,7 @@ COPY --from=builder /app/target/release/sentinel-waf-agent /usr/local/bin/
 COPY config/ /etc/sentinel/config-examples/
 
 # Create supervisord configuration
-RUN cat > /etc/supervisor/conf.d/sentinel.conf << 'EOF'
+RUN <<SUPERVISOR_EOF cat > /etc/supervisor/conf.d/sentinel.conf
 [supervisord]
 nodaemon=true
 user=sentinel
@@ -290,10 +290,10 @@ autostart=false
 autorestart=true
 stdout_logfile=/var/log/sentinel/echo.log
 stderr_logfile=/var/log/sentinel/echo-error.log
-EOF
+SUPERVISOR_EOF
 
 # Create startup script
-RUN cat > /usr/local/bin/start-sentinel << 'EOF'
+RUN <<STARTUP_EOF cat > /usr/local/bin/start-sentinel && chmod +x /usr/local/bin/start-sentinel
 #!/bin/bash
 set -e
 
@@ -307,9 +307,7 @@ fi
 
 # Start supervisord
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/sentinel.conf
-EOF
-
-RUN chmod +x /usr/local/bin/start-sentinel
+STARTUP_EOF
 
 # Switch to non-root user
 USER sentinel
