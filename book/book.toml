@@ -1,7 +1,6 @@
 [book]
-title = "Sentinel Documentation"
-authors = ["Raskell.io Team"]
-description = "Comprehensive documentation for Sentinel - A Pingora-based production reverse proxy platform"
+title = "Sentinel"
+description = "Comprehensive documentation for Sentinel - A security-first reverse proxy built to guard the free web."
 language = "en"
 src = "src"
 
@@ -17,42 +16,10 @@ use-default-preprocessors = true
 [output.html]
 default-theme = "latte"
 preferred-dark-theme = "macchiato"
-smart-punctuation = true
-no-section-label = false
 additional-css = ["./theme/catppuccin.css"]
 additional-js = []
 git-repository-url = "https://github.com/raskell-io/sentinel"
-git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/raskell-io/sentinel/edit/main/{path}"
 site-url = "/sentinel/"
 cname = ""
 input-404 = ""
-
-[output.html.playground]
-editable = false
-copyable = true
-copy-js = true
-line-numbers = false
-
-[output.html.search]
-enable = true
-limit-results = 30
-teaser-word-count = 30
-use-boolean-and = true
-boost-title = 2
-boost-hierarchy = 1
-boost-paragraph = 1
-expand = true
-heading-split-level = 2
-copy-js = true
-
-[output.html.fold]
-enable = false
-level = 0
-
-[output.html.print]
-enable = true
-page-break = true
-
-[rust]
-edition = "2021"

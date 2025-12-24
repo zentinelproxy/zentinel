@@ -1,6 +1,6 @@
 # Introduction
 
-Welcome to **Sentinel**, a high-performance, production-ready reverse proxy platform built on [Cloudflare's Pingora](https://github.com/cloudflare/pingora) framework. Sentinel extends Pingora's robust foundation with enterprise-grade features designed for modern web infrastructure.
+Welcome to **Sentinel**, a high-performance **reverse proxy** platform built on [Cloudflare's Pingora](https://github.com/cloudflare/pingora) framework. Sentinel extends Pingora's robust foundation with enterprise-grade features designed for modern web infrastructure.
 
 ## What is Sentinel?
 
@@ -8,45 +8,45 @@ Sentinel is a next-generation reverse proxy that combines the performance and re
 
 ## Key Features
 
-### 🚀 High Performance
+### High Performance
 - Built on Pingora's async Rust foundation
 - Memory-safe architecture with zero-copy operations
 - Efficient connection pooling and keep-alive management
 - Optimized for both throughput and latency
 
-### 🎯 Service-Type Awareness
+### Service-Type Awareness
 Sentinel understands different service types and optimizes behavior accordingly:
 
 - **Web Applications**: HTML error pages, session handling, SPA support
 - **REST APIs**: JSON schema validation, structured error responses, OpenAPI integration
 - **Static Files**: Direct file serving, automatic MIME types, caching headers
 
-### 🔧 Advanced Routing
+### Advanced Routing
 - Flexible path-based and host-based routing
 - Route priorities and groups
 - Path variables and pattern matching
 - Per-route configuration overrides
 
-### 🛡️ Comprehensive Error Handling
+### Comprehensive Error Handling
 - Service-type-specific error formats (HTML, JSON, XML, Text)
 - Custom error page templates with variable substitution
 - Graceful fallbacks for connection failures
 - Detailed error tracking with request IDs
 
-### 📊 Observability
+### Observability
 - Structured logging with configurable levels
 - Prometheus-compatible metrics
 - Distributed tracing support
 - Health check endpoints
 
-### 🔐 Security Features
+### Security Features
 - Path traversal protection for static files
 - Request validation and sanitization
 - Rate limiting capabilities
 - TLS/SSL with modern cipher suites
 - HTTP/3 preparation with QUIC support (ready for activation)
 
-### ⚙️ Configuration
+### Configuration
 - Human-friendly KDL configuration format
 - Hot reload without downtime
 - Environment variable substitution
@@ -143,7 +143,7 @@ This documentation covers Sentinel version 0.1.0 and later. For the latest updat
 
 ## License
 
-Sentinel is open-source software licensed under the MIT License. See the [License](./appendix/license.md) page for details.
+Sentinel is open-source software licensed under the Apache License, Version 2.0. See the [License](./appendix/license.md) page for details.
 
 ---
 
