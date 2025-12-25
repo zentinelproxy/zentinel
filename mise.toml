@@ -29,9 +29,6 @@ run = """
 cargo build --release --workspace
 strip target/release/sentinel 2>/dev/null || true
 strip target/release/sentinel-echo-agent 2>/dev/null || true
-strip target/release/sentinel-ratelimit-agent 2>/dev/null || true
-strip target/release/sentinel-denylist-agent 2>/dev/null || true
-strip target/release/sentinel-waf-agent 2>/dev/null || true
 echo "Release build complete"
 """
 
@@ -41,9 +38,6 @@ depends = ["release"]
 run = """
 sudo cp target/release/sentinel /usr/local/bin/
 sudo cp target/release/sentinel-echo-agent /usr/local/bin/ 2>/dev/null || true
-sudo cp target/release/sentinel-ratelimit-agent /usr/local/bin/ 2>/dev/null || true
-sudo cp target/release/sentinel-denylist-agent /usr/local/bin/ 2>/dev/null || true
-sudo cp target/release/sentinel-waf-agent /usr/local/bin/ 2>/dev/null || true
 echo "Installation complete"
 """
 
@@ -115,7 +109,7 @@ description = "Watch for changes and rebuild"
 run = "cargo watch -x build -x test"
 
 [tasks.dev]
-description = "Run development environment with all agents"
+description = "Run development environment with echo agent"
 run = """
 #!/bin/bash
 set -e
@@ -123,17 +117,13 @@ set -e
 # Build everything first
 mise run build
 
-# Start agents in background
+# Start echo agent in background
 echo "Starting echo agent..."
 ./target/debug/sentinel-echo-agent --socket /tmp/sentinel-echo.sock &
 ECHO_PID=$!
 
-echo "Starting rate limit agent..."
-./target/debug/sentinel-ratelimit-agent --socket /tmp/sentinel-ratelimit.sock &
-RATELIMIT_PID=$!
-
 # Trap to cleanup on exit
-trap "kill $ECHO_PID $RATELIMIT_PID 2>/dev/null || true" EXIT INT TERM
+trap "kill $ECHO_PID 2>/dev/null || true" EXIT INT TERM
 
 # Start proxy in foreground
 echo "Starting proxy..."
@@ -145,11 +135,6 @@ RUST_LOG=debug ./target/debug/sentinel
 description = "Run echo agent"
 depends = ["build"]
 run = "./target/debug/sentinel-echo-agent --socket /tmp/echo.sock --verbose"
-
-[tasks.agent-ratelimit]
-description = "Run rate limit agent"
-depends = ["build"]
-run = "./target/debug/sentinel-ratelimit-agent --socket /tmp/ratelimit.sock --default-rps 100"
 
 [tasks.agent-test]
 description = "Test agent communication"
@@ -184,9 +169,6 @@ depends = ["clean"]
 run = """
 sudo rm -f /usr/local/bin/sentinel
 sudo rm -f /usr/local/bin/sentinel-echo-agent
-sudo rm -f /usr/local/bin/sentinel-ratelimit-agent
-sudo rm -f /usr/local/bin/sentinel-denylist-agent
-sudo rm -f /usr/local/bin/sentinel-waf-agent
 echo "Deep clean complete"
 """
 
@@ -219,14 +201,12 @@ description = "Start all services"
 run = """
 sudo systemctl start sentinel.service
 sudo systemctl start sentinel-echo-agent.service || true
-sudo systemctl start sentinel-ratelimit-agent.service || true
 """
 
 [tasks.systemd-stop]
 description = "Stop all services"
 run = """
 sudo systemctl stop sentinel-echo-agent.service || true
-sudo systemctl stop sentinel-ratelimit-agent.service || true
 sudo systemctl stop sentinel.service
 """
 
@@ -236,8 +216,6 @@ run = """
 systemctl status sentinel.service --no-pager || true
 echo ""
 systemctl status sentinel-echo-agent.service --no-pager || true
-echo ""
-systemctl status sentinel-ratelimit-agent.service --no-pager || true
 """
 
 # Configuration tasks
@@ -346,7 +324,6 @@ echo ""
 echo "Binary sizes (if built):"
 ls -lh target/release/sentinel 2>/dev/null || echo "Not built yet"
 ls -lh target/release/sentinel-echo-agent 2>/dev/null || echo "Not built yet"
-ls -lh target/release/sentinel-ratelimit-agent 2>/dev/null || echo "Not built yet"
 """
 
 [tasks.ci]

@@ -5,9 +5,6 @@ members = [
     "crates/config",
     "crates/common",
     "agents/echo",
-    "agents/denylist",
-    "agents/ratelimit",
-    
 ]
 resolver = "2"
 

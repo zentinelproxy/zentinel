@@ -1,0 +1,17 @@
+[template]
+cargo_generate_version = ">=0.18.0"
+
+[placeholders.description]
+type = "string"
+prompt = "What does your agent do?"
+default = "A custom Sentinel agent"
+
+[placeholders.events]
+type = "string"
+prompt = "Which events will your agent handle? (comma-separated: request_headers,request_body,response_headers)"
+default = "request_headers"
+
+[placeholders.author]
+type = "string"
+prompt = "Author name"
+default = "Your Name"

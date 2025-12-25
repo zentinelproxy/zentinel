@@ -31,56 +31,7 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # Rate limiting agent
-  ratelimit:
-    build:
-      context: .
-      target: ratelimit-agent
-    container_name: sentinel-ratelimit
-    volumes:
-      - ./config/docker/ratelimit.yaml:/etc/sentinel/ratelimit.yaml:ro
-      - agent-sockets:/var/run/sentinel
-      - ratelimit-data:/var/lib/sentinel
-    environment:
-      RUST_LOG: info,sentinel_ratelimit_agent=debug
-      RATELIMIT_CONFIG: /etc/sentinel/ratelimit.yaml
-    networks:
-      - sentinel
-    ports:
-      - "9092:9092"   # Metrics
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9092/metrics"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-    restart: unless-stopped
-
-  # WAF agent
-  waf:
-    build:
-      context: .
-      target: waf-agent
-    container_name: sentinel-waf
-    volumes:
-      - ./config/docker/waf.yaml:/etc/sentinel/waf.yaml:ro
-      - agent-sockets:/var/run/sentinel
-      - waf-logs:/var/log/sentinel-waf
-      - modsecurity-rules:/usr/share/modsecurity-crs:ro
-    environment:
-      RUST_LOG: info,sentinel_waf_agent=debug
-      WAF_CONFIG: /etc/sentinel/waf.yaml
-    networks:
-      - sentinel
-    ports:
-      - "9094:9094"   # Metrics
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9094/metrics"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-    restart: unless-stopped
-
-  # Echo agent (for testing)
+  # Echo agent (reference implementation for testing)
   echo:
     build:
       context: .
@@ -173,23 +124,21 @@ services:
       - "4318:4318"      # OTLP HTTP
     restart: unless-stopped
 
-  # All-in-one development container
-  all-in-one:
+  # Development container with proxy + echo agent
+  dev:
     build:
       context: .
-      target: all-in-one
-    container_name: sentinel-aio
+      target: dev
+    container_name: sentinel-dev
     profiles: ["dev"]  # Only run with --profile=dev
     ports:
       - "18080:8080"   # HTTP
       - "18443:8443"   # HTTPS
       - "19090:9090"   # Health/Metrics
-      - "19092:9092"   # RateLimit metrics
-      - "19094:9094"   # WAF metrics
     volumes:
       - ./config:/etc/sentinel/config-examples:ro
-      - aio-data:/var/lib/sentinel
-      - aio-logs:/var/log/sentinel
+      - dev-data:/var/lib/sentinel
+      - dev-logs:/var/log/sentinel
     environment:
       RUST_LOG: debug
     networks:
@@ -203,19 +152,13 @@ volumes:
     driver: local
   agent-sockets:
     driver: local
-  ratelimit-data:
-    driver: local
-  waf-logs:
-    driver: local
-  modsecurity-rules:
-    driver: local
   prometheus-data:
     driver: local
   grafana-data:
     driver: local
-  aio-data:
+  dev-data:
     driver: local
-  aio-logs:
+  dev-logs:
     driver: local
 
 networks:
@@ -224,3 +167,8 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
+
+# NOTE: Additional agents (ratelimit, waf, denylist, etc.) are available as
+# separate repositories. See https://github.com/raskell-io for community agents
+# or create your own using the agent template:
+#   cargo generate --git https://github.com/raskell-io/sentinel --path agent-template

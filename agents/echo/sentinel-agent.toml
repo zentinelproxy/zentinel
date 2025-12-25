@@ -1,0 +1,24 @@
+# Sentinel Agent Registry Manifest
+# Echo Agent - Reference implementation for testing and development
+
+[agent]
+name = "sentinel-echo-agent"
+version = "0.1.0"
+description = "Reference echo agent that adds request metadata as response headers"
+authors = ["Sentinel Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/raskell-io/sentinel"
+
+[protocol]
+version = "0.1"
+events = ["request_headers", "response_headers"]
+
+[compatibility]
+sentinel-proxy = ">=0.1.0"
+sentinel-agent-protocol = "0.1"
+
+[registry]
+homepage = "https://github.com/raskell-io/sentinel/tree/main/agents/echo"
+documentation = "https://github.com/raskell-io/sentinel/blob/main/docs/AGENTS.md"
+keywords = ["sentinel", "agent", "echo", "testing", "reference"]
+categories = ["testing"]

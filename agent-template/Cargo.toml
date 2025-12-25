@@ -1,0 +1,45 @@
+[package]
+name = "{{project-name}}"
+version = "0.1.0"
+edition = "2021"
+authors = ["{{authors}}"]
+license = "MIT OR Apache-2.0"
+description = "{{description}}"
+repository = "https://github.com/YOUR_USERNAME/{{project-name}}"
+keywords = ["sentinel", "proxy", "agent", "security"]
+categories = ["network-programming"]
+
+[[bin]]
+name = "{{project-name}}"
+path = "src/main.rs"
+
+[dependencies]
+# Sentinel protocol - provides AgentHandler trait and message types
+sentinel-agent-protocol = "0.1"
+sentinel-common = "0.1"
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Utilities
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Command line
+clap = { version = "4.5", features = ["derive", "env"] }
+
+[dev-dependencies]
+tempfile = "3.12"

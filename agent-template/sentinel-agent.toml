@@ -1,0 +1,37 @@
+# Sentinel Agent Registry Manifest
+# This file describes your agent for the Sentinel registry at sentinel.raskell.io
+
+[agent]
+name = "{{project-name}}"
+version = "0.1.0"
+description = "{{description}}"
+authors = ["{{authors}}"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/YOUR_USERNAME/{{project-name}}"
+
+[protocol]
+# Protocol version this agent implements
+version = "0.1"
+
+# Events this agent handles (request_headers, request_body, response_headers, response_body, request_complete)
+events = ["request_headers"]
+
+[compatibility]
+# Minimum sentinel-proxy version required
+sentinel-proxy = ">=0.1.0"
+
+# Protocol crate version
+sentinel-agent-protocol = "0.1"
+
+[registry]
+# Optional: Homepage for your agent
+# homepage = "https://example.com/my-agent"
+
+# Optional: Documentation URL
+# documentation = "https://docs.example.com"
+
+# Keywords for search
+keywords = ["sentinel", "agent"]
+
+# Categories (security, authentication, rate-limiting, logging, transformation, custom)
+categories = ["custom"]
