@@ -20,6 +20,6 @@ additional-css = ["./theme/catppuccin.css"]
 additional-js = []
 git-repository-url = "https://github.com/raskell-io/sentinel"
 edit-url-template = "https://github.com/raskell-io/sentinel/edit/main/{path}"
-site-url = "/sentinel/"
+site-url = "/docs/"
 cname = ""
 input-404 = ""
