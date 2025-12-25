@@ -1,0 +1,139 @@
+# WAF Agent Configuration for Docker Environment
+
+engine:
+  enabled: true
+  detection_only: false
+  paranoia_level: 1
+  anomaly_threshold: 5
+
+# Listener configuration
+listener:
+  socket_path: /var/run/sentinel/waf.sock
+  socket_permissions: 0666
+  max_connections: 100
+
+# Metrics endpoint
+metrics:
+  enabled: true
+  port: 9094
+  bind_address: "0.0.0.0"
+  path: "/metrics"
+
+# Rule configuration
+rules:
+  load_crs: false  # Use simplified rules for testing
+  custom_rules:
+    # Block SQL injection patterns
+    - |
+      SecRule ARGS|REQUEST_BODY "@detectSQLi" \
+        "id:100001,\
+        phase:2,\
+        block,\
+        msg:'SQL Injection Attack Detected',\
+        severity:'CRITICAL',\
+        tag:'attack-sqli'"
+
+    # Block XSS patterns
+    - |
+      SecRule ARGS|REQUEST_BODY|REQUEST_URI "@rx <script.*?>.*?</script>" \
+        "id:100002,\
+        phase:2,\
+        block,\
+        msg:'XSS Attack Detected',\
+        severity:'CRITICAL',\
+        tag:'attack-xss'"
+
+    # Block path traversal
+    - |
+      SecRule REQUEST_URI "@contains ../" \
+        "id:100003,\
+        phase:1,\
+        block,\
+        msg:'Path Traversal Attack Detected',\
+        severity:'CRITICAL',\
+        tag:'attack-lfi'"
+
+    # Block command injection
+    - |
+      SecRule ARGS|REQUEST_BODY "@rx (;|\||&&|\$\(|\`)" \
+        "id:100004,\
+        phase:2,\
+        block,\
+        msg:'Command Injection Attack Detected',\
+        severity:'CRITICAL',\
+        tag:'attack-rce'"
+
+    # Block bad user agents (scanners, etc)
+    - |
+      SecRule REQUEST_HEADERS:User-Agent "@rx (scanner|nikto|sqlmap|havij|nmap)" \
+        "id:100005,\
+        phase:1,\
+        block,\
+        msg:'Malicious User Agent Detected',\
+        severity:'WARNING',\
+        tag:'scanner'"
+
+# Body inspection settings
+body_inspection:
+  max_request_body_size: 1048576    # 1MB
+  request_body_buffer_limit: 131072  # 128KB
+  inspect_request_content_types:
+    - "application/x-www-form-urlencoded"
+    - "application/json"
+    - "text/plain"
+    - "multipart/form-data"
+    - "application/xml"
+    - "text/xml"
+
+# Audit logging
+audit:
+  enabled: true
+  log_dir: /var/log/sentinel-waf
+  log_relevant: true
+  format: json
+  include:
+    - request_headers
+    - request_body
+    - response_headers
+    - rule_matches
+
+# WAF exclusions
+exclusions:
+  # Health check endpoints bypass WAF
+  - name: health-check
+    enabled: true
+    bypass_waf: true
+    conditions:
+      - type: path
+        pattern: "/health"
+        regex: false
+      - type: path
+        pattern: "/ready"
+        regex: false
+      - type: path
+        pattern: "/status/"
+        regex: true
+
+  # Prometheus metrics endpoint
+  - name: metrics
+    enabled: true
+    bypass_waf: true
+    conditions:
+      - type: path
+        pattern: "/metrics"
+        regex: false
+
+  # Test bypass header (for integration tests)
+  - name: test-bypass
+    enabled: true
+    bypass_waf: true
+    conditions:
+      - type: header
+        name: X-WAF-Bypass
+        value: test-secret-key
+        regex: false
+
+# Logging
+logging:
+  level: debug
+  format: json

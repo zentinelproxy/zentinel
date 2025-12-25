@@ -1,0 +1,86 @@
+# Rate Limit Agent Configuration for Docker Environment
+
+server:
+  socket_path: /var/run/sentinel/ratelimit.sock
+  socket_permissions: 0666
+  max_connections: 100
+
+metrics:
+  enabled: true
+  port: 9092
+  bind_address: "0.0.0.0"
+  path: "/metrics"
+
+# Default rate limiting configuration
+defaults:
+  requests_per_second: 10
+  burst_size: 20
+  key_type: client_ip
+
+# Per-route rate limit rules
+rules:
+  # Strict limit for API routes
+  - name: api
+    match:
+      path_prefix: /api/
+    limit:
+      requests_per_second: 50
+      burst_size: 100
+      key_type: client_ip
+    response:
+      status_code: 429
+      headers:
+        X-RateLimit-Limit: "50"
+        Retry-After: "1"
+
+  # Very strict limit for auth endpoints
+  - name: auth
+    match:
+      path_prefix: /api/auth/
+    limit:
+      requests_per_second: 5
+      burst_size: 10
+      key_type: client_ip
+    response:
+      status_code: 429
+      headers:
+        X-RateLimit-Limit: "5"
+        Retry-After: "5"
+
+  # Moderate limit for general traffic
+  - name: default
+    match:
+      path_prefix: /
+    limit:
+      requests_per_second: 100
+      burst_size: 200
+      key_type: client_ip
+
+# Rate limit by different keys
+key_extractors:
+  - name: client_ip
+    type: header
+    header_name: X-Forwarded-For
+    fallback: remote_addr
+
+  - name: api_key
+    type: header
+    header_name: X-API-Key
+    fallback: client_ip
+
+  - name: user_id
+    type: header
+    header_name: X-User-ID
+    fallback: client_ip
+
+# Circuit breaker for the rate limit store
+circuit_breaker:
+  enabled: true
+  failure_threshold: 5
+  success_threshold: 2
+  timeout_seconds: 30
+
+# Logging
+logging:
+  level: debug
+  format: json

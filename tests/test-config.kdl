@@ -1,0 +1,79 @@
+// Minimal test configuration for local testing
+
+server {
+    worker-threads 2
+    max-connections 1000
+    graceful-shutdown-timeout-secs 5
+}
+
+listeners {
+    listener "http" {
+        address "127.0.0.1:18080"
+        protocol "http"
+        request-timeout-secs 30
+    }
+}
+
+routes {
+    route "echo-test" {
+        priority "high"
+        matches {
+            path-prefix "/echo/"
+        }
+        upstream "test-backend"
+        agents ["echo-agent"]
+        policies {
+            failure-mode "open"
+        }
+    }
+
+    route "default" {
+        priority "low"
+        matches {
+            path-prefix "/"
+        }
+        upstream "test-backend"
+    }
+}
+
+upstreams {
+    upstream "test-backend" {
+        targets {
+            target {
+                address "httpbin.org:80"
+                weight 1
+            }
+        }
+        load-balancing "round_robin"
+    }
+}
+
+agents {
+    agent "echo-agent" {
+        type "custom"
+        transport "unix_socket" {
+            path "/tmp/sentinel-test-echo.sock"
+        }
+        events ["request_headers"]
+        timeout-ms 100
+        failure-mode "open"
+    }
+}
+
+limits {
+    max-header-count 100
+    max-header-size-bytes 8192
+    max-body-size-bytes 1048576
+}
+
+observability {
+    metrics {
+        enabled true
+        address "127.0.0.1:19090"
+        path "/metrics"
+    }
+    logging {
+        level "debug"
+        format "json"
+    }
+}

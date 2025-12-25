@@ -1,0 +1,60 @@
+# Prometheus Configuration for Sentinel Monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers: []
+
+rule_files: []
+
+scrape_configs:
+  # Sentinel Proxy metrics
+  - job_name: 'sentinel-proxy'
+    static_configs:
+      - targets: ['proxy:9090']
+    metrics_path: /metrics
+    scrape_interval: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'sentinel-proxy'
+
+  # Rate Limit Agent metrics
+  - job_name: 'sentinel-ratelimit'
+    static_configs:
+      - targets: ['ratelimit:9092']
+    metrics_path: /metrics
+    scrape_interval: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'ratelimit-agent'
+
+  # WAF Agent metrics
+  - job_name: 'sentinel-waf'
+    static_configs:
+      - targets: ['waf:9094']
+    metrics_path: /metrics
+    scrape_interval: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'waf-agent'
+
+  # Backend service (httpbin) - if it exposes metrics
+  - job_name: 'backend'
+    static_configs:
+      - targets: ['backend:80']
+    metrics_path: /status/200
+    scrape_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'backend'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

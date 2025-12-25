@@ -1044,9 +1044,12 @@ fn main() -> Result<()> {
     // Parse command-line options
     let opt = Opt::parse_args();
 
-    // Get config path from environment or use default
-    let config_path =
-        std::env::var("SENTINEL_CONFIG").unwrap_or_else(|_| "config/sentinel.kdl".to_string());
+    // Get config path with priority: -c flag > SENTINEL_CONFIG env > default
+    let config_path = opt
+        .conf
+        .clone()
+        .or_else(|| std::env::var("SENTINEL_CONFIG").ok())
+        .unwrap_or_else(|| "config/sentinel.kdl".to_string());
 
     info!("Loading configuration from: {}", config_path);
 
@@ -1059,8 +1062,10 @@ fn main() -> Result<()> {
     // Get initial config for server setup
     let config = proxy.config_manager.current();
 
-    // Create Pingora server
-    let mut server = Server::new(Some(opt))?;
+    // Create Pingora server - clear conf since we use our own config format
+    let mut pingora_opt = opt;
+    pingora_opt.conf = None;
+    let mut server = Server::new(Some(pingora_opt))?;
     server.bootstrap();
 
     // Create proxy service
