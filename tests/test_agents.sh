@@ -199,12 +199,12 @@ EOF
 start_echo_agent() {
     log_info "Starting echo agent..."
 
-    if [[ ! -f "target/release/echo-agent" ]]; then
+    if [[ ! -f "target/release/sentinel-echo-agent" ]]; then
         log_failure "Echo agent binary not found"
         return 1
     fi
 
-    RUST_LOG=debug ./target/release/echo-agent \
+    RUST_LOG=debug ./target/release/sentinel-echo-agent \
         --socket "$ECHO_SOCKET" \
         --prefix "X-Test-" \
         --verbose \
@@ -232,12 +232,12 @@ start_echo_agent() {
 start_ratelimit_agent() {
     log_info "Starting rate limit agent..."
 
-    if [[ ! -f "target/release/ratelimit-agent" ]]; then
+    if [[ ! -f "target/release/sentinel-ratelimit-agent" ]]; then
         log_failure "Rate limit agent binary not found"
         return 1
     fi
 
-    RUST_LOG=debug ./target/release/ratelimit-agent \
+    RUST_LOG=debug ./target/release/sentinel-ratelimit-agent \
         --socket "$RATELIMIT_SOCKET" \
         --default-rps 5 \
         --default-burst 10 \
@@ -265,13 +265,13 @@ start_ratelimit_agent() {
 start_proxy() {
     log_info "Starting Sentinel proxy..."
 
-    if [[ ! -f "target/release/sentinel-proxy" ]]; then
+    if [[ ! -f "target/release/sentinel" ]]; then
         log_failure "Proxy binary not found"
         return 1
     fi
 
     RUST_LOG=debug SENTINEL_CONFIG="$PROXY_CONFIG" \
-        ./target/release/sentinel-proxy \
+        ./target/release/sentinel \
         > "$TEST_DIR/proxy.log" 2>&1 &
 
     PROXY_PID=$!

@@ -37,16 +37,18 @@ SERVICE_USER="sentinel"
 SERVICE_GROUP="sentinel"
 
 # Binary names
-PROXY_BIN="sentinel-proxy"
-ECHO_AGENT_BIN="echo-agent"
-RATELIMIT_AGENT_BIN="ratelimit-agent"
-DENYLIST_AGENT_BIN="denylist-agent"
+PROXY_BIN="sentinel"
+ECHO_AGENT_BIN="sentinel-echo-agent"
+RATELIMIT_AGENT_BIN="sentinel-ratelimit-agent"
+DENYLIST_AGENT_BIN="sentinel-denylist-agent"
+WAF_AGENT_BIN="sentinel-waf-agent"
 
 # Service names
 PROXY_SERVICE="sentinel.service"
 ECHO_SERVICE="sentinel-echo-agent.service"
 RATELIMIT_SERVICE="sentinel-ratelimit-agent.service"
 DENYLIST_SERVICE="sentinel-denylist-agent.service"
+WAF_SERVICE="sentinel-waf-agent.service"
 
 # Logging functions
 log_info() {
@@ -388,6 +390,7 @@ uninstall() {
     rm -f "$INSTALL_PREFIX/bin/$ECHO_AGENT_BIN"
     rm -f "$INSTALL_PREFIX/bin/$RATELIMIT_AGENT_BIN"
     rm -f "$INSTALL_PREFIX/bin/$DENYLIST_AGENT_BIN"
+    rm -f "$INSTALL_PREFIX/bin/$WAF_AGENT_BIN"
 
     # Optional: Remove data (commented by default for safety)
     # rm -rf "$CONFIG_DIR"

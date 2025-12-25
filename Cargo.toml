@@ -17,7 +17,8 @@ edition = "2021"
 authors = ["Sentinel Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/raskell-io/sentinel"
-rust-version = "1.92"
+homepage = "https://github.com/raskell-io/sentinel"
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Core dependencies

@@ -7,9 +7,9 @@ set -euo pipefail
 
 # Configuration
 NAMESPACE="${NAMESPACE:-sentinel}"
-SERVICE_NAME="${SERVICE_NAME:-sentinel-proxy}"
-BLUE_DEPLOYMENT="${BLUE_DEPLOYMENT:-sentinel-proxy-blue}"
-GREEN_DEPLOYMENT="${GREEN_DEPLOYMENT:-sentinel-proxy-green}"
+SERVICE_NAME="${SERVICE_NAME:-sentinel}"
+BLUE_DEPLOYMENT="${BLUE_DEPLOYMENT:-sentinel-blue}"
+GREEN_DEPLOYMENT="${GREEN_DEPLOYMENT:-sentinel-green}"
 IMAGE="${IMAGE:-sentinel/proxy:latest}"
 HEALTH_CHECK_RETRIES="${HEALTH_CHECK_RETRIES:-30}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-10}"
@@ -140,18 +140,18 @@ metadata:
   name: $target_deployment
   namespace: $NAMESPACE
   labels:
-    app: sentinel-proxy
+    app: sentinel
     deployment: $target_color
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: sentinel-proxy
+      app: sentinel
       deployment: $target_color
   template:
     metadata:
       labels:
-        app: sentinel-proxy
+        app: sentinel
         deployment: $target_color
       annotations:
         prometheus.io/scrape: "true"
@@ -173,7 +173,7 @@ spec:
         - name: DEPLOYMENT_COLOR
           value: $target_color
         - name: RUST_LOG
-          value: info,sentinel_proxy=debug
+          value: info,sentinel=debug
         livenessProbe:
           httpGet:
             path: /health
@@ -271,11 +271,11 @@ smoke_test() {
 apiVersion: v1
 kind: Service
 metadata:
-  name: sentinel-proxy-test
+  name: sentinel-test
   namespace: $NAMESPACE
 spec:
   selector:
-    app: sentinel-proxy
+    app: sentinel
     deployment: $color
   ports:
   - name: http
@@ -328,7 +328,7 @@ EOF
 
     # Cleanup
     kill $port_forward_pid 2>/dev/null || true
-    kubectl delete service sentinel-proxy-test -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete service sentinel-test -n "$NAMESPACE" 2>/dev/null || true
 
     if [[ "$test_passed" == "true" ]]; then
         log_success "All smoke tests passed"

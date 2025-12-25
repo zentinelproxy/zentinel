@@ -5,7 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+description = "Common utilities and types for Sentinel reverse proxy"
+keywords = ["proxy", "reverse-proxy", "utilities"]
+categories = ["network-programming"]
 
 [dependencies]
 # Logging and tracing

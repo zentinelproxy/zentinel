@@ -62,7 +62,7 @@ RUN find . -name "main.rs" -exec touch {} \; && \
 
 # Build release binaries with optimizations
 RUN cargo build --release --workspace && \
-    strip /app/target/release/sentinel-proxy && \
+    strip /app/target/release/sentinel && \
     strip /app/target/release/sentinel-echo-agent && \
     strip /app/target/release/sentinel-ratelimit-agent && \
     strip /app/target/release/sentinel-denylist-agent && \
@@ -105,7 +105,7 @@ RUN mkdir -p \
 FROM runtime-base AS proxy
 
 # Copy proxy binary
-COPY --from=builder /app/target/release/sentinel-proxy /usr/local/bin/
+COPY --from=builder /app/target/release/sentinel /usr/local/bin/
 
 # Copy default configuration
 COPY config/examples/basic.kdl /etc/sentinel/config.kdl.example
@@ -134,7 +134,7 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
 # Default command
-CMD ["sentinel-proxy", "-c", "/etc/sentinel/config.kdl"]
+CMD ["sentinel", "-c", "/etc/sentinel/config.kdl"]
 
 ################################################################################
 # Rate limit agent runtime stage
@@ -243,7 +243,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy all binaries
-COPY --from=builder /app/target/release/sentinel-proxy /usr/local/bin/
+COPY --from=builder /app/target/release/sentinel /usr/local/bin/
 COPY --from=builder /app/target/release/sentinel-echo-agent /usr/local/bin/
 COPY --from=builder /app/target/release/sentinel-ratelimit-agent /usr/local/bin/
 COPY --from=builder /app/target/release/sentinel-denylist-agent /usr/local/bin/
@@ -260,7 +260,7 @@ user=sentinel
 logfile=/var/log/sentinel/supervisord.log
 
 [program:proxy]
-command=/usr/local/bin/sentinel-proxy -c /etc/sentinel/config.kdl
+command=/usr/local/bin/sentinel -c /etc/sentinel/config.kdl
 user=sentinel
 autostart=true
 autorestart=true

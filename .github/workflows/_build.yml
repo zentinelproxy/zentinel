@@ -83,10 +83,11 @@ jobs:
       - name: Strip binaries (Linux)
         if: matrix.config.os == 'ubuntu-latest' && inputs.profile == 'release'
         run: |
-          strip target/release/sentinel-proxy || true
-          strip target/release/echo-agent || true
-          strip target/release/denylist-agent || true
-          strip target/release/ratelimit-agent || true
+          strip target/release/sentinel || true
+          strip target/release/sentinel-echo-agent || true
+          strip target/release/sentinel-denylist-agent || true
+          strip target/release/sentinel-ratelimit-agent || true
+          strip target/release/sentinel-waf-agent || true
 
       - name: Prepare artifacts
         if: inputs.upload-artifacts
@@ -99,10 +100,11 @@ jobs:
           fi
 
           # Copy binaries
-          cp "$BUILD_DIR/sentinel-proxy" artifacts/ 2>/dev/null || true
-          cp "$BUILD_DIR/echo-agent" artifacts/ 2>/dev/null || true
-          cp "$BUILD_DIR/denylist-agent" artifacts/ 2>/dev/null || true
-          cp "$BUILD_DIR/ratelimit-agent" artifacts/ 2>/dev/null || true
+          cp "$BUILD_DIR/sentinel" artifacts/ 2>/dev/null || true
+          cp "$BUILD_DIR/sentinel-echo-agent" artifacts/ 2>/dev/null || true
+          cp "$BUILD_DIR/sentinel-denylist-agent" artifacts/ 2>/dev/null || true
+          cp "$BUILD_DIR/sentinel-ratelimit-agent" artifacts/ 2>/dev/null || true
+          cp "$BUILD_DIR/sentinel-waf-agent" artifacts/ 2>/dev/null || true
 
           # Create version file if version provided
           if [ -n "${{ inputs.version }}" ]; then

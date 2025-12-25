@@ -9,7 +9,7 @@ SENTINEL_CONFIG = "config/sentinel.kdl"
 SENTINEL_WORKERS = "0"
 
 [tools]
-rust = "1.92.0"
+rust = "1.85.0"
 mdbook = "0.5.2"
 # These cargo tools are not recognized by mise yet, commenting out to avoid warnings
 # cargo-audit = "latest"
@@ -27,9 +27,11 @@ run = "cargo build --workspace"
 description = "Build optimized release binary"
 run = """
 cargo build --release --workspace
-strip target/release/sentinel-proxy 2>/dev/null || true
-strip target/release/echo-agent 2>/dev/null || true
-strip target/release/ratelimit-agent 2>/dev/null || true
+strip target/release/sentinel 2>/dev/null || true
+strip target/release/sentinel-echo-agent 2>/dev/null || true
+strip target/release/sentinel-ratelimit-agent 2>/dev/null || true
+strip target/release/sentinel-denylist-agent 2>/dev/null || true
+strip target/release/sentinel-waf-agent 2>/dev/null || true
 echo "Release build complete"
 """
 
@@ -37,9 +39,11 @@ echo "Release build complete"
 description = "Build and install release binaries"
 depends = ["release"]
 run = """
-sudo cp target/release/sentinel-proxy /usr/local/bin/
-sudo cp target/release/echo-agent /usr/local/bin/ 2>/dev/null || true
-sudo cp target/release/ratelimit-agent /usr/local/bin/ 2>/dev/null || true
+sudo cp target/release/sentinel /usr/local/bin/
+sudo cp target/release/sentinel-echo-agent /usr/local/bin/ 2>/dev/null || true
+sudo cp target/release/sentinel-ratelimit-agent /usr/local/bin/ 2>/dev/null || true
+sudo cp target/release/sentinel-denylist-agent /usr/local/bin/ 2>/dev/null || true
+sudo cp target/release/sentinel-waf-agent /usr/local/bin/ 2>/dev/null || true
 echo "Installation complete"
 """
 
@@ -99,12 +103,12 @@ run = "cargo machete"
 [tasks.run]
 description = "Run proxy with debug build"
 depends = ["build"]
-run = "RUST_LOG=${RUST_LOG:-debug} ./target/debug/sentinel-proxy"
+run = "RUST_LOG=${RUST_LOG:-debug} ./target/debug/sentinel"
 
 [tasks.run-release]
 description = "Run proxy with release build"
 depends = ["release"]
-run = "./target/release/sentinel-proxy"
+run = "./target/release/sentinel"
 
 [tasks.watch]
 description = "Watch for changes and rebuild"
@@ -121,11 +125,11 @@ mise run build
 
 # Start agents in background
 echo "Starting echo agent..."
-./target/debug/echo-agent --socket /tmp/sentinel-echo.sock &
+./target/debug/sentinel-echo-agent --socket /tmp/sentinel-echo.sock &
 ECHO_PID=$!
 
 echo "Starting rate limit agent..."
-./target/debug/ratelimit-agent --socket /tmp/sentinel-ratelimit.sock &
+./target/debug/sentinel-ratelimit-agent --socket /tmp/sentinel-ratelimit.sock &
 RATELIMIT_PID=$!
 
 # Trap to cleanup on exit
@@ -133,19 +137,19 @@ trap "kill $ECHO_PID $RATELIMIT_PID 2>/dev/null || true" EXIT INT TERM
 
 # Start proxy in foreground
 echo "Starting proxy..."
-RUST_LOG=debug ./target/debug/sentinel-proxy
+RUST_LOG=debug ./target/debug/sentinel
 """
 
 # Agent tasks
 [tasks.agent-echo]
 description = "Run echo agent"
 depends = ["build"]
-run = "./target/debug/echo-agent --socket /tmp/echo.sock --verbose"
+run = "./target/debug/sentinel-echo-agent --socket /tmp/echo.sock --verbose"
 
 [tasks.agent-ratelimit]
 description = "Run rate limit agent"
 depends = ["build"]
-run = "./target/debug/ratelimit-agent --socket /tmp/ratelimit.sock --default-rps 100"
+run = "./target/debug/sentinel-ratelimit-agent --socket /tmp/ratelimit.sock --default-rps 100"
 
 [tasks.agent-test]
 description = "Test agent communication"
@@ -178,9 +182,11 @@ echo "Clean complete"
 description = "Deep clean including installed binaries"
 depends = ["clean"]
 run = """
-sudo rm -f /usr/local/bin/sentinel-proxy
-sudo rm -f /usr/local/bin/echo-agent
-sudo rm -f /usr/local/bin/ratelimit-agent
+sudo rm -f /usr/local/bin/sentinel
+sudo rm -f /usr/local/bin/sentinel-echo-agent
+sudo rm -f /usr/local/bin/sentinel-ratelimit-agent
+sudo rm -f /usr/local/bin/sentinel-denylist-agent
+sudo rm -f /usr/local/bin/sentinel-waf-agent
 echo "Deep clean complete"
 """
 
@@ -237,7 +243,7 @@ systemctl status sentinel-ratelimit-agent.service --no-pager || true
 # Configuration tasks
 [tasks.config-validate]
 description = "Validate configuration"
-run = "./target/release/sentinel-proxy --validate --config ${SENTINEL_CONFIG}"
+run = "./target/release/sentinel --validate --config ${SENTINEL_CONFIG}"
 
 [tasks.config-reload]
 description = "Reload configuration (hot reload)"
@@ -295,14 +301,14 @@ echo "Example configuration created: config/example.kdl"
 description = "Run with profiling"
 depends = ["release"]
 run = """
-RUST_LOG=debug perf record -g ./target/release/sentinel-proxy
+RUST_LOG=debug perf record -g ./target/release/sentinel
 perf report
 """
 
 [tasks.flamegraph]
 description = "Generate flamegraph"
 run = """
-cargo flamegraph --bin sentinel-proxy -- --help
+cargo flamegraph --bin sentinel -- --help
 echo "Flamegraph saved to flamegraph.svg"
 """
 
@@ -320,7 +326,7 @@ description = "Show version information"
 run = """
 echo "Sentinel Version Information:"
 echo "=============================="
-./target/release/sentinel-proxy --version 2>/dev/null || echo "Not built yet"
+./target/release/sentinel --version 2>/dev/null || echo "Not built yet"
 echo ""
 echo "Git commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 echo "Build time: $(date)"
@@ -338,9 +344,9 @@ echo "Dependencies:"
 cargo tree | head -20
 echo ""
 echo "Binary sizes (if built):"
-ls -lh target/release/sentinel-proxy 2>/dev/null || echo "Not built yet"
-ls -lh target/release/echo-agent 2>/dev/null || echo "Not built yet"
-ls -lh target/release/ratelimit-agent 2>/dev/null || echo "Not built yet"
+ls -lh target/release/sentinel 2>/dev/null || echo "Not built yet"
+ls -lh target/release/sentinel-echo-agent 2>/dev/null || echo "Not built yet"
+ls -lh target/release/sentinel-ratelimit-agent 2>/dev/null || echo "Not built yet"
 """
 
 [tasks.ci]

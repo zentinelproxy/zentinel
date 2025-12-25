@@ -5,15 +5,19 @@ edition = "2021"
 authors = ["Sentinel Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/raskell-io/sentinel"
+homepage = "https://github.com/raskell-io/sentinel"
+description = "Rate limiting agent for Sentinel reverse proxy - token bucket rate limiting"
+keywords = ["proxy", "reverse-proxy", "agent", "ratelimit", "rate-limiting"]
+categories = ["network-programming"]
 
 [[bin]]
-name = "ratelimit-agent"
+name = "sentinel-ratelimit-agent"
 path = "src/main.rs"
 
 [dependencies]
 # Local dependencies
-sentinel-agent-protocol = { path = "../../crates/agent-protocol" }
-sentinel-common = { path = "../../crates/common" }
+sentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.1.0" }
+sentinel-common = { path = "../../crates/common", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }

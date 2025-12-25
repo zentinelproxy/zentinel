@@ -5,11 +5,15 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+description = "Configuration loading and validation for Sentinel reverse proxy"
+keywords = ["proxy", "reverse-proxy", "configuration", "kdl", "toml"]
+categories = ["config", "network-programming"]
 
 [dependencies]
 # Local crates
-sentinel-common = { path = "../common" }
+sentinel-common = { path = "../common", version = "0.1.0" }
 
 # Configuration formats
 kdl = { workspace = true }

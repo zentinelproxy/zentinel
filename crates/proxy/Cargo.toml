@@ -1,11 +1,20 @@
 [package]
-name = "sentinel-proxy"
+name = "sentinel"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+description = "A security-first reverse proxy built on Pingora with sleepable ops at the edge"
+keywords = ["proxy", "reverse-proxy", "http", "security", "pingora"]
+categories = ["network-programming", "web-programming::http-server"]
+readme = "../../README.md"
+
+[[bin]]
+name = "sentinel"
+path = "src/main.rs"
 
 [dependencies]
 # Pingora core
@@ -17,9 +26,9 @@ pingora-load-balancing = { workspace = true }
 pingora-timeout = { workspace = true }
 
 # Local crates
-sentinel-config = { path = "../config" }
-sentinel-common = { path = "../common" }
-sentinel-agent-protocol = { path = "../agent-protocol" }
+sentinel-config = { path = "../config", version = "0.1.0" }
+sentinel-common = { path = "../common", version = "0.1.0" }
+sentinel-agent-protocol = { path = "../agent-protocol", version = "0.1.0" }
 
 # Async runtime
 tokio = { workspace = true }

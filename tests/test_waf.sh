@@ -414,7 +414,7 @@ MOCK_EOF
 start_proxy() {
     echo -e "${BLUE}Starting Sentinel proxy...${NC}"
 
-    target/release/sentinel-proxy -c /tmp/sentinel-test-config.kdl &
+    target/release/sentinel -c /tmp/sentinel-test-config.kdl &
     PROXY_PID=$!
 
     wait_for_port $PROXY_PORT || return 1

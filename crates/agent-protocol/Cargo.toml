@@ -5,11 +5,15 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+description = "Agent protocol and IPC for Sentinel reverse proxy external processors"
+keywords = ["proxy", "reverse-proxy", "agent", "protocol", "ipc"]
+categories = ["network-programming"]
 
 [dependencies]
 # Local crates
-sentinel-common = { path = "../common" }
+sentinel-common = { path = "../common", version = "0.1.0" }
 
 # Protocol and serialization
 prost = { workspace = true }
