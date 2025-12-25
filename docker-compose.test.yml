@@ -1,0 +1,141 @@
+# Docker Compose Override for Testing Scenarios
+# Usage: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+#
+# This file adds test-specific configurations and additional test services
+
+version: '3.8'
+
+services:
+  # Override proxy with test-specific settings
+  proxy:
+    environment:
+      RUST_LOG: debug,sentinel_proxy=trace
+      SENTINEL_CONFIG: /etc/sentinel/config.kdl
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # Add auth agent for testing
+  auth:
+    build:
+      context: .
+      target: runtime-base
+    container_name: sentinel-auth-test
+    command: >
+      sh -c "
+        echo 'Mock auth agent - echoes allow for all requests'
+        while true; do sleep 3600; done
+      "
+    volumes:
+      - agent-sockets:/var/run/sentinel
+    networks:
+      - sentinel
+    restart: "no"
+
+  # Add denylist agent for testing
+  denylist:
+    build:
+      context: .
+      target: runtime-base
+    container_name: sentinel-denylist-test
+    command: >
+      sh -c "
+        echo 'Mock denylist agent'
+        while true; do sleep 3600; done
+      "
+    volumes:
+      - agent-sockets:/var/run/sentinel
+    networks:
+      - sentinel
+    restart: "no"
+
+  # Test load generator service
+  loadgen:
+    image: alpine/curl:latest
+    container_name: sentinel-loadgen
+    profiles: ["load"]
+    command: >
+      sh -c "
+        echo 'Load generator ready'
+        echo 'Run: docker exec sentinel-loadgen sh -c \"for i in \$\$(seq 1 100); do curl -s http://proxy:8080/get; done\"'
+        sleep infinity
+      "
+    networks:
+      - sentinel
+    depends_on:
+      - proxy
+
+  # Test reporter service - generates test reports
+  reporter:
+    image: alpine:latest
+    container_name: sentinel-reporter
+    profiles: ["report"]
+    volumes:
+      - ./tests:/tests:ro
+      - ./reports:/reports
+    command: >
+      sh -c "
+        apk add --no-cache curl jq bash
+        echo 'Test reporter ready'
+        sleep infinity
+      "
+    networks:
+      - sentinel
+
+  # Additional backend service for testing failover
+  backend-secondary:
+    image: kennethreitz/httpbin:latest
+    container_name: sentinel-backend-secondary
+    profiles: ["ha"]
+    networks:
+      - sentinel
+    ports:
+      - "8082:80"
+    environment:
+      GUNICORN_CMD_ARGS: "--workers=2"
+    restart: "no"
+
+  # Redis for rate limiting persistence tests
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    profiles: ["persistence"]
+    networks:
+      - sentinel
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    restart: "no"
+
+  # Mock malicious traffic generator for WAF testing
+  attacker:
+    image: alpine/curl:latest
+    container_name: sentinel-attacker
+    profiles: ["security"]
+    command: >
+      sh -c "
+        echo 'Attack simulator ready'
+        echo 'Available attacks:'
+        echo '  SQL injection: curl http://proxy:8080/protected/?id=1%27%20OR%20%271%27=%271'
+        echo '  XSS: curl -X POST http://proxy:8080/protected/ -d \"input=<script>alert(1)</script>\"'
+        echo '  Path traversal: curl http://proxy:8080/protected/../../../etc/passwd'
+        sleep infinity
+      "
+    networks:
+      - sentinel
+    depends_on:
+      - proxy
+      - waf
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  sentinel:
+    driver: bridge

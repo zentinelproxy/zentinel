@@ -1,0 +1,251 @@
+// Sentinel Proxy Configuration for Docker Environment
+// This configuration is designed for integration testing with all agents
+
+server {
+    worker-threads 2
+    max-connections 10000
+    graceful-shutdown-timeout-secs 30
+    daemon false
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+        keepalive-timeout-secs 75
+        max-concurrent-streams 100
+        default-route "fallback"
+    }
+}
+
+routes {
+    // API route - uses auth + rate limiting agents
+    route "api" {
+        priority "high"
+
+        matches {
+            path-prefix "/api/"
+        }
+
+        upstream "backend"
+        agents ["echo-agent" "ratelimit-agent"]
+
+        policies {
+            timeout-secs 30
+            max-body-size "10MB"
+            failure-mode "open"
+        }
+    }
+
+    // Protected route - uses WAF agent
+    route "protected" {
+        priority "high"
+
+        matches {
+            path-prefix "/protected/"
+        }
+
+        upstream "backend"
+        agents ["waf-agent"]
+        waf-enabled true
+
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+
+    // Rate limited route - just rate limiting
+    route "limited" {
+        priority "high"
+
+        matches {
+            path-prefix "/limited/"
+        }
+
+        upstream "backend"
+        agents ["ratelimit-agent"]
+
+        policies {
+            timeout-secs 30
+            failure-mode "closed"
+        }
+    }
+
+    // Echo test route - uses echo agent
+    route "echo-test" {
+        priority "high"
+
+        matches {
+            path-prefix "/echo/"
+        }
+
+        upstream "backend"
+        agents ["echo-agent"]
+
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+
+    // Multi-agent route - chains multiple agents
+    route "multi-agent" {
+        priority "high"
+
+        matches {
+            path-prefix "/multi/"
+        }
+
+        upstream "backend"
+        agents ["echo-agent" "ratelimit-agent" "waf-agent"]
+        waf-enabled true
+
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+
+    // Health check endpoint
+    route "health" {
+        priority "high"
+
+        matches {
+            path "/health"
+            path "/ready"
+        }
+
+        upstream "backend"
+
+        policies {
+            timeout-secs 5
+            failure-mode "open"
+        }
+    }
+
+    // Fallback route (catches all)
+    route "fallback" {
+        priority "low"
+
+        matches {
+            path-prefix "/"
+        }
+
+        upstream "backend"
+
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+}
+
+upstreams {
+    upstream "backend" {
+        targets {
+            target {
+                address "backend:80"
+                weight 1
+            }
+        }
+
+        load-balancing "round_robin"
+
+        health-check {
+            type "http" {
+                path "/status/200"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+
+        connection-pool {
+            max-connections 100
+            max-idle 20
+            idle-timeout-secs 60
+        }
+
+        timeouts {
+            connect-secs 10
+            request-secs 30
+            read-secs 30
+            write-secs 30
+        }
+    }
+}
+
+agents {
+    agent "echo-agent" {
+        type "custom"
+        transport "unix_socket" {
+            path "/var/run/sentinel/echo.sock"
+        }
+        events ["request_headers" "response_headers"]
+        timeout-ms 100
+        failure-mode "open"
+    }
+
+    agent "ratelimit-agent" {
+        type "rate_limit"
+        transport "unix_socket" {
+            path "/var/run/sentinel/ratelimit.sock"
+        }
+        events ["request_headers"]
+        timeout-ms 100
+        failure-mode "open"
+
+        circuit-breaker {
+            failure-threshold 5
+            success-threshold 2
+            timeout-seconds 30
+            half-open-max-requests 3
+        }
+    }
+
+    agent "waf-agent" {
+        type "waf"
+        transport "unix_socket" {
+            path "/var/run/sentinel/waf.sock"
+        }
+        events ["request_headers" "request_body"]
+        timeout-ms 200
+        failure-mode "open"
+        max-request-body-bytes 1048576
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
+    max-connections-per-client 100
+    max-in-flight-requests 10000
+    max-agent-queue-depth 100
+}
+
+observability {
+    metrics {
+        enabled true
+        address "0.0.0.0:9090"
+        path "/metrics"
+    }
+
+    logging {
+        level "debug"
+        format "json"
+        timestamps true
+    }
+
+    tracing {
+        backend "otlp" {
+            endpoint "http://jaeger:4317"
+        }
+        sampling-rate 1.0
+        service-name "sentinel-proxy"
+    }
+}

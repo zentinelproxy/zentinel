@@ -1,0 +1,99 @@
+{
+  "server": {
+    "worker_threads": 2,
+    "max_connections": 1000,
+    "graceful_shutdown_timeout_secs": 5,
+    "daemon": false
+  },
+  "listeners": [
+    {
+      "id": "http",
+      "address": "127.0.0.1:18080",
+      "protocol": "http",
+      "request_timeout_secs": 30,
+      "keepalive_timeout_secs": 75,
+      "max_concurrent_streams": 100
+    }
+  ],
+  "routes": [
+    {
+      "id": "echo-test",
+      "priority": "high",
+      "matches": [
+        { "PathPrefix": "/echo/" }
+      ],
+      "upstream": "test-backend",
+      "service_type": "web",
+      "agents": ["echo-agent"],
+      "policies": {
+        "failure_mode": "open"
+      },
+      "waf_enabled": false
+    },
+    {
+      "id": "default",
+      "priority": "low",
+      "matches": [
+        { "PathPrefix": "/" }
+      ],
+      "upstream": "test-backend",
+      "service_type": "web",
+      "agents": [],
+      "policies": {},
+      "waf_enabled": false
+    }
+  ],
+  "upstreams": {
+    "test-backend": {
+      "id": "test-backend",
+      "targets": [
+        {
+          "address": "httpbin.org:80",
+          "weight": 1
+        }
+      ],
+      "load_balancing": "round_robin",
+      "connection_pool": {
+        "max_connections": 100,
+        "max_idle": 20,
+        "idle_timeout_secs": 60
+      },
+      "timeouts": {
+        "connect_secs": 10,
+        "request_secs": 30,
+        "read_secs": 30,
+        "write_secs": 30
+      }
+    }
+  },
+  "agents": [
+    {
+      "id": "echo-agent",
+      "agent_type": "custom",
+      "transport": {
+        "UnixSocket": {
+          "path": "/tmp/sentinel-test-echo.sock"
+        }
+      },
+      "events": ["request_headers"],
+      "timeout_ms": 100,
+      "failure_mode": "open"
+    }
+  ],
+  "limits": {
+    "max_header_count": 100,
+    "max_header_size_bytes": 8192,
+    "max_body_size_bytes": 1048576
+  },
+  "observability": {
+    "metrics": {
+      "enabled": true,
+      "address": "127.0.0.1:19090",
+      "path": "/metrics"
+    },
+    "logging": {
+      "level": "debug",
+      "format": "json"
+    }
+  }
+}

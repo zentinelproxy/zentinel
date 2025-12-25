@@ -1,0 +1,77 @@
+[server]
+worker_threads = 2
+max_connections = 1000
+graceful_shutdown_timeout_secs = 5
+daemon = false
+
+[[listeners]]
+id = "http"
+address = "127.0.0.1:18080"
+protocol = "http"
+request_timeout_secs = 30
+keepalive_timeout_secs = 75
+max_concurrent_streams = 100
+
+[[routes]]
+id = "default"
+priority = "low"
+upstream = "test-backend"
+service_type = "web"
+agents = []
+waf_enabled = false
+
+[[routes.matches]]
+path_prefix = "/"
+
+[routes.policies]
+
+[upstreams.test-backend]
+id = "test-backend"
+load_balancing = "round_robin"
+
+[[upstreams.test-backend.targets]]
+address = "httpbin.org:80"
+weight = 1
+
+[upstreams.test-backend.connection_pool]
+max_connections = 100
+max_idle = 20
+idle_timeout_secs = 60
+
+[upstreams.test-backend.timeouts]
+connect_secs = 10
+request_secs = 30
+read_secs = 30
+write_secs = 30
+
+[limits]
+max_header_count = 100
+max_header_size_bytes = 8192
+max_header_name_bytes = 256
+max_header_value_bytes = 4096
+max_body_size_bytes = 1048576
+max_body_buffer_bytes = 1048576
+max_body_inspection_bytes = 1048576
+max_decompression_ratio = 100.0
+max_decompressed_size_bytes = 104857600
+max_connections_per_client = 100
+max_connections_per_route = 1000
+max_total_connections = 10000
+max_idle_connections_per_upstream = 100
+max_in_flight_requests = 10000
+max_in_flight_requests_per_worker = 1000
+max_queued_requests = 1000
+max_agent_queue_depth = 100
+max_agent_body_bytes = 1048576
+max_agent_response_bytes = 10240
+max_requests_per_second_global = 50000
+max_requests_per_second_per_client = 100
+
+[observability.metrics]
+enabled = true
+address = "127.0.0.1:19090"
+path = "/metrics"
+
+[observability.logging]
+level = "debug"
+format = "json"

@@ -1,0 +1,38 @@
+# Rate Limit Agent Configuration Example
+
+server:
+  socket_path: /var/run/sentinel/ratelimit.sock
+  socket_permissions: 0666
+  max_connections: 100
+
+metrics:
+  enabled: true
+  port: 9092
+  bind_address: "0.0.0.0"
+  path: "/metrics"
+
+defaults:
+  requests_per_second: 100
+  burst_size: 200
+  key_type: client_ip
+
+rules:
+  - name: api
+    match:
+      path_prefix: /api/
+    limit:
+      requests_per_second: 50
+      burst_size: 100
+      key_type: client_ip
+
+  - name: default
+    match:
+      path_prefix: /
+    limit:
+      requests_per_second: 100
+      burst_size: 200
+      key_type: client_ip
+
+logging:
+  level: info
+  format: json
