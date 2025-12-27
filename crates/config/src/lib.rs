@@ -25,6 +25,7 @@ pub use multi_file::{ConfigDirectory, MultiFileLoader};
 
 /// Main configuration structure for Sentinel proxy
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[validate(schema(function = "validate_config_semantics"))]
 pub struct Config {
     /// Global server configuration
     pub server: ServerConfig,
@@ -36,8 +37,8 @@ pub struct Config {
     /// Route configurations
     pub routes: Vec<RouteConfig>,
 
-    /// Upstream pool configurations
-    #[validate(length(min = 1, message = "At least one upstream is required"))]
+    /// Upstream pool configurations (can be empty if all routes are static)
+    #[serde(default)]
     pub upstreams: HashMap<String, UpstreamConfig>,
 
     /// Agent configurations
@@ -1125,7 +1126,285 @@ fn default_error_format() -> ErrorFormat {
 fn validate_socket_addr(addr: &str) -> Result<(), validator::ValidationError> {
     addr.parse::<SocketAddr>()
         .map(|_| ())
-        .map_err(|_| validator::ValidationError::new("invalid_socket_address"))
+        .map_err(|_| {
+            let mut err = validator::ValidationError::new("invalid_socket_address");
+            err.message = Some(std::borrow::Cow::Owned(format!(
+                "Invalid socket address '{}'. Expected format: IP:PORT (e.g., '127.0.0.1:8080' or '0.0.0.0:443')",
+                addr
+            )));
+            err
+        })
+}
+
+/// Comprehensive semantic validation for the entire configuration
+fn validate_config_semantics(config: &Config) -> Result<(), validator::ValidationError> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // Collect route information for validation
+    let route_ids: std::collections::HashSet<_> = config.routes.iter().map(|r| r.id.as_str()).collect();
+    let upstream_ids: std::collections::HashSet<_> = config.upstreams.keys().map(|s| s.as_str()).collect();
+    let agent_ids: std::collections::HashSet<_> = config.agents.iter().map(|a| a.id.as_str()).collect();
+
+    // Determine which routes need upstreams (non-static routes)
+    let routes_needing_upstreams: Vec<_> = config
+        .routes
+        .iter()
+        .filter(|r| r.service_type != ServiceType::Static && r.upstream.is_some())
+        .collect();
+
+    let routes_missing_upstream_config: Vec<_> = config
+        .routes
+        .iter()
+        .filter(|r| {
+            r.service_type != ServiceType::Static
+            && r.upstream.is_none()
+            && r.static_files.is_none()
+        })
+        .collect();
+
+    // === Validate routes have necessary upstream references ===
+    for route in &routes_needing_upstreams {
+        if let Some(ref upstream_id) = route.upstream {
+            if !upstream_ids.contains(upstream_id.as_str()) {
+                errors.push(format!(
+                    "Route '{}' references upstream '{}' which doesn't exist.\n\
+                     Available upstreams: {}\n\
+                     Hint: Add an upstream block or fix the reference:\n\
+                     \n\
+                     upstreams {{\n\
+                         upstream \"{}\" {{\n\
+                             target \"127.0.0.1:8080\" weight=1\n\
+                         }}\n\
+                     }}",
+                    route.id,
+                    upstream_id,
+                    if upstream_ids.is_empty() { "(none defined)".to_string() } else { upstream_ids.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", ") },
+                    upstream_id
+                ));
+            }
+        }
+    }
+
+    // === Validate non-static routes without upstream or static-files ===
+    for route in &routes_missing_upstream_config {
+        errors.push(format!(
+            "Route '{}' has no upstream and no static-files configuration.\n\
+             Each route must either:\n\
+             1. Reference an upstream: upstream \"my-backend\"\n\
+             2. Serve static files: static-files {{ root \"/var/www/html\" }}\n\
+             \n\
+             Example with upstream:\n\
+             route \"{}\" {{\n\
+                 matches {{ path-prefix \"/\" }}\n\
+                 upstream \"my-backend\"\n\
+             }}\n\
+             \n\
+             Example with static files:\n\
+             route \"{}\" {{\n\
+                 matches {{ path-prefix \"/\" }}\n\
+                 static-files {{\n\
+                     root \"/var/www/html\"\n\
+                     index \"index.html\"\n\
+                 }}\n\
+             }}",
+            route.id, route.id, route.id
+        ));
+    }
+
+    // === Validate listener default-route references ===
+    for listener in &config.listeners {
+        if let Some(ref default_route) = listener.default_route {
+            if !route_ids.contains(default_route.as_str()) {
+                errors.push(format!(
+                    "Listener '{}' references default-route '{}' which doesn't exist.\n\
+                     Available routes: {}\n\
+                     Hint: Either create the route or update the listener's default-route.",
+                    listener.id,
+                    default_route,
+                    if route_ids.is_empty() { "(none defined)".to_string() } else { route_ids.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", ") }
+                ));
+            }
+        }
+    }
+
+    // === Validate agent references in routes ===
+    for route in &config.routes {
+        for agent_ref in &route.agents {
+            if !agent_ids.contains(agent_ref.as_str()) {
+                errors.push(format!(
+                    "Route '{}' references agent '{}' which doesn't exist.\n\
+                     Available agents: {}\n\
+                     Hint: Add an agent configuration or remove the reference.",
+                    route.id,
+                    agent_ref,
+                    if agent_ids.is_empty() { "(none defined)".to_string() } else { agent_ids.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", ") }
+                ));
+            }
+        }
+    }
+
+    // === Validate duplicate route IDs ===
+    let mut seen_routes = std::collections::HashSet::new();
+    for route in &config.routes {
+        if !seen_routes.insert(&route.id) {
+            errors.push(format!(
+                "Duplicate route ID '{}'. Each route must have a unique identifier.",
+                route.id
+            ));
+        }
+    }
+
+    // === Validate duplicate listener IDs ===
+    let mut seen_listeners = std::collections::HashSet::new();
+    for listener in &config.listeners {
+        if !seen_listeners.insert(&listener.id) {
+            errors.push(format!(
+                "Duplicate listener ID '{}'. Each listener must have a unique identifier.",
+                listener.id
+            ));
+        }
+    }
+
+    // === Validate duplicate listener addresses ===
+    let mut seen_addresses = std::collections::HashSet::new();
+    for listener in &config.listeners {
+        if !seen_addresses.insert(&listener.address) {
+            errors.push(format!(
+                "Duplicate listener address '{}'. Multiple listeners cannot bind to the same address.\n\
+                 Hint: Use different ports or IP addresses for each listener.",
+                listener.address
+            ));
+        }
+    }
+
+    // === Warn about orphaned upstreams (upstreams not referenced by any route) ===
+    // Note: This is a warning, not an error - logged but doesn't fail validation
+    let referenced_upstreams: std::collections::HashSet<_> = config
+        .routes
+        .iter()
+        .filter_map(|r| r.upstream.as_ref())
+        .map(|s| s.as_str())
+        .collect();
+
+    for upstream_id in &upstream_ids {
+        if !referenced_upstreams.contains(*upstream_id) {
+            // Log warning but don't add to errors
+            tracing::warn!(
+                upstream_id = %upstream_id,
+                "Upstream '{}' is defined but not referenced by any route. Consider removing it or adding a route that uses it.",
+                upstream_id
+            );
+        }
+    }
+
+    // === Validate upstream targets ===
+    for (upstream_id, upstream) in &config.upstreams {
+        if upstream.targets.is_empty() {
+            errors.push(format!(
+                "Upstream '{}' has no targets defined.\n\
+                 Each upstream must have at least one target:\n\
+                 \n\
+                 upstream \"{}\" {{\n\
+                     target \"127.0.0.1:8080\" weight=1\n\
+                     target \"127.0.0.1:8081\" weight=1\n\
+                 }}",
+                upstream_id, upstream_id
+            ));
+        }
+
+        for (i, target) in upstream.targets.iter().enumerate() {
+            if target.address.parse::<SocketAddr>().is_err() {
+                // Try parsing as host:port (could be a hostname)
+                let parts: Vec<&str> = target.address.rsplitn(2, ':').collect();
+                if parts.len() != 2 || parts[0].parse::<u16>().is_err() {
+                    errors.push(format!(
+                        "Upstream '{}' target #{} has invalid address '{}'.\n\
+                         Expected format: HOST:PORT (e.g., '127.0.0.1:8080' or 'backend.local:8080')",
+                        upstream_id,
+                        i + 1,
+                        target.address
+                    ));
+                }
+            }
+        }
+    }
+
+    // === Validate routes have at least one match condition (unless it's a catch-all) ===
+    for route in &config.routes {
+        if route.matches.is_empty() && route.priority != Priority::Low {
+            errors.push(format!(
+                "Route '{}' has no match conditions.\n\
+                 Add at least one match condition (path-prefix, path, host, etc.) or set priority to \"low\" for catch-all routes:\n\
+                 \n\
+                 matches {{\n\
+                     path-prefix \"/api\"\n\
+                 }}",
+                route.id
+            ));
+        }
+    }
+
+    // === Validate static file configurations ===
+    for route in &config.routes {
+        if let Some(ref static_config) = route.static_files {
+            if !static_config.root.exists() {
+                errors.push(format!(
+                    "Route '{}' static files root directory '{}' does not exist.\n\
+                     Create the directory or update the configuration:\n\
+                     \n\
+                     # Create the directory:\n\
+                     mkdir -p {}\n\
+                     \n\
+                     # Or update the config:\n\
+                     static-files {{\n\
+                         root \"/path/to/existing/directory\"\n\
+                     }}",
+                    route.id,
+                    static_config.root.display(),
+                    static_config.root.display()
+                ));
+            } else if !static_config.root.is_dir() {
+                errors.push(format!(
+                    "Route '{}' static files root '{}' exists but is not a directory.\n\
+                     The 'root' must be a directory path, not a file.",
+                    route.id,
+                    static_config.root.display()
+                ));
+            }
+
+            // Check if route has both upstream and static-files (ambiguous)
+            if route.upstream.is_some() {
+                errors.push(format!(
+                    "Route '{}' has both 'upstream' and 'static-files' configured.\n\
+                     A route can only serve one type of content. Choose either:\n\
+                     - Remove 'upstream' to serve static files\n\
+                     - Remove 'static-files' to proxy to an upstream backend",
+                    route.id
+                ));
+            }
+        }
+    }
+
+    // === Build final error ===
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        let mut err = validator::ValidationError::new("config_validation_failed");
+        let error_summary = if errors.len() == 1 {
+            errors[0].clone()
+        } else {
+            format!(
+                "Configuration has {} issues:\n\n{}",
+                errors.len(),
+                errors.iter().enumerate()
+                    .map(|(i, e)| format!("{}. {}", i + 1, e))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            )
+        };
+        err.message = Some(std::borrow::Cow::Owned(error_summary));
+        Err(err)
+    }
 }
 
 impl Config {
@@ -1150,12 +1429,172 @@ impl Config {
 
     /// Parse configuration from KDL format
     pub fn from_kdl(content: &str) -> Result<Self> {
-        let _doc: kdl::KdlDocument = content
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Failed to parse KDL: {}", e))?;
-        // TODO: Implement KDL to Config conversion
-        // For now, return a default config for testing
-        Ok(Self::default_for_testing())
+        let doc: kdl::KdlDocument = content.parse().map_err(|e: kdl::KdlError| {
+            // KDL 6.0 uses miette for error reporting
+            // Extract diagnostic information from the error
+            use miette::Diagnostic;
+
+            let mut error_msg = String::new();
+            error_msg.push_str("KDL configuration parse error:\n\n");
+
+            // Get related diagnostics from the error
+            let mut found_details = false;
+            if let Some(related) = e.related() {
+                for diagnostic in related {
+                    // Each diagnostic is a KdlDiagnostic with span, message, help, label
+                    let diag_str = format!("{}", diagnostic);
+                    error_msg.push_str(&format!("  {}\n", diag_str));
+                    found_details = true;
+
+                    // Try to get source location from the diagnostic's labels
+                    if let Some(labels) = diagnostic.labels() {
+                        for label in labels {
+                            let offset = label.offset();
+                            let (line, col) = offset_to_line_col(content, offset);
+                            error_msg.push_str(&format!("\n  --> at line {}, column {}\n", line, col));
+
+                            // Show the problematic line with context
+                            let lines: Vec<&str> = content.lines().collect();
+
+                            // Show context before
+                            if line > 1 {
+                                if let Some(lc) = lines.get(line.saturating_sub(2)) {
+                                    error_msg.push_str(&format!("{:>4} | {}\n", line - 1, lc));
+                                }
+                            }
+
+                            // Show the problematic line
+                            if let Some(line_content) = lines.get(line.saturating_sub(1)) {
+                                error_msg.push_str(&format!("{:>4} | {}\n", line, line_content));
+                                error_msg.push_str(&format!("     | {}^", " ".repeat(col.saturating_sub(1))));
+                                if let Some(label_msg) = label.label() {
+                                    error_msg.push_str(&format!(" {}", label_msg));
+                                }
+                                error_msg.push('\n');
+                            }
+
+                            // Show context after
+                            if let Some(lc) = lines.get(line) {
+                                error_msg.push_str(&format!("{:>4} | {}\n", line + 1, lc));
+                            }
+                        }
+                    }
+
+                    // Include help from diagnostic if available
+                    if let Some(help) = diagnostic.help() {
+                        error_msg.push_str(&format!("\n  Help: {}\n", help));
+                    }
+                }
+            }
+
+            // If no related diagnostics, show the main error
+            if !found_details {
+                error_msg.push_str(&format!("  {}\n", e));
+                error_msg.push_str("\n  Note: Check your KDL syntax. Common issues:\n");
+                error_msg.push_str("    - Unclosed strings (missing closing quote)\n");
+                error_msg.push_str("    - Unclosed blocks (missing closing brace)\n");
+                error_msg.push_str("    - Invalid node names or values\n");
+                error_msg.push_str("    - Incorrect indentation or whitespace\n");
+            }
+
+            // Include top-level help if available
+            if let Some(help) = e.help() {
+                error_msg.push_str(&format!("\n  Help: {}\n", help));
+            }
+
+            anyhow::anyhow!("{}", error_msg)
+        })?;
+
+        Self::from_kdl_document(doc)
+    }
+
+    /// Convert a parsed KDL document to Config
+    fn from_kdl_document(doc: kdl::KdlDocument) -> Result<Self> {
+        // Parse the KDL document into configuration
+        let mut server = None;
+        let mut listeners = Vec::new();
+        let mut routes = Vec::new();
+        let mut upstreams = HashMap::new();
+        let mut agents = Vec::new();
+        let mut waf = None;
+        let mut limits = None;
+        let mut observability = None;
+
+        for node in doc.nodes() {
+            match node.name().value() {
+                "server" => {
+                    server = Some(parse_server_config(node)?);
+                }
+                "listeners" => {
+                    listeners = parse_listeners(node)?;
+                }
+                "routes" => {
+                    routes = parse_routes(node)?;
+                }
+                "upstreams" => {
+                    upstreams = parse_upstreams(node)?;
+                }
+                "agents" => {
+                    agents = parse_agents(node)?;
+                }
+                "waf" => {
+                    waf = Some(parse_waf_config(node)?);
+                }
+                "limits" => {
+                    limits = Some(parse_limits_config(node)?);
+                }
+                "observability" => {
+                    observability = Some(parse_observability_config(node)?);
+                }
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "Unknown top-level configuration block: '{}'\n\
+                         Valid blocks are: server, listeners, routes, upstreams, agents, waf, limits, observability",
+                        other
+                    ));
+                }
+            }
+        }
+
+        // Validate required sections
+        let server = server.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Missing required 'server' configuration block\n\
+                 Example:\n\
+                 server {{\n\
+                     worker-threads 4\n\
+                     max-connections 10000\n\
+                 }}"
+            )
+        })?;
+
+        if listeners.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Missing required 'listeners' configuration block\n\
+                 Example:\n\
+                 listeners {{\n\
+                     listener \"http\" {{\n\
+                         address \"0.0.0.0:8080\"\n\
+                         protocol \"http\"\n\
+                     }}\n\
+                 }}"
+            ));
+        }
+
+        // Note: Semantic validation (route-upstream relationships, etc.) is handled
+        // by validate_config_semantics which runs when config.validate() is called
+
+        Ok(Config {
+            server,
+            listeners,
+            routes,
+            upstreams,
+            agents,
+            waf,
+            limits: limits.unwrap_or_default(),
+            observability: observability.unwrap_or_default(),
+            default_upstream: None,
+        })
     }
 
     /// Parse configuration from JSON format
@@ -1358,4 +1797,379 @@ impl Config {
     pub fn get_agent(&self, id: &str) -> Option<&AgentConfig> {
         self.agents.iter().find(|a| a.id == id)
     }
+}
+
+// ============================================================================
+// KDL Parsing Helper Functions
+// ============================================================================
+
+/// Convert a byte offset to line and column numbers (1-indexed)
+fn offset_to_line_col(content: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in content.chars().enumerate() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Helper to get a string entry from a KDL node
+fn get_string_entry(node: &kdl::KdlNode, name: &str) -> Option<String> {
+    node.children()
+        .and_then(|children| children.get(name))
+        .and_then(|n| n.entries().first())
+        .and_then(|e| e.value().as_string())
+        .map(|s| s.to_string())
+}
+
+/// Helper to get an integer entry from a KDL node
+fn get_int_entry(node: &kdl::KdlNode, name: &str) -> Option<i128> {
+    node.children()
+        .and_then(|children| children.get(name))
+        .and_then(|n| n.entries().first())
+        .and_then(|e| e.value().as_integer())
+}
+
+/// Helper to get a boolean entry from a KDL node
+fn get_bool_entry(node: &kdl::KdlNode, name: &str) -> Option<bool> {
+    node.children()
+        .and_then(|children| children.get(name))
+        .and_then(|n| n.entries().first())
+        .and_then(|e| e.value().as_bool())
+}
+
+/// Helper to get the first argument of a node as a string
+fn get_first_arg_string(node: &kdl::KdlNode) -> Option<String> {
+    node.entries()
+        .first()
+        .and_then(|e| e.value().as_string())
+        .map(|s| s.to_string())
+}
+
+/// Parse server configuration block
+fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
+    Ok(ServerConfig {
+        worker_threads: get_int_entry(node, "worker-threads")
+            .map(|v| v as usize)
+            .unwrap_or_else(default_worker_threads),
+        max_connections: get_int_entry(node, "max-connections")
+            .map(|v| v as usize)
+            .unwrap_or_else(default_max_connections),
+        graceful_shutdown_timeout_secs: get_int_entry(node, "graceful-shutdown-timeout-secs")
+            .map(|v| v as u64)
+            .unwrap_or_else(default_graceful_shutdown_timeout),
+        daemon: get_bool_entry(node, "daemon").unwrap_or(false),
+        pid_file: get_string_entry(node, "pid-file").map(PathBuf::from),
+        user: get_string_entry(node, "user"),
+        group: get_string_entry(node, "group"),
+        working_directory: get_string_entry(node, "working-directory").map(PathBuf::from),
+    })
+}
+
+/// Parse listeners configuration block
+fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
+    let mut listeners = Vec::new();
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() == "listener" {
+                let id = get_first_arg_string(child).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Listener requires an ID argument, e.g., listener \"http\" {{ ... }}"
+                    )
+                })?;
+
+                let address = get_string_entry(child, "address").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Listener '{}' requires an 'address' field, e.g., address \"0.0.0.0:8080\"",
+                        id
+                    )
+                })?;
+
+                let protocol_str = get_string_entry(child, "protocol").unwrap_or_else(|| "http".to_string());
+                let protocol = match protocol_str.to_lowercase().as_str() {
+                    "http" => ListenerProtocol::Http,
+                    "https" => ListenerProtocol::Https,
+                    "h2" => ListenerProtocol::Http2,
+                    "h3" => ListenerProtocol::Http3,
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "Invalid protocol '{}' for listener '{}'. Valid protocols: http, https, h2, h3",
+                            other,
+                            id
+                        ));
+                    }
+                };
+
+                listeners.push(ListenerConfig {
+                    id,
+                    address,
+                    protocol,
+                    tls: None, // TODO: Parse TLS config
+                    default_route: get_string_entry(child, "default-route"),
+                    request_timeout_secs: get_int_entry(child, "request-timeout-secs")
+                        .map(|v| v as u64)
+                        .unwrap_or_else(default_request_timeout),
+                    keepalive_timeout_secs: get_int_entry(child, "keepalive-timeout-secs")
+                        .map(|v| v as u64)
+                        .unwrap_or_else(default_keepalive_timeout),
+                    max_concurrent_streams: get_int_entry(child, "max-concurrent-streams")
+                        .map(|v| v as u32)
+                        .unwrap_or_else(default_max_concurrent_streams),
+                });
+            }
+        }
+    }
+
+    Ok(listeners)
+}
+
+/// Parse routes configuration block
+fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
+    let mut routes = Vec::new();
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() == "route" {
+                let id = get_first_arg_string(child).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Route requires an ID argument, e.g., route \"api\" {{ ... }}"
+                    )
+                })?;
+
+                // Parse matches
+                let mut matches = Vec::new();
+                if let Some(route_children) = child.children() {
+                    if let Some(matches_node) = route_children.get("matches") {
+                        if let Some(match_children) = matches_node.children() {
+                            for match_node in match_children.nodes() {
+                                match match_node.name().value() {
+                                    "path-prefix" => {
+                                        if let Some(prefix) = get_first_arg_string(match_node) {
+                                            matches.push(MatchCondition::PathPrefix(prefix));
+                                        }
+                                    }
+                                    "path" => {
+                                        if let Some(path) = get_first_arg_string(match_node) {
+                                            matches.push(MatchCondition::Path(path));
+                                        }
+                                    }
+                                    "host" => {
+                                        if let Some(host) = get_first_arg_string(match_node) {
+                                            matches.push(MatchCondition::Host(host));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Parse priority
+                let priority_str = get_string_entry(child, "priority");
+                let priority = match priority_str.as_deref() {
+                    Some("high") => Priority::High,
+                    Some("low") => Priority::Low,
+                    _ => Priority::Normal,
+                };
+
+                // Parse upstream (can be null for static routes)
+                let upstream = if let Some(route_children) = child.children() {
+                    if let Some(upstream_node) = route_children.get("upstream") {
+                        let entry = upstream_node.entries().first();
+                        match entry.and_then(|e| e.value().as_string()) {
+                            Some(s) => Some(s.to_string()),
+                            None => {
+                                // Check if it's explicitly null
+                                if entry.map(|e| e.value().is_null()).unwrap_or(false) {
+                                    None
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Parse static-files configuration if present
+                let static_files = if let Some(route_children) = child.children() {
+                    if let Some(static_node) = route_children.get("static-files") {
+                        Some(parse_static_file_config(static_node)?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Determine service type based on config
+                let service_type = if static_files.is_some() {
+                    ServiceType::Static
+                } else {
+                    ServiceType::Web
+                };
+
+                routes.push(RouteConfig {
+                    id,
+                    priority,
+                    matches,
+                    upstream,
+                    service_type,
+                    policies: RoutePolicies::default(),
+                    agents: vec![],
+                    waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
+                    circuit_breaker: None,
+                    retry_policy: None,
+                    static_files,
+                    api_schema: None,
+                    error_pages: None,
+                });
+            }
+        }
+    }
+
+    Ok(routes)
+}
+
+/// Parse upstreams configuration block
+fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamConfig>> {
+    let mut upstreams = HashMap::new();
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() == "upstream" {
+                let id = get_first_arg_string(child).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Upstream requires an ID argument, e.g., upstream \"backend\" {{ ... }}"
+                    )
+                })?;
+
+                // Parse targets
+                let mut targets = Vec::new();
+                if let Some(upstream_children) = child.children() {
+                    for target_node in upstream_children.nodes() {
+                        if target_node.name().value() == "target" {
+                            if let Some(address) = get_first_arg_string(target_node) {
+                                // Get weight from named argument
+                                let weight = target_node
+                                    .entries()
+                                    .iter()
+                                    .find(|e| e.name().map(|n| n.value()) == Some("weight"))
+                                    .and_then(|e| e.value().as_integer())
+                                    .map(|v| v as u32)
+                                    .unwrap_or(1);
+
+                                targets.push(UpstreamTarget {
+                                    address,
+                                    weight,
+                                    max_requests: None,
+                                    metadata: HashMap::new(),
+                                });
+                            }
+                        }
+                    }
+                }
+
+                if targets.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Upstream '{}' requires at least one target, e.g., target \"127.0.0.1:8081\"",
+                        id
+                    ));
+                }
+
+                upstreams.insert(
+                    id.clone(),
+                    UpstreamConfig {
+                        id,
+                        targets,
+                        load_balancing: LoadBalancingAlgorithm::RoundRobin,
+                        health_check: None,
+                        connection_pool: ConnectionPoolConfig::default(),
+                        timeouts: UpstreamTimeouts::default(),
+                        tls: None,
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(upstreams)
+}
+
+/// Parse agents configuration block
+fn parse_agents(_node: &kdl::KdlNode) -> Result<Vec<AgentConfig>> {
+    // TODO: Implement full agent parsing
+    Ok(vec![])
+}
+
+/// Parse WAF configuration block
+fn parse_waf_config(_node: &kdl::KdlNode) -> Result<WafConfig> {
+    // TODO: Implement full WAF config parsing
+    Err(anyhow::anyhow!("WAF configuration parsing not yet implemented"))
+}
+
+/// Parse limits configuration block
+fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
+    let mut limits = Limits::default();
+
+    // Override defaults with any values from the config
+    if let Some(v) = get_int_entry(node, "max-header-size") {
+        limits.max_header_size_bytes = v as usize;
+    }
+    if let Some(v) = get_int_entry(node, "max-header-count") {
+        limits.max_header_count = v as usize;
+    }
+    if let Some(v) = get_int_entry(node, "max-body-size") {
+        limits.max_body_size_bytes = v as usize;
+    }
+    if let Some(v) = get_int_entry(node, "max-connections-per-client") {
+        limits.max_connections_per_client = v as usize;
+    }
+    if let Some(v) = get_int_entry(node, "max-total-connections") {
+        limits.max_total_connections = v as usize;
+    }
+    if let Some(v) = get_int_entry(node, "max-in-flight-requests") {
+        limits.max_in_flight_requests = v as usize;
+    }
+
+    Ok(limits)
+}
+
+/// Parse observability configuration block
+fn parse_observability_config(_node: &kdl::KdlNode) -> Result<ObservabilityConfig> {
+    // TODO: Implement full observability config parsing
+    Ok(ObservabilityConfig::default())
+}
+
+/// Parse static file configuration block
+fn parse_static_file_config(node: &kdl::KdlNode) -> Result<StaticFileConfig> {
+    let root = get_string_entry(node, "root").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Static files configuration requires a 'root' directory, e.g., root \"/var/www/html\""
+        )
+    })?;
+
+    Ok(StaticFileConfig {
+        root: PathBuf::from(root),
+        index: get_string_entry(node, "index").unwrap_or_else(|| "index.html".to_string()),
+        directory_listing: get_bool_entry(node, "directory-listing").unwrap_or(false),
+        cache_control: get_string_entry(node, "cache-control")
+            .unwrap_or_else(|| "public, max-age=3600".to_string()),
+        compress: get_bool_entry(node, "compress").unwrap_or(true),
+        mime_types: HashMap::new(), // TODO: Parse custom MIME types
+        fallback: get_string_entry(node, "fallback"),
+    })
 }

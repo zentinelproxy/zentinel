@@ -493,11 +493,31 @@ impl ProxyHttp for SentinelProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<bool, Box<Error>> {
-        // Handle static file serving
-        if let Some(ref upstream) = ctx.upstream {
-            if upstream.starts_with("_static_") {
-                // Extract route ID from the static marker
-                let route_id = upstream.strip_prefix("_static_").unwrap();
+        // First, determine the route for this request (needed before upstream_peer)
+        let req_header = session.req_header();
+        let route_info = {
+            let mut headers = HashMap::new();
+            for (name, value) in req_header.headers.iter() {
+                if let Ok(value_str) = value.to_str() {
+                    headers.insert(name.as_str().to_lowercase(), value_str.to_string());
+                }
+            }
+            let host = headers.get("host").cloned().unwrap_or_default();
+            let request_info = RequestInfo {
+                path: req_header.uri.path().to_string(),
+                method: req_header.method.as_str().to_string(),
+                host,
+                headers,
+                query_params: HashMap::new(),
+            };
+            self.route_matcher.read().await.match_request(&request_info)
+        };
+
+        // Check if this is a static file route
+        if let Some(route_match) = route_info {
+            if route_match.config.service_type == sentinel_config::ServiceType::Static {
+                ctx.route_id = Some(route_match.route_id.to_string());
+                let route_id = route_match.route_id.as_str();
 
                 if let Some(static_server) = self.static_servers.read().await.get(route_id) {
                     // Clone the path to avoid borrow issues with session
