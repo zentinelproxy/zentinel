@@ -26,9 +26,9 @@ pingora-load-balancing = { workspace = true }
 pingora-timeout = { workspace = true }
 
 # Local crates
-sentinel-config = { path = "../config", version = "0.1.0" }
-sentinel-common = { path = "../common", version = "0.1.0" }
-sentinel-agent-protocol = { path = "../agent-protocol", version = "0.1.0" }
+sentinel-config = { path = "../config", version = "0.1.1" }
+sentinel-common = { path = "../common", version = "0.1.1" }
+sentinel-agent-protocol = { path = "../agent-protocol", version = "0.1.1" }
 
 # Async runtime
 tokio = { workspace = true }

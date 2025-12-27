@@ -13,7 +13,7 @@ categories = ["config", "network-programming"]
 
 [dependencies]
 # Local crates
-sentinel-common = { path = "../common", version = "0.1.0" }
+sentinel-common = { path = "../common", version = "0.1.1" }
 
 # Configuration formats
 kdl = { workspace = true }
