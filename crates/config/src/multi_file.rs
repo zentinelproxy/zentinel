@@ -11,6 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
+use sentinel_common::TraceIdFormat;
+
 use crate::{
     AgentConfig, Config, Limits, ListenerConfig, ObservabilityConfig, RouteConfig, ServerConfig,
     UpstreamConfig, WafConfig,
@@ -497,6 +499,10 @@ fn parse_server(node: &KdlNode) -> Result<ServerConfig> {
         user: get_string_entry(node, "user"),
         group: get_string_entry(node, "group"),
         working_directory: get_string_entry(node, "working-directory").map(PathBuf::from),
+        trace_id_format: get_string_entry(node, "trace-id-format")
+            .map(|s| TraceIdFormat::from_str_loose(&s))
+            .unwrap_or_default(),
+        auto_reload: get_bool_entry(node, "auto-reload").unwrap_or(false),
     })
 }
 

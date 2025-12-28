@@ -207,6 +207,57 @@ pub enum TlsVersion {
     Tls13,
 }
 
+/// Trace ID format selection
+///
+/// Controls how trace IDs are generated for request tracing.
+///
+/// # Formats
+///
+/// - **TinyFlake** (default): 11-character Base58 encoded ID with time prefix.
+///   Operator-friendly format designed for easy copying and log correlation.
+///   Example: `k7BxR3nVp2Ym`
+///
+/// - **UUID**: Standard 36-character UUID v4 format with dashes.
+///   Guaranteed unique, widely compatible.
+///   Example: `550e8400-e29b-41d4-a716-446655440000`
+///
+/// # Configuration
+///
+/// ```kdl
+/// server {
+///     trace-id-format "tinyflake"  // or "uuid"
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceIdFormat {
+    /// TinyFlake format: 11-char Base58, time-prefixed (default)
+    #[default]
+    TinyFlake,
+
+    /// UUID v4 format: 36-char with dashes
+    Uuid,
+}
+
+impl TraceIdFormat {
+    /// Parse format from string (case-insensitive)
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "uuid" | "uuid4" | "uuidv4" => TraceIdFormat::Uuid,
+            _ => TraceIdFormat::TinyFlake, // Default to TinyFlake
+        }
+    }
+}
+
+impl fmt::Display for TraceIdFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TraceIdFormat::TinyFlake => write!(f, "tinyflake"),
+            TraceIdFormat::Uuid => write!(f, "uuid"),
+        }
+    }
+}
+
 impl fmt::Display for TlsVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

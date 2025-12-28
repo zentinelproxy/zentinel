@@ -22,8 +22,8 @@ pub struct ConfigManager {
     previous_config: Arc<RwLock<Option<Arc<Config>>>>,
     /// Configuration file path
     config_path: PathBuf,
-    /// File watcher for auto-reload
-    watcher: Option<Arc<RwLock<notify::RecommendedWatcher>>>,
+    /// File watcher for auto-reload (uses RwLock for interior mutability)
+    watcher: Arc<RwLock<Option<notify::RecommendedWatcher>>>,
     /// Reload event broadcaster
     reload_tx: broadcast::Sender<ReloadEvent>,
     /// Reload statistics
@@ -125,7 +125,7 @@ impl ConfigManager {
             current_config: Arc::new(ArcSwap::from_pointee(initial_config)),
             previous_config: Arc::new(RwLock::new(None)),
             config_path,
-            watcher: None,
+            watcher: Arc::new(RwLock::new(None)),
             reload_tx,
             stats: Arc::new(ReloadStats::default()),
             validators: Arc::new(RwLock::new(Vec::new())),
@@ -139,9 +139,17 @@ impl ConfigManager {
     }
 
     /// Start watching configuration file for changes
-    pub async fn start_watching(&mut self) -> SentinelResult<()> {
+    ///
+    /// When enabled, the proxy will automatically reload configuration
+    /// when the config file is modified.
+    pub async fn start_watching(&self) -> SentinelResult<()> {
+        // Check if already watching
+        if self.watcher.read().await.is_some() {
+            warn!("File watcher already active, skipping");
+            return Ok(());
+        }
+
         let config_path = self.config_path.clone();
-        let _reload_tx = self.reload_tx.clone();
 
         // Create file watcher
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
@@ -165,7 +173,8 @@ impl ConfigManager {
                 source: None,
             })?;
 
-        self.watcher = Some(Arc::new(RwLock::new(watcher)));
+        // Store watcher using interior mutability
+        *self.watcher.write().await = Some(watcher);
 
         // Spawn event handler task
         let manager = Arc::new(self.clone_for_task());
@@ -179,13 +188,14 @@ impl ConfigManager {
 
                     if let Err(e) = manager.reload(ReloadTrigger::FileChange).await {
                         error!("Auto-reload failed: {}", e);
+                        error!("Continuing with current configuration");
                     }
                 }
             }
         });
 
         info!(
-            "Started watching configuration file: {:?}",
+            "Auto-reload enabled: watching configuration file {:?}",
             self.config_path
         );
         Ok(())
@@ -229,9 +239,11 @@ impl ConfigManager {
             }
         };
 
-        // Validate new configuration
+        // Validate new configuration BEFORE applying
+        // This is critical - invalid configs must never be loaded
         if let Err(e) = self.validate_config(&new_config).await {
             error!("Configuration validation failed: {}", e);
+            error!("REJECTED: New configuration will NOT be applied. Continuing with current configuration.");
             self.stats
                 .failed_reloads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -244,6 +256,8 @@ impl ConfigManager {
 
             return Err(e);
         }
+
+        info!("Configuration validation passed, applying new configuration");
 
         let _ = self.reload_tx.send(ReloadEvent::Validated {
             timestamp: Instant::now(),
@@ -538,6 +552,8 @@ pub struct GracefulReloadCoordinator {
     active_requests: Arc<std::sync::atomic::AtomicUsize>,
     /// Maximum wait time for draining
     max_drain_time: Duration,
+    /// Shutdown flag
+    shutdown_requested: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl GracefulReloadCoordinator {
@@ -546,6 +562,7 @@ impl GracefulReloadCoordinator {
         Self {
             active_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             max_drain_time,
+            shutdown_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -591,6 +608,69 @@ impl GracefulReloadCoordinator {
         self.active_requests
             .load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Request shutdown
+    pub fn request_shutdown(&self) {
+        self.shutdown_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Check if shutdown was requested
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+// ============================================================================
+// Signal Manager
+// ============================================================================
+
+/// Signal type for cross-thread communication
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalType {
+    /// Reload configuration (SIGHUP)
+    Reload,
+    /// Graceful shutdown (SIGTERM/SIGINT)
+    Shutdown,
+}
+
+/// Signal manager for handling OS signals with async integration
+///
+/// Bridges thread-based signal handlers with the async runtime using channels.
+pub struct SignalManager {
+    /// Sender for signal notifications
+    tx: std::sync::mpsc::Sender<SignalType>,
+    /// Receiver for signal notifications (wrapped for async)
+    rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<SignalType>>>,
+}
+
+impl SignalManager {
+    /// Create a new signal manager
+    pub fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self {
+            tx,
+            rx: Arc::new(std::sync::Mutex::new(rx)),
+        }
+    }
+
+    /// Get a sender for use in signal handlers
+    pub fn sender(&self) -> std::sync::mpsc::Sender<SignalType> {
+        self.tx.clone()
+    }
+
+    /// Receive the next signal (blocking)
+    ///
+    /// This should be called from an async context using spawn_blocking
+    pub fn recv_blocking(&self) -> Option<SignalType> {
+        self.rx.lock().ok()?.recv().ok()
+    }
+
+    /// Try to receive a signal without blocking
+    pub fn try_recv(&self) -> Option<SignalType> {
+        self.rx.lock().ok()?.try_recv().ok()
+    }
 }
 
 #[cfg(test)]
@@ -599,21 +679,97 @@ mod tests {
     use sentinel_config::Config;
 
     #[tokio::test]
-    async fn test_config_reload() {
-        // Create test config
-        let config = Config::default_for_testing();
+    async fn test_config_reload_rejects_invalid_config() {
+        // Create valid initial config
+        let initial_config = Config::default_for_testing();
+        let initial_routes = initial_config.routes.len();
+
         let temp_dir = tempfile::tempdir().unwrap();
         let config_path = temp_dir.path().join("config.kdl");
 
-        // Write initial config
-        std::fs::write(&config_path, "test config").unwrap();
+        // Write INVALID config (not valid KDL)
+        std::fs::write(&config_path, "this is not valid KDL { {{{{ broken").unwrap();
+
+        // Create config manager with valid initial config
+        let manager = ConfigManager::new(&config_path, initial_config).await.unwrap();
+
+        // Verify initial config is loaded
+        assert_eq!(manager.current().routes.len(), initial_routes);
+
+        // Attempt reload with invalid config - should fail
+        let result = manager.reload(ReloadTrigger::Manual).await;
+        assert!(result.is_err(), "Reload should fail for invalid config");
+
+        // Verify original config is STILL loaded (not replaced)
+        assert_eq!(
+            manager.current().routes.len(),
+            initial_routes,
+            "Original config should be preserved after failed reload"
+        );
+
+        // Verify failure was recorded in stats
+        assert_eq!(
+            manager.stats().failed_reloads.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "Failed reload should be recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_config_reload_accepts_valid_config() {
+        // Create valid initial config
+        let initial_config = Config::default_for_testing();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.kdl");
+
+        // Create a static files directory for the test
+        let static_dir = temp_dir.path().join("static");
+        std::fs::create_dir_all(&static_dir).unwrap();
+
+        // Write a valid config with upstream
+        let valid_config = format!(r#"
+server {{
+    worker-threads 4
+}}
+
+listeners {{
+    listener "http" {{
+        address "0.0.0.0:8080"
+        protocol "http"
+    }}
+}}
+
+upstreams {{
+    upstream "backend" {{
+        target "127.0.0.1:3000"
+    }}
+}}
+
+routes {{
+    route "api" {{
+        priority "high"
+        matches {{
+            path-prefix "/api/"
+        }}
+        upstream "backend"
+    }}
+}}
+"#);
+        std::fs::write(&config_path, valid_config).unwrap();
 
         // Create config manager
-        let manager = ConfigManager::new(&config_path, config).await.unwrap();
+        let manager = ConfigManager::new(&config_path, initial_config).await.unwrap();
 
-        // Test reload
-        // Note: This would fail in test because we're not writing valid config
-        // This is just to test the structure
+        // Reload should succeed with valid config
+        let result = manager.reload(ReloadTrigger::Manual).await;
+        assert!(result.is_ok(), "Reload should succeed for valid config: {:?}", result.err());
+
+        // Verify success was recorded
+        assert_eq!(
+            manager.stats().successful_reloads.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "Successful reload should be recorded"
+        );
     }
 
     #[tokio::test]
@@ -634,5 +790,16 @@ mod tests {
         // Test drain
         let drained = coordinator.wait_for_drain().await;
         assert!(drained);
+    }
+
+    #[tokio::test]
+    async fn test_graceful_coordinator_shutdown_flag() {
+        let coordinator = GracefulReloadCoordinator::new(Duration::from_secs(1));
+
+        assert!(!coordinator.is_shutdown_requested());
+
+        coordinator.request_shutdown();
+
+        assert!(coordinator.is_shutdown_requested());
     }
 }

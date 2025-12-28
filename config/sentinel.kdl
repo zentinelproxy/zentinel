@@ -471,11 +471,31 @@ observability {
         format "json"  // "json" or "pretty"
         timestamps #true
 
+        // Access log - all HTTP requests with trace_id for correlation
         access-log {
             enabled #true
             file "/var/log/sentinel/access.log"
-            format "combined"
+            format "json"  // "json" or "combined"
             buffer-size 8192
+            include-trace-id #true
+        }
+
+        // Error log - warnings and errors
+        error-log {
+            enabled #true
+            file "/var/log/sentinel/error.log"
+            level "warn"  // minimum level: "warn" or "error"
+            buffer-size 8192
+        }
+
+        // Audit log - security events (blocked requests, agent decisions, WAF)
+        audit-log {
+            enabled #true
+            file "/var/log/sentinel/audit.log"
+            buffer-size 8192
+            log-blocked #true
+            log-agent-decisions #true
+            log-waf-events #true
         }
     }
 

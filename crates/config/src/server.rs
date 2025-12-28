@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use validator::Validate;
 
-use sentinel_common::types::TlsVersion;
+use sentinel_common::types::{TlsVersion, TraceIdFormat};
 
 // ============================================================================
 // Server Configuration
@@ -43,6 +43,20 @@ pub struct ServerConfig {
 
     /// Working directory
     pub working_directory: Option<PathBuf>,
+
+    /// Trace ID format for request tracing
+    ///
+    /// - `tinyflake` (default): 11-char Base58, operator-friendly
+    /// - `uuid`: 36-char UUID v4, guaranteed unique
+    #[serde(default)]
+    pub trace_id_format: TraceIdFormat,
+
+    /// Enable automatic configuration reload on file changes
+    ///
+    /// When enabled, the proxy will watch the configuration file for changes
+    /// and automatically reload when modifications are detected.
+    #[serde(default)]
+    pub auto_reload: bool,
 }
 
 // ============================================================================

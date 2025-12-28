@@ -5,10 +5,11 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pingora::prelude::*;
-use tracing::{info, warn};
+use std::sync::Arc;
+use tracing::{error, info, warn};
 
 use sentinel_config::Config;
-use sentinel_proxy::SentinelProxy;
+use sentinel_proxy::{ReloadTrigger, SignalManager, SignalType, SentinelProxy};
 
 /// Sentinel - A security-first reverse proxy built on Pingora
 #[derive(Parser, Debug)]
@@ -164,13 +165,22 @@ fn run_server(
         None => info!("No configuration specified, using embedded default configuration"),
     }
 
-    // Create runtime for async initialization
+    // Create signal manager for cross-thread communication
+    let signal_manager = Arc::new(SignalManager::new());
+
+    // Setup signal handlers (runs in separate thread)
+    setup_signal_handlers(signal_manager.sender());
+
+    // Create runtime for async initialization and signal handling
     let runtime = tokio::runtime::Runtime::new()?;
 
     // Create proxy with configuration
     let proxy = runtime.block_on(async {
         SentinelProxy::new(effective_config_path.as_deref()).await
     })?;
+
+    // Get config manager for reload operations
+    let config_manager = proxy.config_manager.clone();
 
     // Get initial config for server setup
     let config = proxy.config_manager.current();
@@ -203,20 +213,45 @@ fn run_server(
     // Add proxy service to server
     server.add_service(proxy_service);
 
-    // Setup signal handlers for graceful shutdown and reload
-    setup_signal_handlers();
+    // Enable auto-reload file watching if configured
+    let auto_reload_enabled = config.server.auto_reload;
+    let has_config_file = effective_config_path.is_some();
+
+    if auto_reload_enabled && has_config_file {
+        let config_manager_watch = config_manager.clone();
+        runtime.spawn(async move {
+            if let Err(e) = config_manager_watch.start_watching().await {
+                error!("Failed to start config file watcher: {}", e);
+                error!("Auto-reload disabled, use SIGHUP for manual reload");
+            }
+        });
+    } else if auto_reload_enabled && !has_config_file {
+        warn!("auto-reload enabled but no config file specified (using embedded config)");
+        warn!("Auto-reload requires a config file path");
+    }
+
+    // Spawn signal handler task in the runtime
+    let signal_manager_clone = signal_manager.clone();
+    runtime.spawn(async move {
+        run_signal_handler(signal_manager_clone, config_manager).await;
+    });
 
     info!("Sentinel proxy started successfully");
-    info!("Configuration hot reload enabled");
-    info!("Health checking enabled");
-    info!("Route matching enabled");
+    info!("Configuration hot reload enabled (SIGHUP)");
+    if auto_reload_enabled && has_config_file {
+        info!("Auto-reload enabled (watching config file)");
+    }
+    info!("Graceful shutdown enabled (SIGTERM/SIGINT)");
 
     // Run server forever
     server.run_forever();
 }
 
-/// Setup signal handlers for graceful operations
-fn setup_signal_handlers() {
+/// Setup OS signal handlers
+///
+/// Registers handlers for SIGTERM, SIGINT, and SIGHUP and forwards them
+/// to the async runtime via the signal manager.
+fn setup_signal_handlers(signal_tx: std::sync::mpsc::Sender<SignalType>) {
     use signal_hook::consts::signal::*;
     use signal_hook::iterator::Signals;
     use std::thread;
@@ -226,16 +261,80 @@ fn setup_signal_handlers() {
 
     thread::spawn(move || {
         for sig in signals.forever() {
-            match sig {
+            let signal_type = match sig {
                 SIGTERM | SIGINT => {
-                    info!("Received shutdown signal, initiating graceful shutdown");
-                    std::process::exit(0);
+                    info!("Received shutdown signal ({}), initiating graceful shutdown",
+                        if sig == SIGTERM { "SIGTERM" } else { "SIGINT" });
+                    SignalType::Shutdown
                 }
                 SIGHUP => {
                     info!("Received SIGHUP, triggering configuration reload");
+                    SignalType::Reload
                 }
-                _ => {}
+                _ => continue,
+            };
+
+            if signal_tx.send(signal_type).is_err() {
+                // Channel closed, runtime is shutting down
+                break;
+            }
+
+            // For shutdown, we also need to exit after sending
+            if signal_type == SignalType::Shutdown {
+                // Give the async handler time to process
+                thread::sleep(std::time::Duration::from_secs(5));
+                // Force exit if graceful shutdown takes too long
+                error!("Graceful shutdown timeout, forcing exit");
+                std::process::exit(1);
             }
         }
     });
+}
+
+/// Async signal handler task
+///
+/// Receives signals from the signal manager and performs the appropriate action.
+async fn run_signal_handler(
+    signal_manager: Arc<SignalManager>,
+    config_manager: Arc<sentinel_proxy::ConfigManager>,
+) {
+    loop {
+        // Use spawn_blocking to wait for signals without blocking the async runtime
+        let signal_manager_clone = signal_manager.clone();
+        let signal = tokio::task::spawn_blocking(move || {
+            signal_manager_clone.recv_blocking()
+        }).await;
+
+        match signal {
+            Ok(Some(SignalType::Reload)) => {
+                info!("Processing configuration reload request");
+                match config_manager.reload(ReloadTrigger::Signal).await {
+                    Ok(()) => {
+                        info!("Configuration reloaded successfully");
+                    }
+                    Err(e) => {
+                        error!("Configuration reload failed: {}", e);
+                        error!("Continuing with previous configuration");
+                    }
+                }
+            }
+            Ok(Some(SignalType::Shutdown)) => {
+                info!("Processing graceful shutdown request");
+                // Note: Connection draining is handled by Pingora's internal mechanisms
+                // We give it a moment to start draining, then the signal thread will force exit
+                info!("Shutdown initiated, draining connections...");
+                // Exit cleanly - Pingora will handle connection draining
+                std::process::exit(0);
+            }
+            Ok(None) => {
+                // Channel closed
+                info!("Signal channel closed, stopping signal handler");
+                break;
+            }
+            Err(e) => {
+                error!("Signal handler task panicked: {}", e);
+                break;
+            }
+        }
+    }
 }

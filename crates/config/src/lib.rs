@@ -63,8 +63,8 @@ pub use multi_file::{ConfigDirectory, MultiFileLoader};
 
 // Observability
 pub use observability::{
-    AccessLogConfig, LoggingConfig, MetricsConfig, ObservabilityConfig, TracingBackend,
-    TracingConfig,
+    AccessLogConfig, AuditLogConfig, ErrorLogConfig, LoggingConfig, MetricsConfig,
+    ObservabilityConfig, TracingBackend, TracingConfig,
 };
 
 // Routes
@@ -76,6 +76,9 @@ pub use routes::{
 
 // Server
 pub use server::{ListenerConfig, ListenerProtocol, ServerConfig, TlsConfig};
+
+// Re-export TraceIdFormat from common for convenience
+pub use sentinel_common::TraceIdFormat;
 
 // Upstreams
 pub use upstreams::{
@@ -387,6 +390,8 @@ impl Config {
                 user: None,
                 group: None,
                 working_directory: None,
+                trace_id_format: Default::default(),
+                auto_reload: false,
             },
             listeners: vec![ListenerConfig {
                 id: "http".to_string(),

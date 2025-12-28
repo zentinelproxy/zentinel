@@ -20,6 +20,7 @@ use crate::builtin_handlers::{self, BuiltinHandlerState};
 use crate::errors::ErrorHandler;
 use crate::health::PassiveHealthChecker;
 use crate::http_helpers;
+use crate::logging::{AccessLogEntry, LogManager, SharedLogManager};
 use crate::reload::{
     ConfigManager, GracefulReloadCoordinator, ReloadEvent, RouteValidator, UpstreamValidator,
 };
@@ -31,6 +32,7 @@ use crate::validation::SchemaValidator;
 use sentinel_common::{
     observability::{init_tracing, RequestMetrics},
     types::CorrelationId,
+    TraceIdFormat,
 };
 use sentinel_config::Config;
 
@@ -60,6 +62,10 @@ pub struct SentinelProxy {
     static_servers: Arc<RwLock<HashMap<String, Arc<StaticFileServer>>>>,
     /// Builtin handler state
     builtin_state: Arc<BuiltinHandlerState>,
+    /// Log manager for file-based logging
+    log_manager: SharedLogManager,
+    /// Trace ID format for request tracing
+    trace_id_format: TraceIdFormat,
 }
 
 impl SentinelProxy {
@@ -153,8 +159,31 @@ impl SentinelProxy {
             app_state.instance_id.clone(),
         ));
 
+        // Create log manager for file-based logging
+        let log_manager = match LogManager::new(&config.observability.logging) {
+            Ok(manager) => {
+                if manager.access_log_enabled() {
+                    info!("Access logging enabled");
+                }
+                if manager.error_log_enabled() {
+                    info!("Error logging enabled");
+                }
+                if manager.audit_log_enabled() {
+                    info!("Audit logging enabled");
+                }
+                Arc::new(manager)
+            }
+            Err(e) => {
+                warn!("Failed to initialize log manager, file logging disabled: {}", e);
+                Arc::new(LogManager::disabled())
+            }
+        };
+
         // Mark as ready
         app_state.set_ready(true);
+
+        // Get trace ID format from config
+        let trace_id_format = config.server.trace_id_format;
 
         Ok(Self {
             config_manager,
@@ -169,6 +198,8 @@ impl SentinelProxy {
             validators,
             static_servers,
             builtin_state,
+            log_manager,
+            trace_id_format,
         })
     }
 
@@ -304,9 +335,9 @@ impl SentinelProxy {
         ))
     }
 
-    /// Get or generate correlation ID from session
-    fn get_correlation_id(&self, session: &Session) -> String {
-        http_helpers::get_or_create_correlation_id(session)
+    /// Get or generate trace ID from session
+    fn get_trace_id(&self, session: &Session) -> String {
+        http_helpers::get_or_create_trace_id(session, self.trace_id_format)
     }
 
     /// Apply security headers to response
@@ -323,8 +354,8 @@ impl SentinelProxy {
 
 /// Request context maintained throughout the request lifecycle
 pub struct RequestContext {
-    /// Unique correlation ID for request tracing
-    pub correlation_id: String,
+    /// Unique trace ID for request tracing (also used as correlation_id)
+    pub trace_id: String,
     /// Request start time
     pub start_time: Instant,
     /// Selected route ID
@@ -333,6 +364,30 @@ pub struct RequestContext {
     pub upstream: Option<String>,
     /// Number of upstream attempts
     pub upstream_attempts: u32,
+    /// HTTP method (cached for logging)
+    pub method: String,
+    /// Request path (cached for logging)
+    pub path: String,
+    /// Query string (cached for logging)
+    pub query: Option<String>,
+    /// Client IP address
+    pub client_ip: String,
+    /// User-Agent header
+    pub user_agent: Option<String>,
+    /// Referer header
+    pub referer: Option<String>,
+    /// Host header
+    pub host: Option<String>,
+    /// Response body bytes (set during response)
+    pub response_bytes: u64,
+}
+
+impl RequestContext {
+    /// Get trace_id (alias for backwards compatibility with correlation_id usage)
+    #[inline]
+    pub fn correlation_id(&self) -> &str {
+        &self.trace_id
+    }
 }
 
 #[async_trait]
@@ -341,11 +396,19 @@ impl ProxyHttp for SentinelProxy {
 
     fn new_ctx(&self) -> Self::CTX {
         RequestContext {
-            correlation_id: String::new(),
+            trace_id: String::new(),
             start_time: Instant::now(),
             route_id: None,
             upstream: None,
             upstream_attempts: 0,
+            method: String::new(),
+            path: String::new(),
+            query: None,
+            client_ip: String::new(),
+            user_agent: None,
+            referer: None,
+            host: None,
+            response_bytes: 0,
         }
     }
 
@@ -369,10 +432,36 @@ impl ProxyHttp for SentinelProxy {
         // Track active request
         self.reload_coordinator.inc_requests();
 
-        // Initialize correlation ID
-        ctx.correlation_id = self.get_correlation_id(session);
+        // Initialize trace ID
+        ctx.trace_id = self.get_trace_id(session);
+
+        // Cache client address for logging
+        ctx.client_ip = session
+            .client_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
 
         let req_header = session.req_header();
+
+        // Cache request info for access logging
+        ctx.method = req_header.method.to_string();
+        ctx.path = req_header.uri.path().to_string();
+        ctx.query = req_header.uri.query().map(|q| q.to_string());
+        ctx.host = req_header
+            .headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        ctx.user_agent = req_header
+            .headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        ctx.referer = req_header
+            .headers
+            .get("referer")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
 
         // Build request info for routing
         let mut headers = HashMap::new();
@@ -383,11 +472,11 @@ impl ProxyHttp for SentinelProxy {
         }
 
         let request_info = RequestInfo {
-            method: req_header.method.to_string(),
-            path: req_header.uri.path().to_string(),
-            host: req_header.uri.host().unwrap_or("").to_string(),
+            method: ctx.method.clone(),
+            path: ctx.path.clone(),
+            host: ctx.host.clone().unwrap_or_default(),
             headers,
-            query_params: RequestInfo::parse_query_params(req_header.uri.path()),
+            query_params: RequestInfo::parse_query_params(&ctx.path),
         };
 
         // Match route
@@ -413,7 +502,7 @@ impl ProxyHttp for SentinelProxy {
                 // Mark this as a static route for later processing
                 ctx.upstream = Some(format!("_static_{}", route_match.route_id));
                 debug!(
-                    correlation_id = %ctx.correlation_id,
+                    correlation_id = %ctx.trace_id,
                     route_id = %route_match.route_id,
                     "Route is configured for static file serving"
                 );
@@ -439,7 +528,7 @@ impl ProxyHttp for SentinelProxy {
         }
 
         info!(
-            correlation_id = %ctx.correlation_id,
+            correlation_id = %ctx.trace_id,
             route_id = %route_match.route_id,
             upstream = ?ctx.upstream,
             method = %req_header.method,
@@ -487,7 +576,7 @@ impl ProxyHttp for SentinelProxy {
             match pool.select_peer(None).await {
                 Ok(peer) => {
                     debug!(
-                        correlation_id = %ctx.correlation_id,
+                        correlation_id = %ctx.trace_id,
                         attempt = attempt,
                         "Selected upstream peer"
                     );
@@ -495,7 +584,7 @@ impl ProxyHttp for SentinelProxy {
                 }
                 Err(e) => {
                     warn!(
-                        correlation_id = %ctx.correlation_id,
+                        correlation_id = %ctx.trace_id,
                         attempt = attempt,
                         error = %e,
                         "Failed to select upstream peer"
@@ -574,7 +663,7 @@ impl ProxyHttp for SentinelProxy {
 
         // Add correlation ID header
         req_header
-            .insert_header("X-Correlation-Id", &ctx.correlation_id)
+            .insert_header("X-Correlation-Id", &ctx.trace_id)
             .ok();
         req_header.insert_header("X-Forwarded-By", "Sentinel").ok();
 
@@ -584,7 +673,7 @@ impl ProxyHttp for SentinelProxy {
         // Enforce header limits
         if req_header.headers.len() > config.limits.max_header_count {
             warn!(
-                correlation_id = %ctx.correlation_id,
+                correlation_id = %ctx.trace_id,
                 header_count = req_header.headers.len(),
                 limit = config.limits.max_header_count,
                 "Request exceeds header count limit"
@@ -603,7 +692,7 @@ impl ProxyHttp for SentinelProxy {
 
         if total_header_size > config.limits.max_header_size_bytes {
             warn!(
-                correlation_id = %ctx.correlation_id,
+                correlation_id = %ctx.trace_id,
                 header_size = total_header_size,
                 limit = config.limits.max_header_size_bytes,
                 "Request exceeds header size limit"
@@ -633,7 +722,7 @@ impl ProxyHttp for SentinelProxy {
         self.apply_security_headers(upstream_response).ok();
 
         // Add correlation ID to response
-        upstream_response.insert_header("X-Correlation-Id", &ctx.correlation_id)?;
+        upstream_response.insert_header("X-Correlation-Id", &ctx.trace_id)?;
 
         // Record metrics
         let status = upstream_response.status.as_u16();
@@ -663,7 +752,7 @@ impl ProxyHttp for SentinelProxy {
         }
 
         info!(
-            correlation_id = %ctx.correlation_id,
+            correlation_id = %ctx.trace_id,
             route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
             upstream = ctx.upstream.as_deref().unwrap_or("unknown"),
             status = status,
@@ -679,25 +768,54 @@ impl ProxyHttp for SentinelProxy {
         // Decrement active requests
         self.reload_coordinator.dec_requests();
 
-        let req_header = session.req_header();
         let duration = ctx.start_time.elapsed();
 
-        // Structured JSON logging
+        // Get response status
+        let status = session
+            .response_written()
+            .map(|r| r.status.as_u16())
+            .unwrap_or(0);
+
+        // Write to access log file if configured
+        if self.log_manager.access_log_enabled() {
+            let access_entry = AccessLogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                trace_id: ctx.trace_id.clone(),
+                method: ctx.method.clone(),
+                path: ctx.path.clone(),
+                query: ctx.query.clone(),
+                protocol: "HTTP/1.1".to_string(),
+                status,
+                body_bytes: ctx.response_bytes,
+                duration_ms: duration.as_millis() as u64,
+                client_ip: ctx.client_ip.clone(),
+                user_agent: ctx.user_agent.clone(),
+                referer: ctx.referer.clone(),
+                host: ctx.host.clone(),
+                route_id: ctx.route_id.clone(),
+                upstream: ctx.upstream.clone(),
+                upstream_attempts: ctx.upstream_attempts,
+                instance_id: self.app_state.instance_id.clone(),
+            };
+            self.log_manager.log_access(&access_entry);
+        }
+
+        // Also log to stdout for tracing
         let log_entry = serde_json::json!({
             "timestamp": chrono::Utc::now().to_rfc3339(),
-            "correlation_id": ctx.correlation_id,
+            "trace_id": ctx.trace_id,
             "instance_id": self.app_state.instance_id,
-            "method": req_header.method.to_string(),
-            "path": req_header.uri.path(),
+            "method": ctx.method,
+            "path": ctx.path,
             "route_id": ctx.route_id,
             "upstream": ctx.upstream,
-            "status": session.response_written().map(|r| r.status.as_u16()),
+            "status": status,
             "duration_ms": duration.as_millis(),
             "upstream_attempts": ctx.upstream_attempts,
             "error": _error.map(|e| e.to_string()),
         });
 
-        println!("{}", log_entry);
+        debug!("{}", log_entry);
     }
 }
 
@@ -731,7 +849,7 @@ impl SentinelProxy {
                     self.write_http_response(session, response).await?;
 
                     info!(
-                        correlation_id = %ctx.correlation_id,
+                        correlation_id = %ctx.trace_id,
                         route_id = route_id,
                         path = path,
                         "Served static file"
@@ -741,7 +859,7 @@ impl SentinelProxy {
                 }
                 Err(e) => {
                     error!(
-                        correlation_id = %ctx.correlation_id,
+                        correlation_id = %ctx.trace_id,
                         route_id = route_id,
                         path = path,
                         error = %e,
@@ -761,7 +879,7 @@ impl SentinelProxy {
                         if let Ok(error_response) = error_handler.generate_response(
                             status,
                             Some(format!("Failed to serve file: {}", path)),
-                            &ctx.correlation_id,
+                            &ctx.trace_id,
                             None,
                         ) {
                             self.write_http_response(session, error_response).await?;
@@ -787,16 +905,22 @@ impl SentinelProxy {
         let route_id = route_match.route_id.as_str();
 
         if let Some(handler) = route_match.config.builtin_handler {
-            let request_id = self.get_correlation_id(session);
-            ctx.correlation_id = request_id.clone();
+            let request_id = self.get_trace_id(session);
+            ctx.trace_id = request_id.clone();
+
+            // Get current config for config dump handler
+            let config = Some(self.config_manager.current());
+
+            // Build upstream health snapshot for upstreams handler
+            let upstreams = self.build_upstream_health_snapshot().await;
 
             let response =
-                builtin_handlers::execute_handler(handler, &self.builtin_state, &request_id);
+                builtin_handlers::execute_handler(handler, &self.builtin_state, &request_id, config, upstreams);
 
             self.write_http_response(session, response).await?;
 
             info!(
-                correlation_id = %ctx.correlation_id,
+                correlation_id = %ctx.trace_id,
                 route_id = route_id,
                 handler = ?handler,
                 "Served builtin handler"
@@ -811,6 +935,53 @@ impl SentinelProxy {
         }
 
         Ok(false)
+    }
+
+    /// Build upstream health snapshot for the upstreams admin endpoint
+    async fn build_upstream_health_snapshot(&self) -> Option<builtin_handlers::UpstreamHealthSnapshot> {
+        let config = self.config_manager.current();
+        let pools = self.upstream_pools.read().await;
+
+        if config.upstreams.is_empty() {
+            return None;
+        }
+
+        let mut upstreams = std::collections::HashMap::new();
+
+        for (upstream_id, upstream_config) in &config.upstreams {
+            let mut targets = Vec::new();
+
+            for target in &upstream_config.targets {
+                // Get failure rate from passive health checker
+                let failure_rate = self.passive_health.get_failure_rate(&target.address).await;
+
+                // Determine health status based on failure rate
+                let status = match failure_rate {
+                    Some(rate) if rate > 0.5 => builtin_handlers::TargetHealthStatus::Unhealthy,
+                    Some(_) => builtin_handlers::TargetHealthStatus::Healthy,
+                    None => builtin_handlers::TargetHealthStatus::Unknown,
+                };
+
+                targets.push(builtin_handlers::TargetStatus {
+                    address: target.address.clone(),
+                    weight: target.weight,
+                    status,
+                    failure_rate,
+                    last_error: None, // TODO: Track last error in passive health checker
+                });
+            }
+
+            upstreams.insert(
+                upstream_id.clone(),
+                builtin_handlers::UpstreamStatus {
+                    id: upstream_id.clone(),
+                    load_balancing: format!("{:?}", upstream_config.load_balancing),
+                    targets,
+                },
+            );
+        }
+
+        Some(builtin_handlers::UpstreamHealthSnapshot { upstreams })
     }
 
     /// Validate API request body
@@ -856,12 +1027,12 @@ impl SentinelProxy {
                     .expect("request builder with valid method and uri cannot fail"),
                 body_slice,
                 &path,
-                &ctx.correlation_id,
+                &ctx.trace_id,
             )
             .await
         {
             warn!(
-                correlation_id = %ctx.correlation_id,
+                correlation_id = %ctx.trace_id,
                 route_id = route_id,
                 error = %validation_error,
                 "Request validation failed"
@@ -876,7 +1047,7 @@ impl SentinelProxy {
                 if let Ok(error_response) = error_handler.generate_response(
                     http::StatusCode::BAD_REQUEST,
                     Some("Request validation failed".to_string()),
-                    &ctx.correlation_id,
+                    &ctx.trace_id,
                     Some(error_details),
                 ) {
                     self.write_http_response(session, error_response).await?;
@@ -892,7 +1063,7 @@ impl SentinelProxy {
         }
 
         info!(
-            correlation_id = %ctx.correlation_id,
+            correlation_id = %ctx.trace_id,
             route_id = route_id,
             "Request validation passed"
         );
@@ -940,7 +1111,7 @@ impl SentinelProxy {
         }
 
         debug!(
-            correlation_id = %ctx.correlation_id,
+            correlation_id = %ctx.trace_id,
             route_id = %route_id,
             agents = ?agent_ids,
             "Processing request through agents"
@@ -959,9 +1130,9 @@ impl SentinelProxy {
 
         // Create agent call context
         let agent_ctx = AgentCallContext {
-            correlation_id: CorrelationId::from_string(&ctx.correlation_id),
+            correlation_id: CorrelationId::from_string(&ctx.trace_id),
             metadata: sentinel_agent_protocol::RequestMetadata {
-                correlation_id: ctx.correlation_id.clone(),
+                correlation_id: ctx.trace_id.clone(),
                 request_id: Uuid::new_v4().to_string(),
                 client_ip: client_addr.to_string(),
                 client_port,
@@ -991,7 +1162,7 @@ impl SentinelProxy {
                     match decision.action {
                         AgentAction::Block { status, body, .. } => {
                             warn!(
-                                correlation_id = %ctx.correlation_id,
+                                correlation_id = %ctx.trace_id,
                                 status = status,
                                 "Request blocked by agent"
                             );
@@ -1003,7 +1174,7 @@ impl SentinelProxy {
                         }
                         AgentAction::Redirect { url, status } => {
                             info!(
-                                correlation_id = %ctx.correlation_id,
+                                correlation_id = %ctx.trace_id,
                                 url = %url,
                                 status = status,
                                 "Request redirected by agent"
@@ -1033,13 +1204,13 @@ impl SentinelProxy {
                 }
 
                 debug!(
-                    correlation_id = %ctx.correlation_id,
+                    correlation_id = %ctx.trace_id,
                     "Agent processing completed, request allowed"
                 );
             }
             Err(e) => {
                 error!(
-                    correlation_id = %ctx.correlation_id,
+                    correlation_id = %ctx.trace_id,
                     error = %e,
                     "Agent processing failed"
                 );
@@ -1081,7 +1252,7 @@ impl SentinelProxy {
         match error_handler.generate_response(
             status_code,
             None, // Use default message for status
-            &ctx.correlation_id,
+            &ctx.trace_id,
             None,
         ) {
             Ok(error_response) => {
@@ -1105,7 +1276,7 @@ impl SentinelProxy {
                 }
 
                 debug!(
-                    correlation_id = %ctx.correlation_id,
+                    correlation_id = %ctx.trace_id,
                     route_id = route_id,
                     status = status,
                     "Generated custom error page"
@@ -1113,7 +1284,7 @@ impl SentinelProxy {
             }
             Err(e) => {
                 warn!(
-                    correlation_id = %ctx.correlation_id,
+                    correlation_id = %ctx.trace_id,
                     route_id = route_id,
                     error = %e,
                     "Failed to generate custom error page"

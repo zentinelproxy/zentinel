@@ -90,12 +90,20 @@ pub struct LoggingConfig {
     #[serde(default = "default_true")]
     pub timestamps: bool,
 
-    /// Log file path (stdout if not specified)
+    /// Application log file path (stdout if not specified)
     pub file: Option<PathBuf>,
 
     /// Access log configuration
     #[serde(default)]
     pub access_log: Option<AccessLogConfig>,
+
+    /// Error log configuration
+    #[serde(default)]
+    pub error_log: Option<ErrorLogConfig>,
+
+    /// Audit log configuration (security events)
+    #[serde(default)]
+    pub audit_log: Option<AuditLogConfig>,
 }
 
 impl Default for LoggingConfig {
@@ -106,6 +114,8 @@ impl Default for LoggingConfig {
             timestamps: default_true(),
             file: None,
             access_log: None,
+            error_log: None,
+            audit_log: None,
         }
     }
 }
@@ -118,15 +128,104 @@ pub struct AccessLogConfig {
     pub enabled: bool,
 
     /// Access log file path
+    #[serde(default = "default_access_log_file")]
     pub file: PathBuf,
 
-    /// Log format
+    /// Log format (combined, json, custom)
     #[serde(default = "default_access_log_format")]
     pub format: String,
 
-    /// Buffer size
+    /// Buffer size for writes
     #[serde(default = "default_buffer_size")]
     pub buffer_size: usize,
+
+    /// Include trace_id in logs
+    #[serde(default = "default_true")]
+    pub include_trace_id: bool,
+}
+
+impl Default for AccessLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file: default_access_log_file(),
+            format: default_access_log_format(),
+            buffer_size: default_buffer_size(),
+            include_trace_id: true,
+        }
+    }
+}
+
+/// Error log configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorLogConfig {
+    /// Enable error logging
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Error log file path
+    #[serde(default = "default_error_log_file")]
+    pub file: PathBuf,
+
+    /// Minimum level for error log (warn, error)
+    #[serde(default = "default_error_log_level")]
+    pub level: String,
+
+    /// Buffer size for writes
+    #[serde(default = "default_buffer_size")]
+    pub buffer_size: usize,
+}
+
+impl Default for ErrorLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file: default_error_log_file(),
+            level: default_error_log_level(),
+            buffer_size: default_buffer_size(),
+        }
+    }
+}
+
+/// Audit log configuration (security events)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogConfig {
+    /// Enable audit logging
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Audit log file path
+    #[serde(default = "default_audit_log_file")]
+    pub file: PathBuf,
+
+    /// Buffer size for writes
+    #[serde(default = "default_buffer_size")]
+    pub buffer_size: usize,
+
+    /// Log blocked requests
+    #[serde(default = "default_true")]
+    pub log_blocked: bool,
+
+    /// Log agent decisions
+    #[serde(default = "default_true")]
+    pub log_agent_decisions: bool,
+
+    /// Log WAF events
+    #[serde(default = "default_true")]
+    pub log_waf_events: bool,
+}
+
+impl Default for AuditLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file: default_audit_log_file(),
+            buffer_size: default_buffer_size(),
+            log_blocked: true,
+            log_agent_decisions: true,
+            log_waf_events: true,
+        }
+    }
 }
 
 // ============================================================================
@@ -182,11 +281,27 @@ fn default_log_format() -> String {
 }
 
 fn default_access_log_format() -> String {
-    "combined".to_string()
+    "json".to_string()
 }
 
 fn default_buffer_size() -> usize {
     8192
+}
+
+fn default_access_log_file() -> PathBuf {
+    PathBuf::from("/var/log/sentinel/access.log")
+}
+
+fn default_error_log_file() -> PathBuf {
+    PathBuf::from("/var/log/sentinel/error.log")
+}
+
+fn default_error_log_level() -> String {
+    "warn".to_string()
+}
+
+fn default_audit_log_file() -> PathBuf {
+    PathBuf::from("/var/log/sentinel/audit.log")
 }
 
 fn default_sampling_rate() -> f64 {

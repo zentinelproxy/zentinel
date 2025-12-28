@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use sentinel_common::limits::Limits;
-use sentinel_common::types::LoadBalancingAlgorithm;
+use sentinel_common::types::{LoadBalancingAlgorithm, TraceIdFormat};
 
 use crate::filters::*;
 use crate::observability::ObservabilityConfig;
@@ -173,6 +173,10 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
 
 /// Parse server configuration block
 pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
+    let trace_id_format = get_string_entry(node, "trace-id-format")
+        .map(|s| TraceIdFormat::from_str_loose(&s))
+        .unwrap_or_default();
+
     Ok(ServerConfig {
         worker_threads: get_int_entry(node, "worker-threads")
             .map(|v| v as usize)
@@ -188,6 +192,8 @@ pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
         user: get_string_entry(node, "user"),
         group: get_string_entry(node, "group"),
         working_directory: get_string_entry(node, "working-directory").map(PathBuf::from),
+        trace_id_format,
+        auto_reload: get_bool_entry(node, "auto-reload").unwrap_or(false),
     })
 }
 
@@ -291,6 +297,8 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                         "health" => Some(BuiltinHandler::Health),
                         "metrics" => Some(BuiltinHandler::Metrics),
                         "not-found" | "not_found" => Some(BuiltinHandler::NotFound),
+                        "config" => Some(BuiltinHandler::Config),
+                        "upstreams" => Some(BuiltinHandler::Upstreams),
                         _ => None,
                     }
                 });

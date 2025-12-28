@@ -3,7 +3,7 @@
 //! This module provides utilities for:
 //! - Extracting request information from Pingora sessions
 //! - Writing HTTP responses to Pingora sessions
-//! - Generating and managing correlation IDs
+//! - Trace ID extraction from headers
 //!
 //! These helpers reduce boilerplate in the main proxy logic and ensure
 //! consistent handling of HTTP operations.
@@ -17,6 +17,7 @@ use pingora::proxy::Session;
 use std::collections::HashMap;
 
 use crate::routing::RequestInfo;
+use crate::trace_id::{generate_for_format, TraceIdFormat};
 
 // ============================================================================
 // Request Helpers
@@ -55,37 +56,49 @@ pub fn extract_request_info(session: &Session) -> RequestInfo {
     }
 }
 
-/// Extract or generate a correlation ID from request headers
+/// Extract or generate a trace ID from request headers
 ///
-/// Looks for existing correlation ID headers in order of preference:
-/// 1. `x-correlation-id`
-/// 2. `x-request-id`
-/// 3. `x-trace-id`
+/// Looks for existing trace ID headers in order of preference:
+/// 1. `X-Trace-Id`
+/// 2. `X-Correlation-Id`
+/// 3. `X-Request-Id`
 ///
-/// If none are found, generates a new UUID v4.
+/// If none are found, generates a new TinyFlake trace ID (11 chars).
+/// See [`crate::trace_id`] module for TinyFlake format details.
 ///
 /// # Example
 ///
 /// ```ignore
-/// let correlation_id = get_or_create_correlation_id(session);
-/// tracing::info!(correlation_id = %correlation_id, "Processing request");
+/// let trace_id = get_or_create_trace_id(session, TraceIdFormat::TinyFlake);
+/// tracing::info!(trace_id = %trace_id, "Processing request");
 /// ```
-pub fn get_or_create_correlation_id(session: &Session) -> String {
+pub fn get_or_create_trace_id(session: &Session, format: TraceIdFormat) -> String {
     let req_header = session.req_header();
 
-    // Check for existing correlation ID headers (in order of preference)
-    const CORRELATION_HEADERS: [&str; 3] = ["x-correlation-id", "x-request-id", "x-trace-id"];
+    // Check for existing trace ID headers (in order of preference)
+    const TRACE_HEADERS: [&str; 3] = ["x-trace-id", "x-correlation-id", "x-request-id"];
 
-    for header_name in &CORRELATION_HEADERS {
+    for header_name in &TRACE_HEADERS {
         if let Some(value) = req_header.headers.get(*header_name) {
             if let Ok(id) = value.to_str() {
-                return id.to_string();
+                if !id.is_empty() {
+                    return id.to_string();
+                }
             }
         }
     }
 
-    // Generate new correlation ID
-    uuid::Uuid::new_v4().to_string()
+    // Generate new trace ID using configured format
+    generate_for_format(format)
+}
+
+/// Extract or generate a trace ID (convenience function using TinyFlake default)
+///
+/// This is a convenience wrapper around [`get_or_create_trace_id`] that uses
+/// the default TinyFlake format.
+#[inline]
+pub fn get_or_create_trace_id_default(session: &Session) -> String {
+    get_or_create_trace_id(session, TraceIdFormat::default())
 }
 
 // ============================================================================
@@ -228,6 +241,7 @@ pub async fn write_json_error(
 
 #[cfg(test)]
 mod tests {
-    // Integration tests require mocking Pingora session.
+    // Trace ID generation tests are in crate::trace_id module.
+    // Integration tests for get_or_create_trace_id require mocking Pingora session.
     // See crates/proxy/tests/ for integration test examples.
 }

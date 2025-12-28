@@ -140,6 +140,10 @@ pub enum BuiltinHandler {
     Metrics,
     /// 404 Not Found handler
     NotFound,
+    /// Configuration dump endpoint (admin only)
+    Config,
+    /// Upstream health status endpoint (admin only)
+    Upstreams,
 }
 
 // ============================================================================

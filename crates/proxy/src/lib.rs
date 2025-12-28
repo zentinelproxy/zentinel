@@ -37,10 +37,12 @@ pub mod builtin_handlers;
 pub mod errors;
 pub mod health;
 pub mod http_helpers;
+pub mod logging;
 pub mod proxy;
 pub mod reload;
 pub mod routing;
 pub mod static_files;
+pub mod trace_id;
 pub mod upstream;
 pub mod validation;
 
@@ -72,7 +74,7 @@ pub use health::{ActiveHealthChecker, PassiveHealthChecker, TargetHealthInfo};
 pub use agents::{AgentAction, AgentCallContext, AgentDecision, AgentManager};
 
 // Hot reload
-pub use reload::{ConfigManager, ReloadEvent};
+pub use reload::{ConfigManager, ReloadEvent, ReloadTrigger, SignalManager, SignalType};
 
 // Application state
 pub use app::AppState;
@@ -81,10 +83,21 @@ pub use app::AppState;
 pub use proxy::SentinelProxy;
 
 // Built-in handlers
-pub use builtin_handlers::{execute_handler, BuiltinHandlerState};
+pub use builtin_handlers::{
+    execute_handler, BuiltinHandlerState, TargetHealthStatus, TargetStatus, UpstreamHealthSnapshot,
+    UpstreamStatus,
+};
 
 // HTTP helpers
 pub use http_helpers::{
-    extract_request_info, get_or_create_correlation_id, write_error, write_json_error,
-    write_response, write_text_error,
+    extract_request_info, get_or_create_trace_id, write_error, write_json_error, write_response,
+    write_text_error,
+};
+
+// Trace ID generation (TinyFlake)
+pub use trace_id::{generate_for_format, generate_tinyflake, generate_uuid, TraceIdFormat, TINYFLAKE_LENGTH};
+
+// Logging
+pub use logging::{
+    AccessLogEntry, AccessLogFormat, AuditLogEntry, ErrorLogEntry, LogManager, SharedLogManager,
 };

@@ -26,7 +26,7 @@ pub use errors::{SentinelError, SentinelResult};
 pub use limits::{Limits, RateLimiter};
 
 // Re-export common types
-pub use types::{CorrelationId, RequestId};
+pub use types::{CorrelationId, RequestId, TraceIdFormat};
 
 // Re-export circuit breaker
 pub use circuit_breaker::CircuitBreaker;

@@ -73,6 +73,28 @@ routes {
         service-type "builtin"
         builtin-handler "metrics"
     }
+
+    // Config dump endpoint on admin port
+    route "config" {
+        priority "high"
+        matches {
+            path "/admin/config"
+            path "/config"
+        }
+        service-type "builtin"
+        builtin-handler "config"
+    }
+
+    // Upstream health status endpoint on admin port
+    route "upstreams" {
+        priority "high"
+        matches {
+            path "/admin/upstreams"
+            path "/upstreams"
+        }
+        service-type "builtin"
+        builtin-handler "upstreams"
+    }
 }
 
 limits {
@@ -107,6 +129,8 @@ pub fn create_default_config() -> Config {
             user: None,
             group: None,
             working_directory: None,
+            trace_id_format: Default::default(),
+            auto_reload: false,
         },
         listeners: vec![
             ListenerConfig {
@@ -183,6 +207,44 @@ pub fn create_default_config() -> Config {
                 api_schema: None,
                 error_pages: None,
             },
+            RouteConfig {
+                id: "config".to_string(),
+                priority: Priority::High,
+                matches: vec![
+                    MatchCondition::Path("/admin/config".to_string()),
+                    MatchCondition::Path("/config".to_string()),
+                ],
+                upstream: None,
+                service_type: ServiceType::Builtin,
+                policies: RoutePolicies::default(),
+                filters: vec![],
+                builtin_handler: Some(BuiltinHandler::Config),
+                waf_enabled: false,
+                circuit_breaker: None,
+                retry_policy: None,
+                static_files: None,
+                api_schema: None,
+                error_pages: None,
+            },
+            RouteConfig {
+                id: "upstreams".to_string(),
+                priority: Priority::High,
+                matches: vec![
+                    MatchCondition::Path("/admin/upstreams".to_string()),
+                    MatchCondition::Path("/upstreams".to_string()),
+                ],
+                upstream: None,
+                service_type: ServiceType::Builtin,
+                policies: RoutePolicies::default(),
+                filters: vec![],
+                builtin_handler: Some(BuiltinHandler::Upstreams),
+                waf_enabled: false,
+                circuit_breaker: None,
+                retry_policy: None,
+                static_files: None,
+                api_schema: None,
+                error_pages: None,
+            },
         ],
         upstreams: HashMap::new(),
         filters: HashMap::new(),
@@ -209,8 +271,10 @@ mod tests {
     fn test_create_default_config() {
         let config = create_default_config();
         assert_eq!(config.listeners.len(), 2);
-        assert_eq!(config.routes.len(), 3);
+        assert_eq!(config.routes.len(), 5);
         assert!(config.routes.iter().any(|r| r.id == "status"));
         assert!(config.routes.iter().any(|r| r.id == "health"));
+        assert!(config.routes.iter().any(|r| r.id == "config"));
+        assert!(config.routes.iter().any(|r| r.id == "upstreams"));
     }
 }
