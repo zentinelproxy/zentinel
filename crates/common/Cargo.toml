@@ -12,6 +12,9 @@ keywords = ["proxy", "reverse-proxy", "utilities"]
 categories = ["network-programming"]
 
 [dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["sync"] }
+
 # Logging and tracing
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

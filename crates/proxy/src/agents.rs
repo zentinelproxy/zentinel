@@ -13,13 +13,15 @@ use sentinel_agent_protocol::{
 };
 use sentinel_common::{
     errors::{SentinelError, SentinelResult},
-    types::{CorrelationId, CircuitBreakerConfig, CircuitBreakerState},
+    types::{CorrelationId, CircuitBreakerConfig},
+    CircuitBreaker,
 };
 use sentinel_config::{AgentConfig, AgentEvent, AgentTransport, FailureMode};
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+// Note: AtomicU32 still used by AgentMetrics, AgentConnectionPool, Agent
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
@@ -85,21 +87,7 @@ struct AgentConnection {
     healthy: bool,
 }
 
-/// Circuit breaker for agent protection
-pub struct CircuitBreaker {
-    /// Configuration
-    config: CircuitBreakerConfig,
-    /// Current state
-    state: Arc<RwLock<CircuitBreakerState>>,
-    /// Consecutive failures
-    consecutive_failures: AtomicU32,
-    /// Consecutive successes
-    consecutive_successes: AtomicU32,
-    /// Last state change
-    last_state_change: Arc<RwLock<Instant>>,
-    /// Half-open request count
-    half_open_requests: AtomicU32,
-}
+// CircuitBreaker is imported from sentinel_common
 
 /// Agent metrics collector
 #[derive(Default)]
@@ -624,92 +612,6 @@ impl From<AgentResponse> for AgentDecision {
             audit: vec![response.audit],
             routing_metadata: response.routing_metadata,
         }
-    }
-}
-
-// Circuit breaker implementation
-
-impl CircuitBreaker {
-    fn new(config: CircuitBreakerConfig) -> Self {
-        Self {
-            config,
-            state: Arc::new(RwLock::new(CircuitBreakerState::Closed)),
-            consecutive_failures: AtomicU32::new(0),
-            consecutive_successes: AtomicU32::new(0),
-            last_state_change: Arc::new(RwLock::new(Instant::now())),
-            half_open_requests: AtomicU32::new(0),
-        }
-    }
-
-    async fn is_closed(&self) -> bool {
-        let state = *self.state.read().await;
-        match state {
-            CircuitBreakerState::Closed => true,
-            CircuitBreakerState::Open => {
-                // Check if should transition to half-open
-                let last_change = *self.last_state_change.read().await;
-                if last_change.elapsed() >= Duration::from_secs(self.config.timeout_seconds) {
-                    self.transition_to_half_open().await;
-                    true // Allow one request through
-                } else {
-                    false
-                }
-            }
-            CircuitBreakerState::HalfOpen => {
-                // Allow limited requests
-                self.half_open_requests.fetch_add(1, Ordering::Relaxed)
-                    < self.config.half_open_max_requests
-            }
-        }
-    }
-
-    async fn record_success(&self) {
-        self.consecutive_failures.store(0, Ordering::Relaxed);
-        let successes = self.consecutive_successes.fetch_add(1, Ordering::Relaxed) + 1;
-
-        let state = *self.state.read().await;
-        if state == CircuitBreakerState::HalfOpen && successes >= self.config.success_threshold {
-            self.transition_to_closed().await;
-        }
-    }
-
-    async fn record_failure(&self) {
-        self.consecutive_successes.store(0, Ordering::Relaxed);
-        let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
-
-        let state = *self.state.read().await;
-        match state {
-            CircuitBreakerState::Closed if failures >= self.config.failure_threshold => {
-                self.transition_to_open().await;
-            }
-            CircuitBreakerState::HalfOpen => {
-                self.transition_to_open().await;
-            }
-            _ => {}
-        }
-    }
-
-    async fn transition_to_open(&self) {
-        let mut state = self.state.write().await;
-        *state = CircuitBreakerState::Open;
-        *self.last_state_change.write().await = Instant::now();
-        warn!("Circuit breaker opened");
-    }
-
-    async fn transition_to_closed(&self) {
-        let mut state = self.state.write().await;
-        *state = CircuitBreakerState::Closed;
-        *self.last_state_change.write().await = Instant::now();
-        self.half_open_requests.store(0, Ordering::Relaxed);
-        info!("Circuit breaker closed");
-    }
-
-    async fn transition_to_half_open(&self) {
-        let mut state = self.state.write().await;
-        *state = CircuitBreakerState::HalfOpen;
-        *self.last_state_change.write().await = Instant::now();
-        self.half_open_requests.store(0, Ordering::Relaxed);
-        info!("Circuit breaker half-open");
     }
 }
 

@@ -28,6 +28,8 @@ mod health;
 mod http3;
 mod metrics;
 mod reload;
+mod request;
+mod response;
 mod routing;
 mod static_files;
 mod types;
@@ -298,13 +300,7 @@ impl SentinelProxy {
 
     /// Get or generate correlation ID
     fn get_correlation_id(&self, session: &Session) -> String {
-        session
-            .req_header()
-            .headers
-            .get("x-correlation-id")
-            .and_then(|v| v.to_str().ok())
-            .map(String::from)
-            .unwrap_or_else(|| Uuid::new_v4().to_string())
+        request::get_or_create_correlation_id(session)
     }
 
     /// Apply security headers

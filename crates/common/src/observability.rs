@@ -474,11 +474,14 @@ pub struct ComponentHealth {
 }
 
 /// Global health status aggregator
-pub struct HealthChecker {
+///
+/// Tracks the health of all system components (upstreams, agents, etc.)
+/// and provides aggregate status for health endpoints.
+pub struct ComponentHealthTracker {
     components: parking_lot::RwLock<Vec<ComponentHealth>>,
 }
 
-impl HealthChecker {
+impl ComponentHealthTracker {
     /// Create new health checker
     pub fn new() -> Self {
         Self {
@@ -586,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_health_checker() {
-        let checker = HealthChecker::new();
+        let checker = ComponentHealthTracker::new();
 
         // Initially healthy
         assert_eq!(checker.get_status(), HealthStatus::Healthy);

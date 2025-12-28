@@ -14,7 +14,8 @@ use tracing::{debug, info, warn};
 
 use sentinel_common::{
     errors::{SentinelError, SentinelResult},
-    types::{CircuitBreakerConfig, CircuitBreakerState, LoadBalancingAlgorithm, RetryPolicy, UpstreamId},
+    types::{CircuitBreakerConfig, LoadBalancingAlgorithm, RetryPolicy, UpstreamId},
+    CircuitBreaker,
 };
 use sentinel_config::{HealthCheck as HealthCheckConfig, UpstreamConfig};
 
@@ -89,7 +90,7 @@ pub struct UpstreamPool {
     /// Load balancer implementation
     load_balancer: Arc<dyn LoadBalancer>,
     /// Health checker
-    health_checker: Option<Arc<HealthChecker>>,
+    health_checker: Option<Arc<UpstreamHealthChecker>>,
     /// Connection pool
     connection_pool: Arc<ConnectionPool>,
     /// Circuit breakers per target
@@ -101,16 +102,19 @@ pub struct UpstreamPool {
 }
 
 /// Health checker for upstream targets
-pub struct HealthChecker {
+///
+/// Performs active health checking on upstream targets to determine
+/// their availability for load balancing.
+pub struct UpstreamHealthChecker {
     /// Check configuration
     config: HealthCheckConfig,
     /// Health status per target
-    health_status: Arc<RwLock<HashMap<String, HealthStatus>>>,
+    health_status: Arc<RwLock<HashMap<String, TargetHealthStatus>>>,
     /// Check tasks handles
     check_handles: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
-impl HealthChecker {
+impl UpstreamHealthChecker {
     /// Create a new health checker
     pub fn new(config: HealthCheckConfig) -> Self {
         Self {
@@ -121,9 +125,9 @@ impl HealthChecker {
     }
 }
 
-/// Health status for a target
+/// Health status for an upstream target
 #[derive(Debug, Clone)]
-struct HealthStatus {
+struct TargetHealthStatus {
     /// Is target healthy
     healthy: bool,
     /// Consecutive successes
@@ -210,111 +214,7 @@ struct ConnectionPoolStats {
     idle: AtomicU64,
 }
 
-/// Circuit breaker for upstream protection
-pub struct CircuitBreaker {
-    /// Configuration
-    config: CircuitBreakerConfig,
-    /// Current state
-    state: Arc<RwLock<CircuitBreakerState>>,
-    /// Consecutive failures
-    consecutive_failures: AtomicU64,
-    /// Consecutive successes
-    consecutive_successes: AtomicU64,
-    /// Last state change time
-    last_state_change: Arc<RwLock<Instant>>,
-    /// Half-open requests count
-    half_open_requests: AtomicU64,
-}
-
-impl CircuitBreaker {
-    fn new(config: CircuitBreakerConfig) -> Self {
-        Self {
-            config,
-            state: Arc::new(RwLock::new(CircuitBreakerState::Closed)),
-            consecutive_failures: AtomicU64::new(0),
-            consecutive_successes: AtomicU64::new(0),
-            last_state_change: Arc::new(RwLock::new(Instant::now())),
-            half_open_requests: AtomicU64::new(0),
-        }
-    }
-
-    async fn is_closed(&self) -> bool {
-        let state = *self.state.read().await;
-        match state {
-            CircuitBreakerState::Closed => true,
-            CircuitBreakerState::Open => {
-                let last_change = *self.last_state_change.read().await;
-                if last_change.elapsed() >= Duration::from_secs(self.config.timeout_seconds) {
-                    self.transition_to_half_open().await;
-                    false
-                } else {
-                    false
-                }
-            }
-            CircuitBreakerState::HalfOpen => {
-                self.half_open_requests.fetch_add(1, Ordering::Relaxed)
-                    < self.config.half_open_max_requests.into()
-            }
-        }
-    }
-
-    async fn record_success(&self) {
-        let state = *self.state.read().await;
-
-        self.consecutive_failures.store(0, Ordering::Relaxed);
-        let successes = self.consecutive_successes.fetch_add(1, Ordering::Relaxed) + 1;
-
-        if let CircuitBreakerState::HalfOpen = state {
-            if successes >= self.config.success_threshold.into() {
-                self.transition_to_closed().await;
-            }
-        }
-    }
-
-    async fn record_failure(&self) {
-        let state = *self.state.read().await;
-
-        self.consecutive_successes.store(0, Ordering::Relaxed);
-        let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
-
-        match state {
-            CircuitBreakerState::Closed => {
-                if failures >= self.config.failure_threshold.into() {
-                    self.transition_to_open().await;
-                }
-            }
-            CircuitBreakerState::HalfOpen => {
-                self.transition_to_open().await;
-            }
-            _ => {}
-        }
-    }
-
-    async fn transition_to_open(&self) {
-        let mut state = self.state.write().await;
-        *state = CircuitBreakerState::Open;
-        *self.last_state_change.write().await = Instant::now();
-        warn!("Circuit breaker opened");
-    }
-
-    async fn transition_to_closed(&self) {
-        let mut state = self.state.write().await;
-        *state = CircuitBreakerState::Closed;
-        *self.last_state_change.write().await = Instant::now();
-        self.consecutive_failures.store(0, Ordering::Relaxed);
-        self.consecutive_successes.store(0, Ordering::Relaxed);
-        self.half_open_requests.store(0, Ordering::Relaxed);
-        info!("Circuit breaker closed");
-    }
-
-    async fn transition_to_half_open(&self) {
-        let mut state = self.state.write().await;
-        *state = CircuitBreakerState::HalfOpen;
-        *self.last_state_change.write().await = Instant::now();
-        self.half_open_requests.store(0, Ordering::Relaxed);
-        info!("Circuit breaker half-open");
-    }
-}
+// CircuitBreaker is imported from sentinel_common
 
 /// Pool statistics
 #[derive(Default)]
@@ -607,7 +507,7 @@ impl UpstreamPool {
         let health_checker = config
             .health_check
             .as_ref()
-            .map(|hc_config| Arc::new(HealthChecker::new(hc_config.clone())));
+            .map(|hc_config| Arc::new(UpstreamHealthChecker::new(hc_config.clone())));
 
         // Create connection pool
         let connection_pool = Arc::new(ConnectionPool::new(

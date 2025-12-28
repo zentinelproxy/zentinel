@@ -20,8 +20,11 @@ use sentinel_common::{
 };
 use sentinel_config::{HealthCheck as HealthCheckConfig, UpstreamTarget};
 
-/// Health checker for upstream targets
-pub struct HealthChecker {
+/// Active health checker for upstream targets
+///
+/// Performs periodic health checks on upstream targets using HTTP, TCP, or gRPC
+/// protocols to determine their availability for load balancing.
+pub struct ActiveHealthChecker {
     /// Check configuration
     config: HealthCheckConfig,
     /// Health checker implementation
@@ -86,8 +89,8 @@ struct GrpcHealthCheck {
     timeout: Duration,
 }
 
-impl HealthChecker {
-    /// Create new health checker
+impl ActiveHealthChecker {
+    /// Create new active health checker
     pub fn new(config: HealthCheckConfig) -> Self {
         let checker: Arc<dyn HealthCheckImpl> = match &config.check_type {
             HealthCheckType::Http {
@@ -460,6 +463,10 @@ fn parse_http_status(response: &str) -> Option<u16> {
 }
 
 /// Passive health checker that monitors request outcomes
+///
+/// Observes request success/failure rates to detect unhealthy targets
+/// without performing explicit health checks. Works in combination with
+/// `ActiveHealthChecker` for comprehensive health monitoring.
 pub struct PassiveHealthChecker {
     /// Failure rate threshold (0.0 - 1.0)
     failure_rate_threshold: f64,
@@ -468,7 +475,7 @@ pub struct PassiveHealthChecker {
     /// Request outcomes per target (ring buffer)
     outcomes: Arc<RwLock<HashMap<String, Vec<bool>>>>,
     /// Active health checker reference
-    active_checker: Option<Arc<HealthChecker>>,
+    active_checker: Option<Arc<ActiveHealthChecker>>,
 }
 
 impl PassiveHealthChecker {
@@ -476,7 +483,7 @@ impl PassiveHealthChecker {
     pub fn new(
         failure_rate_threshold: f64,
         window_size: usize,
-        active_checker: Option<Arc<HealthChecker>>,
+        active_checker: Option<Arc<ActiveHealthChecker>>,
     ) -> Self {
         Self {
             failure_rate_threshold,
