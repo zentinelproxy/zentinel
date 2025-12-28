@@ -482,12 +482,17 @@ mod tests {
             id: id.to_string(),
             priority: Priority::Normal,
             matches,
-            upstream: "test_upstream".to_string(),
+            upstream: Some("test_upstream".to_string()),
+            service_type: sentinel_config::ServiceType::Web,
             policies: Default::default(),
-            agents: vec![],
+            filters: vec![],
+            builtin_handler: None,
             waf_enabled: false,
             circuit_breaker: None,
             retry_policy: None,
+            static_files: None,
+            api_schema: None,
+            error_pages: None,
         }
     }
 

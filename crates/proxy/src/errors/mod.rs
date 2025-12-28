@@ -116,7 +116,7 @@ impl ErrorHandler {
 
         // Use default format based on service type
         match self.service_type {
-            ServiceType::Api => ErrorFormat::Json,
+            ServiceType::Api | ServiceType::Builtin => ErrorFormat::Json,
             ServiceType::Web | ServiceType::Static => self
                 .config
                 .as_ref()

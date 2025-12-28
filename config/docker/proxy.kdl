@@ -19,8 +19,50 @@ listeners {
     }
 }
 
+// ============================================================================
+// Filter Definitions
+// Named filter instances that can be referenced by routes
+// ============================================================================
+filters {
+    filter "echo" {
+        type "agent"
+        agent "echo-agent"
+        timeout-ms 100
+        failure-mode "open"
+    }
+
+    filter "rate-limit" {
+        type "agent"
+        agent "ratelimit-agent"
+        timeout-ms 100
+        failure-mode "open"
+    }
+
+    filter "rate-limit-strict" {
+        type "agent"
+        agent "ratelimit-agent"
+        timeout-ms 100
+        failure-mode "closed"
+    }
+
+    filter "waf" {
+        type "agent"
+        agent "waf-agent"
+        timeout-ms 200
+        failure-mode "open"
+        inspect-body true
+    }
+
+    filter "api-rate-limit" {
+        type "rate-limit"
+        max-rps 100
+        burst 50
+        key "client-ip"
+    }
+}
+
 routes {
-    // API route - uses auth + rate limiting agents
+    // API route - uses echo + rate limiting filters
     route "api" {
         priority "high"
 
@@ -29,7 +71,7 @@ routes {
         }
 
         upstream "backend"
-        agents ["echo-agent" "ratelimit-agent"]
+        filters ["echo" "rate-limit"]
 
         policies {
             timeout-secs 30
@@ -38,7 +80,7 @@ routes {
         }
     }
 
-    // Protected route - uses WAF agent
+    // Protected route - uses WAF filter
     route "protected" {
         priority "high"
 
@@ -47,7 +89,7 @@ routes {
         }
 
         upstream "backend"
-        agents ["waf-agent"]
+        filters ["waf"]
         waf-enabled true
 
         policies {
@@ -56,7 +98,7 @@ routes {
         }
     }
 
-    // Rate limited route - just rate limiting
+    // Rate limited route - strict rate limiting
     route "limited" {
         priority "high"
 
@@ -65,7 +107,7 @@ routes {
         }
 
         upstream "backend"
-        agents ["ratelimit-agent"]
+        filters ["rate-limit-strict"]
 
         policies {
             timeout-secs 30
@@ -73,7 +115,7 @@ routes {
         }
     }
 
-    // Echo test route - uses echo agent
+    // Echo test route - uses echo filter
     route "echo-test" {
         priority "high"
 
@@ -82,7 +124,7 @@ routes {
         }
 
         upstream "backend"
-        agents ["echo-agent"]
+        filters ["echo"]
 
         policies {
             timeout-secs 30
@@ -90,7 +132,7 @@ routes {
         }
     }
 
-    // Multi-agent route - chains multiple agents
+    // Multi-agent route - chains multiple filters
     route "multi-agent" {
         priority "high"
 
@@ -99,7 +141,7 @@ routes {
         }
 
         upstream "backend"
-        agents ["echo-agent" "ratelimit-agent" "waf-agent"]
+        filters ["echo" "rate-limit" "waf"]
         waf-enabled true
 
         policies {
@@ -108,7 +150,7 @@ routes {
         }
     }
 
-    // Health check endpoint
+    // Health check endpoint (no filters)
     route "health" {
         priority "high"
 

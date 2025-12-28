@@ -20,7 +20,12 @@ use sentinel_common::{
     },
 };
 
+mod defaults;
+mod filters;
 mod multi_file;
+
+pub use defaults::{create_default_config, DEFAULT_CONFIG_KDL};
+pub use filters::*;
 pub use multi_file::{ConfigDirectory, MultiFileLoader};
 
 /// Main configuration structure for Sentinel proxy
@@ -40,6 +45,10 @@ pub struct Config {
     /// Upstream pool configurations (can be empty if all routes are static)
     #[serde(default)]
     pub upstreams: HashMap<String, UpstreamConfig>,
+
+    /// Named filter configurations (referenced by routes)
+    #[serde(default)]
+    pub filters: HashMap<String, FilterConfig>,
 
     /// Agent configurations
     #[serde(default)]
@@ -198,11 +207,16 @@ pub struct RouteConfig {
     #[serde(default)]
     pub policies: RoutePolicies,
 
-    /// Agents to apply to this route
+    /// Filter chain for this route - list of filter IDs (executed in order)
+    /// References filters defined in the top-level `filters` block
     #[serde(default)]
-    pub agents: Vec<String>,
+    pub filters: Vec<String>,
 
-    /// WAF enabled for this route
+    /// Built-in handler (for service_type = Builtin)
+    #[serde(default, rename = "builtin-handler")]
+    pub builtin_handler: Option<BuiltinHandler>,
+
+    /// WAF enabled for this route (shorthand for adding WAF agent filter)
     #[serde(default)]
     pub waf_enabled: bool,
 
@@ -263,12 +277,28 @@ pub enum ServiceType {
     Api,
     /// Static file hosting
     Static,
+    /// Built-in handler (status page, health check, etc.)
+    Builtin,
 }
 
 impl Default for ServiceType {
     fn default() -> Self {
         ServiceType::Web
     }
+}
+
+/// Built-in handler types for ServiceType::Builtin routes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuiltinHandler {
+    /// JSON status page with version and uptime
+    Status,
+    /// Health check endpoint (returns 200 OK if healthy)
+    Health,
+    /// Prometheus metrics endpoint
+    Metrics,
+    /// 404 Not Found handler
+    NotFound,
 }
 
 /// Static file serving configuration
@@ -431,7 +461,7 @@ pub struct HeaderModifications {
     pub remove: Vec<String>,
 }
 
-/// Rate limit policy
+/// Rate limit policy (legacy - prefer using rate-limit filter)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitPolicy {
     /// Requests per second
@@ -441,18 +471,7 @@ pub struct RateLimitPolicy {
     pub burst: u32,
 
     /// Key to rate limit by
-    pub key: RateLimitKey,
-}
-
-/// Rate limit key
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RateLimitKey {
-    ClientIp,
-    Header(String),
-    Cookie(String),
-    Path,
-    Method,
+    pub key: filters::RateLimitKey,
 }
 
 /// Failure mode for degraded operation
@@ -1157,6 +1176,7 @@ fn validate_config_semantics(config: &Config) -> Result<(), validator::Validatio
         .iter()
         .filter(|r| {
             r.service_type != ServiceType::Static
+            && r.service_type != ServiceType::Builtin
             && r.upstream.is_none()
             && r.static_files.is_none()
         })
@@ -1227,16 +1247,42 @@ fn validate_config_semantics(config: &Config) -> Result<(), validator::Validatio
         }
     }
 
-    // === Validate agent references in routes ===
+    // === Validate filter references in routes ===
+    let filter_ids: std::collections::HashSet<_> = config.filters.keys().map(|s| s.as_str()).collect();
+
     for route in &config.routes {
-        for agent_ref in &route.agents {
-            if !agent_ids.contains(agent_ref.as_str()) {
+        for filter_id in &route.filters {
+            if !filter_ids.contains(filter_id.as_str()) {
                 errors.push(format!(
-                    "Route '{}' references agent '{}' which doesn't exist.\n\
-                     Available agents: {}\n\
-                     Hint: Add an agent configuration or remove the reference.",
+                    "Route '{}' references filter '{}' which doesn't exist.\n\
+                     Available filters: {}\n\
+                     Hint: Define the filter in the top-level filters block:\n\
+                     \n\
+                     filters {{\n\
+                         filter \"{}\" {{\n\
+                             type \"agent\"\n\
+                             agent \"my-agent\"\n\
+                         }}\n\
+                     }}",
                     route.id,
-                    agent_ref,
+                    filter_id,
+                    if filter_ids.is_empty() { "(none defined)".to_string() } else { filter_ids.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", ") },
+                    filter_id
+                ));
+            }
+        }
+    }
+
+    // === Validate agent references in filter definitions ===
+    for (filter_id, filter_config) in &config.filters {
+        if let Filter::Agent(agent_filter) = &filter_config.filter {
+            if !agent_ids.contains(agent_filter.agent.as_str()) {
+                errors.push(format!(
+                    "Filter '{}' references agent '{}' which doesn't exist.\n\
+                     Available agents: {}\n\
+                     Hint: Add an agent configuration or update the filter.",
+                    filter_id,
+                    agent_filter.agent,
                     if agent_ids.is_empty() { "(none defined)".to_string() } else { agent_ids.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", ") }
                 ));
             }
@@ -1427,6 +1473,21 @@ impl Config {
         }
     }
 
+    /// Load the default embedded configuration.
+    ///
+    /// This is used when no configuration file is provided. It parses the
+    /// embedded KDL configuration, falling back to the programmatic default
+    /// if KDL parsing fails for any reason.
+    pub fn default_embedded() -> Result<Self> {
+        Self::from_kdl(DEFAULT_CONFIG_KDL).or_else(|e| {
+            tracing::warn!(
+                "Failed to parse embedded KDL config, using programmatic default: {}",
+                e
+            );
+            Ok(create_default_config())
+        })
+    }
+
     /// Parse configuration from KDL format
     pub fn from_kdl(content: &str) -> Result<Self> {
         let doc: kdl::KdlDocument = content.parse().map_err(|e: kdl::KdlError| {
@@ -1515,6 +1576,7 @@ impl Config {
         let mut listeners = Vec::new();
         let mut routes = Vec::new();
         let mut upstreams = HashMap::new();
+        let mut filters = HashMap::new();
         let mut agents = Vec::new();
         let mut waf = None;
         let mut limits = None;
@@ -1534,6 +1596,9 @@ impl Config {
                 "upstreams" => {
                     upstreams = parse_upstreams(node)?;
                 }
+                "filters" => {
+                    filters = parse_filter_definitions(node)?;
+                }
                 "agents" => {
                     agents = parse_agents(node)?;
                 }
@@ -1549,7 +1614,7 @@ impl Config {
                 other => {
                     return Err(anyhow::anyhow!(
                         "Unknown top-level configuration block: '{}'\n\
-                         Valid blocks are: server, listeners, routes, upstreams, agents, waf, limits, observability",
+                         Valid blocks are: server, listeners, routes, upstreams, filters, agents, waf, limits, observability",
                         other
                     ));
                 }
@@ -1589,6 +1654,7 @@ impl Config {
             listeners,
             routes,
             upstreams,
+            filters,
             agents,
             waf,
             limits: limits.unwrap_or_default(),
@@ -1639,19 +1705,35 @@ impl Config {
                 }
             }
 
-            // Check that referenced agents exist
-            for agent_id in &route.agents {
-                if !self.agents.iter().any(|a| a.id == *agent_id) {
+            // Check that referenced filter IDs exist
+            for filter_id in &route.filters {
+                if !self.filters.contains_key(filter_id) {
                     return Err(SentinelError::Config {
                         message: format!(
-                            "Route '{}' references non-existent agent '{}'",
-                            route.id, agent_id
+                            "Route '{}' references non-existent filter '{}'",
+                            route.id, filter_id
                         ),
                         source: None,
                     });
                 }
             }
         }
+
+        // Validate agent references in filter definitions
+        for (filter_id, filter_config) in &self.filters {
+            if let Filter::Agent(agent_filter) = &filter_config.filter {
+                if !self.agents.iter().any(|a| a.id == agent_filter.agent) {
+                    return Err(SentinelError::Config {
+                        message: format!(
+                            "Filter '{}' references non-existent agent '{}'",
+                            filter_id, agent_filter.agent
+                        ),
+                        source: None,
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1745,7 +1827,8 @@ impl Config {
                 upstream: Some("default".to_string()),
                 service_type: ServiceType::Web,
                 policies: RoutePolicies::default(),
-                agents: vec![],
+                filters: vec![],
+                builtin_handler: None,
                 waf_enabled: false,
                 circuit_breaker: None,
                 retry_policy: None,
@@ -1754,6 +1837,7 @@ impl Config {
                 error_pages: None,
             }],
             upstreams,
+            filters: HashMap::new(),
             agents: vec![],
             waf: None,
             limits: Limits::for_testing(),
@@ -2015,9 +2099,33 @@ fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     None
                 };
 
+                // Parse filters - list of filter IDs referencing top-level filter definitions
+                // Syntax: filters ["filter-id-1" "filter-id-2"]
+                let filters = if let Some(route_children) = child.children() {
+                    if let Some(filters_node) = route_children.get("filters") {
+                        parse_route_filter_refs(filters_node)?
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+
+                // Parse builtin-handler for Builtin service types
+                let builtin_handler = get_string_entry(child, "builtin-handler")
+                    .and_then(|s| match s.as_str() {
+                        "status" => Some(BuiltinHandler::Status),
+                        "health" => Some(BuiltinHandler::Health),
+                        "metrics" => Some(BuiltinHandler::Metrics),
+                        "not-found" | "not_found" => Some(BuiltinHandler::NotFound),
+                        _ => None,
+                    });
+
                 // Determine service type based on config
                 let service_type = if static_files.is_some() {
                     ServiceType::Static
+                } else if builtin_handler.is_some() {
+                    ServiceType::Builtin
                 } else {
                     ServiceType::Web
                 };
@@ -2029,7 +2137,8 @@ fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     upstream,
                     service_type,
                     policies: RoutePolicies::default(),
-                    agents: vec![],
+                    filters,
+                    builtin_handler,
                     waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
                     circuit_breaker: None,
                     retry_policy: None,
@@ -2042,6 +2151,425 @@ fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
     }
 
     Ok(routes)
+}
+
+/// Parse filter ID references from a route
+/// Syntax: filters ["auth" "rate-limit" "waf"]
+/// Order is significant - filters execute in array order
+fn parse_route_filter_refs(node: &kdl::KdlNode) -> Result<Vec<String>> {
+    let mut filter_ids = Vec::new();
+
+    // Parse array of filter IDs from node arguments
+    for entry in node.entries() {
+        if let Some(id) = entry.value().as_string() {
+            filter_ids.push(id.to_string());
+        }
+    }
+
+    Ok(filter_ids)
+}
+
+/// Parse top-level filter definitions block
+/// Syntax:
+/// ```kdl
+/// filters {
+///     filter "strict-auth" {
+///         type "agent"
+///         agent "auth-agent"
+///         timeout-ms 100
+///     }
+///     filter "api-rate-limit" {
+///         type "rate-limit"
+///         max-rps 100
+///     }
+/// }
+/// ```
+fn parse_filter_definitions(node: &kdl::KdlNode) -> Result<HashMap<String, FilterConfig>> {
+    let mut filters = HashMap::new();
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() == "filter" {
+                let id = get_first_arg_string(child).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Filter requires an ID argument, e.g., filter \"my-rate-limit\" {{ ... }}"
+                    )
+                })?;
+
+                let filter = parse_single_filter_definition(child)?;
+                filters.insert(id.clone(), FilterConfig::new(id, filter));
+            }
+        }
+    }
+
+    Ok(filters)
+}
+
+/// Parse a single filter definition
+fn parse_single_filter_definition(node: &kdl::KdlNode) -> Result<Filter> {
+    let filter_type = get_string_entry(node, "type").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Filter definition requires a 'type' field. Valid types: rate-limit, agent, headers, compress, cors, timeout, log"
+        )
+    })?;
+
+    match filter_type.as_str() {
+        "rate-limit" => {
+            let max_rps = get_int_entry(node, "max-rps")
+                .map(|v| v as u32)
+                .unwrap_or(100);
+            let burst = get_int_entry(node, "burst")
+                .map(|v| v as u32)
+                .unwrap_or(10);
+            let status_code = get_int_entry(node, "status-code")
+                .map(|v| v as u16)
+                .unwrap_or(429);
+
+            let key = get_string_entry(node, "key")
+                .map(|s| match s.as_str() {
+                    "client-ip" => RateLimitKey::ClientIp,
+                    "path" => RateLimitKey::Path,
+                    "route" => RateLimitKey::Route,
+                    "client-ip-and-path" => RateLimitKey::ClientIpAndPath,
+                    header if header.starts_with("header:") => {
+                        RateLimitKey::Header(header.trim_start_matches("header:").to_string())
+                    }
+                    _ => RateLimitKey::ClientIp,
+                })
+                .unwrap_or(RateLimitKey::ClientIp);
+
+            let on_limit = get_string_entry(node, "on-limit")
+                .map(|s| match s.as_str() {
+                    "reject" => RateLimitAction::Reject,
+                    "delay" => RateLimitAction::Delay,
+                    "log-only" => RateLimitAction::LogOnly,
+                    _ => RateLimitAction::Reject,
+                })
+                .unwrap_or(RateLimitAction::Reject);
+
+            Ok(Filter::RateLimit(RateLimitFilter {
+                max_rps,
+                burst,
+                key,
+                on_limit,
+                status_code,
+                limit_message: get_string_entry(node, "message"),
+            }))
+        }
+        "agent" => {
+            let agent = get_string_entry(node, "agent").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Agent filter requires an 'agent' field referencing an agent definition"
+                )
+            })?;
+
+            let timeout_ms = get_int_entry(node, "timeout-ms").map(|v| v as u64);
+            let failure_mode = get_string_entry(node, "failure-mode")
+                .and_then(|s| match s.as_str() {
+                    "open" => Some(FailureMode::Open),
+                    "closed" => Some(FailureMode::Closed),
+                    _ => None,
+                });
+
+            let phase = get_string_entry(node, "phase")
+                .and_then(|s| match s.as_str() {
+                    "request" => Some(FilterPhase::Request),
+                    "response" => Some(FilterPhase::Response),
+                    "both" => Some(FilterPhase::Both),
+                    _ => None,
+                });
+
+            Ok(Filter::Agent(AgentFilter {
+                agent,
+                phase,
+                timeout_ms,
+                failure_mode,
+                inspect_body: get_bool_entry(node, "inspect-body").unwrap_or(false),
+                max_body_bytes: get_int_entry(node, "max-body-bytes").map(|v| v as usize),
+            }))
+        }
+        "headers" => {
+            let mut set = std::collections::HashMap::new();
+            let mut add = std::collections::HashMap::new();
+            let mut remove = Vec::new();
+
+            if let Some(node_children) = node.children() {
+                if let Some(set_node) = node_children.get("set") {
+                    if let Some(set_children) = set_node.children() {
+                        for entry_node in set_children.nodes() {
+                            let name = entry_node.name().value().to_string();
+                            if let Some(value) = get_first_arg_string(entry_node) {
+                                set.insert(name, value);
+                            }
+                        }
+                    }
+                }
+                if let Some(add_node) = node_children.get("add") {
+                    if let Some(add_children) = add_node.children() {
+                        for entry_node in add_children.nodes() {
+                            let name = entry_node.name().value().to_string();
+                            if let Some(value) = get_first_arg_string(entry_node) {
+                                add.insert(name, value);
+                            }
+                        }
+                    }
+                }
+                if let Some(remove_node) = node_children.get("remove") {
+                    for entry in remove_node.entries() {
+                        if let Some(name) = entry.value().as_string() {
+                            remove.push(name.to_string());
+                        }
+                    }
+                }
+            }
+
+            let phase = get_string_entry(node, "phase")
+                .and_then(|s| match s.as_str() {
+                    "request" => Some(FilterPhase::Request),
+                    "response" => Some(FilterPhase::Response),
+                    "both" => Some(FilterPhase::Both),
+                    _ => None,
+                })
+                .unwrap_or(FilterPhase::Request);
+
+            Ok(Filter::Headers(HeadersFilter { phase, set, add, remove }))
+        }
+        "compress" => {
+            let algorithms_str = get_string_entry(node, "algorithms")
+                .unwrap_or_else(|| "gzip,br".to_string());
+            let algorithms: Vec<CompressionAlgorithm> = algorithms_str
+                .split(',')
+                .filter_map(|s| match s.trim() {
+                    "gzip" => Some(CompressionAlgorithm::Gzip),
+                    "br" | "brotli" => Some(CompressionAlgorithm::Brotli),
+                    "deflate" => Some(CompressionAlgorithm::Deflate),
+                    "zstd" => Some(CompressionAlgorithm::Zstd),
+                    _ => None,
+                })
+                .collect();
+
+            let min_size = get_int_entry(node, "min-size")
+                .map(|v| v as usize)
+                .unwrap_or(1024);
+
+            Ok(Filter::Compress(CompressFilter {
+                algorithms,
+                min_size,
+                content_types: vec![
+                    "text/html".into(),
+                    "text/css".into(),
+                    "application/json".into(),
+                    "application/javascript".into(),
+                ],
+                level: get_int_entry(node, "level").map(|v| v as u8).unwrap_or(6),
+            }))
+        }
+        "cors" => Ok(Filter::Cors(CorsFilter::default())),
+        "timeout" => Ok(Filter::Timeout(TimeoutFilter {
+            request_timeout_secs: get_int_entry(node, "request-timeout-secs").map(|v| v as u64),
+            upstream_timeout_secs: get_int_entry(node, "upstream-timeout-secs").map(|v| v as u64),
+            connect_timeout_secs: get_int_entry(node, "connect-timeout-secs").map(|v| v as u64),
+        })),
+        "log" => Ok(Filter::Log(LogFilter {
+            log_request: get_bool_entry(node, "log-request").unwrap_or(true),
+            log_response: get_bool_entry(node, "log-response").unwrap_or(true),
+            log_body: get_bool_entry(node, "log-body").unwrap_or(false),
+            max_body_log_size: get_int_entry(node, "max-body-log-size")
+                .map(|v| v as usize)
+                .unwrap_or(4096),
+            fields: vec![],
+            level: get_string_entry(node, "level").unwrap_or_else(|| "info".to_string()),
+        })),
+        other => Err(anyhow::anyhow!(
+            "Unknown filter type: '{}'. Valid types: rate-limit, agent, headers, compress, cors, timeout, log",
+            other
+        )),
+    }
+}
+
+/// Parse filters configuration block within a route (legacy inline format)
+/// Kept for backward compatibility during migration
+fn parse_filters(node: &kdl::KdlNode) -> Result<Vec<Filter>> {
+    let mut filters = Vec::new();
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            let filter = match child.name().value() {
+                "rate-limit" => {
+                    let max_rps = get_int_entry(child, "max-rps")
+                        .map(|v| v as u32)
+                        .unwrap_or(100);
+                    let burst = get_int_entry(child, "burst")
+                        .map(|v| v as u32)
+                        .unwrap_or(10);
+                    let status_code = get_int_entry(child, "status-code")
+                        .map(|v| v as u16)
+                        .unwrap_or(429);
+
+                    // Parse rate limit key (what to bucket by)
+                    let key = get_string_entry(child, "key")
+                        .map(|s| match s.as_str() {
+                            "client-ip" => RateLimitKey::ClientIp,
+                            "path" => RateLimitKey::Path,
+                            "route" => RateLimitKey::Route,
+                            "client-ip-and-path" => RateLimitKey::ClientIpAndPath,
+                            header if header.starts_with("header:") => {
+                                RateLimitKey::Header(header.trim_start_matches("header:").to_string())
+                            }
+                            _ => RateLimitKey::ClientIp,
+                        })
+                        .unwrap_or(RateLimitKey::ClientIp);
+
+                    // Parse action when limit is exceeded
+                    let on_limit = get_string_entry(child, "on-limit")
+                        .map(|s| match s.as_str() {
+                            "reject" => RateLimitAction::Reject,
+                            "delay" => RateLimitAction::Delay,
+                            "log-only" => RateLimitAction::LogOnly,
+                            _ => RateLimitAction::Reject,
+                        })
+                        .unwrap_or(RateLimitAction::Reject);
+
+                    Filter::RateLimit(RateLimitFilter {
+                        max_rps,
+                        burst,
+                        key,
+                        on_limit,
+                        status_code,
+                        limit_message: get_string_entry(child, "message"),
+                    })
+                }
+                "agent" => {
+                    let agent = get_first_arg_string(child).ok_or_else(|| {
+                        anyhow::anyhow!("agent filter requires an agent ID")
+                    })?;
+                    let timeout_ms = get_int_entry(child, "timeout-ms").map(|v| v as u64);
+                    let failure_mode = get_string_entry(child, "failure-mode")
+                        .and_then(|s| match s.as_str() {
+                            "open" => Some(FailureMode::Open),
+                            "closed" => Some(FailureMode::Closed),
+                            _ => None,
+                        });
+
+                    Filter::Agent(AgentFilter {
+                        agent,
+                        phase: None,
+                        timeout_ms,
+                        failure_mode,
+                        inspect_body: get_bool_entry(child, "inspect-body").unwrap_or(false),
+                        max_body_bytes: get_int_entry(child, "max-body-bytes").map(|v| v as usize),
+                    })
+                }
+                "headers" => {
+                    let mut set = std::collections::HashMap::new();
+                    let mut add = std::collections::HashMap::new();
+                    let mut remove = Vec::new();
+
+                    if let Some(header_children) = child.children() {
+                        for header_child in header_children.nodes() {
+                            match header_child.name().value() {
+                                "set" => {
+                                    // set "Header-Name" "value"
+                                    if let (Some(name), Some(value)) = (
+                                        header_child.entries().first().and_then(|e| e.value().as_string()),
+                                        header_child.entries().get(1).and_then(|e| e.value().as_string()),
+                                    ) {
+                                        set.insert(name.to_string(), value.to_string());
+                                    }
+                                }
+                                "add" => {
+                                    if let (Some(name), Some(value)) = (
+                                        header_child.entries().first().and_then(|e| e.value().as_string()),
+                                        header_child.entries().get(1).and_then(|e| e.value().as_string()),
+                                    ) {
+                                        add.insert(name.to_string(), value.to_string());
+                                    }
+                                }
+                                "remove" => {
+                                    if let Some(name) = get_first_arg_string(header_child) {
+                                        remove.push(name);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    let phase = get_string_entry(child, "phase")
+                        .and_then(|s| match s.as_str() {
+                            "request" => Some(FilterPhase::Request),
+                            "response" => Some(FilterPhase::Response),
+                            "both" => Some(FilterPhase::Both),
+                            _ => None,
+                        })
+                        .unwrap_or(FilterPhase::Request);
+
+                    Filter::Headers(HeadersFilter { phase, set, add, remove })
+                }
+                "compress" => {
+                    let algorithms_str = get_string_entry(child, "algorithms")
+                        .unwrap_or_else(|| "gzip,br".to_string());
+                    let algorithms: Vec<CompressionAlgorithm> = algorithms_str
+                        .split(',')
+                        .filter_map(|s| match s.trim() {
+                            "gzip" => Some(CompressionAlgorithm::Gzip),
+                            "br" | "brotli" => Some(CompressionAlgorithm::Brotli),
+                            "deflate" => Some(CompressionAlgorithm::Deflate),
+                            "zstd" => Some(CompressionAlgorithm::Zstd),
+                            _ => None,
+                        })
+                        .collect();
+
+                    let min_size = get_int_entry(child, "min-size")
+                        .map(|v| v as usize)
+                        .unwrap_or(1024);
+
+                    Filter::Compress(CompressFilter {
+                        algorithms,
+                        min_size,
+                        content_types: vec![
+                            "text/html".into(),
+                            "text/css".into(),
+                            "application/json".into(),
+                            "application/javascript".into(),
+                        ],
+                        level: 6,
+                    })
+                }
+                "cors" => {
+                    Filter::Cors(CorsFilter::default())
+                }
+                "timeout" => {
+                    Filter::Timeout(TimeoutFilter {
+                        request_timeout_secs: get_int_entry(child, "request-timeout-secs").map(|v| v as u64),
+                        upstream_timeout_secs: get_int_entry(child, "upstream-timeout-secs").map(|v| v as u64),
+                        connect_timeout_secs: get_int_entry(child, "connect-timeout-secs").map(|v| v as u64),
+                    })
+                }
+                "log" => {
+                    Filter::Log(LogFilter {
+                        log_request: get_bool_entry(child, "log-request").unwrap_or(true),
+                        log_response: get_bool_entry(child, "log-response").unwrap_or(true),
+                        log_body: get_bool_entry(child, "log-body").unwrap_or(false),
+                        max_body_log_size: get_int_entry(child, "max-body-log-size")
+                            .map(|v| v as usize)
+                            .unwrap_or(4096),
+                        fields: vec![],
+                        level: get_string_entry(child, "level").unwrap_or_else(|| "info".to_string()),
+                    })
+                }
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "Unknown filter type: '{}'. Valid types: rate-limit, agent, headers, compress, cors, timeout, log",
+                        other
+                    ));
+                }
+            };
+            filters.push(filter);
+        }
+    }
+
+    Ok(filters)
 }
 
 /// Parse upstreams configuration block

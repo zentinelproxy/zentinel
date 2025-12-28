@@ -68,11 +68,11 @@ route "api-public" {
         }
     }
 
-    // Agents to apply
-    agents [
-        "rate-limiter"
-        "cors-handler"
-    ]
+    // Filters to apply (in execution order)
+    filters {
+        agent "rate-limiter"
+        agent "cors-handler"
+    }
 }
 
 // Authenticated API endpoints
@@ -88,12 +88,12 @@ route "api-authenticated" {
 
     upstream "api-backend-v1"
 
-    // Authentication required
-    agents [
-        "auth-jwt"       // JWT validation
-        "rate-limiter"   // Rate limiting
-        "waf"           // WAF protection
-    ]
+    // Authentication required (filters in execution order)
+    filters {
+        agent "auth-jwt"       // JWT validation
+        agent "rate-limiter"   // Rate limiting
+        agent "waf"           // WAF protection
+    }
 
     // Auth agent configuration
     agent-config "auth-jwt" {
@@ -176,11 +176,11 @@ route "graphql" {
 
     upstream "graphql-backend"
 
-    agents [
-        "auth-jwt"
-        "graphql-validator"
-        "rate-limiter"
-    ]
+    filters {
+        agent "auth-jwt"
+        agent "graphql-validator"
+        agent "rate-limiter"
+    }
 
     // GraphQL-specific configuration
     agent-config "graphql-validator" {
@@ -247,10 +247,10 @@ route "websocket-api" {
         algorithm "ip-hash"
     }
 
-    agents [
-        "auth-jwt"
-        "websocket-filter"
-    ]
+    filters {
+        agent "auth-jwt"
+        agent "websocket-filter"
+    }
 
     request {
         timeout "120s"  // Longer timeout for WebSocket upgrade
@@ -280,11 +280,11 @@ route "admin-api" {
         deny-all true
     }
 
-    agents [
-        "auth-mtls"     // mTLS authentication
-        "audit-logger"  // Audit all admin actions
-        "waf"
-    ]
+    filters {
+        agent "auth-mtls"     // mTLS authentication
+        agent "audit-logger"  // Audit all admin actions
+        agent "waf"
+    }
 
     // mTLS configuration
     agent-config "auth-mtls" {
@@ -340,8 +340,8 @@ route "health" {
         }
     }
 
-    // No agents needed for health checks
-    agents []
+    // No filters needed for health checks
+    filters {}
 
     // No rate limiting for health checks from monitoring
     rate-limit {
@@ -370,7 +370,9 @@ route "metrics" {
     }
 
     // Basic auth for metrics
-    agents ["auth-basic"]
+    filters {
+        agent "auth-basic"
+    }
 
     agent-config "auth-basic" {
         realm "Metrics"

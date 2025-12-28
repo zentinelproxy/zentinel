@@ -42,6 +42,58 @@ listeners {
     }
 }
 
+// ============================================================================
+// Filter Definitions
+// Named filter instances that can be referenced by routes
+// ============================================================================
+filters {
+    // Authentication filter - fail-closed for security
+    filter "auth" {
+        type "agent"
+        agent "auth-agent"
+        timeout-ms 100
+        failure-mode "closed"
+    }
+
+    // Rate limiting filter - fail-open to avoid blocking traffic
+    filter "rate-limit" {
+        type "agent"
+        agent "rate-limit-agent"
+        timeout-ms 50
+        failure-mode "open"
+    }
+
+    // WAF filter - fail-closed for security
+    filter "waf" {
+        type "agent"
+        agent "waf-agent"
+        timeout-ms 200
+        failure-mode "closed"
+        inspect-body true
+    }
+
+    // Built-in rate limit filter (alternative to agent)
+    filter "api-rate-limit" {
+        type "rate-limit"
+        max-rps 100
+        burst 200
+        key "client-ip"
+        on-limit "reject"
+    }
+
+    // Response compression filter
+    filter "compress" {
+        type "compress"
+        algorithms "gzip,br"
+        min-size 1024
+    }
+
+    // CORS filter for API routes
+    filter "cors" {
+        type "cors"
+    }
+}
+
 // Route configurations
 routes {
     // API routes with high priority
@@ -75,7 +127,8 @@ routes {
             }
         }
 
-        agents ["auth-agent" "rate-limit-agent"]
+        // Filter chain: executed in array order
+        filters ["auth" "rate-limit"]
         waf-enabled true
 
         circuit-breaker {
@@ -117,7 +170,7 @@ routes {
         }
     }
 
-    // Health check endpoint (no upstream)
+    // Health check endpoint (no filters needed)
     route "health" {
         priority "high"
 

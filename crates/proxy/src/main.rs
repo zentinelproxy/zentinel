@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 mod agents;
 mod app;
+mod builtin_handlers;
 mod config;
 mod errors;
 mod health;
@@ -35,6 +36,7 @@ mod validation;
 
 use crate::agents::{AgentCallContext, AgentManager};
 use crate::app::AppState;
+use crate::builtin_handlers::BuiltinHandlerState;
 use crate::errors::ErrorHandler;
 use crate::health::PassiveHealthChecker;
 use crate::reload::{
@@ -76,26 +78,39 @@ pub struct SentinelProxy {
     validators: Arc<RwLock<HashMap<String, Arc<SchemaValidator>>>>,
     /// Static file servers per route
     static_servers: Arc<RwLock<HashMap<String, Arc<StaticFileServer>>>>,
+    /// Builtin handler state
+    builtin_state: Arc<BuiltinHandlerState>,
 }
 
 impl SentinelProxy {
     /// Create new proxy instance with Phase 2 features
-    pub async fn new(config_path: &str) -> Result<Self> {
+    ///
+    /// If config_path is None, uses the embedded default configuration.
+    pub async fn new(config_path: Option<&str>) -> Result<Self> {
         // Initialize tracing
         init_tracing()?;
 
         info!("Starting Sentinel Proxy Phase 2");
 
         // Load initial configuration
-        let config =
-            Config::from_file(config_path).context("Failed to load initial configuration")?;
+        let (config, effective_config_path) = match config_path {
+            Some(path) => {
+                let cfg = Config::from_file(path).context("Failed to load configuration file")?;
+                (cfg, path.to_string())
+            }
+            None => {
+                let cfg = Config::default_embedded().context("Failed to load embedded default configuration")?;
+                // Use a sentinel path to indicate embedded config
+                (cfg, "_embedded_".to_string())
+            }
+        };
 
         config
             .validate()
             .context("Initial configuration validation failed")?;
 
         // Create configuration manager
-        let config_manager = Arc::new(ConfigManager::new(config_path, config.clone()).await?);
+        let config_manager = Arc::new(ConfigManager::new(&effective_config_path, config.clone()).await?);
 
         // Add validators
         config_manager.add_validator(Box::new(RouteValidator)).await;
@@ -256,6 +271,12 @@ impl SentinelProxy {
         let validators = Arc::new(RwLock::new(validators_map));
         let static_servers = Arc::new(RwLock::new(static_servers_map));
 
+        // Create builtin handler state
+        let builtin_state = Arc::new(BuiltinHandlerState::new(
+            env!("CARGO_PKG_VERSION").to_string(),
+            app_state.instance_id.clone(),
+        ));
+
         // Mark as ready
         app_state.set_ready(true);
 
@@ -271,6 +292,7 @@ impl SentinelProxy {
             error_handlers,
             validators,
             static_servers,
+            builtin_state,
         })
     }
 
@@ -637,6 +659,62 @@ impl ProxyHttp for SentinelProxy {
                         }
                     }
                 }
+            } else if route_match.config.service_type == sentinel_config::ServiceType::Builtin {
+                // Handle builtin routes (status, health, metrics)
+                ctx.route_id = Some(route_match.route_id.to_string());
+                let route_id = route_match.route_id.as_str();
+
+                if let Some(handler) = route_match.config.builtin_handler {
+                    let request_id = self.get_correlation_id(session);
+                    ctx.correlation_id = request_id.clone();
+
+                    let response = builtin_handlers::execute_handler(
+                        handler,
+                        &self.builtin_state,
+                        &request_id,
+                    );
+
+                    // Convert response to Pingora format
+                    let status = response.status().as_u16();
+
+                    // Collect headers to owned strings
+                    let headers_owned: Vec<(String, String)> = response
+                        .headers()
+                        .iter()
+                        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                        .collect();
+
+                    // Get the body
+                    let full_body = response.into_body();
+                    let body_bytes: bytes::Bytes = http_body_util::BodyExt::collect(full_body)
+                        .await
+                        .map(|collected| collected.to_bytes())
+                        .unwrap_or_default();
+
+                    let mut resp_header = ResponseHeader::build(status, None)?;
+                    for (key, value) in headers_owned {
+                        resp_header.insert_header(key, &value)?;
+                    }
+
+                    // Write response to session
+                    session.set_keepalive(None);
+                    session.write_response_header(Box::new(resp_header), false).await?;
+                    session.write_response_body(Some(body_bytes), true).await?;
+
+                    info!(
+                        correlation_id = %ctx.correlation_id,
+                        route_id = route_id,
+                        handler = ?handler,
+                        "Served builtin handler"
+                    );
+
+                    return Ok(true); // Skip upstream
+                } else {
+                    warn!(
+                        "Builtin route {} has no builtin_handler configured",
+                        route_id
+                    );
+                }
             }
         }
 
@@ -815,11 +893,26 @@ impl ProxyHttp for SentinelProxy {
             // Get route configuration to find which agents to apply
             let routes = config.routes.clone();
             if let Some(route) = routes.iter().find(|r| r.id == *route_id) {
-                if !route.agents.is_empty() {
+                // Extract agent IDs from filter chain by looking up filter definitions
+                let agent_ids: Vec<String> = route
+                    .filters
+                    .iter()
+                    .filter_map(|filter_id| {
+                        config.filters.get(filter_id).and_then(|filter_config| {
+                            if let sentinel_config::Filter::Agent(agent_filter) = &filter_config.filter {
+                                Some(agent_filter.agent.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+
+                if !agent_ids.is_empty() {
                     debug!(
                         correlation_id = %ctx.correlation_id,
                         route_id = %route_id,
-                        agents = ?route.agents,
+                        agents = ?agent_ids,
                         "Processing request through agents"
                     );
 
@@ -857,7 +950,7 @@ impl ProxyHttp for SentinelProxy {
                     // Process through agents
                     match self
                         .agent_manager
-                        .process_request_headers(&agent_ctx, &headers_map, &route.agents)
+                        .process_request_headers(&agent_ctx, &headers_map, &agent_ids)
                         .await
                     {
                         Ok(decision) => {
@@ -1064,20 +1157,22 @@ fn main() -> Result<()> {
     // Parse command-line options
     let opt = Opt::parse_args();
 
-    // Get config path with priority: -c flag > SENTINEL_CONFIG env > default
-    let config_path = opt
+    // Get config path with priority: -c flag > SENTINEL_CONFIG env > None (use embedded default)
+    let config_path: Option<String> = opt
         .conf
         .clone()
-        .or_else(|| std::env::var("SENTINEL_CONFIG").ok())
-        .unwrap_or_else(|| "config/sentinel.kdl".to_string());
+        .or_else(|| std::env::var("SENTINEL_CONFIG").ok());
 
-    info!("Loading configuration from: {}", config_path);
+    match &config_path {
+        Some(path) => info!("Loading configuration from: {}", path),
+        None => info!("No configuration specified, using embedded default configuration"),
+    }
 
     // Create runtime for async initialization
     let runtime = tokio::runtime::Runtime::new()?;
 
-    // Create proxy with Phase 1 features
-    let proxy = runtime.block_on(async { SentinelProxy::new(&config_path).await })?;
+    // Create proxy with configuration
+    let proxy = runtime.block_on(async { SentinelProxy::new(config_path.as_deref()).await })?;
 
     // Get initial config for server setup
     let config = proxy.config_manager.current();
