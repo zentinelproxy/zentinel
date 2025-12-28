@@ -33,7 +33,10 @@ COPY crates/common/Cargo.toml crates/common/Cargo.toml
 COPY agents/echo/Cargo.toml agents/echo/Cargo.toml
 
 # Create dummy source files for dependency compilation
-RUN mkdir -p crates/proxy/src && echo "fn main() {}" > crates/proxy/src/main.rs && \
+# sentinel-proxy has both lib.rs and main.rs (binary + library)
+RUN mkdir -p crates/proxy/src && \
+    echo "fn main() {}" > crates/proxy/src/main.rs && \
+    echo "" > crates/proxy/src/lib.rs && \
     mkdir -p crates/agent-protocol/src && echo "" > crates/agent-protocol/src/lib.rs && \
     mkdir -p crates/config/src && echo "" > crates/config/src/lib.rs && \
     mkdir -p crates/common/src && echo "" > crates/common/src/lib.rs && \
