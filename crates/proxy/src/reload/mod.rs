@@ -1,7 +1,21 @@
-//! Configuration hot reload module for Sentinel proxy
+//! Configuration hot reload module for Sentinel proxy.
 //!
 //! This module implements zero-downtime configuration reloading with validation,
 //! atomic swaps, and rollback support for production reliability.
+//!
+//! ## Submodules
+//!
+//! - [`coordinator`]: Graceful reload coordination and request draining
+//! - [`signals`]: OS signal handling (SIGHUP, SIGTERM)
+//! - [`validators`]: Runtime configuration validators
+
+mod coordinator;
+mod signals;
+mod validators;
+
+pub use coordinator::GracefulReloadCoordinator;
+pub use signals::{SignalManager, SignalType};
+pub use validators::{RouteValidator, UpstreamValidator};
 
 use arc_swap::ArcSwap;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -14,25 +28,9 @@ use tracing::{debug, error, info, warn};
 use sentinel_common::errors::{SentinelError, SentinelResult};
 use sentinel_config::Config;
 
-/// Configuration manager with hot reload support
-pub struct ConfigManager {
-    /// Current active configuration
-    current_config: Arc<ArcSwap<Config>>,
-    /// Previous configuration for rollback
-    previous_config: Arc<RwLock<Option<Arc<Config>>>>,
-    /// Configuration file path
-    config_path: PathBuf,
-    /// File watcher for auto-reload (uses RwLock for interior mutability)
-    watcher: Arc<RwLock<Option<notify::RecommendedWatcher>>>,
-    /// Reload event broadcaster
-    reload_tx: broadcast::Sender<ReloadEvent>,
-    /// Reload statistics
-    stats: Arc<ReloadStats>,
-    /// Validation hooks
-    validators: Arc<RwLock<Vec<Box<dyn ConfigValidator>>>>,
-    /// Reload hooks
-    reload_hooks: Arc<RwLock<Vec<Box<dyn ReloadHook>>>>,
-}
+// ============================================================================
+// Reload Events and Types
+// ============================================================================
 
 /// Reload event types
 #[derive(Debug, Clone)]
@@ -65,6 +63,10 @@ pub enum ReloadTrigger {
     Scheduled,
 }
 
+// ============================================================================
+// Traits
+// ============================================================================
+
 /// Configuration validator trait
 #[async_trait::async_trait]
 pub trait ConfigValidator: Send + Sync {
@@ -91,6 +93,10 @@ pub trait ReloadHook: Send + Sync {
     fn name(&self) -> &str;
 }
 
+// ============================================================================
+// Reload Statistics
+// ============================================================================
+
 /// Reload statistics
 #[derive(Default)]
 pub struct ReloadStats {
@@ -108,6 +114,30 @@ pub struct ReloadStats {
     pub last_failure: RwLock<Option<Instant>>,
     /// Average reload duration
     pub avg_duration_ms: RwLock<f64>,
+}
+
+// ============================================================================
+// Configuration Manager
+// ============================================================================
+
+/// Configuration manager with hot reload support
+pub struct ConfigManager {
+    /// Current active configuration
+    current_config: Arc<ArcSwap<Config>>,
+    /// Previous configuration for rollback
+    previous_config: Arc<RwLock<Option<Arc<Config>>>>,
+    /// Configuration file path
+    config_path: PathBuf,
+    /// File watcher for auto-reload (uses RwLock for interior mutability)
+    watcher: Arc<RwLock<Option<notify::RecommendedWatcher>>>,
+    /// Reload event broadcaster
+    reload_tx: broadcast::Sender<ReloadEvent>,
+    /// Reload statistics
+    stats: Arc<ReloadStats>,
+    /// Validation hooks
+    validators: Arc<RwLock<Vec<Box<dyn ConfigValidator>>>>,
+    /// Reload hooks
+    reload_hooks: Arc<RwLock<Vec<Box<dyn ReloadHook>>>>,
 }
 
 impl ConfigManager {
@@ -404,279 +434,9 @@ impl ConfigManager {
     }
 }
 
-/// Route configuration validator
-///
-/// Performs runtime-specific route validation that complements the schema-level
-/// validation in sentinel-config. This validator focuses on aspects that may
-/// change during hot reload.
-pub struct RouteValidator;
-
-#[async_trait::async_trait]
-impl ConfigValidator for RouteValidator {
-    async fn validate(&self, config: &Config) -> SentinelResult<()> {
-        // Most validation is now handled by Config's validate_config_semantics
-        // This validator handles runtime-specific checks
-
-        // Check for routes with both upstream and static-files (ambiguous config)
-        for route in &config.routes {
-            if route.upstream.is_some() && route.static_files.is_some() {
-                return Err(SentinelError::Config {
-                    message: format!(
-                        "Route '{}' has both 'upstream' and 'static-files' configured.\n\
-                         A route can only be one type. Choose either:\n\
-                         - Remove 'upstream' to serve static files\n\
-                         - Remove 'static-files' to proxy to upstream",
-                        route.id
-                    ),
-                    source: None,
-                });
-            }
-        }
-
-        // Check for static routes with non-existent root directories
-        for route in &config.routes {
-            if let Some(ref static_config) = route.static_files {
-                if !static_config.root.exists() {
-                    return Err(SentinelError::Config {
-                        message: format!(
-                            "Route '{}' static files root directory '{}' does not exist.\n\
-                             Hint: Create the directory or update the path:\n\
-                             \n\
-                             mkdir -p {}\n\
-                             \n\
-                             Or change the configuration:\n\
-                             static-files {{\n\
-                                 root \"/path/to/existing/directory\"\n\
-                             }}",
-                            route.id,
-                            static_config.root.display(),
-                            static_config.root.display()
-                        ),
-                        source: None,
-                    });
-                }
-
-                if !static_config.root.is_dir() {
-                    return Err(SentinelError::Config {
-                        message: format!(
-                            "Route '{}' static files root '{}' is not a directory.\n\
-                             The 'root' must be a directory path, not a file.",
-                            route.id,
-                            static_config.root.display()
-                        ),
-                        source: None,
-                    });
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "RouteValidator"
-    }
-}
-
-/// Upstream configuration validator
-///
-/// Performs runtime-specific upstream validation. The schema-level validation
-/// in sentinel-config handles most checks; this focuses on network reachability
-/// and runtime concerns.
-pub struct UpstreamValidator;
-
-#[async_trait::async_trait]
-impl ConfigValidator for UpstreamValidator {
-    async fn validate(&self, config: &Config) -> SentinelResult<()> {
-        // Most validation is now handled by Config's validate_config_semantics
-        // This validator handles runtime-specific checks
-
-        for (name, upstream) in &config.upstreams {
-            // Validate target addresses can be parsed (supports hostnames)
-            for (i, target) in upstream.targets.iter().enumerate() {
-                // Try as socket address first
-                if target.address.parse::<std::net::SocketAddr>().is_ok() {
-                    continue;
-                }
-
-                // Try as host:port format
-                let parts: Vec<&str> = target.address.rsplitn(2, ':').collect();
-                if parts.len() == 2 {
-                    if let Ok(port) = parts[0].parse::<u16>() {
-                        if port > 0 {
-                            continue; // Valid host:port format
-                        }
-                    }
-                }
-
-                return Err(SentinelError::Config {
-                    message: format!(
-                        "Upstream '{}' target #{} has invalid address '{}'.\n\
-                         \n\
-                         Expected format: HOST:PORT\n\
-                         \n\
-                         Valid examples:\n\
-                         - 127.0.0.1:8080 (IPv4)\n\
-                         - [::1]:8080 (IPv6)\n\
-                         - backend.local:8080 (hostname)\n\
-                         - api-server:3000 (service name)",
-                        name,
-                        i + 1,
-                        target.address
-                    ),
-                    source: None,
-                });
-            }
-
-            // Warn about upstreams with only one target (no redundancy)
-            if upstream.targets.len() == 1 {
-                tracing::warn!(
-                    upstream = %name,
-                    "Upstream '{}' has only one target. Consider adding more targets for redundancy.",
-                    name
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "UpstreamValidator"
-    }
-}
-
-/// Graceful reload coordinator
-pub struct GracefulReloadCoordinator {
-    /// Active requests counter
-    active_requests: Arc<std::sync::atomic::AtomicUsize>,
-    /// Maximum wait time for draining
-    max_drain_time: Duration,
-    /// Shutdown flag
-    shutdown_requested: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl GracefulReloadCoordinator {
-    /// Create new coordinator
-    pub fn new(max_drain_time: Duration) -> Self {
-        Self {
-            active_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            max_drain_time,
-            shutdown_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
-
-    /// Increment active request count
-    pub fn inc_requests(&self) {
-        self.active_requests
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Decrement active request count
-    pub fn dec_requests(&self) {
-        self.active_requests
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Wait for active requests to drain
-    pub async fn wait_for_drain(&self) -> bool {
-        let start = Instant::now();
-
-        while self
-            .active_requests
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0
-        {
-            if start.elapsed() > self.max_drain_time {
-                warn!(
-                    "Drain timeout reached, {} requests still active",
-                    self.active_requests
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                );
-                return false;
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        info!("All requests drained successfully");
-        true
-    }
-
-    /// Get active request count
-    pub fn active_count(&self) -> usize {
-        self.active_requests
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Request shutdown
-    pub fn request_shutdown(&self) {
-        self.shutdown_requested
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Check if shutdown was requested
-    pub fn is_shutdown_requested(&self) -> bool {
-        self.shutdown_requested
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-// ============================================================================
-// Signal Manager
-// ============================================================================
-
-/// Signal type for cross-thread communication
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignalType {
-    /// Reload configuration (SIGHUP)
-    Reload,
-    /// Graceful shutdown (SIGTERM/SIGINT)
-    Shutdown,
-}
-
-/// Signal manager for handling OS signals with async integration
-///
-/// Bridges thread-based signal handlers with the async runtime using channels.
-pub struct SignalManager {
-    /// Sender for signal notifications
-    tx: std::sync::mpsc::Sender<SignalType>,
-    /// Receiver for signal notifications (wrapped for async)
-    rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<SignalType>>>,
-}
-
-impl SignalManager {
-    /// Create a new signal manager
-    pub fn new() -> Self {
-        let (tx, rx) = std::sync::mpsc::channel();
-        Self {
-            tx,
-            rx: Arc::new(std::sync::Mutex::new(rx)),
-        }
-    }
-
-    /// Get a sender for use in signal handlers
-    pub fn sender(&self) -> std::sync::mpsc::Sender<SignalType> {
-        self.tx.clone()
-    }
-
-    /// Receive the next signal (blocking)
-    ///
-    /// This should be called from an async context using spawn_blocking
-    pub fn recv_blocking(&self) -> Option<SignalType> {
-        self.rx.lock().ok()?.recv().ok()
-    }
-
-    /// Try to receive a signal without blocking
-    pub fn try_recv(&self) -> Option<SignalType> {
-        self.rx.lock().ok()?.try_recv().ok()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_config::Config;
 
     #[tokio::test]
     async fn test_config_reload_rejects_invalid_config() {
@@ -691,7 +451,9 @@ mod tests {
         std::fs::write(&config_path, "this is not valid KDL { {{{{ broken").unwrap();
 
         // Create config manager with valid initial config
-        let manager = ConfigManager::new(&config_path, initial_config).await.unwrap();
+        let manager = ConfigManager::new(&config_path, initial_config)
+            .await
+            .unwrap();
 
         // Verify initial config is loaded
         assert_eq!(manager.current().routes.len(), initial_routes);
@@ -709,7 +471,10 @@ mod tests {
 
         // Verify failure was recorded in stats
         assert_eq!(
-            manager.stats().failed_reloads.load(std::sync::atomic::Ordering::Relaxed),
+            manager
+                .stats()
+                .failed_reloads
+                .load(std::sync::atomic::Ordering::Relaxed),
             1,
             "Failed reload should be recorded"
         );
@@ -727,79 +492,57 @@ mod tests {
         std::fs::create_dir_all(&static_dir).unwrap();
 
         // Write a valid config with upstream
-        let valid_config = format!(r#"
-server {{
+        let valid_config = r#"
+server {
     worker-threads 4
-}}
+}
 
-listeners {{
-    listener "http" {{
+listeners {
+    listener "http" {
         address "0.0.0.0:8080"
         protocol "http"
-    }}
-}}
+    }
+}
 
-upstreams {{
-    upstream "backend" {{
+upstreams {
+    upstream "backend" {
         target "127.0.0.1:3000"
-    }}
-}}
+    }
+}
 
-routes {{
-    route "api" {{
+routes {
+    route "api" {
         priority "high"
-        matches {{
+        matches {
             path-prefix "/api/"
-        }}
+        }
         upstream "backend"
-    }}
-}}
-"#);
+    }
+}
+"#;
         std::fs::write(&config_path, valid_config).unwrap();
 
         // Create config manager
-        let manager = ConfigManager::new(&config_path, initial_config).await.unwrap();
+        let manager = ConfigManager::new(&config_path, initial_config)
+            .await
+            .unwrap();
 
         // Reload should succeed with valid config
         let result = manager.reload(ReloadTrigger::Manual).await;
-        assert!(result.is_ok(), "Reload should succeed for valid config: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Reload should succeed for valid config: {:?}",
+            result.err()
+        );
 
         // Verify success was recorded
         assert_eq!(
-            manager.stats().successful_reloads.load(std::sync::atomic::Ordering::Relaxed),
+            manager
+                .stats()
+                .successful_reloads
+                .load(std::sync::atomic::Ordering::Relaxed),
             1,
             "Successful reload should be recorded"
         );
-    }
-
-    #[tokio::test]
-    async fn test_graceful_coordinator() {
-        let coordinator = GracefulReloadCoordinator::new(Duration::from_secs(1));
-
-        // Simulate active requests
-        coordinator.inc_requests();
-        coordinator.inc_requests();
-        assert_eq!(coordinator.active_count(), 2);
-
-        coordinator.dec_requests();
-        assert_eq!(coordinator.active_count(), 1);
-
-        coordinator.dec_requests();
-        assert_eq!(coordinator.active_count(), 0);
-
-        // Test drain
-        let drained = coordinator.wait_for_drain().await;
-        assert!(drained);
-    }
-
-    #[tokio::test]
-    async fn test_graceful_coordinator_shutdown_flag() {
-        let coordinator = GracefulReloadCoordinator::new(Duration::from_secs(1));
-
-        assert!(!coordinator.is_shutdown_requested());
-
-        coordinator.request_shutdown();
-
-        assert!(coordinator.is_shutdown_requested());
     }
 }

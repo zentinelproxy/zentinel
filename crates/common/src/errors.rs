@@ -188,25 +188,6 @@ impl fmt::Display for LimitType {
 /// Result type alias for Sentinel operations
 pub type SentinelResult<T> = Result<T, SentinelError>;
 
-/// Error context for operational visibility
-#[derive(Debug, Clone)]
-pub struct ErrorContext {
-    pub correlation_id: String,
-    pub route: Option<String>,
-    pub upstream: Option<String>,
-    pub client_addr: Option<String>,
-    pub failure_mode: FailureMode,
-}
-
-/// Failure mode for degraded operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailureMode {
-    /// Allow traffic through on failure (fail-open)
-    Open,
-    /// Block traffic on failure (fail-closed)
-    Closed,
-}
-
 impl SentinelError {
     /// Determine if this error should trigger a circuit breaker
     pub fn is_circuit_breaker_eligible(&self) -> bool {
@@ -339,25 +320,6 @@ impl SentinelError {
             _ => {}
         }
         self
-    }
-}
-
-/// Extension trait for adding context to errors
-pub trait ErrorContextExt {
-    /// Add Sentinel-specific context to the error
-    fn context_sentinel(self, context: ErrorContext) -> SentinelError;
-}
-
-impl<E> ErrorContextExt for E
-where
-    E: std::error::Error + Send + Sync + 'static,
-{
-    fn context_sentinel(self, context: ErrorContext) -> SentinelError {
-        SentinelError::Internal {
-            message: format!("Error in route {:?}: {}", context.route, self),
-            correlation_id: Some(context.correlation_id),
-            source: Some(Box::new(self)),
-        }
     }
 }
 

@@ -7,6 +7,7 @@ pub mod circuit_breaker;
 pub mod errors;
 pub mod limits;
 pub mod observability;
+pub mod registry;
 pub mod types;
 
 // Re-export commonly used items at the crate root
@@ -30,3 +31,6 @@ pub use types::{CorrelationId, RequestId, TraceIdFormat};
 
 // Re-export circuit breaker
 pub use circuit_breaker::CircuitBreaker;
+
+// Re-export registry
+pub use registry::Registry;

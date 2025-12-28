@@ -101,3 +101,6 @@ pub use trace_id::{generate_for_format, generate_tinyflake, generate_uuid, Trace
 pub use logging::{
     AccessLogEntry, AccessLogFormat, AuditLogEntry, ErrorLogEntry, LogManager, SharedLogManager,
 };
+
+// Re-export common error types for convenience
+pub use sentinel_common::errors::{LimitType, SentinelError, SentinelResult};

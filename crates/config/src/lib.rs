@@ -13,7 +13,7 @@
 //! - [`observability`]: Metrics, logging, and tracing configuration
 //! - [`filters`]: Filter types for request/response processing
 //! - [`validation`]: Configuration validation functions
-//! - [`kdl_parser`]: KDL format parsing
+//! - [`kdl`]: KDL format parsing
 //! - [`defaults`]: Default embedded configuration
 //! - [`multi_file`]: Multi-file configuration loading
 
@@ -36,7 +36,7 @@ use sentinel_common::{
 pub mod agents;
 mod defaults;
 pub mod filters;
-mod kdl_parser;
+mod kdl;
 pub mod multi_file;
 pub mod observability;
 pub mod routes;
@@ -182,7 +182,7 @@ impl Config {
 
     /// Parse configuration from KDL format
     pub fn from_kdl(content: &str) -> Result<Self> {
-        let doc: kdl::KdlDocument = content.parse().map_err(|e: kdl::KdlError| {
+        let doc: ::kdl::KdlDocument = content.parse().map_err(|e: ::kdl::KdlError| {
             use miette::Diagnostic;
 
             let mut error_msg = String::new();
@@ -198,7 +198,7 @@ impl Config {
                     if let Some(labels) = diagnostic.labels() {
                         for label in labels {
                             let offset = label.offset();
-                            let (line, col) = kdl_parser::offset_to_line_col(content, offset);
+                            let (line, col) = kdl::offset_to_line_col(content, offset);
                             error_msg
                                 .push_str(&format!("\n  --> at line {}, column {}\n", line, col));
 
@@ -249,7 +249,7 @@ impl Config {
             anyhow::anyhow!("{}", error_msg)
         })?;
 
-        kdl_parser::parse_kdl_document(doc)
+        kdl::parse_kdl_document(doc)
     }
 
     /// Parse configuration from JSON format
