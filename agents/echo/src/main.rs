@@ -10,22 +10,32 @@ use std::path::PathBuf;
 use tracing::{debug, info};
 
 use sentinel_agent_protocol::{
-    AgentHandler, AgentResponse, AgentServer, AuditMetadata, HeaderOp, RequestBodyChunkEvent,
-    RequestCompleteEvent, RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent,
+    AgentHandler, AgentResponse, AgentServer, AuditMetadata, GrpcAgentServer, HeaderOp,
+    RequestBodyChunkEvent, RequestCompleteEvent, RequestHeadersEvent, ResponseBodyChunkEvent,
+    ResponseHeadersEvent,
 };
 
 /// Echo agent command-line arguments
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Unix socket path to listen on
+    /// Unix socket path to listen on (mutually exclusive with --grpc)
     #[arg(
         short,
         long,
         env = "ECHO_AGENT_SOCKET",
-        default_value = "/tmp/echo-agent.sock"
+        conflicts_with = "grpc"
     )]
-    socket: PathBuf,
+    socket: Option<PathBuf>,
+
+    /// gRPC address to listen on (e.g., "0.0.0.0:50051")
+    #[arg(
+        short,
+        long,
+        env = "ECHO_AGENT_GRPC",
+        conflicts_with = "socket"
+    )]
+    grpc: Option<String>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, env = "ECHO_AGENT_LOG_LEVEL", default_value = "info")]
@@ -370,27 +380,75 @@ async fn main() -> Result<()> {
         .json()
         .init();
 
-    info!(
-        version = env!("CARGO_PKG_VERSION"),
-        socket = ?args.socket,
-        prefix = %args.prefix,
-        verbose = args.verbose,
-        "Starting echo agent"
-    );
+    // Determine transport mode
+    match (&args.socket, &args.grpc) {
+        (Some(socket), None) => {
+            info!(
+                version = env!("CARGO_PKG_VERSION"),
+                socket = ?socket,
+                prefix = %args.prefix,
+                verbose = args.verbose,
+                "Starting echo agent (Unix socket)"
+            );
 
-    // Create echo agent
-    let agent = Box::new(EchoAgent::new(args.prefix, args.verbose));
+            let agent = Box::new(EchoAgent::new(args.prefix, args.verbose));
+            let server = AgentServer::new("echo-agent", socket, agent);
 
-    // Create and run server
-    let server = AgentServer::new("echo-agent", args.socket, agent);
+            info!("Echo agent ready and listening on Unix socket");
 
-    info!("Echo agent ready and listening");
+            server
+                .run()
+                .await
+                .context("Failed to run echo agent server")?;
+        }
+        (None, Some(grpc_addr)) => {
+            info!(
+                version = env!("CARGO_PKG_VERSION"),
+                grpc = %grpc_addr,
+                prefix = %args.prefix,
+                verbose = args.verbose,
+                "Starting echo agent (gRPC)"
+            );
 
-    // Run server (blocks forever)
-    server
-        .run()
-        .await
-        .context("Failed to run echo agent server")?;
+            let agent = Box::new(EchoAgent::new(args.prefix, args.verbose));
+            let server = GrpcAgentServer::new("echo-agent", agent);
+            let addr = grpc_addr
+                .parse()
+                .context("Invalid gRPC address format (expected host:port)")?;
+
+            info!("Echo agent ready and listening on gRPC");
+
+            server
+                .run(addr)
+                .await
+                .context("Failed to run echo agent gRPC server")?;
+        }
+        (None, None) => {
+            // Default to Unix socket if neither specified
+            let socket = PathBuf::from("/tmp/echo-agent.sock");
+            info!(
+                version = env!("CARGO_PKG_VERSION"),
+                socket = ?socket,
+                prefix = %args.prefix,
+                verbose = args.verbose,
+                "Starting echo agent (Unix socket, default)"
+            );
+
+            let agent = Box::new(EchoAgent::new(args.prefix, args.verbose));
+            let server = AgentServer::new("echo-agent", socket, agent);
+
+            info!("Echo agent ready and listening on Unix socket");
+
+            server
+                .run()
+                .await
+                .context("Failed to run echo agent server")?;
+        }
+        (Some(_), Some(_)) => {
+            // This shouldn't happen due to clap's conflicts_with
+            unreachable!("Cannot specify both --socket and --grpc");
+        }
+    }
 
     Ok(())
 }
