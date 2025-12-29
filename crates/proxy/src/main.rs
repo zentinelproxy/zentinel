@@ -170,10 +170,31 @@ fn run_server(
     let effective_config_path = config_path
         .or_else(|| std::env::var("SENTINEL_CONFIG").ok());
 
-    match &effective_config_path {
-        Some(path) => info!("Loading configuration from: {}", path),
-        None => info!("No configuration specified, using embedded default configuration"),
-    }
+    // Handle config file creation/loading
+    let effective_config_path = match effective_config_path {
+        Some(path) => {
+            let config_path = std::path::Path::new(&path);
+            if config_path.exists() {
+                info!("Loading configuration from: {}", path);
+                Some(path)
+            } else {
+                // Config file doesn't exist - create it with default content
+                info!("Configuration file not found: {}", path);
+                if let Err(e) = create_default_config_file(config_path) {
+                    warn!("Failed to create default config file: {}", e);
+                    info!("Using embedded default configuration instead");
+                    None
+                } else {
+                    info!("Created default configuration at: {}", path);
+                    Some(path)
+                }
+            }
+        }
+        None => {
+            info!("No configuration specified, using embedded default configuration");
+            None
+        }
+    };
 
     // Create signal manager for cross-thread communication
     let signal_manager = Arc::new(SignalManager::new());
@@ -299,6 +320,28 @@ fn setup_signal_handlers(signal_tx: std::sync::mpsc::Sender<SignalType>) {
             }
         }
     });
+}
+
+/// Create a default configuration file at the specified path
+///
+/// Creates parent directories if needed and writes the embedded default config.
+fn create_default_config_file(path: &std::path::Path) -> Result<()> {
+    use std::fs;
+    use sentinel_config::DEFAULT_CONFIG_KDL;
+
+    // Create parent directories if they don't exist
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
+        }
+    }
+
+    // Write the default config
+    fs::write(path, DEFAULT_CONFIG_KDL.trim_start())
+        .with_context(|| format!("Failed to write default config to: {:?}", path))?;
+
+    Ok(())
 }
 
 /// Async signal handler task
