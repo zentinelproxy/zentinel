@@ -1,16 +1,24 @@
 //! Agent server for implementing external agents.
+//!
+//! Supports two transport mechanisms:
+//! - Unix domain sockets (length-prefixed JSON)
+//! - gRPC (Protocol Buffers over HTTP/2)
 
 use async_trait::async_trait;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info};
 
 use crate::errors::AgentProtocolError;
+use crate::grpc::{self, agent_processor_server::AgentProcessor, agent_processor_server::AgentProcessorServer};
 use crate::protocol::{
-    AgentRequest, AgentResponse, AuditMetadata, EventType, HeaderOp, RequestBodyChunkEvent,
-    RequestCompleteEvent, RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent,
-    MAX_MESSAGE_SIZE,
+    AgentRequest, AgentResponse, AuditMetadata, Decision, EventType, HeaderOp, RequestBodyChunkEvent,
+    RequestCompleteEvent, RequestHeadersEvent, RequestMetadata, ResponseBodyChunkEvent, ResponseHeadersEvent,
+    MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
 };
 
 /// Agent server for testing and reference implementations
@@ -243,5 +251,298 @@ impl AgentHandler for DenylistAgent {
         }
 
         AgentResponse::default_allow()
+    }
+}
+
+// ============================================================================
+// gRPC Server Implementation
+// ============================================================================
+
+/// gRPC agent server for implementing external agents
+pub struct GrpcAgentServer {
+    /// Agent ID
+    id: String,
+    /// Request handler
+    handler: Arc<dyn AgentHandler>,
+}
+
+impl GrpcAgentServer {
+    /// Create a new gRPC agent server
+    pub fn new(id: impl Into<String>, handler: Box<dyn AgentHandler>) -> Self {
+        Self {
+            id: id.into(),
+            handler: Arc::from(handler),
+        }
+    }
+
+    /// Get the tonic service for this agent
+    pub fn into_service(self) -> AgentProcessorServer<GrpcAgentHandler> {
+        AgentProcessorServer::new(GrpcAgentHandler {
+            id: self.id,
+            handler: self.handler,
+        })
+    }
+
+    /// Start the gRPC server on the given address
+    pub async fn run(self, addr: SocketAddr) -> Result<(), AgentProtocolError> {
+        info!("gRPC agent server '{}' listening on {}", self.id, addr);
+
+        tonic::transport::Server::builder()
+            .add_service(self.into_service())
+            .serve(addr)
+            .await
+            .map_err(|e| AgentProtocolError::ConnectionFailed(format!("gRPC server error: {}", e)))
+    }
+}
+
+/// Internal handler that implements the gRPC AgentProcessor trait
+pub struct GrpcAgentHandler {
+    id: String,
+    handler: Arc<dyn AgentHandler>,
+}
+
+#[tonic::async_trait]
+impl AgentProcessor for GrpcAgentHandler {
+    async fn process_event(
+        &self,
+        request: Request<grpc::AgentRequest>,
+    ) -> Result<Response<grpc::AgentResponse>, Status> {
+        let grpc_request = request.into_inner();
+
+        // Convert gRPC event to internal event and dispatch
+        let response = match grpc_request.event {
+            Some(grpc::agent_request::Event::RequestHeaders(e)) => {
+                let event = Self::convert_request_headers_from_grpc(e);
+                self.handler.on_request_headers(event).await
+            }
+            Some(grpc::agent_request::Event::RequestBodyChunk(e)) => {
+                let event = Self::convert_request_body_chunk_from_grpc(e);
+                self.handler.on_request_body_chunk(event).await
+            }
+            Some(grpc::agent_request::Event::ResponseHeaders(e)) => {
+                let event = Self::convert_response_headers_from_grpc(e);
+                self.handler.on_response_headers(event).await
+            }
+            Some(grpc::agent_request::Event::ResponseBodyChunk(e)) => {
+                let event = Self::convert_response_body_chunk_from_grpc(e);
+                self.handler.on_response_body_chunk(event).await
+            }
+            Some(grpc::agent_request::Event::RequestComplete(e)) => {
+                let event = Self::convert_request_complete_from_grpc(e);
+                self.handler.on_request_complete(event).await
+            }
+            None => {
+                return Err(Status::invalid_argument("Missing event in request"));
+            }
+        };
+
+        // Convert internal response to gRPC response
+        let grpc_response = Self::convert_response_to_grpc(response);
+        Ok(Response::new(grpc_response))
+    }
+
+    async fn process_event_stream(
+        &self,
+        request: Request<Streaming<grpc::AgentRequest>>,
+    ) -> Result<Response<grpc::AgentResponse>, Status> {
+        let mut stream = request.into_inner();
+
+        // Process all events in the stream, returning the final response
+        let mut final_response = AgentResponse::default_allow();
+
+        while let Some(result) = stream.next().await {
+            let grpc_request = result.map_err(|e| Status::internal(format!("Stream error: {}", e)))?;
+
+            let response = match grpc_request.event {
+                Some(grpc::agent_request::Event::RequestHeaders(e)) => {
+                    let event = Self::convert_request_headers_from_grpc(e);
+                    self.handler.on_request_headers(event).await
+                }
+                Some(grpc::agent_request::Event::RequestBodyChunk(e)) => {
+                    let event = Self::convert_request_body_chunk_from_grpc(e);
+                    self.handler.on_request_body_chunk(event).await
+                }
+                Some(grpc::agent_request::Event::ResponseHeaders(e)) => {
+                    let event = Self::convert_response_headers_from_grpc(e);
+                    self.handler.on_response_headers(event).await
+                }
+                Some(grpc::agent_request::Event::ResponseBodyChunk(e)) => {
+                    let event = Self::convert_response_body_chunk_from_grpc(e);
+                    self.handler.on_response_body_chunk(event).await
+                }
+                Some(grpc::agent_request::Event::RequestComplete(e)) => {
+                    let event = Self::convert_request_complete_from_grpc(e);
+                    self.handler.on_request_complete(event).await
+                }
+                None => continue,
+            };
+
+            // If any event results in a block/redirect, that becomes the final response
+            if !matches!(response.decision, Decision::Allow) {
+                final_response = response;
+                break;
+            }
+            final_response = response;
+        }
+
+        let grpc_response = Self::convert_response_to_grpc(final_response);
+        Ok(Response::new(grpc_response))
+    }
+}
+
+impl GrpcAgentHandler {
+    /// Convert gRPC RequestHeadersEvent to internal format
+    fn convert_request_headers_from_grpc(e: grpc::RequestHeadersEvent) -> RequestHeadersEvent {
+        RequestHeadersEvent {
+            metadata: Self::convert_metadata_from_grpc(e.metadata),
+            method: e.method,
+            uri: e.uri,
+            headers: e.headers.into_iter().map(|(k, v)| (k, v.values)).collect(),
+        }
+    }
+
+    /// Convert gRPC RequestBodyChunkEvent to internal format
+    fn convert_request_body_chunk_from_grpc(e: grpc::RequestBodyChunkEvent) -> RequestBodyChunkEvent {
+        RequestBodyChunkEvent {
+            correlation_id: e.correlation_id,
+            data: String::from_utf8_lossy(&e.data).to_string(),
+            is_last: e.is_last,
+            total_size: e.total_size.map(|s| s as usize),
+        }
+    }
+
+    /// Convert gRPC ResponseHeadersEvent to internal format
+    fn convert_response_headers_from_grpc(e: grpc::ResponseHeadersEvent) -> ResponseHeadersEvent {
+        ResponseHeadersEvent {
+            correlation_id: e.correlation_id,
+            status: e.status as u16,
+            headers: e.headers.into_iter().map(|(k, v)| (k, v.values)).collect(),
+        }
+    }
+
+    /// Convert gRPC ResponseBodyChunkEvent to internal format
+    fn convert_response_body_chunk_from_grpc(e: grpc::ResponseBodyChunkEvent) -> ResponseBodyChunkEvent {
+        ResponseBodyChunkEvent {
+            correlation_id: e.correlation_id,
+            data: String::from_utf8_lossy(&e.data).to_string(),
+            is_last: e.is_last,
+            total_size: e.total_size.map(|s| s as usize),
+        }
+    }
+
+    /// Convert gRPC RequestCompleteEvent to internal format
+    fn convert_request_complete_from_grpc(e: grpc::RequestCompleteEvent) -> RequestCompleteEvent {
+        RequestCompleteEvent {
+            correlation_id: e.correlation_id,
+            status: e.status as u16,
+            duration_ms: e.duration_ms,
+            request_body_size: e.request_body_size as usize,
+            response_body_size: e.response_body_size as usize,
+            upstream_attempts: e.upstream_attempts,
+            error: e.error,
+        }
+    }
+
+    /// Convert gRPC metadata to internal format
+    fn convert_metadata_from_grpc(metadata: Option<grpc::RequestMetadata>) -> RequestMetadata {
+        match metadata {
+            Some(m) => RequestMetadata {
+                correlation_id: m.correlation_id,
+                request_id: m.request_id,
+                client_ip: m.client_ip,
+                client_port: m.client_port as u16,
+                server_name: m.server_name,
+                protocol: m.protocol,
+                tls_version: m.tls_version,
+                tls_cipher: m.tls_cipher,
+                route_id: m.route_id,
+                upstream_id: m.upstream_id,
+                timestamp: m.timestamp,
+            },
+            None => RequestMetadata {
+                correlation_id: String::new(),
+                request_id: String::new(),
+                client_ip: String::new(),
+                client_port: 0,
+                server_name: None,
+                protocol: String::new(),
+                tls_version: None,
+                tls_cipher: None,
+                route_id: None,
+                upstream_id: None,
+                timestamp: String::new(),
+            },
+        }
+    }
+
+    /// Convert internal response to gRPC format
+    fn convert_response_to_grpc(response: AgentResponse) -> grpc::AgentResponse {
+        let decision = match response.decision {
+            Decision::Allow => Some(grpc::agent_response::Decision::Allow(grpc::AllowDecision {})),
+            Decision::Block { status, body, headers } => {
+                Some(grpc::agent_response::Decision::Block(grpc::BlockDecision {
+                    status: status as u32,
+                    body,
+                    headers: headers.unwrap_or_default(),
+                }))
+            }
+            Decision::Redirect { url, status } => {
+                Some(grpc::agent_response::Decision::Redirect(grpc::RedirectDecision {
+                    url,
+                    status: status as u32,
+                }))
+            }
+            Decision::Challenge { challenge_type, params } => {
+                Some(grpc::agent_response::Decision::Challenge(grpc::ChallengeDecision {
+                    challenge_type,
+                    params,
+                }))
+            }
+        };
+
+        let request_headers: Vec<grpc::HeaderOp> = response.request_headers
+            .into_iter()
+            .map(Self::convert_header_op_to_grpc)
+            .collect();
+
+        let response_headers: Vec<grpc::HeaderOp> = response.response_headers
+            .into_iter()
+            .map(Self::convert_header_op_to_grpc)
+            .collect();
+
+        let audit = Some(grpc::AuditMetadata {
+            tags: response.audit.tags,
+            rule_ids: response.audit.rule_ids,
+            confidence: response.audit.confidence,
+            reason_codes: response.audit.reason_codes,
+            custom: response.audit.custom.into_iter().map(|(k, v)| {
+                (k, v.to_string())
+            }).collect(),
+        });
+
+        grpc::AgentResponse {
+            version: PROTOCOL_VERSION,
+            decision,
+            request_headers,
+            response_headers,
+            routing_metadata: response.routing_metadata,
+            audit,
+        }
+    }
+
+    /// Convert internal header operation to gRPC format
+    fn convert_header_op_to_grpc(op: HeaderOp) -> grpc::HeaderOp {
+        let operation = match op {
+            HeaderOp::Set { name, value } => {
+                Some(grpc::header_op::Operation::Set(grpc::SetHeader { name, value }))
+            }
+            HeaderOp::Add { name, value } => {
+                Some(grpc::header_op::Operation::Add(grpc::AddHeader { name, value }))
+            }
+            HeaderOp::Remove { name } => {
+                Some(grpc::header_op::Operation::Remove(grpc::RemoveHeader { name }))
+            }
+        };
+        grpc::HeaderOp { operation }
     }
 }
