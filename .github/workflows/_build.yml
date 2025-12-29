@@ -78,6 +78,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
+      - name: Install cross-compilation toolchain (Linux ARM64)
+        if: runner.os == 'Linux' && matrix.config.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
         run: brew install protobuf
@@ -86,6 +92,11 @@ jobs:
         run: |
           TARGET="${{ matrix.config.target }}"
           PROFILE="${{ inputs.profile }}"
+
+          # Set cross-compilation linker for Linux ARM64
+          if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          fi
 
           # Check if we need cross-compilation
           HOST_TARGET=$(rustc -vV | grep host | cut -d' ' -f2)
@@ -109,10 +120,16 @@ jobs:
           fi
 
       - name: Strip binaries (Linux)
-        if: matrix.config.os == 'ubuntu-latest' && inputs.profile == 'release'
+        if: runner.os == 'Linux' && inputs.profile == 'release'
         run: |
-          strip $BUILD_DIR/release/sentinel || true
-          strip $BUILD_DIR/release/sentinel-echo-agent || true
+          TARGET="${{ matrix.config.target }}"
+          if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then
+            STRIP=aarch64-linux-gnu-strip
+          else
+            STRIP=strip
+          fi
+          $STRIP $BUILD_DIR/release/sentinel || true
+          $STRIP $BUILD_DIR/release/sentinel-echo-agent || true
 
       - name: Prepare artifacts
         if: inputs.upload-artifacts

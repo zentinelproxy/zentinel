@@ -105,6 +105,7 @@ jobs:
       targets: |
         [
           {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"},
+          {"os": "ubuntu-latest", "target": "aarch64-unknown-linux-gnu", "suffix": "linux-arm64"},
           {"os": "macos-latest", "target": "x86_64-apple-darwin", "suffix": "darwin-amd64"},
           {"os": "macos-latest", "target": "aarch64-apple-darwin", "suffix": "darwin-arm64"}
         ]
@@ -112,10 +113,11 @@ jobs:
   # Build Docker image (validation - no pushing yet)
   docker-build:
     name: Docker Build
-    needs: validate
+    needs: [validate, build]
     uses: ./.github/workflows/_docker.yml
     with:
       version: ${{ needs.validate.outputs.calver }}
+      artifact-prefix: sentinel-${{ needs.validate.outputs.calver }}
       push: false  # Don't push yet - just validate it builds
       latest: false
     permissions:
@@ -220,10 +222,11 @@ jobs:
   # Push Docker image (only after crates published)
   docker-push:
     name: Docker Push
-    needs: [validate, publish-crates]
+    needs: [validate, build, publish-crates]
     uses: ./.github/workflows/_docker.yml
     with:
       version: ${{ needs.validate.outputs.calver }}
+      artifact-prefix: sentinel-${{ needs.validate.outputs.calver }}
       push: true
       latest: true
     permissions:

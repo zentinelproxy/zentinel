@@ -1,5 +1,9 @@
 # Reusable Docker build and push workflow
 # Called by: release.yml, nightly.yml (future)
+#
+# This workflow uses pre-built binaries for fast multi-arch builds.
+# It downloads artifacts from the build job and creates Docker images
+# without needing to compile Rust inside Docker (which is slow under QEMU).
 
 name: Docker
 
@@ -9,6 +13,11 @@ on:
       version:
         description: 'Version tag for the image'
         required: true
+        type: string
+      artifact-prefix:
+        description: 'Prefix for artifact names to download'
+        required: false
+        default: 'sentinel'
         type: string
       push:
         description: 'Push images to registry'
@@ -37,6 +46,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download Linux AMD64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-linux-amd64
+          path: artifacts/linux-amd64
+
+      - name: Download Linux ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-linux-arm64
+          path: artifacts/linux-arm64
+        continue-on-error: true
+
+      - name: Check artifacts
+        id: check-artifacts
+        run: |
+          echo "Contents of artifacts directory:"
+          find artifacts -type f -ls || true
+
+          if [ -f "artifacts/linux-amd64/sentinel" ]; then
+            echo "amd64=true" >> $GITHUB_OUTPUT
+            chmod +x artifacts/linux-amd64/sentinel
+          else
+            echo "amd64=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ -f "artifacts/linux-arm64/sentinel" ]; then
+            echo "arm64=true" >> $GITHUB_OUTPUT
+            chmod +x artifacts/linux-arm64/sentinel
+          else
+            echo "arm64=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -60,16 +102,53 @@ jobs:
             type=raw,value=${{ inputs.version }}
             type=raw,value=latest,enable=${{ inputs.latest }}
 
-      - name: Build and push
+      # Build and push AMD64 image
+      - name: Build and push AMD64 image
+        if: steps.check-artifacts.outputs.amd64 == 'true'
         uses: docker/build-push-action@v5
         with:
-          context: .
-          target: proxy
-          platforms: linux/amd64,linux/arm64
+          context: artifacts/linux-amd64
+          file: ./Dockerfile
+          target: proxy-prebuilt
+          platforms: linux/amd64
           push: ${{ inputs.push }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            RUST_VERSION=1.85
+
+      # Build and push ARM64 image
+      - name: Build and push ARM64 image
+        if: steps.check-artifacts.outputs.arm64 == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: artifacts/linux-arm64
+          file: ./Dockerfile
+          target: proxy-prebuilt
+          platforms: linux/arm64
+          push: ${{ inputs.push }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # Create and push multi-arch manifest
+      - name: Create multi-arch manifest
+        if: inputs.push && steps.check-artifacts.outputs.amd64 == 'true'
+        run: |
+          VERSION="${{ inputs.version }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          # Determine which images to include
+          IMAGES="$IMAGE:$VERSION-amd64"
+          if [ "${{ steps.check-artifacts.outputs.arm64 }}" = "true" ]; then
+            IMAGES="$IMAGES $IMAGE:$VERSION-arm64"
+          fi
+
+          # Create and push version manifest
+          echo "Creating manifest for $IMAGE:$VERSION with: $IMAGES"
+          docker manifest create "$IMAGE:$VERSION" $IMAGES
+          docker manifest push "$IMAGE:$VERSION"
+
+          # Create and push latest manifest if requested
+          if [ "${{ inputs.latest }}" = "true" ]; then
+            echo "Creating manifest for $IMAGE:latest"
+            docker manifest create "$IMAGE:latest" $IMAGES
+            docker manifest push "$IMAGE:latest"
+          fi

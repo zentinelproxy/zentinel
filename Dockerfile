@@ -3,9 +3,73 @@
 # Build arguments
 ARG RUST_VERSION=1.85
 ARG DEBIAN_VARIANT=slim-bookworm
+ARG TARGETPLATFORM
 
 ################################################################################
-# Create a stage for building the application
+# Stage for pre-built binaries (used in CI for fast multi-arch builds)
+# Usage: docker build --build-arg BINARY_PATH=./artifacts/sentinel --target proxy-prebuilt .
+FROM debian:bookworm-slim AS proxy-prebuilt
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y \
+        libssl3 \
+        ca-certificates \
+        curl \
+        jq \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r sentinel -g 1000 && \
+    useradd -r -g sentinel -u 1000 -m -s /bin/bash sentinel
+
+# Create required directories
+RUN mkdir -p \
+    /etc/sentinel \
+    /var/lib/sentinel \
+    /var/log/sentinel \
+    /var/run/sentinel \
+    /usr/local/share/sentinel \
+    && chown -R sentinel:sentinel \
+    /etc/sentinel \
+    /var/lib/sentinel \
+    /var/log/sentinel \
+    /var/run/sentinel \
+    /usr/local/share/sentinel
+
+# Copy pre-built binary (passed via build context)
+COPY sentinel /usr/local/bin/sentinel
+RUN chmod +x /usr/local/bin/sentinel
+
+# Set up health check script
+RUN echo '#!/bin/sh\ncurl -f http://localhost:9090/health || exit 1' > /usr/local/bin/healthcheck && \
+    chmod +x /usr/local/bin/healthcheck
+
+# Switch to non-root user
+USER sentinel
+
+# Environment variables
+ENV RUST_LOG=info,sentinel_proxy=info \
+    SENTINEL_CONFIG=/etc/sentinel/config.kdl \
+    SENTINEL_DATA_DIR=/var/lib/sentinel \
+    SENTINEL_LOG_DIR=/var/log/sentinel
+
+# Expose ports
+EXPOSE 8080 8443 9090
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
+    CMD ["/usr/local/bin/healthcheck"]
+
+# Use tini for proper signal handling
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Default command
+CMD ["sentinel", "-c", "/etc/sentinel/config.kdl"]
+
+################################################################################
+# Create a stage for building the application (for local dev or single-arch builds)
 FROM rust:${RUST_VERSION}-${DEBIAN_VARIANT} AS builder
 
 # Install build dependencies
