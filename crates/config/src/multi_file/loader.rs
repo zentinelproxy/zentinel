@@ -112,10 +112,7 @@ impl MultiFileLoader {
         let mut merged = ConfigBuilder::new();
 
         for file in files {
-            debug!("Loading configuration from: {:?}", file);
-            let config = self.load_file(&file)?;
-            merged.merge(config)?;
-            self.loaded_files.insert(file);
+            self.load_file_recursive(&file, &mut merged)?;
         }
 
         // Build final configuration
@@ -129,6 +126,61 @@ impl MultiFileLoader {
         }
 
         Ok(config)
+    }
+
+    /// Load a file and recursively process its includes.
+    fn load_file_recursive(&mut self, path: &Path, merged: &mut ConfigBuilder) -> Result<()> {
+        // Canonicalize path to detect circular includes
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("Failed to resolve path: {:?}", path))?;
+
+        // Check for circular includes
+        if self.loaded_files.contains(&canonical) {
+            debug!("Skipping already loaded file: {:?}", canonical);
+            return Ok(());
+        }
+
+        debug!("Loading configuration from: {:?}", path);
+
+        // Mark as loaded before processing to prevent circular includes
+        self.loaded_files.insert(canonical.clone());
+
+        // Load and parse the file
+        let config = self.load_file(path)?;
+
+        // Process includes first (depth-first)
+        for include_path in &config.includes {
+            let resolved = self.resolve_include_path(path, include_path)?;
+
+            if !resolved.exists() {
+                warn!(
+                    "Include file not found: {:?} (referenced from {:?})",
+                    resolved, path
+                );
+                continue;
+            }
+
+            self.load_file_recursive(&resolved, merged)?;
+        }
+
+        // Merge this file's config
+        merged.merge(config)?;
+
+        Ok(())
+    }
+
+    /// Resolve an include path relative to the including file.
+    fn resolve_include_path(&self, from_file: &Path, include: &Path) -> Result<PathBuf> {
+        if include.is_absolute() {
+            Ok(include.to_path_buf())
+        } else {
+            // Relative to the directory containing the including file
+            let base_dir = from_file
+                .parent()
+                .ok_or_else(|| anyhow!("Cannot determine parent directory of {:?}", from_file))?;
+            Ok(base_dir.join(include))
+        }
     }
 
     /// Find all configuration files matching patterns.

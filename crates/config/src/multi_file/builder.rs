@@ -34,6 +34,8 @@ pub(super) struct PartialConfig {
     pub waf: Option<WafConfig>,
     pub limits: Option<Limits>,
     pub observability: Option<ObservabilityConfig>,
+    /// Include directives found in this file (relative paths to include)
+    pub includes: Vec<PathBuf>,
 }
 
 impl PartialConfig {
@@ -47,8 +49,13 @@ impl PartialConfig {
         for node in doc.nodes() {
             match node.name().value() {
                 "include" => {
-                    // Handle include directives - currently ignored
-                    // TODO: Implement include processing
+                    // Parse include directive: include "path/to/file.kdl"
+                    if let Some(entry) = node.entries().first() {
+                        if let Some(path_str) = entry.value().as_string() {
+                            config.includes.push(PathBuf::from(path_str));
+                            debug!("Found include directive: {}", path_str);
+                        }
+                    }
                 }
                 "server" if config.server.is_none() => {
                     config.server = Some(parse_server(node)?);

@@ -223,4 +223,87 @@ mod tests {
         assert!(config.is_ok(), "Config load failed: {:?}", config.err());
         // In a real implementation, we'd verify the override was applied
     }
+
+    #[test]
+    fn test_include_processing() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path();
+
+        // Create shared routes file
+        fs::write(
+            config_dir.join("routes.kdl"),
+            r#"
+            route "api" {
+                path "/api/*"
+                upstream "backend"
+            }
+            "#,
+        )
+        .unwrap();
+
+        // Create main config that includes routes
+        fs::write(
+            config_dir.join("main.kdl"),
+            r#"
+            include "routes.kdl"
+
+            server {
+                worker-threads 2
+                max-connections 1000
+            }
+
+            upstream "backend" {
+                address "127.0.0.1:8080"
+            }
+            "#,
+        )
+        .unwrap();
+
+        // Load configuration
+        let mut loader = MultiFileLoader::new(config_dir);
+        let config = loader.load();
+
+        assert!(config.is_ok(), "Config load failed: {:?}", config.err());
+        let config = config.unwrap();
+
+        // Verify the included route was loaded
+        assert_eq!(config.routes.len(), 1);
+        assert_eq!(config.routes[0].id, "api");
+    }
+
+    #[test]
+    fn test_circular_include_prevention() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path();
+
+        // Create files that include each other
+        fs::write(
+            config_dir.join("a.kdl"),
+            r#"
+            include "b.kdl"
+            server {
+                worker-threads 2
+            }
+            "#,
+        )
+        .unwrap();
+
+        fs::write(
+            config_dir.join("b.kdl"),
+            r#"
+            include "a.kdl"
+            route "test" {
+                path "/*"
+            }
+            "#,
+        )
+        .unwrap();
+
+        // Load configuration - should not hang or fail due to circular includes
+        let mut loader = MultiFileLoader::new(config_dir);
+        let config = loader.load();
+
+        // Should succeed (circular includes are detected and skipped)
+        assert!(config.is_ok(), "Config load failed: {:?}", config.err());
+    }
 }

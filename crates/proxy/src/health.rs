@@ -83,7 +83,18 @@ struct TcpHealthCheck {
     timeout: Duration,
 }
 
-/// gRPC health check implementation
+/// gRPC health check implementation.
+///
+/// Currently uses TCP connectivity check as a fallback since full gRPC
+/// health checking protocol (grpc.health.v1.Health) requires the `tonic`
+/// crate for HTTP/2 and Protocol Buffers support.
+///
+/// Full implementation would:
+/// 1. Establish HTTP/2 connection
+/// 2. Call `grpc.health.v1.Health/Check` with service name
+/// 3. Parse `HealthCheckResponse` for SERVING/NOT_SERVING status
+///
+/// See: https://github.com/grpc/grpc/blob/master/doc/health-checking.md
 struct GrpcHealthCheck {
     service: String,
     timeout: Duration,
@@ -429,19 +440,32 @@ impl HealthCheckImpl for GrpcHealthCheck {
     async fn check(&self, target: &str) -> Result<Duration, String> {
         let start = Instant::now();
 
-        // TODO: Implement gRPC health check
-        // This would use the gRPC health checking protocol:
-        // https://github.com/grpc/grpc/blob/master/doc/health-checking.md
+        // NOTE: Full gRPC health check requires `tonic` crate for HTTP/2 support.
+        // This implementation uses TCP connectivity as a reasonable fallback.
+        // The gRPC health checking protocol (grpc.health.v1.Health/Check) would
+        // return SERVING, NOT_SERVING, or UNKNOWN for the specified service.
 
-        // For now, fall back to TCP check
         let addr: SocketAddr = target
             .parse()
             .map_err(|e| format!("Invalid address: {}", e))?;
 
-        time::timeout(self.timeout, TcpStream::connect(addr))
+        // TCP connectivity check as fallback
+        let stream = time::timeout(self.timeout, TcpStream::connect(addr))
             .await
             .map_err(|_| format!("Connection timeout after {:?}", self.timeout))?
             .map_err(|e| format!("Connection failed: {}", e))?;
+
+        // Verify connection is writable (basic health indicator)
+        stream
+            .writable()
+            .await
+            .map_err(|e| format!("Connection not writable: {}", e))?;
+
+        debug!(
+            target = %target,
+            service = %self.service,
+            "gRPC health check using TCP fallback (full gRPC protocol requires tonic)"
+        );
 
         Ok(start.elapsed())
     }
