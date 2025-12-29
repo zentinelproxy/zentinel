@@ -30,6 +30,7 @@ COPY crates/proxy/Cargo.toml crates/proxy/Cargo.toml
 COPY crates/agent-protocol/Cargo.toml crates/agent-protocol/Cargo.toml
 COPY crates/config/Cargo.toml crates/config/Cargo.toml
 COPY crates/common/Cargo.toml crates/common/Cargo.toml
+COPY crates/stack/Cargo.toml crates/stack/Cargo.toml
 COPY agents/echo/Cargo.toml agents/echo/Cargo.toml
 
 # Create dummy source files for dependency compilation
@@ -40,6 +41,7 @@ RUN mkdir -p crates/proxy/src && \
     mkdir -p crates/agent-protocol/src && echo "" > crates/agent-protocol/src/lib.rs && \
     mkdir -p crates/config/src && echo "" > crates/config/src/lib.rs && \
     mkdir -p crates/common/src && echo "" > crates/common/src/lib.rs && \
+    mkdir -p crates/stack/src && echo "fn main() {}" > crates/stack/src/main.rs && \
     mkdir -p agents/echo/src && echo "fn main() {}" > agents/echo/src/main.rs
 
 # Build dependencies for proxy only (this layer will be cached)
