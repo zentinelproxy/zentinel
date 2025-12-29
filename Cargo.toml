@@ -77,6 +77,9 @@ parking_lot = "0.12"
 arc-swap = "1.7"
 base64 = "0.22"
 
+# Memory allocator (better performance for allocation-heavy workloads)
+tikv-jemallocator = "0.6"
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -2,6 +2,15 @@
 //!
 //! A security-first reverse proxy built on Pingora with sleepable ops at the edge.
 
+// Use jemalloc as the global allocator for better performance
+// jemalloc is optimized for multi-threaded allocation-heavy workloads
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pingora::prelude::*;

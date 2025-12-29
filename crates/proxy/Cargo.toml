@@ -92,6 +92,9 @@ nix = { version = "0.29", features = ["signal"] }
 libc = "0.2"
 signal-hook = "0.3"
 
+# Memory allocator
+tikv-jemallocator = { workspace = true }
+
 # Random number generation
 rand = "0.8"
 
