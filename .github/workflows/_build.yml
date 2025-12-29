@@ -72,6 +72,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-${{ inputs.profile }}-
 
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
       - name: Build workspace
         run: |
           TARGET="${{ matrix.config.target }}"
