@@ -1,0 +1,41 @@
+[package]
+name = "sentinel-stack"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "All-in-one launcher for Sentinel proxy and agents"
+keywords = ["sentinel", "proxy", "launcher", "process-manager"]
+categories = ["command-line-utilities", "network-programming"]
+
+[[bin]]
+name = "sentinel-stack"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full", "process", "signal"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+kdl = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+
+# Unix process management
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -4,6 +4,7 @@ members = [
     "crates/agent-protocol",
     "crates/config",
     "crates/common",
+    "crates/stack",
     "agents/echo",
 ]
 resolver = "2"
