@@ -1,0 +1,182 @@
+// Sentinel Agent Protocol - gRPC Definition
+//
+// This protocol mirrors the existing JSON-over-Unix-socket protocol,
+// allowing agents to communicate via either transport.
+
+syntax = "proto3";
+package sentinel.agent.v1;
+
+// Event types for agent processing lifecycle
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_REQUEST_HEADERS = 1;
+  EVENT_TYPE_REQUEST_BODY_CHUNK = 2;
+  EVENT_TYPE_RESPONSE_HEADERS = 3;
+  EVENT_TYPE_RESPONSE_BODY_CHUNK = 4;
+  EVENT_TYPE_REQUEST_COMPLETE = 5;
+}
+
+// Request metadata included with every event
+message RequestMetadata {
+  string correlation_id = 1;
+  string request_id = 2;
+  string client_ip = 3;
+  uint32 client_port = 4;
+  optional string server_name = 5;
+  string protocol = 6;
+  optional string tls_version = 7;
+  optional string tls_cipher = 8;
+  optional string route_id = 9;
+  optional string upstream_id = 10;
+  string timestamp = 11;
+}
+
+// Header values (supports multiple values per header name)
+message HeaderValues {
+  repeated string values = 1;
+}
+
+// Request headers event - sent when HTTP headers are received
+message RequestHeadersEvent {
+  RequestMetadata metadata = 1;
+  string method = 2;
+  string uri = 3;
+  map<string, HeaderValues> headers = 4;
+}
+
+// Request body chunk event - sent for request body data
+message RequestBodyChunkEvent {
+  string correlation_id = 1;
+  bytes data = 2;  // Raw bytes, not base64
+  bool is_last = 3;
+  optional uint64 total_size = 4;
+}
+
+// Response headers event - sent when upstream response headers are received
+message ResponseHeadersEvent {
+  string correlation_id = 1;
+  uint32 status = 2;
+  map<string, HeaderValues> headers = 3;
+}
+
+// Response body chunk event - sent for response body data
+message ResponseBodyChunkEvent {
+  string correlation_id = 1;
+  bytes data = 2;  // Raw bytes, not base64
+  bool is_last = 3;
+  optional uint64 total_size = 4;
+}
+
+// Request complete event - final event for logging/audit
+message RequestCompleteEvent {
+  string correlation_id = 1;
+  uint32 status = 2;
+  uint64 duration_ms = 3;
+  uint64 request_body_size = 4;
+  uint64 response_body_size = 5;
+  uint32 upstream_attempts = 6;
+  optional string error = 7;
+}
+
+// Header operation for modifying request/response headers
+message HeaderOp {
+  oneof operation {
+    SetHeader set = 1;
+    AddHeader add = 2;
+    RemoveHeader remove = 3;
+  }
+}
+
+message SetHeader {
+  string name = 1;
+  string value = 2;
+}
+
+message AddHeader {
+  string name = 1;
+  string value = 2;
+}
+
+message RemoveHeader {
+  string name = 1;
+}
+
+// Audit metadata for logging and observability
+message AuditMetadata {
+  repeated string tags = 1;
+  repeated string rule_ids = 2;
+  optional float confidence = 3;
+  repeated string reason_codes = 4;
+  map<string, string> custom = 5;
+}
+
+// Decision types
+message AllowDecision {
+  // Empty - request is allowed to proceed
+}
+
+message BlockDecision {
+  uint32 status = 1;  // HTTP status code (e.g., 403)
+  optional string body = 2;  // Response body
+  map<string, string> headers = 3;  // Additional response headers
+}
+
+message RedirectDecision {
+  string url = 1;  // Redirect target URL
+  uint32 status = 2;  // HTTP status code (301, 302, 307, 308)
+}
+
+message ChallengeDecision {
+  string challenge_type = 1;  // e.g., "captcha", "javascript"
+  map<string, string> params = 2;  // Challenge-specific parameters
+}
+
+// Agent request - wraps all event types
+message AgentRequest {
+  uint32 version = 1;  // Protocol version (currently 1)
+  EventType event_type = 2;
+
+  oneof event {
+    RequestHeadersEvent request_headers = 10;
+    RequestBodyChunkEvent request_body_chunk = 11;
+    ResponseHeadersEvent response_headers = 12;
+    ResponseBodyChunkEvent response_body_chunk = 13;
+    RequestCompleteEvent request_complete = 14;
+  }
+}
+
+// Agent response - decision and optional modifications
+message AgentResponse {
+  uint32 version = 1;  // Protocol version (currently 1)
+
+  // Decision (exactly one must be set)
+  oneof decision {
+    AllowDecision allow = 2;
+    BlockDecision block = 3;
+    RedirectDecision redirect = 4;
+    ChallengeDecision challenge = 5;
+  }
+
+  // Header modifications to apply
+  repeated HeaderOp request_headers = 10;
+  repeated HeaderOp response_headers = 11;
+
+  // Routing metadata (can influence upstream selection)
+  map<string, string> routing_metadata = 12;
+
+  // Audit information for logging
+  optional AuditMetadata audit = 13;
+}
+
+// Agent Processor Service
+//
+// Agents implement this service to receive and process proxy events.
+// The proxy acts as the client, calling agents for each relevant event.
+service AgentProcessor {
+  // Process a single event (request/response headers, body chunks, etc.)
+  rpc ProcessEvent(AgentRequest) returns (AgentResponse);
+
+  // Bidirectional streaming for body inspection
+  // Allows efficient processing of large request/response bodies
+  rpc ProcessEventStream(stream AgentRequest) returns (AgentResponse);
+}

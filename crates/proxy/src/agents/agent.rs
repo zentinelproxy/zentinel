@@ -88,28 +88,41 @@ impl Agent {
 
     /// Initialize agent connection.
     pub async fn initialize(&self) -> SentinelResult<()> {
+        let timeout = Duration::from_millis(self.config.timeout_ms);
+
         match &self.config.transport {
             AgentTransport::UnixSocket { path } => {
-                let client = AgentClient::unix_socket(
-                    &self.config.id,
-                    path,
-                    Duration::from_millis(self.config.timeout_ms),
-                )
-                .await
-                .map_err(|e| SentinelError::Agent {
-                    agent: self.config.id.clone(),
-                    message: format!("Failed to connect: {}", e),
-                    event: "initialize".to_string(),
-                    source: None,
-                })?;
+                let client = AgentClient::unix_socket(&self.config.id, path, timeout)
+                    .await
+                    .map_err(|e| SentinelError::Agent {
+                        agent: self.config.id.clone(),
+                        message: format!("Failed to connect via Unix socket: {}", e),
+                        event: "initialize".to_string(),
+                        source: None,
+                    })?;
 
                 *self.client.write().await = Some(client);
                 Ok(())
             }
-            _ => {
+            AgentTransport::Grpc { address, tls: _ } => {
+                // TODO: Add TLS support for gRPC connections
+                let client = AgentClient::grpc(&self.config.id, address, timeout)
+                    .await
+                    .map_err(|e| SentinelError::Agent {
+                        agent: self.config.id.clone(),
+                        message: format!("Failed to connect via gRPC: {}", e),
+                        event: "initialize".to_string(),
+                        source: None,
+                    })?;
+
+                *self.client.write().await = Some(client);
+                Ok(())
+            }
+            AgentTransport::Http { url, tls: _ } => {
                 warn!(
-                    "Unsupported agent transport: {:?}",
-                    self.config.transport
+                    agent = %self.config.id,
+                    url = %url,
+                    "HTTP transport not yet implemented, agent will not be available"
                 );
                 Ok(())
             }

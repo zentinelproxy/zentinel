@@ -132,10 +132,266 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
 // Agent Parsing
 // ============================================================================
 
+use crate::agents::{AgentEvent, AgentTransport, AgentTlsConfig, AgentType};
+use crate::routes::FailureMode;
+use sentinel_common::types::CircuitBreakerConfig;
+use std::path::PathBuf;
+
 /// Parse agents configuration block
-pub fn parse_agents(_node: &kdl::KdlNode) -> Result<Vec<AgentConfig>> {
-    // TODO: Implement full agent parsing
-    Ok(vec![])
+///
+/// Example KDL syntax:
+/// ```kdl
+/// agents {
+///     agent "waf-agent" type="waf" {
+///         unix-socket path="/var/run/waf.sock"
+///         timeout-ms 200
+///         events "request_headers" "request_body"
+///         failure-mode "fail_open"
+///     }
+///     agent "auth-agent" type="auth" {
+///         grpc address="http://localhost:50051"
+///         timeout-ms 100
+///         events "request_headers"
+///     }
+/// }
+/// ```
+pub fn parse_agents(node: &kdl::KdlNode) -> Result<Vec<AgentConfig>> {
+    let mut agents = Vec::new();
+
+    let children = match node.children() {
+        Some(doc) => doc,
+        None => return Ok(agents),
+    };
+
+    for child in children.nodes() {
+        if child.name().value() == "agent" {
+            agents.push(parse_single_agent(child)?);
+        }
+    }
+
+    Ok(agents)
+}
+
+/// Parse a single agent configuration
+fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
+    // Get agent ID from first argument
+    let id = get_first_arg_string(node)
+        .ok_or_else(|| anyhow::anyhow!("Agent requires an ID as first argument"))?;
+
+    // Get agent type from attribute
+    let agent_type = match node
+        .get("type")
+        .and_then(|v| v.as_string())
+        .map(|s| s.to_string())
+    {
+        Some(t) => match t.as_str() {
+            "waf" => AgentType::Waf,
+            "auth" => AgentType::Auth,
+            "rate_limit" | "rate-limit" => AgentType::RateLimit,
+            other => AgentType::Custom(other.to_string()),
+        },
+        None => AgentType::Custom(id.clone()),
+    };
+
+    // Parse transport from children
+    let children = node
+        .children()
+        .ok_or_else(|| anyhow::anyhow!("Agent '{}' requires configuration block", id))?;
+
+    let mut transport = None;
+    let mut timeout_ms = 1000u64;
+    let mut failure_mode = FailureMode::Open;
+    let mut events = Vec::new();
+    let mut circuit_breaker = None;
+    let mut max_request_body_bytes = None;
+    let mut max_response_body_bytes = None;
+
+    for child in children.nodes() {
+        match child.name().value() {
+            "unix-socket" => {
+                let path = get_string_entry(child, "path")
+                    .or_else(|| get_first_arg_string(child))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("unix-socket requires 'path' attribute or argument")
+                    })?;
+                transport = Some(AgentTransport::UnixSocket {
+                    path: PathBuf::from(path),
+                });
+            }
+            "grpc" => {
+                let address = get_string_entry(child, "address")
+                    .or_else(|| get_first_arg_string(child))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("grpc requires 'address' attribute or argument")
+                    })?;
+                let tls = parse_agent_tls(child)?;
+                transport = Some(AgentTransport::Grpc { address, tls });
+            }
+            "http" => {
+                let url = get_string_entry(child, "url")
+                    .or_else(|| get_first_arg_string(child))
+                    .ok_or_else(|| anyhow::anyhow!("http requires 'url' attribute or argument"))?;
+                let tls = parse_agent_tls(child)?;
+                transport = Some(AgentTransport::Http { url, tls });
+            }
+            "timeout-ms" => {
+                if let Some(entry) = child.entries().first() {
+                    if let Some(v) = entry.value().as_integer() {
+                        timeout_ms = v as u64;
+                    }
+                }
+            }
+            "failure-mode" => {
+                if let Some(mode) = get_first_arg_string(child) {
+                    failure_mode = match mode.as_str() {
+                        "fail_open" | "fail-open" | "open" => FailureMode::Open,
+                        "fail_closed" | "fail-closed" | "closed" => FailureMode::Closed,
+                        other => {
+                            return Err(anyhow::anyhow!(
+                                "Unknown failure mode: '{}'. Use 'open' or 'closed'",
+                                other
+                            ))
+                        }
+                    };
+                }
+            }
+            "events" => {
+                // Parse events from arguments
+                for entry in child.entries() {
+                    if let Some(event_str) = entry.value().as_string() {
+                        let event = match event_str {
+                            "request_headers" | "request-headers" => AgentEvent::RequestHeaders,
+                            "request_body" | "request-body" => AgentEvent::RequestBody,
+                            "response_headers" | "response-headers" => AgentEvent::ResponseHeaders,
+                            "response_body" | "response-body" => AgentEvent::ResponseBody,
+                            "log" => AgentEvent::Log,
+                            other => {
+                                return Err(anyhow::anyhow!("Unknown agent event: '{}'", other))
+                            }
+                        };
+                        events.push(event);
+                    }
+                }
+            }
+            "circuit-breaker" => {
+                circuit_breaker = Some(parse_circuit_breaker(child)?);
+            }
+            "max-request-body-bytes" => {
+                if let Some(entry) = child.entries().first() {
+                    if let Some(v) = entry.value().as_integer() {
+                        max_request_body_bytes = Some(v as usize);
+                    }
+                }
+            }
+            "max-response-body-bytes" => {
+                if let Some(entry) = child.entries().first() {
+                    if let Some(v) = entry.value().as_integer() {
+                        max_response_body_bytes = Some(v as usize);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let transport = transport.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Agent '{}' requires a transport (unix-socket, grpc, or http)",
+            id
+        )
+    })?;
+
+    // Default events if none specified
+    if events.is_empty() {
+        events.push(AgentEvent::RequestHeaders);
+    }
+
+    Ok(AgentConfig {
+        id,
+        agent_type,
+        transport,
+        events,
+        timeout_ms,
+        failure_mode,
+        circuit_breaker,
+        max_request_body_bytes,
+        max_response_body_bytes,
+    })
+}
+
+/// Parse TLS configuration for agent transport
+fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
+    let children = match node.children() {
+        Some(doc) => doc,
+        None => return Ok(None),
+    };
+
+    let mut has_tls = false;
+    let mut insecure_skip_verify = false;
+    let mut ca_cert = None;
+    let mut client_cert = None;
+    let mut client_key = None;
+
+    for child in children.nodes() {
+        match child.name().value() {
+            "tls" | "tls-insecure" => {
+                has_tls = true;
+                if child.name().value() == "tls-insecure" {
+                    insecure_skip_verify = true;
+                }
+            }
+            "ca-cert" => {
+                has_tls = true;
+                if let Some(path) = get_first_arg_string(child) {
+                    ca_cert = Some(PathBuf::from(path));
+                }
+            }
+            "client-cert" => {
+                has_tls = true;
+                if let Some(path) = get_first_arg_string(child) {
+                    client_cert = Some(PathBuf::from(path));
+                }
+            }
+            "client-key" => {
+                has_tls = true;
+                if let Some(path) = get_first_arg_string(child) {
+                    client_key = Some(PathBuf::from(path));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if has_tls {
+        Ok(Some(AgentTlsConfig {
+            insecure_skip_verify,
+            ca_cert,
+            client_cert,
+            client_key,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Parse circuit breaker configuration
+fn parse_circuit_breaker(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
+    let mut config = CircuitBreakerConfig::default();
+
+    if let Some(v) = get_int_entry(node, "failure-threshold") {
+        config.failure_threshold = v as u32;
+    }
+    if let Some(v) = get_int_entry(node, "success-threshold") {
+        config.success_threshold = v as u32;
+    }
+    if let Some(v) = get_int_entry(node, "timeout-seconds") {
+        config.timeout_seconds = v as u64;
+    }
+    if let Some(v) = get_int_entry(node, "half-open-max-requests") {
+        config.half_open_max_requests = v as u32;
+    }
+
+    Ok(config)
 }
 
 // ============================================================================

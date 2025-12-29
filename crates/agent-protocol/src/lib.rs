@@ -13,18 +13,36 @@
 //! - [`AgentHandler`]: Trait for implementing agent logic
 //! - [`AgentResponse`]: Response from agent with decision and mutations
 //!
-//! # Protocol
+//! # Transports
 //!
-//! Messages are length-prefixed JSON over Unix domain sockets:
+//! Two transport options are supported:
+//!
+//! ## Unix Domain Sockets (Default)
+//! Messages are length-prefixed JSON:
 //! - 4-byte big-endian length prefix
 //! - JSON payload (max 10MB)
 //!
-//! # Example: Client Usage
+//! ## gRPC
+//! Binary protocol using Protocol Buffers over HTTP/2:
+//! - Better performance for high-throughput scenarios
+//! - Native support for TLS/mTLS
+//! - Language-agnostic (agents can be written in any language with gRPC support)
+//!
+//! # Example: Client Usage (Unix Socket)
 //!
 //! ```ignore
 //! use sentinel_agent_protocol::{AgentClient, EventType, RequestHeadersEvent};
 //!
 //! let mut client = AgentClient::unix_socket("my-agent", "/tmp/agent.sock", timeout).await?;
+//! let response = client.send_event(EventType::RequestHeaders, &event).await?;
+//! ```
+//!
+//! # Example: Client Usage (gRPC)
+//!
+//! ```ignore
+//! use sentinel_agent_protocol::{AgentClient, EventType, RequestHeadersEvent};
+//!
+//! let mut client = AgentClient::grpc("my-agent", "http://localhost:50051", timeout).await?;
 //! let response = client.send_event(EventType::RequestHeaders, &event).await?;
 //! ```
 //!
@@ -54,6 +72,11 @@ mod errors;
 mod protocol;
 mod server;
 
+/// gRPC protocol definitions generated from proto/agent.proto
+pub mod grpc {
+    tonic::include_proto!("sentinel.agent.v1");
+}
+
 // Re-export error types
 pub use errors::AgentProtocolError;
 
@@ -68,7 +91,7 @@ pub use protocol::{
 pub use client::AgentClient;
 
 // Re-export server and handler
-pub use server::{AgentHandler, AgentServer, DenylistAgent, EchoAgent};
+pub use server::{AgentHandler, AgentServer, DenylistAgent, EchoAgent, GrpcAgentHandler, GrpcAgentServer};
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,15 @@
 # Sentinel Agent Ecosystem
 
-Sentinel uses an external processing model where agents run as separate processes and communicate with the proxy over Unix domain sockets. This architecture provides isolation, independent versioning, and allows the community to create and share agents.
+Sentinel uses an external processing model where agents run as separate processes and communicate with the proxy via Unix domain sockets or gRPC. This architecture provides isolation, independent versioning, and allows the community to create and share agents.
+
+## Transport Options
+
+Sentinel supports two transport mechanisms for agent communication:
+
+| Transport | Protocol | Best For |
+|-----------|----------|----------|
+| **Unix Socket** | Length-prefixed JSON | Local agents, simplicity |
+| **gRPC** | Protocol Buffers over HTTP/2 | Remote agents, high throughput, polyglot |
 
 ## Architecture Overview
 
@@ -15,11 +24,11 @@ Sentinel uses an external processing model where agents run as separate processe
 │  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘      │    │
 │  └─────────┼────────────────┼────────────────┼─────────────┘    │
 └────────────┼────────────────┼────────────────┼──────────────────┘
-             │ UDS            │ UDS            │ UDS
+             │ UDS            │ gRPC           │ gRPC
              ▼                ▼                ▼
       ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
       │  Echo Agent  │ │ RateLimit    │ │  WAF Agent   │
-      │  (built-in)  │ │   Agent      │ │              │
+      │  (local)     │ │   Agent      │ │  (remote)    │
       └──────────────┘ └──────────────┘ └──────────────┘
 ```
 
@@ -86,7 +95,7 @@ Implement the `AgentHandler` trait:
 
 ```rust
 use sentinel_agent_protocol::{
-    AgentHandler, AgentResult, Decision, Mutations,
+    AgentHandler, AgentResponse, AgentServer, GrpcAgentServer,
     RequestHeadersEvent, ResponseHeadersEvent,
 };
 
@@ -94,21 +103,61 @@ pub struct MyAgent;
 
 #[async_trait::async_trait]
 impl AgentHandler for MyAgent {
-    async fn on_request_headers(
-        &self,
-        event: RequestHeadersEvent,
-    ) -> AgentResult<(Decision, Mutations)> {
+    async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
         // Your logic here
-        Ok((Decision::Allow, Mutations::default()))
+        AgentResponse::default_allow()
     }
 
-    async fn on_response_headers(
-        &self,
-        event: ResponseHeadersEvent,
-    ) -> AgentResult<(Decision, Mutations)> {
-        Ok((Decision::Allow, Mutations::default()))
+    async fn on_response_headers(&self, event: ResponseHeadersEvent) -> AgentResponse {
+        AgentResponse::default_allow()
     }
 }
+
+// Run as Unix socket server
+let server = AgentServer::new("my-agent", "/tmp/my-agent.sock", Box::new(MyAgent));
+server.run().await?;
+
+// OR run as gRPC server
+let server = GrpcAgentServer::new("my-agent", Box::new(MyAgent));
+server.run("0.0.0.0:50051".parse()?).await?;
+```
+
+### Implementing gRPC Agents in Other Languages
+
+The gRPC protocol is defined in `crates/agent-protocol/proto/agent.proto`. You can generate client/server code for any language that supports gRPC:
+
+```bash
+# Python
+python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. agent.proto
+
+# Go
+protoc --go_out=. --go-grpc_out=. agent.proto
+
+# Node.js
+grpc_tools_node_protoc --js_out=. --grpc_out=. agent.proto
+```
+
+Example Python agent:
+
+```python
+import grpc
+from concurrent import futures
+import agent_pb2
+import agent_pb2_grpc
+
+class MyAgent(agent_pb2_grpc.AgentProcessorServicer):
+    def ProcessEvent(self, request, context):
+        # Handle the event
+        return agent_pb2.AgentResponse(
+            version=1,
+            allow=agent_pb2.AllowDecision()
+        )
+
+server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+agent_pb2_grpc.add_AgentProcessorServicer_to_server(MyAgent(), server)
+server.add_insecure_port('[::]:50051')
+server.start()
+server.wait_for_termination()
 ```
 
 ## Agent Protocol
@@ -162,14 +211,35 @@ Configure agents in your Sentinel config (`config.kdl`):
 
 ```kdl
 agents {
-    agent "my-agent" {
-        type "custom"
-        transport "unix_socket" {
-            path "/var/run/sentinel/my-agent.sock"
-        }
-        events ["request_headers"]
+    // Unix socket agent (local)
+    agent "echo-agent" type="custom" {
+        unix-socket "/var/run/sentinel/echo.sock"
+        events "request_headers" "response_headers"
         timeout-ms 100
-        failure-mode "open"  // or "closed"
+        failure-mode "open"
+    }
+
+    // gRPC agent (local or remote)
+    agent "waf-agent" type="waf" {
+        grpc "http://localhost:50051"
+        events "request_headers" "request_body"
+        timeout-ms 200
+        failure-mode "closed"
+        circuit-breaker {
+            failure-threshold 5
+            timeout-seconds 30
+        }
+    }
+
+    // gRPC agent with TLS
+    agent "auth-agent" type="auth" {
+        grpc "https://auth-service.internal:443" {
+            ca-cert "/etc/ssl/ca.pem"
+            client-cert "/etc/ssl/client.pem"
+            client-key "/etc/ssl/client-key.pem"
+        }
+        events "request_headers"
+        timeout-ms 50
     }
 }
 
@@ -177,7 +247,7 @@ routes {
     route "api" {
         matches { path-prefix "/api" }
         upstream "backend"
-        agents ["my-agent"]
+        agents "waf-agent" "auth-agent"
     }
 }
 ```
