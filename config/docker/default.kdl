@@ -1,0 +1,70 @@
+// Sentinel Default Docker Configuration
+// Minimal config that starts the proxy without requiring a backend
+// Override by mounting your config to /etc/sentinel/config.kdl
+
+server {
+    worker-threads 0  // auto-detect CPU cores
+    max-connections 10000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+    }
+}
+
+// Default route - proxies to localhost:8081
+// Replace with your actual backend
+routes {
+    route "default" {
+        priority "low"
+        matches {
+            path-prefix "/"
+        }
+        upstream "backend"
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+}
+
+upstreams {
+    upstream "backend" {
+        targets {
+            target {
+                address "127.0.0.1:8081"
+                weight 1
+            }
+        }
+        load-balancing "round_robin"
+        health-check {
+            type "tcp"
+            interval-secs 30
+            timeout-secs 5
+            healthy-threshold 1
+            unhealthy-threshold 3
+        }
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
+}
+
+observability {
+    metrics {
+        enabled true
+        address "0.0.0.0:9090"
+        path "/metrics"
+    }
+    logging {
+        level "info"
+        format "json"
+    }
+}

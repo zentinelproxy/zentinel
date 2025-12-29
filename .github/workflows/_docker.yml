@@ -59,7 +59,7 @@ jobs:
           path: artifacts/linux-arm64
         continue-on-error: true
 
-      - name: Check artifacts
+      - name: Check artifacts and prepare config
         id: check-artifacts
         run: |
           echo "Contents of artifacts directory:"
@@ -68,6 +68,8 @@ jobs:
           if [ -f "artifacts/linux-amd64/sentinel" ]; then
             echo "amd64=true" >> $GITHUB_OUTPUT
             chmod +x artifacts/linux-amd64/sentinel
+            # Copy default config into artifact directory for Docker build
+            cp config/docker/default.kdl artifacts/linux-amd64/config.kdl
           else
             echo "amd64=false" >> $GITHUB_OUTPUT
           fi
@@ -75,6 +77,8 @@ jobs:
           if [ -f "artifacts/linux-arm64/sentinel" ]; then
             echo "arm64=true" >> $GITHUB_OUTPUT
             chmod +x artifacts/linux-arm64/sentinel
+            # Copy default config into artifact directory for Docker build
+            cp config/docker/default.kdl artifacts/linux-arm64/config.kdl
           else
             echo "arm64=false" >> $GITHUB_OUTPUT
           fi
