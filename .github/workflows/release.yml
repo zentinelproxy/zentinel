@@ -1,15 +1,23 @@
 # Release workflow - builds and publishes release artifacts
-# Triggered on new releases with CalVer tags (YY.MM_PATCH format)
+# Triggered on new CalVer tags (YY.MM_PATCH format)
 #
 # CalVer format: YY.MM_PATCH
 # Examples: 24.12_0, 25.01_1, 25.06_12
-# Similar to Ubuntu release cycles (YY.MM)
+#
+# This workflow:
+# 1. Validates the CalVer tag format
+# 2. Auto-increments semver in Cargo.toml
+# 3. Publishes all crates to crates.io
+# 4. Builds binaries for all platforms
+# 5. Builds and pushes Docker images
+# 6. Creates GitHub release with artifacts
 
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - '[0-9][0-9].[0-9][0-9]_[0-9]*'
 
   # Allow manual trigger for testing
   workflow_dispatch:
@@ -19,7 +27,7 @@ on:
         required: true
         type: string
       dry-run:
-        description: 'Dry run (do not upload to release)'
+        description: 'Dry run (skip crates.io publish and release creation)'
         required: false
         default: true
         type: boolean
@@ -28,51 +36,150 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Validate version format
-  validate:
-    name: Validate Version
+  # Validate version format and prepare release
+  prepare:
+    name: Prepare Release
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      calver: ${{ steps.version.outputs.calver }}
+      semver: ${{ steps.version.outputs.semver }}
     steps:
-      - name: Get version
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version info
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION="${{ github.event.release.tag_name }}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            CALVER="${{ github.ref_name }}"
           else
-            VERSION="${{ inputs.version }}"
+            CALVER="${{ inputs.version }}"
           fi
 
-          # Remove 'v' prefix if present
-          VERSION="${VERSION#v}"
-
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building version: $VERSION"
-
-      - name: Validate CalVer format
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # CalVer regex: YY.MM_PATCH (e.g., 24.12_0, 25.01_15)
-          if ! echo "$VERSION" | grep -qE '^[0-9]{2}\.(0[1-9]|1[0-2])_[0-9]+$'; then
-            echo "::error::Invalid CalVer format: $VERSION"
+          # Validate CalVer format: YY.MM_PATCH (e.g., 24.12_0, 25.01_15)
+          if ! echo "$CALVER" | grep -qE '^[0-9]{2}\.(0[1-9]|1[0-2])_[0-9]+$'; then
+            echo "::error::Invalid CalVer format: $CALVER"
             echo "Expected format: YY.MM_PATCH (e.g., 24.12_0, 25.01_1)"
             exit 1
           fi
 
-          echo "Valid CalVer version: $VERSION"
+          echo "calver=$CALVER" >> $GITHUB_OUTPUT
+          echo "Valid CalVer: $CALVER"
+
+          # Get current semver from Cargo.toml
+          CURRENT_SEMVER=$(grep -m1 'version = "' Cargo.toml | sed 's/.*version = "\([^"]*\)".*/\1/')
+          echo "Current semver: $CURRENT_SEMVER"
+
+          # Parse and increment patch version
+          MAJOR=$(echo $CURRENT_SEMVER | cut -d. -f1)
+          MINOR=$(echo $CURRENT_SEMVER | cut -d. -f2)
+          PATCH=$(echo $CURRENT_SEMVER | cut -d. -f3)
+          NEW_PATCH=$((PATCH + 1))
+          NEW_SEMVER="${MAJOR}.${MINOR}.${NEW_PATCH}"
+
+          echo "semver=$NEW_SEMVER" >> $GITHUB_OUTPUT
+          echo "New semver: $NEW_SEMVER"
+
+      - name: Update Cargo.toml versions
+        run: |
+          NEW_SEMVER="${{ steps.version.outputs.semver }}"
+          CURRENT_SEMVER=$(grep -m1 'version = "' Cargo.toml | sed 's/.*version = "\([^"]*\)".*/\1/')
+
+          echo "Updating workspace version from $CURRENT_SEMVER to $NEW_SEMVER"
+
+          # Update workspace version
+          sed -i "s/^version = \"$CURRENT_SEMVER\"/version = \"$NEW_SEMVER\"/" Cargo.toml
+
+          # Update internal dependency versions
+          find crates -name "Cargo.toml" -exec sed -i "s/version = \"$CURRENT_SEMVER\"/version = \"$NEW_SEMVER\"/g" {} \;
+
+          # Verify updates
+          echo "Updated versions:"
+          grep -r "version = \"$NEW_SEMVER\"" Cargo.toml crates/*/Cargo.toml || true
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add Cargo.toml crates/*/Cargo.toml
+          git commit -m "chore: bump version to ${{ steps.version.outputs.semver }} for release ${{ steps.version.outputs.calver }}" || echo "No changes to commit"
+
+          # Push to main branch (not the tag)
+          git push origin HEAD:main || echo "Push failed or no changes"
+
+      - name: Upload updated source
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-${{ steps.version.outputs.calver }}
+          path: |
+            Cargo.toml
+            crates/*/Cargo.toml
+          retention-days: 1
+
+  # Publish to crates.io
+  publish-crates:
+    name: Publish to crates.io
+    needs: prepare
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main  # Get the updated version
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # Publish in dependency order with retry logic
+          CRATES=(
+            "sentinel-common"
+            "sentinel-config"
+            "sentinel-agent-protocol"
+            "sentinel-proxy"
+          )
+
+          for crate in "${CRATES[@]}"; do
+            echo "Publishing $crate..."
+
+            # Retry up to 3 times (crates.io index propagation)
+            for i in 1 2 3; do
+              if cargo publish -p "$crate" --no-verify; then
+                echo "Successfully published $crate"
+                break
+              else
+                if [ $i -lt 3 ]; then
+                  echo "Publish failed, waiting 30s for index to update..."
+                  sleep 30
+                else
+                  echo "::error::Failed to publish $crate after 3 attempts"
+                  exit 1
+                fi
+              fi
+            done
+
+            # Wait for crates.io index to update before next crate
+            sleep 15
+          done
 
   # Build for all platforms
   build:
     name: Build
-    needs: validate
+    needs: prepare
     uses: ./.github/workflows/_build.yml
     with:
       profile: release
       upload-artifacts: true
-      artifact-prefix: sentinel-${{ needs.validate.outputs.version }}
-      version: ${{ needs.validate.outputs.version }}
+      artifact-prefix: sentinel-${{ needs.prepare.outputs.calver }}
+      version: ${{ needs.prepare.outputs.calver }}
       targets: |
         [
           {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"},
@@ -83,22 +190,22 @@ jobs:
   # Build and push Docker images
   docker:
     name: Docker
-    needs: validate
+    needs: prepare
     uses: ./.github/workflows/_docker.yml
     with:
-      version: ${{ needs.validate.outputs.version }}
-      push: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false) }}
+      version: ${{ needs.prepare.outputs.calver }}
+      push: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false) }}
       latest: true
     permissions:
       contents: read
       packages: write
 
-  # Package and upload release assets
-  publish:
-    name: Publish
-    needs: [validate, build]
+  # Create GitHub release with assets
+  release:
+    name: Create Release
+    needs: [prepare, build, publish-crates]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false)
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false)
     permissions:
       contents: write
     steps:
@@ -112,7 +219,7 @@ jobs:
 
       - name: Create release archives
         run: |
-          VERSION="${{ needs.validate.outputs.version }}"
+          VERSION="${{ needs.prepare.outputs.calver }}"
           mkdir -p release
 
           for dir in artifacts/sentinel-${VERSION}-*/; do
@@ -133,17 +240,55 @@ jobs:
           echo "Release archives:"
           ls -la release/
 
-      - name: Upload release assets
-        if: github.event_name == 'release'
+      - name: Generate release notes
+        id: notes
+        run: |
+          CALVER="${{ needs.prepare.outputs.calver }}"
+          SEMVER="${{ needs.prepare.outputs.semver }}"
+
+          cat << EOF > release_notes.md
+          ## Sentinel $CALVER
+
+          **Cargo version:** \`$SEMVER\`
+
+          ### Installation
+
+          #### From crates.io
+          \`\`\`bash
+          cargo install sentinel-proxy
+          \`\`\`
+
+          #### From binary
+          Download the appropriate archive for your platform and extract:
+          \`\`\`bash
+          tar -xzf sentinel-${CALVER}-linux-amd64.tar.gz
+          sudo mv sentinel /usr/local/bin/
+          \`\`\`
+
+          #### Docker
+          \`\`\`bash
+          docker pull ghcr.io/${{ github.repository }}:${CALVER}
+          \`\`\`
+
+          ### Checksums
+          Verify downloads with the \`.sha256\` files.
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/$(git describe --tags --abbrev=0 HEAD^)...${CALVER}
+          EOF
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ needs.prepare.outputs.calver }}
+          name: Release ${{ needs.prepare.outputs.calver }}
+          body_path: release_notes.md
           files: release/*
           fail_on_unmatched_files: true
 
   # Summary
   summary:
     name: Summary
-    needs: [validate, build, docker, publish]
+    needs: [prepare, build, docker, publish-crates, release]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -151,14 +296,21 @@ jobs:
         run: |
           echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ needs.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| CalVer | \`${{ needs.prepare.outputs.calver }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Semver | \`${{ needs.prepare.outputs.semver }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Build Status" >> $GITHUB_STEP_SUMMARY
-          echo "- Validate: ${{ needs.validate.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker: ${{ needs.docker.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Publish: ${{ needs.publish.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Prepare | ${{ needs.prepare.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker | ${{ needs.docker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Crates | ${{ needs.publish-crates.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Release | ${{ needs.release.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Container Image" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ github.repository }}:${{ needs.validate.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ github.repository }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- **crates.io**: [sentinel-proxy](https://crates.io/crates/sentinel-proxy)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Container**: \`ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.calver }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/${{ needs.prepare.outputs.calver }}" >> $GITHUB_STEP_SUMMARY
