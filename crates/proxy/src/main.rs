@@ -11,10 +11,20 @@ use tracing::{error, info, warn};
 use sentinel_config::Config;
 use sentinel_proxy::{ReloadTrigger, SignalManager, SignalType, SentinelProxy};
 
+/// Version string combining Cargo semver and CalVer release tag
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (release ",
+    env!("SENTINEL_CALVER"),
+    ", commit ",
+    env!("SENTINEL_COMMIT"),
+    ")"
+);
+
 /// Sentinel - A security-first reverse proxy built on Pingora
 #[derive(Parser, Debug)]
 #[command(name = "sentinel")]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     /// Configuration file path
