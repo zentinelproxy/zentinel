@@ -40,7 +40,7 @@ use crate::static_files::StaticFileServer;
 use crate::upstream::UpstreamPool;
 use crate::validation::SchemaValidator;
 
-use sentinel_common::{observability::init_tracing, TraceIdFormat};
+use sentinel_common::TraceIdFormat;
 use sentinel_config::Config;
 
 /// Main proxy service implementing Pingora's ProxyHttp trait
@@ -79,10 +79,8 @@ impl SentinelProxy {
     /// Create new proxy instance
     ///
     /// If config_path is None, uses the embedded default configuration.
+    /// Note: Tracing must be initialized by the caller before calling this function.
     pub async fn new(config_path: Option<&str>) -> Result<Self> {
-        // Initialize tracing
-        init_tracing()?;
-
         info!("Starting Sentinel Proxy");
 
         // Load initial configuration
