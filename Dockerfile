@@ -42,6 +42,9 @@ RUN mkdir -p \
 COPY sentinel /usr/local/bin/sentinel
 RUN chmod +x /usr/local/bin/sentinel
 
+# Copy default configuration
+COPY config.kdl /etc/sentinel/config.kdl
+
 # Set up health check script
 RUN echo '#!/bin/sh\ncurl -f http://localhost:9090/health || exit 1' > /usr/local/bin/healthcheck && \
     chmod +x /usr/local/bin/healthcheck
@@ -166,7 +169,7 @@ FROM runtime-base AS proxy
 COPY --from=builder /app/target/release/sentinel /usr/local/bin/
 
 # Copy default configuration
-COPY config/examples/basic.kdl /etc/sentinel/config.kdl.example
+COPY config/docker/default.kdl /etc/sentinel/config.kdl
 
 # Set up health check script
 RUN echo '#!/bin/sh\ncurl -f http://localhost:9090/health || exit 1' > /usr/local/bin/healthcheck && \
