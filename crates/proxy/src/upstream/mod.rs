@@ -14,10 +14,10 @@ use tracing::{debug, error, info, trace, warn};
 
 use sentinel_common::{
     errors::{SentinelError, SentinelResult},
-    types::{CircuitBreakerConfig, LoadBalancingAlgorithm, RetryPolicy},
+    types::{CircuitBreakerConfig, LoadBalancingAlgorithm},
     CircuitBreaker, UpstreamId,
 };
-use sentinel_config::{HealthCheck as HealthCheckConfig, UpstreamConfig};
+use sentinel_config::UpstreamConfig;
 
 // ============================================================================
 // Internal Upstream Target Type
@@ -149,129 +149,43 @@ pub struct UpstreamPool {
     targets: Vec<UpstreamTarget>,
     /// Load balancer implementation
     load_balancer: Arc<dyn LoadBalancer>,
-    /// Health checker
-    health_checker: Option<Arc<UpstreamHealthChecker>>,
-    /// Connection pool
-    connection_pool: Arc<ConnectionPool>,
+    /// Connection pool configuration (Pingora handles actual pooling)
+    pool_config: ConnectionPoolConfig,
     /// Circuit breakers per target
     circuit_breakers: Arc<RwLock<HashMap<String, CircuitBreaker>>>,
-    /// Retry policy
-    retry_policy: Option<RetryPolicy>,
     /// Pool statistics
     stats: Arc<PoolStats>,
 }
 
-/// Health checker for upstream targets
+// Note: Active health checking is handled by the PassiveHealthChecker in health.rs
+// and via load balancer health reporting. A future enhancement could add active
+// HTTP/TCP health probes here.
+
+/// Connection pool configuration for Pingora's built-in pooling
 ///
-/// Performs active health checking on upstream targets to determine
-/// their availability for load balancing.
-pub struct UpstreamHealthChecker {
-    /// Check configuration
-    config: HealthCheckConfig,
-    /// Health status per target
-    health_status: Arc<RwLock<HashMap<String, TargetHealthStatus>>>,
-    /// Check tasks handles
-    check_handles: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
+/// Note: Actual connection pooling is handled by Pingora internally.
+/// This struct holds configuration that is applied to peer options.
+pub struct ConnectionPoolConfig {
+    /// Maximum idle timeout for pooled connections
+    pub idle_timeout: Duration,
+    /// Connection timeout
+    pub connection_timeout: Duration,
+    /// Read timeout
+    pub read_timeout: Duration,
+    /// Write timeout
+    pub write_timeout: Duration,
 }
 
-impl UpstreamHealthChecker {
-    /// Create a new health checker
-    pub fn new(config: HealthCheckConfig) -> Self {
+impl ConnectionPoolConfig {
+    /// Create a new connection pool configuration
+    pub fn new(idle_timeout_secs: u64) -> Self {
         Self {
-            config,
-            health_status: Arc::new(RwLock::new(HashMap::new())),
-            check_handles: Arc::new(RwLock::new(Vec::new())),
+            idle_timeout: Duration::from_secs(idle_timeout_secs),
+            connection_timeout: Duration::from_secs(5),
+            read_timeout: Duration::from_secs(60),
+            write_timeout: Duration::from_secs(60),
         }
     }
-}
-
-/// Health status for an upstream target
-#[derive(Debug, Clone)]
-struct TargetHealthStatus {
-    /// Is target healthy
-    healthy: bool,
-    /// Consecutive successes
-    consecutive_successes: u32,
-    /// Consecutive failures
-    consecutive_failures: u32,
-    /// Last check time
-    last_check: Instant,
-    /// Last successful check
-    last_success: Option<Instant>,
-    /// Last error message
-    last_error: Option<String>,
-}
-
-/// Connection pool for upstream connections
-pub struct ConnectionPool {
-    /// Pool configuration
-    max_connections: usize,
-    max_idle: usize,
-    idle_timeout: Duration,
-    max_lifetime: Option<Duration>,
-    /// Active connections per target
-    connections: Arc<RwLock<HashMap<String, Vec<PooledConnection>>>>,
-    /// Connection statistics
-    stats: Arc<ConnectionPoolStats>,
-}
-
-impl ConnectionPool {
-    /// Create a new connection pool
-    pub fn new(
-        max_connections: usize,
-        max_idle: usize,
-        idle_timeout: Duration,
-        max_lifetime: Option<Duration>,
-    ) -> Self {
-        Self {
-            max_connections,
-            max_idle,
-            idle_timeout,
-            max_lifetime,
-            connections: Arc::new(RwLock::new(HashMap::new())),
-            stats: Arc::new(ConnectionPoolStats::default()),
-        }
-    }
-
-    /// Acquire a connection from the pool
-    pub async fn acquire(&self, _address: &str) -> SentinelResult<Option<HttpPeer>> {
-        // TODO: Implement actual connection pooling logic
-        // For now, return None to always create new connections
-        Ok(None)
-    }
-
-    /// Close all connections in the pool
-    pub async fn close_all(&self) {
-        let mut connections = self.connections.write().await;
-        connections.clear();
-    }
-}
-
-/// Pooled connection wrapper
-struct PooledConnection {
-    /// The actual connection/peer
-    peer: HttpPeer,
-    /// Creation time
-    created: Instant,
-    /// Last used time
-    last_used: Instant,
-    /// Is currently in use
-    in_use: bool,
-}
-
-/// Connection pool statistics
-#[derive(Default)]
-struct ConnectionPoolStats {
-    /// Total connections created
-    created: AtomicU64,
-    /// Total connections reused
-    reused: AtomicU64,
-    /// Total connections closed
-    closed: AtomicU64,
-    /// Current active connections
-    active: AtomicU64,
-    /// Current idle connections
-    idle: AtomicU64,
 }
 
 // CircuitBreaker is imported from sentinel_common
@@ -704,37 +618,13 @@ impl UpstreamPool {
         );
         let load_balancer = Self::create_load_balancer(&config.load_balancing, &targets)?;
 
-        // Create health checker if configured
-        let health_checker = config
-            .health_check
-            .as_ref()
-            .map(|hc_config| {
-                debug!(
-                    upstream_id = %config.id,
-                    check_type = ?hc_config.check_type,
-                    interval_secs = hc_config.interval_secs,
-                    "Creating health checker"
-                );
-                Arc::new(UpstreamHealthChecker::new(hc_config.clone()))
-            });
-
-        // Create connection pool
+        // Create connection pool configuration (Pingora handles actual pooling)
         debug!(
             upstream_id = %config.id,
-            max_connections = config.connection_pool.max_connections,
-            max_idle = config.connection_pool.max_idle,
             idle_timeout_secs = config.connection_pool.idle_timeout_secs,
-            "Creating connection pool"
+            "Creating connection pool configuration"
         );
-        let connection_pool = Arc::new(ConnectionPool::new(
-            config.connection_pool.max_connections,
-            config.connection_pool.max_idle,
-            Duration::from_secs(config.connection_pool.idle_timeout_secs),
-            config
-                .connection_pool
-                .max_lifetime_secs
-                .map(Duration::from_secs),
-        ));
+        let pool_config = ConnectionPoolConfig::new(config.connection_pool.idle_timeout_secs);
 
         // Initialize circuit breakers for each target
         let mut circuit_breakers = HashMap::new();
@@ -754,10 +644,8 @@ impl UpstreamPool {
             id: id.clone(),
             targets,
             load_balancer,
-            health_checker,
-            connection_pool,
+            pool_config,
             circuit_breakers: Arc::new(RwLock::new(circuit_breakers)),
-            retry_policy: None,
             stats: Arc::new(PoolStats::default()),
         };
 
@@ -872,22 +760,13 @@ impl UpstreamPool {
                 }
             }
 
-            // Try to get connection from pool
-            if let Some(peer) = self.connection_pool.acquire(&selection.address).await? {
-                debug!(
-                    upstream_id = %self.id,
-                    target = %selection.address,
-                    attempt = attempts,
-                    "Reusing pooled connection"
-                );
-                return Ok(peer);
-            }
-
-            // Create new connection
+            // Create peer with pooling options
+            // Note: Pingora handles actual connection pooling internally based on
+            // peer.options.idle_timeout and ServerConf.upstream_keepalive_pool_size
             trace!(
                 upstream_id = %self.id,
                 target = %selection.address,
-                "Creating new connection to upstream"
+                "Creating peer for upstream (Pingora handles connection reuse)"
             );
             let peer = self.create_peer(&selection)?;
 
@@ -916,6 +795,10 @@ impl UpstreamPool {
     }
 
     /// Create new peer connection with connection pooling options
+    ///
+    /// Pingora handles actual connection pooling internally. When idle_timeout
+    /// is set on the peer options, Pingora will keep the connection alive and
+    /// reuse it for subsequent requests to the same upstream.
     fn create_peer(&self, selection: &TargetSelection) -> SentinelResult<HttpPeer> {
         let mut peer = HttpPeer::new(
             &selection.address,
@@ -926,15 +809,15 @@ impl UpstreamPool {
         // Configure connection pooling options for better performance
         // idle_timeout enables Pingora's connection pooling - connections are
         // kept alive and reused for this duration
-        peer.options.idle_timeout = Some(self.connection_pool.idle_timeout);
+        peer.options.idle_timeout = Some(self.pool_config.idle_timeout);
 
         // Connection timeouts
-        peer.options.connection_timeout = Some(Duration::from_secs(5));
+        peer.options.connection_timeout = Some(self.pool_config.connection_timeout);
         peer.options.total_connection_timeout = Some(Duration::from_secs(10));
 
         // Read/write timeouts
-        peer.options.read_timeout = Some(Duration::from_secs(60));
-        peer.options.write_timeout = Some(Duration::from_secs(60));
+        peer.options.read_timeout = Some(self.pool_config.read_timeout);
+        peer.options.write_timeout = Some(self.pool_config.write_timeout);
 
         // Enable TCP keepalive for long-lived connections
         peer.options.tcp_keepalive = Some(pingora::protocols::TcpKeepalive {
@@ -949,8 +832,8 @@ impl UpstreamPool {
         trace!(
             upstream_id = %self.id,
             target = %selection.address,
-            idle_timeout_secs = self.connection_pool.idle_timeout.as_secs(),
-            "Created peer with connection pooling options"
+            idle_timeout_secs = self.pool_config.idle_timeout.as_secs(),
+            "Created peer with Pingora connection pooling enabled"
         );
 
         Ok(peer)
@@ -1000,6 +883,8 @@ impl UpstreamPool {
     }
 
     /// Shutdown the pool
+    ///
+    /// Note: Pingora manages connection pooling internally, so we just log stats.
     pub async fn shutdown(&self) {
         info!(
             upstream_id = %self.id,
@@ -1009,7 +894,7 @@ impl UpstreamPool {
             total_failures = self.stats.failures.load(Ordering::Relaxed),
             "Shutting down upstream pool"
         );
-        self.connection_pool.close_all().await;
-        debug!(upstream_id = %self.id, "Connection pool closed");
+        // Pingora handles connection cleanup internally
+        debug!(upstream_id = %self.id, "Upstream pool shutdown complete");
     }
 }
