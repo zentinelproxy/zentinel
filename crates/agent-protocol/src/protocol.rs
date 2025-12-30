@@ -77,6 +77,68 @@ pub enum HeaderOp {
     Remove { name: String },
 }
 
+// ============================================================================
+// Body Mutation
+// ============================================================================
+
+/// Body mutation from agent
+///
+/// Allows agents to modify body content during streaming:
+/// - `None` data: pass through original chunk unchanged
+/// - `Some(empty)`: drop the chunk entirely
+/// - `Some(data)`: replace chunk with modified content
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BodyMutation {
+    /// Modified body data (base64 encoded for JSON transport)
+    ///
+    /// - `None`: use original chunk unchanged
+    /// - `Some("")`: drop this chunk
+    /// - `Some(data)`: replace chunk with this data
+    pub data: Option<String>,
+
+    /// Chunk index this mutation applies to
+    ///
+    /// Must match the `chunk_index` from the body chunk event.
+    #[serde(default)]
+    pub chunk_index: u32,
+}
+
+impl BodyMutation {
+    /// Create a pass-through mutation (no change)
+    pub fn pass_through(chunk_index: u32) -> Self {
+        Self {
+            data: None,
+            chunk_index,
+        }
+    }
+
+    /// Create a mutation that drops the chunk
+    pub fn drop_chunk(chunk_index: u32) -> Self {
+        Self {
+            data: Some(String::new()),
+            chunk_index,
+        }
+    }
+
+    /// Create a mutation that replaces the chunk
+    pub fn replace(chunk_index: u32, data: String) -> Self {
+        Self {
+            data: Some(data),
+            chunk_index,
+        }
+    }
+
+    /// Check if this mutation passes through unchanged
+    pub fn is_pass_through(&self) -> bool {
+        self.data.is_none()
+    }
+
+    /// Check if this mutation drops the chunk
+    pub fn is_drop(&self) -> bool {
+        matches!(&self.data, Some(d) if d.is_empty())
+    }
+}
+
 /// Request metadata sent to agents
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestMetadata {
@@ -128,6 +190,14 @@ pub struct RequestBodyChunkEvent {
     pub is_last: bool,
     /// Total body size if known
     pub total_size: Option<usize>,
+    /// Chunk index for ordering (0-based)
+    ///
+    /// Used to match mutations to chunks and ensure ordering.
+    #[serde(default)]
+    pub chunk_index: u32,
+    /// Bytes received so far (cumulative)
+    #[serde(default)]
+    pub bytes_received: usize,
 }
 
 /// Response headers event
@@ -152,6 +222,12 @@ pub struct ResponseBodyChunkEvent {
     pub is_last: bool,
     /// Total body size if known
     pub total_size: Option<usize>,
+    /// Chunk index for ordering (0-based)
+    #[serde(default)]
+    pub chunk_index: u32,
+    /// Bytes sent so far (cumulative)
+    #[serde(default)]
+    pub bytes_sent: usize,
 }
 
 /// Request complete event (for logging/audit)
@@ -203,6 +279,34 @@ pub struct AgentResponse {
     /// Audit metadata
     #[serde(default)]
     pub audit: AuditMetadata,
+
+    // ========================================================================
+    // Streaming-specific fields
+    // ========================================================================
+
+    /// Agent needs more data to make a final decision
+    ///
+    /// When `true`, the current `decision` is provisional and may change
+    /// after processing more body chunks. The proxy should continue
+    /// streaming body data to this agent.
+    ///
+    /// When `false` (default), the decision is final.
+    #[serde(default)]
+    pub needs_more: bool,
+
+    /// Request body mutation (for streaming mode)
+    ///
+    /// If present, applies the mutation to the current request body chunk.
+    /// Only valid for `RequestBodyChunk` events.
+    #[serde(default)]
+    pub request_body_mutation: Option<BodyMutation>,
+
+    /// Response body mutation (for streaming mode)
+    ///
+    /// If present, applies the mutation to the current response body chunk.
+    /// Only valid for `ResponseBodyChunk` events.
+    #[serde(default)]
+    pub response_body_mutation: Option<BodyMutation>,
 }
 
 impl AgentResponse {
@@ -215,6 +319,9 @@ impl AgentResponse {
             response_headers: vec![],
             routing_metadata: HashMap::new(),
             audit: AuditMetadata::default(),
+            needs_more: false,
+            request_body_mutation: None,
+            response_body_mutation: None,
         }
     }
 
@@ -231,6 +338,9 @@ impl AgentResponse {
             response_headers: vec![],
             routing_metadata: HashMap::new(),
             audit: AuditMetadata::default(),
+            needs_more: false,
+            request_body_mutation: None,
+            response_body_mutation: None,
         }
     }
 
@@ -243,7 +353,43 @@ impl AgentResponse {
             response_headers: vec![],
             routing_metadata: HashMap::new(),
             audit: AuditMetadata::default(),
+            needs_more: false,
+            request_body_mutation: None,
+            response_body_mutation: None,
         }
+    }
+
+    /// Create a streaming response indicating more data is needed
+    pub fn needs_more_data() -> Self {
+        Self {
+            version: PROTOCOL_VERSION,
+            decision: Decision::Allow,
+            request_headers: vec![],
+            response_headers: vec![],
+            routing_metadata: HashMap::new(),
+            audit: AuditMetadata::default(),
+            needs_more: true,
+            request_body_mutation: None,
+            response_body_mutation: None,
+        }
+    }
+
+    /// Create a streaming response with body mutation
+    pub fn with_request_body_mutation(mut self, mutation: BodyMutation) -> Self {
+        self.request_body_mutation = Some(mutation);
+        self
+    }
+
+    /// Create a streaming response with response body mutation
+    pub fn with_response_body_mutation(mut self, mutation: BodyMutation) -> Self {
+        self.response_body_mutation = Some(mutation);
+        self
+    }
+
+    /// Set needs_more flag
+    pub fn set_needs_more(mut self, needs_more: bool) -> Self {
+        self.needs_more = needs_more;
+        self
     }
 
     /// Add a request header modification

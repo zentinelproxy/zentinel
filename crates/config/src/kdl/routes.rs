@@ -47,9 +47,14 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                         "not-found" | "not_found" => Some(BuiltinHandler::NotFound),
                         "config" => Some(BuiltinHandler::Config),
                         "upstreams" => Some(BuiltinHandler::Upstreams),
+                        "cache-purge" | "cache_purge" => Some(BuiltinHandler::CachePurge),
+                        "cache-stats" | "cache_stats" => Some(BuiltinHandler::CacheStats),
                         _ => None,
                     }
                 });
+
+                // Parse cache configuration
+                let cache_config = parse_cache_config_opt(child)?;
 
                 // Determine service type
                 let service_type = if static_files.is_some() {
@@ -69,13 +74,19 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     "Parsed route"
                 );
 
+                // Build route policies with optional cache config
+                let policies = RoutePolicies {
+                    cache: cache_config,
+                    ..RoutePolicies::default()
+                };
+
                 routes.push(RouteConfig {
                     id,
                     priority,
                     matches,
                     upstream,
                     service_type,
-                    policies: RoutePolicies::default(),
+                    policies,
                     filters,
                     builtin_handler,
                     waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
@@ -188,5 +199,122 @@ pub fn parse_static_file_config(node: &kdl::KdlNode) -> Result<StaticFileConfig>
         compress: get_bool_entry(node, "compress").unwrap_or(true),
         mime_types: HashMap::new(),
         fallback: get_string_entry(node, "fallback"),
+    })
+}
+
+/// Parse optional cache configuration from a route
+fn parse_cache_config_opt(node: &kdl::KdlNode) -> Result<Option<RouteCacheConfig>> {
+    if let Some(route_children) = node.children() {
+        if let Some(cache_node) = route_children.get("cache") {
+            return Ok(Some(parse_cache_config(cache_node)?));
+        }
+    }
+    Ok(None)
+}
+
+/// Parse cache configuration block
+///
+/// Example KDL:
+/// ```kdl
+/// cache {
+///     enabled true
+///     default-ttl-secs 3600
+///     max-size-bytes 10485760
+///     cache-private false
+///     stale-while-revalidate-secs 60
+///     stale-if-error-secs 300
+///     cacheable-methods "GET" "HEAD"
+///     cacheable-status-codes 200 203 204 206 300 301 308 404 410
+///     vary-headers "Accept" "Accept-Encoding"
+///     ignore-query-params "utm_source" "utm_medium"
+/// }
+/// ```
+fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
+    let enabled = get_bool_entry(node, "enabled").unwrap_or(false);
+    let default_ttl_secs = get_int_entry(node, "default-ttl-secs").unwrap_or(3600) as u64;
+    let max_size_bytes = get_int_entry(node, "max-size-bytes").unwrap_or(10 * 1024 * 1024) as usize;
+    let cache_private = get_bool_entry(node, "cache-private").unwrap_or(false);
+    let stale_while_revalidate_secs =
+        get_int_entry(node, "stale-while-revalidate-secs").unwrap_or(60) as u64;
+    let stale_if_error_secs = get_int_entry(node, "stale-if-error-secs").unwrap_or(300) as u64;
+
+    // Parse cacheable methods (string arguments)
+    let cacheable_methods = if let Some(children) = node.children() {
+        if let Some(methods_node) = children.get("cacheable-methods") {
+            methods_node
+                .entries()
+                .iter()
+                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+                .collect()
+        } else {
+            vec!["GET".to_string(), "HEAD".to_string()]
+        }
+    } else {
+        vec!["GET".to_string(), "HEAD".to_string()]
+    };
+
+    // Parse cacheable status codes (integer arguments)
+    let cacheable_status_codes = if let Some(children) = node.children() {
+        if let Some(codes_node) = children.get("cacheable-status-codes") {
+            codes_node
+                .entries()
+                .iter()
+                .filter_map(|e| e.value().as_integer().map(|v| v as u16))
+                .collect()
+        } else {
+            vec![200, 203, 204, 206, 300, 301, 308, 404, 410]
+        }
+    } else {
+        vec![200, 203, 204, 206, 300, 301, 308, 404, 410]
+    };
+
+    // Parse vary headers
+    let vary_headers = if let Some(children) = node.children() {
+        if let Some(vary_node) = children.get("vary-headers") {
+            vary_node
+                .entries()
+                .iter()
+                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Parse ignore query params
+    let ignore_query_params = if let Some(children) = node.children() {
+        if let Some(ignore_node) = children.get("ignore-query-params") {
+            ignore_node
+                .entries()
+                .iter()
+                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    trace!(
+        enabled = enabled,
+        default_ttl = default_ttl_secs,
+        max_size = max_size_bytes,
+        "Parsed cache configuration"
+    );
+
+    Ok(RouteCacheConfig {
+        enabled,
+        default_ttl_secs,
+        max_size_bytes,
+        cache_private,
+        stale_while_revalidate_secs,
+        stale_if_error_secs,
+        cacheable_methods,
+        cacheable_status_codes,
+        vary_headers,
+        ignore_query_params,
     })
 }

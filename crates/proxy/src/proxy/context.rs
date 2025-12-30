@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use sentinel_config::{RouteConfig, ServiceType};
+use sentinel_config::{BodyStreamingMode, RouteConfig, ServiceType};
 
 /// Request context maintained throughout the request lifecycle.
 ///
@@ -72,6 +72,24 @@ pub struct RequestContext {
     pub(crate) body_buffer: Vec<u8>,
     /// Agent IDs to use for body inspection
     pub(crate) body_inspection_agents: Vec<String>,
+
+    // === Body Streaming ===
+    /// Body streaming mode for request body inspection
+    pub(crate) request_body_streaming_mode: BodyStreamingMode,
+    /// Current chunk index for request body streaming
+    pub(crate) request_body_chunk_index: u32,
+    /// Whether agent needs more data (streaming mode)
+    pub(crate) agent_needs_more: bool,
+    /// Body streaming mode for response body inspection
+    pub(crate) response_body_streaming_mode: BodyStreamingMode,
+    /// Current chunk index for response body streaming
+    pub(crate) response_body_chunk_index: u32,
+    /// Response body bytes inspected
+    pub(crate) response_body_bytes_inspected: u64,
+    /// Response body inspection enabled
+    pub(crate) response_body_inspection_enabled: bool,
+    /// Agent IDs for response body inspection
+    pub(crate) response_body_inspection_agents: Vec<String>,
 }
 
 impl RequestContext {
@@ -99,6 +117,14 @@ impl RequestContext {
             body_bytes_inspected: 0,
             body_buffer: Vec::new(),
             body_inspection_agents: Vec::new(),
+            request_body_streaming_mode: BodyStreamingMode::Buffer,
+            request_body_chunk_index: 0,
+            agent_needs_more: false,
+            response_body_streaming_mode: BodyStreamingMode::Buffer,
+            response_body_chunk_index: 0,
+            response_body_bytes_inspected: 0,
+            response_body_inspection_enabled: false,
+            response_body_inspection_agents: Vec::new(),
         }
     }
 

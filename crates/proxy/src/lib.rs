@@ -92,8 +92,8 @@ pub use proxy::SentinelProxy;
 
 // Built-in handlers
 pub use builtin_handlers::{
-    execute_handler, BuiltinHandlerState, TargetHealthStatus, TargetStatus, UpstreamHealthSnapshot,
-    UpstreamStatus,
+    execute_handler, BuiltinHandlerState, CachePurgeRequest, TargetHealthStatus, TargetStatus,
+    UpstreamHealthSnapshot, UpstreamStatus,
 };
 
 // HTTP helpers
@@ -113,11 +113,16 @@ pub use otel::{
 };
 
 // TLS / SNI support
-pub use tls::{build_server_config, load_client_ca, validate_tls_config, SniResolver, TlsError};
+pub use tls::{
+    build_server_config, build_upstream_tls_config, load_client_ca, validate_tls_config,
+    validate_upstream_tls_config, CertificateReloader, HotReloadableSniResolver, OcspCacheEntry,
+    OcspStapler, SniResolver, TlsError,
+};
 
 // Logging
 pub use logging::{
-    AccessLogEntry, AccessLogFormat, AuditLogEntry, ErrorLogEntry, LogManager, SharedLogManager,
+    AccessLogEntry, AccessLogFormat, AuditEventType, AuditLogEntry, ErrorLogEntry, LogManager,
+    SharedLogManager,
 };
 
 // Rate limiting

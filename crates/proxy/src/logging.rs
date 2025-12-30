@@ -153,6 +153,55 @@ pub struct ErrorLogEntry {
     pub details: Option<String>,
 }
 
+/// Audit event type for categorizing security events
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditEventType {
+    /// Request blocked by policy
+    Blocked,
+    /// Agent made a decision
+    AgentDecision,
+    /// WAF rule matched
+    WafMatch,
+    /// WAF blocked request
+    WafBlock,
+    /// Rate limit exceeded
+    RateLimitExceeded,
+    /// Authentication event
+    AuthEvent,
+    /// Configuration change
+    ConfigChange,
+    /// Certificate reload
+    CertReload,
+    /// Circuit breaker state change
+    CircuitBreakerChange,
+    /// Cache purge request
+    CachePurge,
+    /// Admin action
+    AdminAction,
+    /// Custom event
+    Custom,
+}
+
+impl std::fmt::Display for AuditEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuditEventType::Blocked => write!(f, "blocked"),
+            AuditEventType::AgentDecision => write!(f, "agent_decision"),
+            AuditEventType::WafMatch => write!(f, "waf_match"),
+            AuditEventType::WafBlock => write!(f, "waf_block"),
+            AuditEventType::RateLimitExceeded => write!(f, "rate_limit_exceeded"),
+            AuditEventType::AuthEvent => write!(f, "auth_event"),
+            AuditEventType::ConfigChange => write!(f, "config_change"),
+            AuditEventType::CertReload => write!(f, "cert_reload"),
+            AuditEventType::CircuitBreakerChange => write!(f, "circuit_breaker_change"),
+            AuditEventType::CachePurge => write!(f, "cache_purge"),
+            AuditEventType::AdminAction => write!(f, "admin_action"),
+            AuditEventType::Custom => write!(f, "custom"),
+        }
+    }
+}
+
 /// Audit log entry for security events
 #[derive(Debug, Serialize)]
 pub struct AuditLogEntry {
@@ -183,6 +232,198 @@ pub struct AuditLogEntry {
     /// Additional tags
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Action taken (allow, block, challenge, redirect)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// Response status code
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+    /// User ID if authenticated
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Session ID if available
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Additional metadata as key-value pairs
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub metadata: std::collections::HashMap<String, String>,
+}
+
+impl AuditLogEntry {
+    /// Create a new audit log entry with required fields
+    pub fn new(
+        trace_id: impl Into<String>,
+        event_type: AuditEventType,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        client_ip: impl Into<String>,
+    ) -> Self {
+        Self {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            trace_id: trace_id.into(),
+            event_type: event_type.to_string(),
+            method: method.into(),
+            path: path.into(),
+            client_ip: client_ip.into(),
+            route_id: None,
+            reason: None,
+            agent_id: None,
+            rule_ids: Vec::new(),
+            tags: Vec::new(),
+            action: None,
+            status_code: None,
+            user_id: None,
+            session_id: None,
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Builder: set route ID
+    pub fn with_route_id(mut self, route_id: impl Into<String>) -> Self {
+        self.route_id = Some(route_id.into());
+        self
+    }
+
+    /// Builder: set reason
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+
+    /// Builder: set agent ID
+    pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.agent_id = Some(agent_id.into());
+        self
+    }
+
+    /// Builder: add rule IDs
+    pub fn with_rule_ids(mut self, rule_ids: Vec<String>) -> Self {
+        self.rule_ids = rule_ids;
+        self
+    }
+
+    /// Builder: add tags
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    /// Builder: set action
+    pub fn with_action(mut self, action: impl Into<String>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    /// Builder: set status code
+    pub fn with_status_code(mut self, status_code: u16) -> Self {
+        self.status_code = Some(status_code);
+        self
+    }
+
+    /// Builder: set user ID
+    pub fn with_user_id(mut self, user_id: impl Into<String>) -> Self {
+        self.user_id = Some(user_id.into());
+        self
+    }
+
+    /// Builder: set session ID
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Builder: add metadata
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Create an entry for a blocked request
+    pub fn blocked(
+        trace_id: impl Into<String>,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        client_ip: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::new(trace_id, AuditEventType::Blocked, method, path, client_ip)
+            .with_reason(reason)
+            .with_action("block")
+    }
+
+    /// Create an entry for rate limit exceeded
+    pub fn rate_limited(
+        trace_id: impl Into<String>,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        client_ip: impl Into<String>,
+        limit_key: impl Into<String>,
+    ) -> Self {
+        Self::new(trace_id, AuditEventType::RateLimitExceeded, method, path, client_ip)
+            .with_reason("Rate limit exceeded")
+            .with_action("block")
+            .with_metadata("limit_key", limit_key)
+    }
+
+    /// Create an entry for WAF block
+    pub fn waf_blocked(
+        trace_id: impl Into<String>,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        client_ip: impl Into<String>,
+        rule_ids: Vec<String>,
+    ) -> Self {
+        Self::new(trace_id, AuditEventType::WafBlock, method, path, client_ip)
+            .with_rule_ids(rule_ids)
+            .with_action("block")
+    }
+
+    /// Create an entry for configuration change
+    pub fn config_change(
+        trace_id: impl Into<String>,
+        change_type: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::new(trace_id, AuditEventType::ConfigChange, "-", "/-/config", "internal")
+            .with_reason(change_type)
+            .with_metadata("details", details)
+    }
+
+    /// Create an entry for certificate reload
+    pub fn cert_reload(
+        trace_id: impl Into<String>,
+        listener_id: impl Into<String>,
+        success: bool,
+    ) -> Self {
+        Self::new(trace_id, AuditEventType::CertReload, "-", "/-/certs", "internal")
+            .with_metadata("listener_id", listener_id)
+            .with_metadata("success", success.to_string())
+    }
+
+    /// Create an entry for cache purge
+    pub fn cache_purge(
+        trace_id: impl Into<String>,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        client_ip: impl Into<String>,
+        pattern: impl Into<String>,
+    ) -> Self {
+        Self::new(trace_id, AuditEventType::CachePurge, method, path, client_ip)
+            .with_metadata("pattern", pattern)
+            .with_action("purge")
+    }
+
+    /// Create an entry for admin action
+    pub fn admin_action(
+        trace_id: impl Into<String>,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        client_ip: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self::new(trace_id, AuditEventType::AdminAction, method, path, client_ip)
+            .with_action(action)
+    }
 }
 
 /// Buffered file writer for log files

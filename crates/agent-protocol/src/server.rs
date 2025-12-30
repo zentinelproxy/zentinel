@@ -588,6 +588,8 @@ impl GrpcAgentHandler {
             data: String::from_utf8_lossy(&e.data).to_string(),
             is_last: e.is_last,
             total_size: e.total_size.map(|s| s as usize),
+            chunk_index: e.chunk_index,
+            bytes_received: e.bytes_received as usize,
         }
     }
 
@@ -607,6 +609,8 @@ impl GrpcAgentHandler {
             data: String::from_utf8_lossy(&e.data).to_string(),
             is_last: e.is_last,
             total_size: e.total_size.map(|s| s as usize),
+            chunk_index: e.chunk_index,
+            bytes_sent: e.bytes_sent as usize,
         }
     }
 
@@ -700,6 +704,17 @@ impl GrpcAgentHandler {
             }).collect(),
         });
 
+        // Convert body mutations
+        let request_body_mutation = response.request_body_mutation.map(|m| grpc::BodyMutation {
+            data: m.data.map(|d| d.into_bytes()),
+            chunk_index: m.chunk_index,
+        });
+
+        let response_body_mutation = response.response_body_mutation.map(|m| grpc::BodyMutation {
+            data: m.data.map(|d| d.into_bytes()),
+            chunk_index: m.chunk_index,
+        });
+
         grpc::AgentResponse {
             version: PROTOCOL_VERSION,
             decision,
@@ -707,6 +722,9 @@ impl GrpcAgentHandler {
             response_headers,
             routing_metadata: response.routing_metadata,
             audit,
+            needs_more: response.needs_more,
+            request_body_mutation,
+            response_body_mutation,
         }
     }
 

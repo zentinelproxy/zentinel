@@ -28,6 +28,8 @@ use tracing::{debug, error, info, trace, warn};
 use sentinel_common::errors::{SentinelError, SentinelResult};
 use sentinel_config::Config;
 
+use crate::tls::CertificateReloader;
+
 // ============================================================================
 // Reload Events and Types
 // ============================================================================
@@ -138,6 +140,8 @@ pub struct ConfigManager {
     validators: Arc<RwLock<Vec<Box<dyn ConfigValidator>>>>,
     /// Reload hooks
     reload_hooks: Arc<RwLock<Vec<Box<dyn ReloadHook>>>>,
+    /// Certificate reloader for TLS hot-reload
+    cert_reloader: Arc<CertificateReloader>,
 }
 
 impl ConfigManager {
@@ -171,7 +175,13 @@ impl ConfigManager {
             stats: Arc::new(ReloadStats::default()),
             validators: Arc::new(RwLock::new(Vec::new())),
             reload_hooks: Arc::new(RwLock::new(Vec::new())),
+            cert_reloader: Arc::new(CertificateReloader::new()),
         })
+    }
+
+    /// Get the certificate reloader for registering TLS listeners
+    pub fn cert_reloader(&self) -> Arc<CertificateReloader> {
+        Arc::clone(&self.cert_reloader)
     }
 
     /// Get current configuration
@@ -393,11 +403,26 @@ impl ConfigManager {
             version: format!("{:?}", Instant::now()), // TODO: Use proper versioning
         });
 
+        // Reload TLS certificates (hot-reload)
+        // This picks up any certificate file changes without restart
+        let (cert_success, cert_errors) = self.cert_reloader.reload_all();
+        if !cert_errors.is_empty() {
+            for (listener_id, error) in &cert_errors {
+                error!(
+                    listener_id = %listener_id,
+                    error = %error,
+                    "TLS certificate reload failed for listener"
+                );
+            }
+        }
+
         info!(
             duration_ms = duration.as_millis(),
             successful_reloads = successful_count,
             route_count = new_config.routes.len(),
             upstream_count = new_config.upstreams.len(),
+            cert_reload_success = cert_success,
+            cert_reload_errors = cert_errors.len(),
             "Configuration reload completed successfully"
         );
 
@@ -529,6 +554,7 @@ impl ConfigManager {
             stats: Arc::clone(&self.stats),
             validators: Arc::clone(&self.validators),
             reload_hooks: Arc::clone(&self.reload_hooks),
+            cert_reloader: Arc::clone(&self.cert_reloader),
         }
     }
 }

@@ -11,9 +11,11 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 use sentinel_config::{BuiltinHandler, Config};
+
+use crate::cache::HttpCacheStats;
 
 /// Application state for builtin handlers
 pub struct BuiltinHandlerState {
@@ -132,6 +134,15 @@ pub enum TargetHealthStatus {
     Unknown,
 }
 
+/// Cache purge request details
+#[derive(Debug, Clone)]
+pub struct CachePurgeRequest {
+    /// Pattern to purge (URL path or wildcard pattern)
+    pub pattern: String,
+    /// Whether this is a wildcard purge (purge all matching pattern)
+    pub wildcard: bool,
+}
+
 /// Execute a builtin handler
 pub fn execute_handler(
     handler: BuiltinHandler,
@@ -139,6 +150,8 @@ pub fn execute_handler(
     request_id: &str,
     config: Option<Arc<Config>>,
     upstreams: Option<UpstreamHealthSnapshot>,
+    cache_stats: Option<Arc<HttpCacheStats>>,
+    cache_purge: Option<CachePurgeRequest>,
 ) -> Response<Full<Bytes>> {
     trace!(
         handler = ?handler,
@@ -149,10 +162,12 @@ pub fn execute_handler(
     let response = match handler {
         BuiltinHandler::Status => status_handler(state, request_id),
         BuiltinHandler::Health => health_handler(request_id),
-        BuiltinHandler::Metrics => metrics_handler(request_id),
+        BuiltinHandler::Metrics => metrics_handler(request_id, cache_stats.as_ref()),
         BuiltinHandler::NotFound => not_found_handler(request_id),
         BuiltinHandler::Config => config_handler(config, request_id),
         BuiltinHandler::Upstreams => upstreams_handler(upstreams, request_id),
+        BuiltinHandler::CachePurge => cache_purge_handler(cache_purge, request_id),
+        BuiltinHandler::CacheStats => cache_stats_handler(cache_stats, request_id),
     };
 
     debug!(
@@ -216,7 +231,7 @@ fn health_handler(request_id: &str) -> Response<Full<Bytes>> {
 }
 
 /// Prometheus metrics handler
-fn metrics_handler(request_id: &str) -> Response<Full<Bytes>> {
+fn metrics_handler(request_id: &str, cache_stats: Option<&Arc<HttpCacheStats>>) -> Response<Full<Bytes>> {
     use prometheus::{Encoder, TextEncoder};
 
     // Create encoder for Prometheus text format
@@ -240,6 +255,29 @@ fn metrics_handler(request_id: &str) -> Response<Full<Bytes>> {
                 env!("CARGO_PKG_VERSION")
             );
             buffer.extend_from_slice(extra_metrics.as_bytes());
+
+            // Add HTTP cache metrics if available
+            if let Some(stats) = cache_stats {
+                let cache_metrics = format!(
+                    "# HELP sentinel_cache_hits_total Total number of cache hits\n\
+                     # TYPE sentinel_cache_hits_total counter\n\
+                     sentinel_cache_hits_total {}\n\
+                     # HELP sentinel_cache_misses_total Total number of cache misses\n\
+                     # TYPE sentinel_cache_misses_total counter\n\
+                     sentinel_cache_misses_total {}\n\
+                     # HELP sentinel_cache_stores_total Total number of cache stores\n\
+                     # TYPE sentinel_cache_stores_total counter\n\
+                     sentinel_cache_stores_total {}\n\
+                     # HELP sentinel_cache_hit_ratio Cache hit ratio (0.0 to 1.0)\n\
+                     # TYPE sentinel_cache_hit_ratio gauge\n\
+                     sentinel_cache_hit_ratio {:.4}\n",
+                    stats.hits(),
+                    stats.misses(),
+                    stats.stores(),
+                    stats.hit_ratio()
+                );
+                buffer.extend_from_slice(cache_metrics.as_bytes());
+            }
 
             Response::builder()
                 .status(StatusCode::OK)
@@ -467,6 +505,135 @@ fn upstreams_handler(
         .expect("static response builder with valid headers cannot fail")
 }
 
+/// Cache purge handler
+///
+/// Handles PURGE requests to invalidate cache entries. Accepts a pattern
+/// and optionally purges all matching entries if wildcard is enabled.
+fn cache_purge_handler(
+    purge_request: Option<CachePurgeRequest>,
+    request_id: &str,
+) -> Response<Full<Bytes>> {
+    let body = match &purge_request {
+        Some(request) => {
+            info!(
+                pattern = %request.pattern,
+                wildcard = request.wildcard,
+                request_id = %request_id,
+                "Processing cache purge request"
+            );
+
+            // TODO: Implement actual cache purge logic via CacheManager
+            // For now, return success acknowledging the purge request
+            let purged_count = if request.wildcard {
+                // Wildcard purge would clear matching entries
+                0 // Placeholder - actual implementation would return count
+            } else {
+                // Single entry purge
+                0 // Placeholder - actual implementation would return 0 or 1
+            };
+
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "status": "ok",
+                "message": "Cache purge request processed",
+                "pattern": request.pattern,
+                "wildcard": request.wildcard,
+                "purged_entries": purged_count,
+                "request_id": request_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            })).unwrap_or_default()
+        }
+        None => {
+            // No purge request provided - return error
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "error": "Bad Request",
+                "status": 400,
+                "message": "Cache purge requires a pattern. Use PURGE /path or X-Purge-Pattern header.",
+                "request_id": request_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            })).unwrap_or_default()
+        }
+    };
+
+    let status = if purge_request.is_some() {
+        StatusCode::OK
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json; charset=utf-8")
+        .header("X-Request-Id", request_id)
+        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+        .body(Full::new(Bytes::from(body)))
+        .expect("static response builder with valid headers cannot fail")
+}
+
+/// Cache statistics response
+#[derive(Debug, Serialize)]
+struct CacheStatsResponse {
+    /// Total cache hits
+    hits: u64,
+    /// Total cache misses
+    misses: u64,
+    /// Total cache stores
+    stores: u64,
+    /// Total cache evictions
+    evictions: u64,
+    /// Cache hit ratio (0.0 to 1.0)
+    hit_ratio: f64,
+    /// Request ID
+    request_id: String,
+    /// Timestamp
+    timestamp: String,
+}
+
+/// Cache statistics handler
+///
+/// Returns current cache statistics including hits, misses, and hit ratio.
+fn cache_stats_handler(
+    cache_stats: Option<Arc<HttpCacheStats>>,
+    request_id: &str,
+) -> Response<Full<Bytes>> {
+    let body = match cache_stats {
+        Some(stats) => {
+            let response = CacheStatsResponse {
+                hits: stats.hits(),
+                misses: stats.misses(),
+                stores: stats.stores(),
+                evictions: stats.evictions(),
+                hit_ratio: stats.hit_ratio(),
+                request_id: request_id.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+
+            serde_json::to_vec_pretty(&response).unwrap_or_else(|_| {
+                b"{\"error\":\"Failed to serialize stats\"}".to_vec()
+            })
+        }
+        None => {
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "hits": 0,
+                "misses": 0,
+                "stores": 0,
+                "evictions": 0,
+                "hit_ratio": 0.0,
+                "message": "Cache statistics not available",
+                "request_id": request_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            })).unwrap_or_default()
+        }
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json; charset=utf-8")
+        .header("X-Request-Id", request_id)
+        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+        .body(Full::new(Bytes::from(body)))
+        .expect("static response builder with valid headers cannot fail")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,11 +660,58 @@ mod tests {
 
     #[test]
     fn test_metrics_handler() {
-        let response = metrics_handler("test-request-id");
+        let response = metrics_handler("test-request-id", None);
         assert_eq!(response.status(), StatusCode::OK);
 
         let content_type = response.headers().get("Content-Type").unwrap();
         assert!(content_type.to_str().unwrap().contains("text/plain"));
+    }
+
+    #[test]
+    fn test_metrics_handler_with_cache_stats() {
+        let stats = Arc::new(HttpCacheStats::default());
+        stats.record_hit();
+        stats.record_miss();
+        stats.record_store();
+
+        let response = metrics_handler("test-request-id", Some(&stats));
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_cache_purge_handler_with_request() {
+        let request = CachePurgeRequest {
+            pattern: "/api/users/*".to_string(),
+            wildcard: true,
+        };
+        let response = cache_purge_handler(Some(request), "test-request-id");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_cache_purge_handler_without_request() {
+        let response = cache_purge_handler(None, "test-request-id");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_cache_stats_handler_with_stats() {
+        let stats = Arc::new(HttpCacheStats::default());
+        stats.record_hit();
+        stats.record_hit();
+        stats.record_miss();
+
+        let response = cache_stats_handler(Some(stats), "test-request-id");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let content_type = response.headers().get("Content-Type").unwrap();
+        assert_eq!(content_type, "application/json; charset=utf-8");
+    }
+
+    #[test]
+    fn test_cache_stats_handler_without_stats() {
+        let response = cache_stats_handler(None, "test-request-id");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

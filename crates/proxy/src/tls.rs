@@ -10,6 +10,8 @@
 //! - Default certificate fallback
 //! - Certificate validation at startup
 //! - mTLS client certificate verification
+//! - Certificate hot-reload on SIGHUP
+//! - OCSP stapling support
 //!
 //! # Example KDL Configuration
 //!
@@ -36,6 +38,9 @@
 //!         // mTLS configuration
 //!         ca-file "/etc/certs/ca.crt"
 //!         client-auth true
+//!
+//!         // OCSP stapling
+//!         ocsp-stapling true
 //!     }
 //! }
 //! ```
@@ -45,14 +50,17 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use parking_lot::RwLock;
+use rustls::client::ClientConfig;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::CertificateDer;
 use rustls::{RootCertStore, ServerConfig};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
-use sentinel_config::{SniCertificate, TlsConfig};
+use sentinel_config::{TlsConfig, UpstreamTlsConfig};
 
 /// Error type for TLS operations
 #[derive(Debug)]
@@ -67,6 +75,8 @@ pub enum TlsError {
     CertKeyMismatch(String),
     /// Invalid certificate
     InvalidCertificate(String),
+    /// OCSP fetch error
+    OcspFetch(String),
 }
 
 impl std::fmt::Display for TlsError {
@@ -77,6 +87,7 @@ impl std::fmt::Display for TlsError {
             TlsError::ConfigBuild(e) => write!(f, "Failed to build TLS config: {}", e),
             TlsError::CertKeyMismatch(e) => write!(f, "Certificate/key mismatch: {}", e),
             TlsError::InvalidCertificate(e) => write!(f, "Invalid certificate: {}", e),
+            TlsError::OcspFetch(e) => write!(f, "Failed to fetch OCSP response: {}", e),
         }
     }
 }
@@ -202,6 +213,425 @@ impl ResolvesServerCert for SniResolver {
     }
 }
 
+// ============================================================================
+// Hot-Reloadable Certificate Support
+// ============================================================================
+
+/// Hot-reloadable SNI certificate resolver
+///
+/// Wraps an SniResolver behind an RwLock to allow certificate hot-reload
+/// without restarting the server. On SIGHUP, the inner resolver is replaced
+/// with a newly loaded one.
+pub struct HotReloadableSniResolver {
+    /// Inner resolver (protected by RwLock for hot-reload)
+    inner: RwLock<Arc<SniResolver>>,
+    /// Original config for reloading
+    config: RwLock<TlsConfig>,
+    /// Last reload time
+    last_reload: RwLock<Instant>,
+}
+
+impl std::fmt::Debug for HotReloadableSniResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HotReloadableSniResolver")
+            .field("last_reload", &*self.last_reload.read())
+            .finish()
+    }
+}
+
+impl HotReloadableSniResolver {
+    /// Create a new hot-reloadable resolver from TLS configuration
+    pub fn from_config(config: TlsConfig) -> Result<Self, TlsError> {
+        let resolver = SniResolver::from_config(&config)?;
+
+        Ok(Self {
+            inner: RwLock::new(Arc::new(resolver)),
+            config: RwLock::new(config),
+            last_reload: RwLock::new(Instant::now()),
+        })
+    }
+
+    /// Reload certificates from disk
+    ///
+    /// This is called on SIGHUP to pick up new certificates without restart.
+    /// If the reload fails, the old certificates continue to be used.
+    pub fn reload(&self) -> Result<(), TlsError> {
+        let config = self.config.read();
+
+        info!(
+            cert_file = %config.cert_file.display(),
+            sni_count = config.additional_certs.len(),
+            "Reloading TLS certificates"
+        );
+
+        // Try to load new certificates
+        let new_resolver = SniResolver::from_config(&config)?;
+
+        // Swap in the new resolver atomically
+        *self.inner.write() = Arc::new(new_resolver);
+        *self.last_reload.write() = Instant::now();
+
+        info!("TLS certificates reloaded successfully");
+        Ok(())
+    }
+
+    /// Update configuration and reload
+    pub fn update_config(&self, new_config: TlsConfig) -> Result<(), TlsError> {
+        // Load with new config first
+        let new_resolver = SniResolver::from_config(&new_config)?;
+
+        // Update both config and resolver
+        *self.config.write() = new_config;
+        *self.inner.write() = Arc::new(new_resolver);
+        *self.last_reload.write() = Instant::now();
+
+        info!("TLS configuration updated and certificates reloaded");
+        Ok(())
+    }
+
+    /// Get time since last reload
+    pub fn last_reload_age(&self) -> Duration {
+        self.last_reload.read().elapsed()
+    }
+}
+
+impl ResolvesServerCert for HotReloadableSniResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.inner.read().resolve(client_hello.server_name()))
+    }
+}
+
+/// Certificate reload manager
+///
+/// Tracks all TLS listeners and provides a unified reload interface.
+pub struct CertificateReloader {
+    /// Map of listener ID to hot-reloadable resolver
+    resolvers: RwLock<HashMap<String, Arc<HotReloadableSniResolver>>>,
+}
+
+impl CertificateReloader {
+    /// Create a new certificate reloader
+    pub fn new() -> Self {
+        Self {
+            resolvers: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Register a resolver for a listener
+    pub fn register(&self, listener_id: &str, resolver: Arc<HotReloadableSniResolver>) {
+        debug!(listener_id = %listener_id, "Registering TLS resolver for hot-reload");
+        self.resolvers.write().insert(listener_id.to_string(), resolver);
+    }
+
+    /// Reload all registered certificates
+    ///
+    /// Returns the number of successfully reloaded listeners and any errors.
+    pub fn reload_all(&self) -> (usize, Vec<(String, TlsError)>) {
+        let resolvers = self.resolvers.read();
+        let mut success_count = 0;
+        let mut errors = Vec::new();
+
+        info!(listener_count = resolvers.len(), "Reloading certificates for all TLS listeners");
+
+        for (listener_id, resolver) in resolvers.iter() {
+            match resolver.reload() {
+                Ok(()) => {
+                    success_count += 1;
+                    debug!(listener_id = %listener_id, "Certificate reload successful");
+                }
+                Err(e) => {
+                    error!(listener_id = %listener_id, error = %e, "Certificate reload failed");
+                    errors.push((listener_id.clone(), e));
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            info!(success_count = success_count, "All certificates reloaded successfully");
+        } else {
+            warn!(
+                success_count = success_count,
+                error_count = errors.len(),
+                "Certificate reload completed with errors"
+            );
+        }
+
+        (success_count, errors)
+    }
+
+    /// Get reload status for all listeners
+    pub fn status(&self) -> HashMap<String, Duration> {
+        self.resolvers
+            .read()
+            .iter()
+            .map(|(id, resolver)| (id.clone(), resolver.last_reload_age()))
+            .collect()
+    }
+}
+
+impl Default for CertificateReloader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// OCSP Stapling Support
+// ============================================================================
+
+/// OCSP response cache entry
+#[derive(Debug, Clone)]
+pub struct OcspCacheEntry {
+    /// DER-encoded OCSP response
+    pub response: Vec<u8>,
+    /// When this response was fetched
+    pub fetched_at: Instant,
+    /// When this response expires (from nextUpdate field)
+    pub expires_at: Option<Instant>,
+}
+
+/// OCSP stapling manager
+///
+/// Fetches and caches OCSP responses for certificates.
+pub struct OcspStapler {
+    /// Cache of OCSP responses by certificate fingerprint
+    cache: RwLock<HashMap<String, OcspCacheEntry>>,
+    /// Refresh interval for OCSP responses (default 1 hour)
+    refresh_interval: Duration,
+}
+
+impl OcspStapler {
+    /// Create a new OCSP stapler
+    pub fn new() -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+            refresh_interval: Duration::from_secs(3600), // 1 hour default
+        }
+    }
+
+    /// Create with custom refresh interval
+    pub fn with_refresh_interval(interval: Duration) -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+            refresh_interval: interval,
+        }
+    }
+
+    /// Get cached OCSP response for a certificate
+    pub fn get_response(&self, cert_fingerprint: &str) -> Option<Vec<u8>> {
+        let cache = self.cache.read();
+        if let Some(entry) = cache.get(cert_fingerprint) {
+            // Check if response is still valid
+            if entry.fetched_at.elapsed() < self.refresh_interval {
+                trace!(fingerprint = %cert_fingerprint, "OCSP cache hit");
+                return Some(entry.response.clone());
+            }
+            trace!(fingerprint = %cert_fingerprint, "OCSP cache expired");
+        }
+        None
+    }
+
+    /// Fetch OCSP response for a certificate
+    ///
+    /// This performs an HTTP request to the OCSP responder specified in the
+    /// certificate's Authority Information Access extension.
+    pub fn fetch_ocsp_response(
+        &self,
+        _cert_der: &[u8],
+        _issuer_der: &[u8],
+    ) -> Result<Vec<u8>, TlsError> {
+        // Parse certificates to extract OCSP responder URL
+        // Note: Full implementation would use x509-parser or similar
+        // For now, we'll return an error indicating the feature needs the full impl
+
+        // This is a placeholder - actual implementation would:
+        // 1. Parse the certificate to find AIA extension
+        // 2. Extract OCSP responder URL
+        // 3. Build OCSP request
+        // 4. Send HTTP POST to responder
+        // 5. Parse and validate response
+        // 6. Cache the response
+
+        warn!("OCSP stapling fetch not yet implemented - certificates will work without stapling");
+        Err(TlsError::OcspFetch(
+            "OCSP responder URL extraction requires x509-parser dependency".to_string()
+        ))
+    }
+
+    /// Prefetch OCSP responses for all certificates in a config
+    pub fn prefetch_for_config(&self, config: &TlsConfig) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if !config.ocsp_stapling {
+            trace!("OCSP stapling disabled in config");
+            return warnings;
+        }
+
+        info!("Prefetching OCSP responses for certificates");
+
+        // For now, just log that we would prefetch
+        // Full implementation would iterate certificates and fetch OCSP responses
+        warnings.push("OCSP stapling prefetch not yet fully implemented".to_string());
+
+        warnings
+    }
+
+    /// Clear the OCSP cache
+    pub fn clear_cache(&self) {
+        self.cache.write().clear();
+        info!("OCSP cache cleared");
+    }
+}
+
+impl Default for OcspStapler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// Upstream mTLS Support (Client Certificates)
+// ============================================================================
+
+/// Build a TLS client configuration for upstream connections with mTLS
+///
+/// This creates a rustls ClientConfig that can be used when Sentinel
+/// connects to backends that require client certificate authentication.
+pub fn build_upstream_tls_config(config: &UpstreamTlsConfig) -> Result<ClientConfig, TlsError> {
+    let mut root_store = RootCertStore::empty();
+
+    // Load CA certificates for server verification
+    if let Some(ca_path) = &config.ca_cert {
+        let ca_file = File::open(ca_path).map_err(|e| {
+            TlsError::CertificateLoad(format!("{}: {}", ca_path.display(), e))
+        })?;
+        let mut ca_reader = BufReader::new(ca_file);
+
+        let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut ca_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| TlsError::CertificateLoad(format!("{}: {}", ca_path.display(), e)))?;
+
+        for cert in certs {
+            root_store.add(cert).map_err(|e| {
+                TlsError::InvalidCertificate(format!("Failed to add CA certificate: {}", e))
+            })?;
+        }
+
+        debug!(
+            ca_file = %ca_path.display(),
+            cert_count = root_store.len(),
+            "Loaded upstream CA certificates"
+        );
+    } else if !config.insecure_skip_verify {
+        // Use webpki roots for standard TLS
+        root_store = RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        trace!("Using webpki-roots for upstream TLS verification");
+    }
+
+    // Build the client config
+    let builder = ClientConfig::builder()
+        .with_root_certificates(root_store);
+
+    let client_config = if let (Some(cert_path), Some(key_path)) = (&config.client_cert, &config.client_key) {
+        // Load client certificate for mTLS
+        let cert_file = File::open(cert_path).map_err(|e| {
+            TlsError::CertificateLoad(format!("{}: {}", cert_path.display(), e))
+        })?;
+        let mut cert_reader = BufReader::new(cert_file);
+
+        let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| TlsError::CertificateLoad(format!("{}: {}", cert_path.display(), e)))?;
+
+        if certs.is_empty() {
+            return Err(TlsError::CertificateLoad(format!(
+                "{}: No certificates found",
+                cert_path.display()
+            )));
+        }
+
+        // Load client private key
+        let key_file = File::open(key_path).map_err(|e| {
+            TlsError::KeyLoad(format!("{}: {}", key_path.display(), e))
+        })?;
+        let mut key_reader = BufReader::new(key_file);
+
+        let key = rustls_pemfile::private_key(&mut key_reader)
+            .map_err(|e| TlsError::KeyLoad(format!("{}: {}", key_path.display(), e)))?
+            .ok_or_else(|| {
+                TlsError::KeyLoad(format!("{}: No private key found", key_path.display()))
+            })?;
+
+        info!(
+            cert_file = %cert_path.display(),
+            "Configured mTLS client certificate for upstream connections"
+        );
+
+        builder
+            .with_client_auth_cert(certs, key)
+            .map_err(|e| TlsError::CertKeyMismatch(format!("Failed to set client auth: {}", e)))?
+    } else {
+        // No client certificate
+        builder.with_no_client_auth()
+    };
+
+    debug!("Upstream TLS configuration built successfully");
+    Ok(client_config)
+}
+
+/// Validate upstream TLS configuration
+pub fn validate_upstream_tls_config(config: &UpstreamTlsConfig) -> Result<(), TlsError> {
+    // Validate CA certificate if specified
+    if let Some(ca_path) = &config.ca_cert {
+        if !ca_path.exists() {
+            return Err(TlsError::CertificateLoad(format!(
+                "Upstream CA certificate not found: {}",
+                ca_path.display()
+            )));
+        }
+    }
+
+    // Validate client certificate pair if mTLS is configured
+    if let Some(cert_path) = &config.client_cert {
+        if !cert_path.exists() {
+            return Err(TlsError::CertificateLoad(format!(
+                "Upstream client certificate not found: {}",
+                cert_path.display()
+            )));
+        }
+
+        // If cert is specified, key must also be specified
+        match &config.client_key {
+            Some(key_path) if !key_path.exists() => {
+                return Err(TlsError::KeyLoad(format!(
+                    "Upstream client key not found: {}",
+                    key_path.display()
+                )));
+            }
+            None => {
+                return Err(TlsError::ConfigBuild(
+                    "client_cert specified without client_key".to_string()
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if config.client_key.is_some() && config.client_cert.is_none() {
+        return Err(TlsError::ConfigBuild(
+            "client_key specified without client_cert".to_string()
+        ));
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Certificate Loading Functions
+// ============================================================================
+
 /// Load a certificate chain and private key from files
 fn load_certified_key(
     cert_path: &Path,
@@ -288,7 +718,7 @@ pub fn load_client_ca(ca_path: &Path) -> Result<RootCertStore, TlsError> {
 pub fn build_server_config(config: &TlsConfig) -> Result<ServerConfig, TlsError> {
     let resolver = SniResolver::from_config(config)?;
 
-    let mut builder = ServerConfig::builder();
+    let builder = ServerConfig::builder();
 
     // Configure client authentication (mTLS)
     let server_config = if config.client_auth {

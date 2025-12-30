@@ -169,6 +169,16 @@ impl HttpCacheStats {
             hits / total
         }
     }
+
+    /// Get current store count
+    pub fn stores(&self) -> u64 {
+        self.stores.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Get current eviction count
+    pub fn evictions(&self) -> u64 {
+        self.evictions.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Cache manager for HTTP responses

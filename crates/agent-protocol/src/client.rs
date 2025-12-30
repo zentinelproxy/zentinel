@@ -9,14 +9,14 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tonic::transport::Channel;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 
 use crate::errors::AgentProtocolError;
 use crate::grpc::{self, agent_processor_client::AgentProcessorClient};
 use crate::protocol::{
-    AgentRequest, AgentResponse, AuditMetadata, Decision, EventType, HeaderOp, RequestBodyChunkEvent,
-    RequestCompleteEvent, RequestHeadersEvent, RequestMetadata, ResponseBodyChunkEvent,
-    ResponseHeadersEvent, MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
+    AgentRequest, AgentResponse, AuditMetadata, BodyMutation, Decision, EventType, HeaderOp,
+    RequestBodyChunkEvent, RequestCompleteEvent, RequestHeadersEvent, RequestMetadata,
+    ResponseBodyChunkEvent, ResponseHeadersEvent, MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
 };
 
 /// Agent client for communicating with external agents
@@ -271,6 +271,8 @@ impl AgentClient {
                     data: event.data.into_bytes(),
                     is_last: event.is_last,
                     total_size: event.total_size.map(|s| s as u64),
+                    chunk_index: event.chunk_index,
+                    bytes_received: event.bytes_received as u64,
                 })
             }
             EventType::ResponseHeaders => {
@@ -292,6 +294,8 @@ impl AgentClient {
                     data: event.data.into_bytes(),
                     is_last: event.is_last,
                     total_size: event.total_size.map(|s| s as u64),
+                    chunk_index: event.chunk_index,
+                    bytes_sent: event.bytes_sent as u64,
                 })
             }
             EventType::RequestComplete => {
@@ -375,6 +379,17 @@ impl AgentClient {
             }).collect(),
         });
 
+        // Convert body mutations
+        let request_body_mutation = response.request_body_mutation.map(|m| BodyMutation {
+            data: m.data.map(|d| String::from_utf8_lossy(&d).to_string()),
+            chunk_index: m.chunk_index,
+        });
+
+        let response_body_mutation = response.response_body_mutation.map(|m| BodyMutation {
+            data: m.data.map(|d| String::from_utf8_lossy(&d).to_string()),
+            chunk_index: m.chunk_index,
+        });
+
         Ok(AgentResponse {
             version: response.version,
             decision,
@@ -382,6 +397,9 @@ impl AgentClient {
             response_headers,
             routing_metadata: response.routing_metadata,
             audit: audit.unwrap_or_default(),
+            needs_more: response.needs_more,
+            request_body_mutation,
+            response_body_mutation,
         })
     }
 

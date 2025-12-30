@@ -61,6 +61,7 @@ bytes = { workspace = true }
 # TLS
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
+webpki-roots = "0.26"
 
 # Utilities
 uuid = { workspace = true }
