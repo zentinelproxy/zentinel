@@ -174,8 +174,14 @@ pub struct UpstreamPool {
 /// Note: Actual connection pooling is handled by Pingora internally.
 /// This struct holds configuration that is applied to peer options.
 pub struct ConnectionPoolConfig {
+    /// Maximum connections per target (informational - Pingora manages actual pooling)
+    pub max_connections: usize,
+    /// Maximum idle connections (informational - Pingora manages actual pooling)
+    pub max_idle: usize,
     /// Maximum idle timeout for pooled connections
     pub idle_timeout: Duration,
+    /// Maximum connection lifetime (None = unlimited)
+    pub max_lifetime: Option<Duration>,
     /// Connection timeout
     pub connection_timeout: Duration,
     /// Read timeout
@@ -197,13 +203,19 @@ pub struct HttpVersionOptions {
 }
 
 impl ConnectionPoolConfig {
-    /// Create a new connection pool configuration
-    pub fn new(idle_timeout_secs: u64) -> Self {
+    /// Create from upstream config
+    pub fn from_config(
+        pool_config: &sentinel_config::ConnectionPoolConfig,
+        timeouts: &sentinel_config::UpstreamTimeouts,
+    ) -> Self {
         Self {
-            idle_timeout: Duration::from_secs(idle_timeout_secs),
-            connection_timeout: Duration::from_secs(5),
-            read_timeout: Duration::from_secs(60),
-            write_timeout: Duration::from_secs(60),
+            max_connections: pool_config.max_connections,
+            max_idle: pool_config.max_idle,
+            idle_timeout: Duration::from_secs(pool_config.idle_timeout_secs),
+            max_lifetime: pool_config.max_lifetime_secs.map(Duration::from_secs),
+            connection_timeout: Duration::from_secs(timeouts.connect_secs),
+            read_timeout: Duration::from_secs(timeouts.read_secs),
+            write_timeout: Duration::from_secs(timeouts.write_secs),
         }
     }
 }
@@ -223,6 +235,25 @@ pub struct PoolStats {
     pub retries: AtomicU64,
     /// Circuit breaker trips
     pub circuit_breaker_trips: AtomicU64,
+}
+
+/// Snapshot of pool configuration for metrics/debugging
+#[derive(Debug, Clone)]
+pub struct PoolConfigSnapshot {
+    /// Maximum connections per target
+    pub max_connections: usize,
+    /// Maximum idle connections
+    pub max_idle: usize,
+    /// Idle timeout in seconds
+    pub idle_timeout_secs: u64,
+    /// Maximum connection lifetime in seconds (None = unlimited)
+    pub max_lifetime_secs: Option<u64>,
+    /// Connection timeout in seconds
+    pub connection_timeout_secs: u64,
+    /// Read timeout in seconds
+    pub read_timeout_secs: u64,
+    /// Write timeout in seconds
+    pub write_timeout_secs: u64,
 }
 
 /// Round-robin load balancer
@@ -641,10 +672,15 @@ impl UpstreamPool {
         // Create connection pool configuration (Pingora handles actual pooling)
         debug!(
             upstream_id = %config.id,
+            max_connections = config.connection_pool.max_connections,
+            max_idle = config.connection_pool.max_idle,
             idle_timeout_secs = config.connection_pool.idle_timeout_secs,
+            connect_timeout_secs = config.timeouts.connect_secs,
+            read_timeout_secs = config.timeouts.read_secs,
+            write_timeout_secs = config.timeouts.write_secs,
             "Creating connection pool configuration"
         );
-        let pool_config = ConnectionPoolConfig::new(config.connection_pool.idle_timeout_secs);
+        let pool_config = ConnectionPoolConfig::from_config(&config.connection_pool, &config.timeouts);
 
         // Create HTTP version configuration
         let http_version = HttpVersionOptions {
@@ -978,6 +1014,29 @@ impl UpstreamPool {
     /// Get pool statistics
     pub fn stats(&self) -> &PoolStats {
         &self.stats
+    }
+
+    /// Get pool ID
+    pub fn id(&self) -> &UpstreamId {
+        &self.id
+    }
+
+    /// Get target count
+    pub fn target_count(&self) -> usize {
+        self.targets.len()
+    }
+
+    /// Get pool configuration (for metrics/debugging)
+    pub fn pool_config(&self) -> PoolConfigSnapshot {
+        PoolConfigSnapshot {
+            max_connections: self.pool_config.max_connections,
+            max_idle: self.pool_config.max_idle,
+            idle_timeout_secs: self.pool_config.idle_timeout.as_secs(),
+            max_lifetime_secs: self.pool_config.max_lifetime.map(|d| d.as_secs()),
+            connection_timeout_secs: self.pool_config.connection_timeout.as_secs(),
+            read_timeout_secs: self.pool_config.read_timeout.as_secs(),
+            write_timeout_secs: self.pool_config.write_timeout.as_secs(),
+        }
     }
 
     /// Shutdown the pool
