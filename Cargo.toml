@@ -26,6 +26,7 @@ pingora-http = "0.6"
 pingora-proxy = "0.6"
 pingora-load-balancing = "0.6"
 pingora-timeout = "0.6"
+pingora-limits = "0.6"
 
 # Async runtime
 tokio = { version = "1.48", features = ["full"] }

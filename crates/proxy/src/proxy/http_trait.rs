@@ -16,10 +16,19 @@ use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::logging::AccessLogEntry;
+use crate::rate_limit::HeaderAccessor;
 use crate::routing::RequestInfo;
 
 use super::context::RequestContext;
 use super::SentinelProxy;
+
+/// Helper type for rate limiting when we don't need header access
+struct NoHeaderAccessor;
+impl HeaderAccessor for NoHeaderAccessor {
+    fn get_header(&self, _name: &str) -> Option<String> {
+        None
+    }
+}
 
 #[async_trait]
 impl ProxyHttp for SentinelProxy {
@@ -437,6 +446,62 @@ impl ProxyHttp for SentinelProxy {
             "Starting request filter phase"
         );
 
+        // Check rate limiting early (before other processing)
+        if let Some(route_id) = ctx.route_id.as_deref() {
+            let rate_result = self.rate_limit_manager.check(
+                route_id,
+                &ctx.client_ip,
+                &ctx.path,
+                Option::<&NoHeaderAccessor>::None,
+            );
+
+            if !rate_result.allowed {
+                use sentinel_config::RateLimitAction;
+
+                match rate_result.action {
+                    RateLimitAction::Reject => {
+                        warn!(
+                            correlation_id = %ctx.trace_id,
+                            route_id = route_id,
+                            client_ip = %ctx.client_ip,
+                            limiter = %rate_result.limiter,
+                            "Request rate limited"
+                        );
+                        self.metrics.record_blocked_request("rate_limited");
+
+                        // Send rate limit response
+                        let body = rate_result
+                            .message
+                            .unwrap_or_else(|| "Rate limit exceeded".to_string());
+                        crate::http_helpers::write_error(
+                            session,
+                            rate_result.status_code,
+                            &body,
+                            "text/plain",
+                        )
+                        .await?;
+                        return Ok(true); // Request complete, don't continue
+                    }
+                    RateLimitAction::LogOnly => {
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            route_id = route_id,
+                            "Rate limit exceeded (log only mode)"
+                        );
+                        // Continue processing
+                    }
+                    RateLimitAction::Delay => {
+                        // Delay handling could be implemented here with pingora_timeout::sleep
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            route_id = route_id,
+                            "Rate limit delay mode not yet implemented, allowing request"
+                        );
+                    }
+                }
+            }
+        }
+
         // Use cached route config from upstream_peer (avoids duplicate route matching)
         // Handle static file and builtin routes
         if let Some(route_config) = ctx.route_config.clone() {
@@ -740,6 +805,64 @@ impl ProxyHttp for SentinelProxy {
         Ok(())
     }
 
+    /// Modify the request before sending to upstream.
+    /// Used for header modifications, adding authentication, etc.
+    async fn upstream_request_filter(
+        &self,
+        _session: &mut Session,
+        upstream_request: &mut pingora::http::RequestHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        trace!(
+            correlation_id = %ctx.trace_id,
+            route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+            "Applying upstream request modifications"
+        );
+
+        // Add trace ID header for upstream correlation
+        upstream_request
+            .insert_header("X-Trace-Id", &ctx.trace_id)
+            .ok();
+
+        // Add request metadata headers
+        upstream_request.insert_header("X-Forwarded-By", "Sentinel").ok();
+
+        // Apply route-specific request header modifications
+        // Clone the modifications to avoid lifetime issues with the header API
+        if let Some(ref route_config) = ctx.route_config {
+            let mods = route_config.policies.request_headers.clone();
+
+            // Set headers (overwrite existing)
+            for (name, value) in mods.set {
+                upstream_request.insert_header(name, value).ok();
+            }
+
+            // Add headers (append)
+            for (name, value) in mods.add {
+                upstream_request.append_header(name, value).ok();
+            }
+
+            // Remove headers
+            for name in &mods.remove {
+                upstream_request.remove_header(name);
+            }
+
+            trace!(
+                correlation_id = %ctx.trace_id,
+                "Applied request header modifications"
+            );
+        }
+
+        // Remove sensitive headers that shouldn't go to upstream
+        upstream_request.remove_header("X-Internal-Token");
+        upstream_request.remove_header("Authorization-Internal");
+
+        Ok(())
+    }
+
     /// Process response body chunks from upstream.
     /// Used for response size tracking and WAF inspection.
     fn response_body_filter(
@@ -811,6 +934,67 @@ impl ProxyHttp for SentinelProxy {
         }
 
         Ok(())
+    }
+
+    /// Handle fatal proxy errors by generating custom error pages.
+    /// Called when the proxy itself fails to process the request.
+    async fn fail_to_proxy(
+        &self,
+        _session: &mut Session,
+        e: &Error,
+        ctx: &mut Self::CTX,
+    ) -> pingora_proxy::FailToProxy
+    where
+        Self::CTX: Send + Sync,
+    {
+        let error_code = match e.etype() {
+            // Connection errors
+            ErrorType::ConnectRefused => 503,
+            ErrorType::ConnectTimedout => 504,
+            ErrorType::ConnectNoRoute => 502,
+
+            // Timeout errors
+            ErrorType::ReadTimedout => 504,
+            ErrorType::WriteTimedout => 504,
+
+            // TLS errors
+            ErrorType::TLSHandshakeFailure => 502,
+            ErrorType::InvalidCert => 502,
+
+            // Protocol errors
+            ErrorType::InvalidHTTPHeader => 400,
+            ErrorType::H2Error => 502,
+
+            // Resource errors
+            ErrorType::ConnectProxyFailure => 502,
+            ErrorType::ConnectionClosed => 502,
+
+            // Internal errors
+            ErrorType::InternalError => 500,
+
+            // Default to 502 for unknown errors
+            _ => 502,
+        };
+
+        error!(
+            correlation_id = %ctx.trace_id,
+            route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+            upstream = ctx.upstream.as_deref().unwrap_or("unknown"),
+            error_type = ?e.etype(),
+            error = %e,
+            error_code = error_code,
+            "Proxy error occurred"
+        );
+
+        // Record the error in metrics
+        self.metrics.record_blocked_request(&format!("proxy_error_{}", error_code));
+
+        // Return the error response info
+        // can_reuse_downstream: allow connection reuse for client errors, not for server errors
+        pingora_proxy::FailToProxy {
+            error_code,
+            can_reuse_downstream: error_code < 500,
+        }
     }
 
     async fn logging(&self, session: &mut Session, _error: Option<&Error>, ctx: &mut Self::CTX) {

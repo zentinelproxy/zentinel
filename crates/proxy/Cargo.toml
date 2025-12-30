@@ -28,6 +28,7 @@ pingora-http = { workspace = true }
 pingora-proxy = { workspace = true }
 pingora-load-balancing = { workspace = true }
 pingora-timeout = { workspace = true }
+pingora-limits = { workspace = true }
 
 # Local crates
 sentinel-config = { path = "../config", version = "0.1.8" }
