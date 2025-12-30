@@ -82,7 +82,7 @@ pub use errors::AgentProtocolError;
 
 // Re-export protocol types
 pub use protocol::{
-    AgentRequest, AgentResponse, AuditMetadata, Decision, EventType, HeaderOp,
+    AgentRequest, AgentResponse, AuditMetadata, BodyMutation, Decision, EventType, HeaderOp,
     RequestBodyChunkEvent, RequestCompleteEvent, RequestHeadersEvent, RequestMetadata,
     ResponseBodyChunkEvent, ResponseHeadersEvent, MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
 };
@@ -211,5 +211,47 @@ mod tests {
         // Clean up
         client.close().await.unwrap();
         server_handle.abort();
+    }
+
+    #[test]
+    fn test_body_mutation_types() {
+        // Test pass-through mutation
+        let pass_through = BodyMutation::pass_through(0);
+        assert!(pass_through.is_pass_through());
+        assert!(!pass_through.is_drop());
+        assert_eq!(pass_through.chunk_index, 0);
+
+        // Test drop mutation
+        let drop = BodyMutation::drop_chunk(1);
+        assert!(!drop.is_pass_through());
+        assert!(drop.is_drop());
+        assert_eq!(drop.chunk_index, 1);
+
+        // Test replace mutation
+        let replace = BodyMutation::replace(2, "modified content".to_string());
+        assert!(!replace.is_pass_through());
+        assert!(!replace.is_drop());
+        assert_eq!(replace.chunk_index, 2);
+        assert_eq!(replace.data, Some("modified content".to_string()));
+    }
+
+    #[test]
+    fn test_agent_response_streaming() {
+        // Test needs_more_data response
+        let response = AgentResponse::needs_more_data();
+        assert!(response.needs_more);
+        assert_eq!(response.decision, Decision::Allow);
+
+        // Test response with body mutation
+        let mutation = BodyMutation::replace(0, "new content".to_string());
+        let response = AgentResponse::default_allow()
+            .with_request_body_mutation(mutation.clone());
+        assert!(!response.needs_more);
+        assert!(response.request_body_mutation.is_some());
+        assert_eq!(response.request_body_mutation.unwrap().data, Some("new content".to_string()));
+
+        // Test set_needs_more
+        let response = AgentResponse::default_allow().set_needs_more(true);
+        assert!(response.needs_more);
     }
 }

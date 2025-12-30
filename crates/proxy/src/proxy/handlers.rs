@@ -120,12 +120,34 @@ impl SentinelProxy {
             // Build upstream health snapshot for upstreams handler
             let upstreams = self.build_upstream_health_snapshot().await;
 
+            // Get cache stats from cache manager
+            let cache_stats = Some(self.cache_manager.stats());
+
+            // Parse cache purge request for PURGE handler
+            let cache_purge = if matches!(handler, sentinel_config::BuiltinHandler::CachePurge) {
+                // Extract purge pattern from request path or X-Purge-Pattern header
+                let path = session.req_header().uri.path().to_string();
+                Some(builtin_handlers::CachePurgeRequest {
+                    pattern: path,
+                    wildcard: session
+                        .req_header()
+                        .headers
+                        .get("X-Purge-Wildcard")
+                        .map(|v| v.to_str().unwrap_or("false") == "true")
+                        .unwrap_or(false),
+                })
+            } else {
+                None
+            };
+
             let response = builtin_handlers::execute_handler(
                 handler,
                 &self.builtin_state,
                 &request_id,
                 config,
                 upstreams,
+                cache_stats,
+                cache_purge,
             );
 
             self.write_http_response(session, response).await?;

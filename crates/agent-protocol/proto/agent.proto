@@ -50,6 +50,8 @@ message RequestBodyChunkEvent {
   bytes data = 2;  // Raw bytes, not base64
   bool is_last = 3;
   optional uint64 total_size = 4;
+  uint32 chunk_index = 5;  // 0-based chunk ordering
+  uint64 bytes_received = 6;  // Cumulative bytes received so far
 }
 
 // Response headers event - sent when upstream response headers are received
@@ -65,6 +67,14 @@ message ResponseBodyChunkEvent {
   bytes data = 2;  // Raw bytes, not base64
   bool is_last = 3;
   optional uint64 total_size = 4;
+  uint32 chunk_index = 5;  // 0-based chunk ordering
+  uint64 bytes_sent = 6;  // Cumulative bytes sent so far
+}
+
+// Body mutation for streaming body modification
+message BodyMutation {
+  optional bytes data = 1;  // Modified body data (None = pass-through, empty = drop)
+  uint32 chunk_index = 2;  // Index of the chunk this mutation applies to
 }
 
 // Request complete event - final event for logging/audit
@@ -166,6 +176,11 @@ message AgentResponse {
 
   // Audit information for logging
   optional AuditMetadata audit = 13;
+
+  // Streaming-specific fields
+  bool needs_more = 20;  // Agent needs more data to make final decision
+  optional BodyMutation request_body_mutation = 21;  // Mutation for request body chunk
+  optional BodyMutation response_body_mutation = 22;  // Mutation for response body chunk
 }
 
 // Agent Processor Service

@@ -144,6 +144,10 @@ pub enum BuiltinHandler {
     Config,
     /// Upstream health status endpoint (admin only)
     Upstreams,
+    /// Cache purge endpoint (admin only, accepts PURGE method)
+    CachePurge,
+    /// Cache statistics endpoint (admin only)
+    CacheStats,
 }
 
 // ============================================================================
@@ -181,6 +185,99 @@ pub struct RoutePolicies {
     /// Enable response buffering
     #[serde(default)]
     pub buffer_responses: bool,
+
+    /// HTTP caching configuration
+    #[serde(default)]
+    pub cache: Option<RouteCacheConfig>,
+}
+
+// ============================================================================
+// Cache Configuration
+// ============================================================================
+
+/// Route-level HTTP caching configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteCacheConfig {
+    /// Enable caching for this route
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Default TTL in seconds if no Cache-Control header
+    #[serde(default = "default_cache_ttl")]
+    pub default_ttl_secs: u64,
+
+    /// Maximum cacheable response size in bytes
+    #[serde(default = "default_max_cache_size")]
+    pub max_size_bytes: usize,
+
+    /// Whether to cache private responses
+    #[serde(default)]
+    pub cache_private: bool,
+
+    /// Stale-while-revalidate grace period in seconds
+    #[serde(default = "default_stale_while_revalidate")]
+    pub stale_while_revalidate_secs: u64,
+
+    /// Stale-if-error grace period in seconds
+    #[serde(default = "default_stale_if_error")]
+    pub stale_if_error_secs: u64,
+
+    /// HTTP methods that are cacheable
+    #[serde(default = "default_cacheable_methods")]
+    pub cacheable_methods: Vec<String>,
+
+    /// Status codes that are cacheable
+    #[serde(default = "default_cacheable_status_codes")]
+    pub cacheable_status_codes: Vec<u16>,
+
+    /// Vary headers to include in cache key
+    #[serde(default)]
+    pub vary_headers: Vec<String>,
+
+    /// Query parameters to exclude from cache key
+    #[serde(default)]
+    pub ignore_query_params: Vec<String>,
+}
+
+impl Default for RouteCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_ttl_secs: default_cache_ttl(),
+            max_size_bytes: default_max_cache_size(),
+            cache_private: false,
+            stale_while_revalidate_secs: default_stale_while_revalidate(),
+            stale_if_error_secs: default_stale_if_error(),
+            cacheable_methods: default_cacheable_methods(),
+            cacheable_status_codes: default_cacheable_status_codes(),
+            vary_headers: Vec::new(),
+            ignore_query_params: Vec::new(),
+        }
+    }
+}
+
+fn default_cache_ttl() -> u64 {
+    3600 // 1 hour
+}
+
+fn default_max_cache_size() -> usize {
+    10 * 1024 * 1024 // 10MB
+}
+
+fn default_stale_while_revalidate() -> u64 {
+    60 // 1 minute
+}
+
+fn default_stale_if_error() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_cacheable_methods() -> Vec<String> {
+    vec!["GET".to_string(), "HEAD".to_string()]
+}
+
+fn default_cacheable_status_codes() -> Vec<u16> {
+    vec![200, 203, 204, 206, 300, 301, 308, 404, 410]
 }
 
 /// Header modification rules

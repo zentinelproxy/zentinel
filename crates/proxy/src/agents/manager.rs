@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use pingora_timeout::timeout;
 use sentinel_agent_protocol::{
-    EventType, RequestBodyChunkEvent, RequestHeadersEvent, ResponseHeadersEvent,
+    EventType, RequestBodyChunkEvent, RequestHeadersEvent, ResponseBodyChunkEvent,
+    ResponseHeadersEvent,
 };
 use sentinel_common::{
     errors::{SentinelError, SentinelResult},
@@ -166,9 +167,80 @@ impl AgentManager {
             data: STANDARD.encode(data),
             is_last,
             total_size: ctx.request_body.as_ref().map(|b| b.len()),
+            chunk_index: 0, // Buffer mode sends entire body as single chunk
+            bytes_received: data.len(),
         };
 
         self.process_event(EventType::RequestBodyChunk, &event, route_agents, ctx)
+            .await
+    }
+
+    /// Process a single request body chunk through agents (streaming mode).
+    ///
+    /// Unlike `process_request_body` which is used for buffered mode, this method
+    /// is designed for streaming where chunks are sent individually as they arrive.
+    pub async fn process_request_body_streaming(
+        &self,
+        ctx: &AgentCallContext,
+        data: &[u8],
+        is_last: bool,
+        chunk_index: u32,
+        bytes_received: usize,
+        total_size: Option<usize>,
+        route_agents: &[String],
+    ) -> SentinelResult<AgentDecision> {
+        trace!(
+            correlation_id = %ctx.correlation_id,
+            chunk_index = chunk_index,
+            chunk_size = data.len(),
+            bytes_received = bytes_received,
+            is_last = is_last,
+            "Processing streaming request body chunk"
+        );
+
+        let event = RequestBodyChunkEvent {
+            correlation_id: ctx.correlation_id.to_string(),
+            data: STANDARD.encode(data),
+            is_last,
+            total_size,
+            chunk_index,
+            bytes_received,
+        };
+
+        self.process_event(EventType::RequestBodyChunk, &event, route_agents, ctx)
+            .await
+    }
+
+    /// Process a single response body chunk through agents (streaming mode).
+    pub async fn process_response_body_streaming(
+        &self,
+        ctx: &AgentCallContext,
+        data: &[u8],
+        is_last: bool,
+        chunk_index: u32,
+        bytes_sent: usize,
+        total_size: Option<usize>,
+        route_agents: &[String],
+    ) -> SentinelResult<AgentDecision> {
+        trace!(
+            correlation_id = %ctx.correlation_id,
+            chunk_index = chunk_index,
+            chunk_size = data.len(),
+            bytes_sent = bytes_sent,
+            is_last = is_last,
+            "Processing streaming response body chunk"
+        );
+
+        let event = ResponseBodyChunkEvent {
+            correlation_id: ctx.correlation_id.to_string(),
+            data: STANDARD.encode(data),
+            is_last,
+            total_size,
+            chunk_index,
+            bytes_sent,
+        };
+
+        self.process_event(EventType::ResponseBodyChunk, &event, route_agents, ctx)
             .await
     }
 

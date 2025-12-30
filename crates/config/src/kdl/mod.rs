@@ -161,7 +161,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
 // Agent Parsing
 // ============================================================================
 
-use crate::agents::{AgentEvent, AgentTransport, AgentTlsConfig, AgentType};
+use crate::agents::{AgentEvent, AgentTransport, AgentTlsConfig, AgentType, BodyStreamingMode};
 use crate::routes::FailureMode;
 use sentinel_common::types::CircuitBreakerConfig;
 use std::path::PathBuf;
@@ -234,6 +234,9 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
     let mut circuit_breaker = None;
     let mut max_request_body_bytes = None;
     let mut max_response_body_bytes = None;
+    let mut request_body_mode = BodyStreamingMode::Buffer;
+    let mut response_body_mode = BodyStreamingMode::Buffer;
+    let mut chunk_timeout_ms = 5000u64;
 
     for child in children.nodes() {
         match child.name().value() {
@@ -319,6 +322,23 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                     }
                 }
             }
+            "request-body-mode" => {
+                if let Some(mode) = get_first_arg_string(child) {
+                    request_body_mode = parse_body_streaming_mode(&mode, &id)?;
+                }
+            }
+            "response-body-mode" => {
+                if let Some(mode) = get_first_arg_string(child) {
+                    response_body_mode = parse_body_streaming_mode(&mode, &id)?;
+                }
+            }
+            "chunk-timeout-ms" => {
+                if let Some(entry) = child.entries().first() {
+                    if let Some(v) = entry.value().as_integer() {
+                        chunk_timeout_ms = v as u64;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -345,7 +365,43 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
         circuit_breaker,
         max_request_body_bytes,
         max_response_body_bytes,
+        request_body_mode,
+        response_body_mode,
+        chunk_timeout_ms,
     })
+}
+
+/// Parse body streaming mode from string
+fn parse_body_streaming_mode(mode: &str, agent_id: &str) -> Result<BodyStreamingMode> {
+    match mode {
+        "buffer" => Ok(BodyStreamingMode::Buffer),
+        "stream" => Ok(BodyStreamingMode::Stream),
+        _ if mode.starts_with("hybrid:") => {
+            // Parse "hybrid:1024" format
+            let threshold_str = mode.strip_prefix("hybrid:").unwrap();
+            let threshold: usize = threshold_str.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "Agent '{}': invalid hybrid threshold '{}', expected number",
+                    agent_id,
+                    threshold_str
+                )
+            })?;
+            Ok(BodyStreamingMode::Hybrid {
+                buffer_threshold: threshold,
+            })
+        }
+        "hybrid" => {
+            // Default hybrid threshold: 64KB
+            Ok(BodyStreamingMode::Hybrid {
+                buffer_threshold: 65536,
+            })
+        }
+        other => Err(anyhow::anyhow!(
+            "Agent '{}': unknown body streaming mode '{}'. Valid modes: buffer, stream, hybrid, hybrid:<bytes>",
+            agent_id,
+            other
+        )),
+    }
 }
 
 /// Parse TLS configuration for agent transport

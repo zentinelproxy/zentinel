@@ -51,7 +51,9 @@ pub mod waf;
 // ============================================================================
 
 // Agents
-pub use agents::{AgentConfig, AgentEvent, AgentTlsConfig, AgentTransport, AgentType};
+pub use agents::{
+    AgentConfig, AgentEvent, AgentTlsConfig, AgentTransport, AgentType, BodyStreamingMode,
+};
 
 // Defaults
 pub use defaults::{create_default_config, DEFAULT_CONFIG_KDL};
@@ -71,8 +73,8 @@ pub use observability::{
 // Routes
 pub use routes::{
     ApiSchemaConfig, BuiltinHandler, ErrorFormat, ErrorPage, ErrorPageConfig, FailureMode,
-    HeaderModifications, MatchCondition, RateLimitPolicy, RouteConfig, RoutePolicies, ServiceType,
-    StaticFileConfig,
+    HeaderModifications, MatchCondition, RateLimitPolicy, RouteCacheConfig, RouteConfig,
+    RoutePolicies, ServiceType, StaticFileConfig,
 };
 
 // Server

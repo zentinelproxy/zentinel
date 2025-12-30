@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use sentinel_agent_protocol::{AgentResponse, AuditMetadata, Decision, HeaderOp};
+use sentinel_agent_protocol::{AgentResponse, AuditMetadata, BodyMutation, Decision, HeaderOp};
 
 /// Agent decision combining all agent responses.
 #[derive(Debug, Clone)]
@@ -17,6 +17,12 @@ pub struct AgentDecision {
     pub audit: Vec<AuditMetadata>,
     /// Routing metadata updates
     pub routing_metadata: HashMap<String, String>,
+    /// Whether agent needs more data to make final decision (streaming mode)
+    pub needs_more: bool,
+    /// Mutation for request body chunk (streaming mode)
+    pub request_body_mutation: Option<BodyMutation>,
+    /// Mutation for response body chunk (streaming mode)
+    pub response_body_mutation: Option<BodyMutation>,
 }
 
 /// Agent action types.
@@ -48,6 +54,9 @@ impl AgentDecision {
             response_headers: Vec::new(),
             audit: Vec::new(),
             routing_metadata: HashMap::new(),
+            needs_more: false,
+            request_body_mutation: None,
+            response_body_mutation: None,
         }
     }
 
@@ -63,6 +72,9 @@ impl AgentDecision {
             response_headers: Vec::new(),
             audit: Vec::new(),
             routing_metadata: HashMap::new(),
+            needs_more: false,
+            request_body_mutation: None,
+            response_body_mutation: None,
         }
     }
 
@@ -90,6 +102,19 @@ impl AgentDecision {
 
         // Merge routing metadata
         self.routing_metadata.extend(other.routing_metadata);
+
+        // Streaming: if any agent needs more, we need more
+        if other.needs_more {
+            self.needs_more = true;
+        }
+
+        // Body mutations: last one wins
+        if other.request_body_mutation.is_some() {
+            self.request_body_mutation = other.request_body_mutation;
+        }
+        if other.response_body_mutation.is_some() {
+            self.response_body_mutation = other.response_body_mutation;
+        }
     }
 }
 
@@ -122,6 +147,9 @@ impl From<AgentResponse> for AgentDecision {
             response_headers: response.response_headers,
             audit: vec![response.audit],
             routing_metadata: response.routing_metadata,
+            needs_more: response.needs_more,
+            request_body_mutation: response.request_body_mutation,
+            response_body_mutation: response.response_body_mutation,
         }
     }
 }
