@@ -102,8 +102,17 @@ tikv-jemallocator = { workspace = true }
 # Random number generation
 rand = "0.8"
 
+# Hex encoding
+hex = "0.4"
+
 # Distributed rate limiting
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
+
+# OpenTelemetry for distributed tracing
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"], optional = true }
+opentelemetry-semantic-conventions = { version = "0.27", optional = true }
 
 # Hashing
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -119,6 +128,7 @@ futures = "0.3"
 [features]
 default = []
 distributed-rate-limit = ["redis"]
+opentelemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:opentelemetry-semantic-conventions"]
 
 [dev-dependencies]
 criterion = { workspace = true }

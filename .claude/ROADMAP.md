@@ -189,41 +189,58 @@ This roadmap outlines the path from current state to production-ready, prioritiz
 - `crates/config/src/filters.rs` - Backend configuration
 
 ### 3.2 Service Discovery Integration
-**Status:** Planned (DiscoveryConfig exists)
+**Status:** DONE - Core implementations complete
 **Impact:** MEDIUM - Cloud-native deployment
 **Effort:** 2-3 weeks
 
 **Tasks:**
-- [ ] Implement Consul service discovery
-- [ ] Implement Kubernetes endpoint discovery
-- [ ] Add DNS SRV record support
-- [ ] Support health-aware backend selection
-- [ ] Add discovery refresh intervals
+- [x] Implement Static discovery (existing)
+- [x] Implement DNS A/AAAA discovery (existing)
+- [x] Implement Consul service discovery
+- [x] Implement Kubernetes endpoint discovery (in-cluster)
+- [x] Add DNS SRV record support (basic)
+- [x] Add discovery refresh intervals
+- [ ] Implement kubeconfig file parsing for K8s
+- [ ] Add async HTTP client for HTTPS K8s API
 - [ ] Document service mesh integration
 
+**Features:**
+- Static: Fixed list of backends
+- DNS: Resolve A/AAAA records with configurable refresh
+- Consul: HTTP API integration with health filtering
+- Kubernetes: In-cluster endpoint discovery
+- Caching with fallback on failure
+- Configurable refresh intervals
+
 **Files:**
-- `crates/proxy/src/discovery.rs` - Extend existing module
-- `crates/config/src/upstreams.rs` - Discovery configuration
+- `crates/proxy/src/discovery.rs` - All discovery implementations
+- `crates/proxy/src/lib.rs` - Exports ConsulDiscovery, KubernetesDiscovery
 
 ---
 
 ## Priority 4: Observability
 
 ### 4.1 OpenTelemetry Integration
-**Status:** tracing crate used, no OTLP export
+**Status:** DONE - Core implementation complete
 **Impact:** MEDIUM - Distributed tracing
 **Effort:** 1-2 weeks
 
 **Tasks:**
-- [ ] Add opentelemetry-otlp dependency
-- [ ] Implement trace context propagation (W3C Trace Context)
-- [ ] Add span creation for request lifecycle phases
-- [ ] Export traces to Jaeger/Tempo/etc.
-- [ ] Add trace sampling configuration
+- [x] Add opentelemetry-otlp dependency (feature-gated)
+- [x] Implement trace context propagation (W3C Trace Context)
+- [x] Add span creation for request lifecycle phases
+- [x] Export traces to Jaeger/Tempo/etc. via OTLP
+- [x] Add trace sampling configuration
 - [ ] Document tracing deployment
 
+**Features:**
+- W3C Trace Context header parsing (traceparent/tracestate)
+- OTLP exporter to any OpenTelemetry-compatible backend
+- Configurable sampling rates
+- Feature flag: `opentelemetry`
+
 **Files:**
-- `crates/proxy/src/trace_id.rs` - Extend with OTLP
+- `crates/proxy/src/otel.rs` - OpenTelemetry integration
 - `crates/config/src/observability.rs` - Tracing config
 
 ### 4.2 Enhanced Audit Logging
@@ -246,18 +263,39 @@ This roadmap outlines the path from current state to production-ready, prioritiz
 ## Priority 5: Configuration Enhancements
 
 ### 5.1 Per-Upstream Pool Configuration
-**Status:** Hardcoded to 256 connections
+**Status:** DONE - Fully configurable per upstream
 **Impact:** MEDIUM - Performance tuning
 **Effort:** 3-5 days
 
 **Tasks:**
-- [ ] Add `pool-size` to upstream KDL config
-- [ ] Add per-upstream timeout overrides
-- [ ] Add connection retry configuration
-- [ ] Expose pool statistics in metrics
+- [x] Add `connection-pool` block to upstream KDL config
+- [x] Add per-upstream timeout overrides via `timeouts` block
+- [x] Wire config values into Pingora peer options
+- [x] Add `PoolConfigSnapshot` for metrics/debugging
+- [x] Expose pool statistics via `UpstreamPool.stats()`
+
+**KDL Configuration:**
+```kdl
+upstream "backend" {
+    target "127.0.0.1:8080"
+    connection-pool {
+        max-connections 100
+        max-idle 20
+        idle-timeout 60
+        max-lifetime 3600
+    }
+    timeouts {
+        connect 10
+        request 60
+        read 30
+        write 30
+    }
+}
+```
 
 **Files:**
 - `crates/config/src/upstreams.rs` - Pool config
+- `crates/config/src/kdl/upstreams.rs` - KDL parsing
 - `crates/proxy/src/upstream/mod.rs` - Apply config
 
 ### 5.2 Configuration Schema Versioning

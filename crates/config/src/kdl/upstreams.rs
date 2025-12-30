@@ -101,12 +101,28 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                     );
                 }
 
+                // Parse connection pool configuration
+                let connection_pool = child
+                    .children()
+                    .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "connection-pool"))
+                    .map(|n| parse_connection_pool(n))
+                    .unwrap_or_default();
+
+                // Parse timeouts configuration
+                let timeouts = child
+                    .children()
+                    .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "timeouts"))
+                    .map(|n| parse_upstream_timeouts(n))
+                    .unwrap_or_default();
+
                 trace!(
                     upstream_id = %id,
                     target_count = targets.len(),
                     load_balancing = ?load_balancing,
                     has_health_check = health_check.is_some(),
                     http_version = http_version.max_version,
+                    max_connections = connection_pool.max_connections,
+                    connect_timeout = timeouts.connect_secs,
                     "Parsed upstream"
                 );
 
@@ -117,8 +133,8 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                         targets,
                         load_balancing,
                         health_check,
-                        connection_pool: ConnectionPoolConfig::default(),
-                        timeouts: UpstreamTimeouts::default(),
+                        connection_pool,
+                        timeouts,
                         tls: None,
                         http_version,
                     },
@@ -187,6 +203,76 @@ fn parse_http_version(node: &kdl::KdlNode) -> HttpVersionConfig {
         max_version,
         h2_ping_interval_secs,
         max_h2_streams,
+    }
+}
+
+/// Parse connection pool configuration
+///
+/// Example KDL:
+/// ```kdl
+/// connection-pool {
+///     max-connections 100
+///     max-idle 20
+///     idle-timeout 60
+///     max-lifetime 3600
+/// }
+/// ```
+fn parse_connection_pool(node: &kdl::KdlNode) -> ConnectionPoolConfig {
+    let max_connections = get_int_entry(node, "max-connections")
+        .map(|v| v as usize)
+        .unwrap_or(100);
+
+    let max_idle = get_int_entry(node, "max-idle")
+        .map(|v| v as usize)
+        .unwrap_or(20);
+
+    let idle_timeout_secs = get_int_entry(node, "idle-timeout")
+        .map(|v| v as u64)
+        .unwrap_or(60);
+
+    let max_lifetime_secs = get_int_entry(node, "max-lifetime").map(|v| v as u64);
+
+    ConnectionPoolConfig {
+        max_connections,
+        max_idle,
+        idle_timeout_secs,
+        max_lifetime_secs,
+    }
+}
+
+/// Parse upstream timeouts configuration
+///
+/// Example KDL:
+/// ```kdl
+/// timeouts {
+///     connect 10
+///     request 60
+///     read 30
+///     write 30
+/// }
+/// ```
+fn parse_upstream_timeouts(node: &kdl::KdlNode) -> UpstreamTimeouts {
+    let connect_secs = get_int_entry(node, "connect")
+        .map(|v| v as u64)
+        .unwrap_or(10);
+
+    let request_secs = get_int_entry(node, "request")
+        .map(|v| v as u64)
+        .unwrap_or(60);
+
+    let read_secs = get_int_entry(node, "read")
+        .map(|v| v as u64)
+        .unwrap_or(30);
+
+    let write_secs = get_int_entry(node, "write")
+        .map(|v| v as u64)
+        .unwrap_or(30);
+
+    UpstreamTimeouts {
+        connect_secs,
+        request_secs,
+        read_secs,
+        write_secs,
     }
 }
 

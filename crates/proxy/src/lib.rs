@@ -42,6 +42,7 @@ pub mod health;
 pub mod http_helpers;
 pub mod logging;
 pub mod memory_cache;
+pub mod otel;
 pub mod proxy;
 pub mod rate_limit;
 pub mod reload;
@@ -69,7 +70,8 @@ pub use routing::{RouteMatcher, RouteMatch, RequestInfo};
 
 // Upstream management
 pub use upstream::{
-    LoadBalancer, PoolStats, RequestContext, TargetSelection, UpstreamPool, UpstreamTarget,
+    LoadBalancer, PoolConfigSnapshot, PoolStats, RequestContext, TargetSelection, UpstreamPool,
+    UpstreamTarget,
 };
 
 // Health checking
@@ -102,6 +104,13 @@ pub use http_helpers::{
 // Trace ID generation (TinyFlake)
 pub use trace_id::{generate_for_format, generate_tinyflake, generate_uuid, TraceIdFormat, TINYFLAKE_LENGTH};
 
+// OpenTelemetry tracing
+pub use otel::{
+    create_traceparent, generate_span_id, generate_trace_id, get_tracer, init_tracer,
+    shutdown_tracer, OtelError, OtelTracer, RequestSpan, TraceContext, TRACEPARENT_HEADER,
+    TRACESTATE_HEADER,
+};
+
 // Logging
 pub use logging::{
     AccessLogEntry, AccessLogFormat, AuditLogEntry, ErrorLogEntry, LogManager, SharedLogManager,
@@ -123,7 +132,9 @@ pub use cache::{
 pub use memory_cache::{MemoryCacheConfig, MemoryCacheManager, MemoryCacheStats, RouteMatchEntry, TypedCache};
 
 // Service discovery
-pub use discovery::{DiscoveryConfig, DiscoveryManager, DnsDiscovery};
+pub use discovery::{
+    ConsulDiscovery, DiscoveryConfig, DiscoveryManager, DnsDiscovery, KubernetesDiscovery,
+};
 
 // Re-export common error types for convenience
 pub use sentinel_common::errors::{LimitType, SentinelError, SentinelResult};
