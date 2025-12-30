@@ -34,6 +34,7 @@
 pub mod agents;
 pub mod app;
 pub mod builtin_handlers;
+pub mod cache;
 pub mod errors;
 pub mod health;
 pub mod http_helpers;
@@ -105,6 +106,9 @@ pub use logging::{
 
 // Rate limiting
 pub use rate_limit::{RateLimitConfig, RateLimitManager, RateLimitResult};
+
+// HTTP caching
+pub use cache::{CacheConfig, CacheManager, HttpCacheStats};
 
 // Re-export common error types for convenience
 pub use sentinel_common::errors::{LimitType, SentinelError, SentinelResult};

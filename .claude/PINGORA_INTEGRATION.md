@@ -123,7 +123,9 @@ Not implemented (25+):
 - [x] 3. request_body_filter() (2024-12-30)
 - [x] 4. response_body_filter() (2024-12-30)
 - [x] 5. pingora-limits rate limiting (2024-12-30)
-- [ ] 6. pingora-cache HTTP caching
+- [x] 6. pingora-cache HTTP caching infrastructure (2024-12-30)
+  - Note: Core infrastructure implemented (CacheConfig, CacheManager, statistics)
+  - ProxyHttp cache methods pending pingora-cache API stabilization
 - [ ] 7. HTTP/2 support
 - [ ] 8. pingora-memory-cache
 - [x] 9. upstream_request_filter() (2024-12-30)

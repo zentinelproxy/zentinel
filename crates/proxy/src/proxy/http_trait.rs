@@ -936,6 +936,25 @@ impl ProxyHttp for SentinelProxy {
         Ok(())
     }
 
+    // =========================================================================
+    // Caching (Infrastructure Only - pingora-cache integration pending)
+    // =========================================================================
+    // Note: The cache infrastructure is available via self.cache_manager
+    // but the pingora-cache ProxyHttp methods are not yet implemented
+    // due to API instability. The CacheManager provides:
+    // - Per-route cache configuration
+    // - Cache key generation
+    // - TTL calculation from Cache-Control headers
+    // - Cache statistics tracking
+    //
+    // When pingora-cache stabilizes, implement:
+    // - request_cache_filter()
+    // - cache_key_callback()
+    // - cache_hit_filter()
+    // - cache_miss()
+    // - should_serve_stale()
+    // - response_cache_filter()
+
     /// Handle fatal proxy errors by generating custom error pages.
     /// Called when the proxy itself fails to process the request.
     async fn fail_to_proxy(

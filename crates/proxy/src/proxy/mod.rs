@@ -28,6 +28,7 @@ use sentinel_common::Registry;
 use crate::agents::AgentManager;
 use crate::app::AppState;
 use crate::builtin_handlers::BuiltinHandlerState;
+use crate::cache::{CacheConfig, CacheManager};
 use crate::errors::ErrorHandler;
 use crate::health::PassiveHealthChecker;
 use crate::http_helpers;
@@ -78,6 +79,8 @@ pub struct SentinelProxy {
     pub(super) health_check_runner: Arc<HealthCheckRunner>,
     /// Rate limit manager
     pub(super) rate_limit_manager: Arc<RateLimitManager>,
+    /// HTTP cache manager
+    pub(super) cache_manager: Arc<CacheManager>,
 }
 
 impl SentinelProxy {
@@ -221,6 +224,9 @@ impl SentinelProxy {
         // Initialize rate limit manager
         let rate_limit_manager = Arc::new(Self::initialize_rate_limiters(&config));
 
+        // Initialize cache manager
+        let cache_manager = Arc::new(Self::initialize_cache_manager(&config));
+
         Ok(Self {
             config_manager,
             route_matcher,
@@ -238,6 +244,7 @@ impl SentinelProxy {
             trace_id_format,
             health_check_runner,
             rate_limit_manager,
+            cache_manager,
         })
     }
 
@@ -433,6 +440,46 @@ impl SentinelProxy {
                 "Rate limiting initialized"
             );
         }
+
+        manager
+    }
+
+    /// Initialize cache manager from configuration
+    fn initialize_cache_manager(config: &Config) -> CacheManager {
+        let manager = CacheManager::new();
+
+        // TODO: Add cache configuration to route config schema
+        // For now, we'll enable caching for routes that have explicit cache settings
+        // This is a placeholder for when we add cache configuration to routes
+
+        for route in &config.routes {
+            // Check if route has caching enabled via policies or service type
+            // For API routes, we might want to enable caching by default with short TTL
+            if route.service_type == sentinel_config::ServiceType::Api {
+                // Don't enable by default, but register the route for potential caching
+                let cache_config = CacheConfig {
+                    enabled: false, // Disabled until explicitly configured
+                    default_ttl_secs: 60,
+                    ..Default::default()
+                };
+                manager.register_route(&route.id, cache_config);
+            }
+
+            // Static routes could benefit from caching
+            if route.service_type == sentinel_config::ServiceType::Static {
+                let cache_config = CacheConfig {
+                    enabled: false, // Disabled until explicitly configured
+                    default_ttl_secs: 3600,
+                    max_size_bytes: 50 * 1024 * 1024, // 50MB for static
+                    ..Default::default()
+                };
+                manager.register_route(&route.id, cache_config);
+            }
+        }
+
+        debug!(
+            "Cache manager initialized"
+        );
 
         manager
     }

@@ -3644,6 +3644,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "pingora",
+ "pingora-cache",
  "pingora-core",
  "pingora-http",
  "pingora-limits",
