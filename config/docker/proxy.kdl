@@ -1,11 +1,10 @@
-// Sentinel Proxy Configuration for Docker Environment
-// This configuration is designed for integration testing with all agents
+// Sentinel Proxy Configuration for Docker Benchmarking
+// Simple config for performance testing
 
 server {
-    worker-threads 2
+    worker-threads 0  // auto-detect CPU cores
     max-connections 10000
     graceful-shutdown-timeout-secs 30
-    daemon false
 }
 
 listeners {
@@ -13,170 +12,31 @@ listeners {
         address "0.0.0.0:8080"
         protocol "http"
         request-timeout-secs 60
-        keepalive-timeout-secs 75
-        max-concurrent-streams 100
-        default-route "fallback"
     }
 }
 
-// ============================================================================
-// Filter Definitions
-// Named filter instances that can be referenced by routes
-// ============================================================================
-filters {
-    filter "echo" {
-        type "agent"
-        agent "echo-agent"
-        timeout-ms 100
-        failure-mode "open"
-    }
-
-    filter "rate-limit" {
-        type "agent"
-        agent "ratelimit-agent"
-        timeout-ms 100
-        failure-mode "open"
-    }
-
-    filter "rate-limit-strict" {
-        type "agent"
-        agent "ratelimit-agent"
-        timeout-ms 100
-        failure-mode "closed"
-    }
-
-    filter "waf" {
-        type "agent"
-        agent "waf-agent"
-        timeout-ms 200
-        failure-mode "open"
-        inspect-body true
-    }
-
-    filter "api-rate-limit" {
-        type "rate-limit"
-        max-rps 100
-        burst 50
-        key "client-ip"
-    }
-}
-
+// Simple routes for benchmarking (no agents/filters for pure proxy performance)
 routes {
-    // API route - uses echo + rate limiting filters
-    route "api" {
-        priority "high"
-
-        matches {
-            path-prefix "/api/"
-        }
-
-        upstream "backend"
-        filters ["echo" "rate-limit"]
-
-        policies {
-            timeout-secs 30
-            max-body-size "10MB"
-            failure-mode "open"
-        }
-    }
-
-    // Protected route - uses WAF filter
-    route "protected" {
-        priority "high"
-
-        matches {
-            path-prefix "/protected/"
-        }
-
-        upstream "backend"
-        filters ["waf"]
-        waf-enabled true
-
-        policies {
-            timeout-secs 30
-            failure-mode "open"
-        }
-    }
-
-    // Rate limited route - strict rate limiting
-    route "limited" {
-        priority "high"
-
-        matches {
-            path-prefix "/limited/"
-        }
-
-        upstream "backend"
-        filters ["rate-limit-strict"]
-
-        policies {
-            timeout-secs 30
-            failure-mode "closed"
-        }
-    }
-
-    // Echo test route - uses echo filter
-    route "echo-test" {
-        priority "high"
-
-        matches {
-            path-prefix "/echo/"
-        }
-
-        upstream "backend"
-        filters ["echo"]
-
-        policies {
-            timeout-secs 30
-            failure-mode "open"
-        }
-    }
-
-    // Multi-agent route - chains multiple filters
-    route "multi-agent" {
-        priority "high"
-
-        matches {
-            path-prefix "/multi/"
-        }
-
-        upstream "backend"
-        filters ["echo" "rate-limit" "waf"]
-        waf-enabled true
-
-        policies {
-            timeout-secs 30
-            failure-mode "open"
-        }
-    }
-
-    // Health check endpoint (no filters)
+    // Health check endpoint
     route "health" {
         priority "high"
-
         matches {
             path "/health"
-            path "/ready"
         }
-
-        upstream "backend"
-
+        builtin-handler "health"
         policies {
             timeout-secs 5
             failure-mode "open"
         }
     }
 
-    // Fallback route (catches all)
-    route "fallback" {
+    // Main route - direct proxy to backend
+    route "default" {
         priority "low"
-
         matches {
             path-prefix "/"
         }
-
         upstream "backend"
-
         policies {
             timeout-secs 30
             failure-mode "open"
@@ -186,78 +46,8 @@ routes {
 
 upstreams {
     upstream "backend" {
-        targets {
-            target {
-                address "backend:80"
-                weight 1
-            }
-        }
-
+        target "backend:80" weight=1
         load-balancing "round_robin"
-
-        health-check {
-            type "http" {
-                path "/status/200"
-                expected-status 200
-            }
-            interval-secs 10
-            timeout-secs 5
-            healthy-threshold 2
-            unhealthy-threshold 3
-        }
-
-        connection-pool {
-            max-connections 100
-            max-idle 20
-            idle-timeout-secs 60
-        }
-
-        timeouts {
-            connect-secs 10
-            request-secs 30
-            read-secs 30
-            write-secs 30
-        }
-    }
-}
-
-agents {
-    agent "echo-agent" {
-        type "custom"
-        transport "unix_socket" {
-            path "/var/run/sentinel/echo.sock"
-        }
-        events ["request_headers" "response_headers"]
-        timeout-ms 100
-        failure-mode "open"
-    }
-
-    agent "ratelimit-agent" {
-        type "rate_limit"
-        transport "unix_socket" {
-            path "/var/run/sentinel/ratelimit.sock"
-        }
-        events ["request_headers"]
-        timeout-ms 100
-        failure-mode "open"
-
-        circuit-breaker {
-            failure-threshold 5
-            success-threshold 2
-            timeout-seconds 30
-            half-open-max-requests 3
-        }
-    }
-
-    agent "waf-agent" {
-        type "waf"
-        transport "unix_socket" {
-            path "/var/run/sentinel/waf.sock"
-        }
-        events ["request_headers" "request_body"]
-        timeout-ms 200
-        failure-mode "open"
-        max-request-body-bytes 1048576
     }
 }
 
@@ -265,29 +55,15 @@ limits {
     max-header-size-bytes 8192
     max-header-count 100
     max-body-size-bytes 10485760
-    max-connections-per-client 100
-    max-in-flight-requests 10000
-    max-agent-queue-depth 100
 }
 
 observability {
     metrics {
-        enabled true
         address "0.0.0.0:9090"
         path "/metrics"
     }
-
     logging {
-        level "debug"
+        level "info"
         format "json"
-        timestamps true
-    }
-
-    tracing {
-        backend "otlp" {
-            endpoint "http://jaeger:4317"
-        }
-        sampling-rate 1.0
-        service-name "sentinel-proxy"
     }
 }

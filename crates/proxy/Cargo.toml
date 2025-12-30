@@ -91,6 +91,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 nix = { version = "0.29", features = ["signal"] }
 libc = "0.2"
 signal-hook = "0.3"
+num_cpus = "1.16"
 
 # Memory allocator
 tikv-jemallocator = { workspace = true }

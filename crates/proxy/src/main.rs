@@ -174,6 +174,7 @@ fn run_server(
     let mut pingora_opt = Opt::default();
     pingora_opt.daemon = daemon;
     pingora_opt.upgrade = upgrade;
+    // Note: We'll configure threads via ServerConf after loading our config
 
     // Get config path with priority: CLI arg > env var > None (embedded default)
     let effective_config_path = config_path
@@ -225,8 +226,27 @@ fn run_server(
     // Get initial config for server setup
     let config = proxy.config_manager.current();
 
-    // Create Pingora server
-    let mut server = Server::new(Some(pingora_opt))?;
+    // Configure Pingora ServerConf with our settings
+    let worker_threads = if config.server.worker_threads > 0 {
+        config.server.worker_threads
+    } else {
+        num_cpus::get() // Default to CPU count
+    };
+
+    // Create Pingora ServerConf with performance settings
+    let mut pingora_conf = pingora::server::configuration::ServerConf::default();
+    pingora_conf.threads = worker_threads;
+    pingora_conf.work_stealing = true;
+    pingora_conf.upstream_keepalive_pool_size = 256; // Increase from default 128
+
+    info!(
+        worker_threads = worker_threads,
+        upstream_pool_size = pingora_conf.upstream_keepalive_pool_size,
+        "Configuring Pingora server"
+    );
+
+    // Create Pingora server with our configuration
+    let mut server = Server::new_with_opt_and_conf(Some(pingora_opt), pingora_conf);
     server.bootstrap();
 
     // Create proxy service

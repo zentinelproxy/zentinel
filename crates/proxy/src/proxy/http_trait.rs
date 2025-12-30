@@ -44,6 +44,67 @@ impl ProxyHttp for SentinelProxy {
         e
     }
 
+    /// Early request filter - runs before upstream selection
+    /// Used to handle builtin routes that don't need an upstream connection
+    async fn early_request_filter(
+        &self,
+        session: &mut Session,
+        ctx: &mut Self::CTX,
+    ) -> Result<(), Box<Error>> {
+        // Extract request info for routing
+        let req_header = session.req_header();
+        let method = req_header.method.as_str();
+        let path = req_header.uri.path();
+        let host = req_header
+            .headers
+            .get("host")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        ctx.method = method.to_string();
+        ctx.path = path.to_string();
+        ctx.host = Some(host.to_string());
+
+        // Match route to determine service type
+        let route_match = {
+            let route_matcher = self.route_matcher.read();
+            let request_info = RequestInfo::new(method, path, host);
+            match route_matcher.match_request(&request_info) {
+                Some(m) => m,
+                None => return Ok(()), // No matching route, let upstream_peer handle it
+            }
+        };
+
+        ctx.trace_id = self.get_trace_id(session);
+        ctx.route_id = Some(route_match.route_id.to_string());
+        ctx.route_config = Some(route_match.config.clone());
+
+        // Check if this is a builtin handler route
+        if route_match.config.service_type == sentinel_config::ServiceType::Builtin {
+            trace!(
+                correlation_id = %ctx.trace_id,
+                route_id = %route_match.route_id,
+                builtin_handler = ?route_match.config.builtin_handler,
+                "Handling builtin route in early_request_filter"
+            );
+
+            // Handle the builtin route directly
+            let handled = self
+                .handle_builtin_route(session, ctx, &route_match)
+                .await?;
+
+            if handled {
+                // Return error to signal that request is complete (Pingora will not continue)
+                return Err(Error::explain(
+                    ErrorType::InternalError,
+                    "Builtin handler complete",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     async fn upstream_peer(
         &self,
         session: &mut Session,
@@ -52,32 +113,27 @@ impl ProxyHttp for SentinelProxy {
         // Track active request
         self.reload_coordinator.inc_requests();
 
-        // Initialize trace ID
-        ctx.trace_id = self.get_trace_id(session);
-
-        // Cache client address for logging
-        ctx.client_ip = session
-            .client_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
-        trace!(
-            correlation_id = %ctx.trace_id,
-            client_ip = %ctx.client_ip,
-            "Request received, initializing context"
-        );
+        // Cache client address for logging if not already set
+        if ctx.client_ip.is_empty() {
+            ctx.client_ip = session
+                .client_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+        }
 
         let req_header = session.req_header();
 
-        // Cache request info for access logging
-        ctx.method = req_header.method.to_string();
-        ctx.path = req_header.uri.path().to_string();
-        ctx.query = req_header.uri.query().map(|q| q.to_string());
-        ctx.host = req_header
-            .headers
-            .get("host")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+        // Cache request info for access logging if not already set
+        if ctx.method.is_empty() {
+            ctx.method = req_header.method.to_string();
+            ctx.path = req_header.uri.path().to_string();
+            ctx.query = req_header.uri.query().map(|q| q.to_string());
+            ctx.host = req_header
+                .headers
+                .get("host")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+        }
         ctx.user_agent = req_header
             .headers
             .get("user-agent")
@@ -89,64 +145,98 @@ impl ProxyHttp for SentinelProxy {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        // Match route using sync RwLock (scoped to ensure lock is released before async ops)
-        let (route_match, route_duration) = {
-            let route_matcher = self.route_matcher.read();
-            let host = ctx.host.as_deref().unwrap_or("");
+        trace!(
+            correlation_id = %ctx.trace_id,
+            client_ip = %ctx.client_ip,
+            "Request received, initializing context"
+        );
 
-            // Build request info (zero-copy for common case)
-            let mut request_info = RequestInfo::new(&ctx.method, &ctx.path, host);
-
-            // Only build headers HashMap if any route needs header matching
-            if route_matcher.needs_headers() {
-                request_info = request_info.with_headers(
-                    RequestInfo::build_headers(req_header.headers.iter())
-                );
+        // Use cached route info if already set by early_request_filter
+        let route_match = if let Some(ref route_config) = ctx.route_config {
+            let route_id = ctx.route_id.as_deref().unwrap_or("");
+            crate::routing::RouteMatch {
+                route_id: sentinel_common::RouteId::new(route_id),
+                config: route_config.clone(),
+                policies: route_config.policies.clone(),
             }
+        } else {
+            // Match route using sync RwLock (scoped to ensure lock is released before async ops)
+            let (match_result, route_duration) = {
+                let route_matcher = self.route_matcher.read();
+                let host = ctx.host.as_deref().unwrap_or("");
 
-            // Only parse query params if any route needs query param matching
-            if route_matcher.needs_query_params() {
-                request_info = request_info.with_query_params(
-                    RequestInfo::parse_query_params(&ctx.path)
+                // Build request info (zero-copy for common case)
+                let mut request_info = RequestInfo::new(&ctx.method, &ctx.path, host);
+
+                // Only build headers HashMap if any route needs header matching
+                if route_matcher.needs_headers() {
+                    request_info = request_info.with_headers(
+                        RequestInfo::build_headers(req_header.headers.iter())
+                    );
+                }
+
+                // Only parse query params if any route needs query param matching
+                if route_matcher.needs_query_params() {
+                    request_info = request_info.with_query_params(
+                        RequestInfo::parse_query_params(&ctx.path)
+                    );
+                }
+
+                trace!(
+                    correlation_id = %ctx.trace_id,
+                    method = %request_info.method,
+                    path = %request_info.path,
+                    host = %request_info.host,
+                    "Built request info for route matching"
                 );
-            }
+
+                let route_start = std::time::Instant::now();
+                let route_match = route_matcher
+                    .match_request(&request_info)
+                    .ok_or_else(|| {
+                        warn!(
+                            correlation_id = %ctx.trace_id,
+                            method = %request_info.method,
+                            path = %request_info.path,
+                            host = %request_info.host,
+                            "No matching route found for request"
+                        );
+                        Error::explain(ErrorType::InternalError, "No matching route found")
+                    })?;
+                let route_duration = route_start.elapsed();
+                // Lock is dropped here when block ends
+                (route_match, route_duration)
+            };
+
+            ctx.route_id = Some(match_result.route_id.to_string());
+            ctx.route_config = Some(match_result.config.clone());
 
             trace!(
                 correlation_id = %ctx.trace_id,
-                method = %request_info.method,
-                path = %request_info.path,
-                host = %request_info.host,
-                "Built request info for route matching"
+                route_id = %match_result.route_id,
+                route_duration_us = route_duration.as_micros(),
+                service_type = ?match_result.config.service_type,
+                "Route matched"
             );
-
-            let route_start = std::time::Instant::now();
-            let route_match = route_matcher
-                .match_request(&request_info)
-                .ok_or_else(|| {
-                    warn!(
-                        correlation_id = %ctx.trace_id,
-                        method = %request_info.method,
-                        path = %request_info.path,
-                        host = %request_info.host,
-                        "No matching route found for request"
-                    );
-                    Error::explain(ErrorType::InternalError, "No matching route found")
-                })?;
-            let route_duration = route_start.elapsed();
-            // Lock is dropped here when block ends
-            (route_match, route_duration)
+            match_result
         };
 
-        ctx.route_id = Some(route_match.route_id.to_string());
-        ctx.route_config = Some(route_match.config.clone());
-
-        trace!(
-            correlation_id = %ctx.trace_id,
-            route_id = %route_match.route_id,
-            route_duration_us = route_duration.as_micros(),
-            service_type = ?route_match.config.service_type,
-            "Route matched"
-        );
+        // Check if this is a builtin handler route (no upstream needed)
+        if route_match.config.service_type == sentinel_config::ServiceType::Builtin {
+            trace!(
+                correlation_id = %ctx.trace_id,
+                route_id = %route_match.route_id,
+                builtin_handler = ?route_match.config.builtin_handler,
+                "Route type is builtin, skipping upstream"
+            );
+            // Mark as builtin route for later processing in request_filter
+            ctx.upstream = Some(format!("_builtin_{}", route_match.route_id));
+            // Return error to skip upstream connection for builtin routes
+            return Err(Error::explain(
+                ErrorType::InternalError,
+                "Builtin handler handled in request_filter",
+            ));
+        }
 
         // Check if this is a static file route
         if route_match.config.service_type == sentinel_config::ServiceType::Static {
