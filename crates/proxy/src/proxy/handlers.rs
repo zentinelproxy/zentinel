@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::builtin_handlers;
+use crate::logging::{AuditEventType, AuditLogEntry};
 use crate::routing::RouteMatch;
 use crate::validation::SchemaValidator;
 
@@ -451,6 +452,31 @@ impl SentinelProxy {
                                 "Request blocked by agent"
                             );
                             self.metrics.record_blocked_request("agent_blocked");
+
+                            // Audit log the block decision
+                            // Collect tags and rule_ids from all audit metadata
+                            let all_tags: Vec<String> = decision.audit.iter()
+                                .flat_map(|a| a.tags.iter().cloned())
+                                .collect();
+                            let all_rule_ids: Vec<String> = decision.audit.iter()
+                                .flat_map(|a| a.rule_ids.iter().cloned())
+                                .collect();
+
+                            let audit_entry = AuditLogEntry::new(
+                                &ctx.trace_id,
+                                AuditEventType::AgentDecision,
+                                &ctx.method,
+                                &ctx.path,
+                                &ctx.client_ip,
+                            )
+                            .with_route_id(ctx.route_id.as_deref().unwrap_or("unknown"))
+                            .with_action("block")
+                            .with_status_code(status)
+                            .with_reason(body.clone().unwrap_or_else(|| "Blocked by agent".to_string()))
+                            .with_tags(all_tags)
+                            .with_rule_ids(all_rule_ids);
+                            self.log_manager.log_audit(&audit_entry);
+
                             return Err(Error::explain(
                                 ErrorType::InternalError,
                                 body.unwrap_or_else(|| "Blocked by agent".to_string()),

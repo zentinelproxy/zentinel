@@ -203,6 +203,14 @@ impl SentinelProxy {
             }
         };
 
+        // Register audit reload hook to log configuration changes
+        {
+            use crate::reload::AuditReloadHook;
+            let audit_hook = AuditReloadHook::new(log_manager.clone());
+            config_manager.add_hook(Box::new(audit_hook)).await;
+            debug!("Registered audit reload hook");
+        }
+
         // Start active health check runner in background
         if health_check_runner.checker_count() > 0 {
             let runner = health_check_runner.clone();

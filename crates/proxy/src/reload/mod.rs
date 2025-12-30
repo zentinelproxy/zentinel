@@ -17,6 +17,8 @@ pub use coordinator::GracefulReloadCoordinator;
 pub use signals::{SignalManager, SignalType};
 pub use validators::{RouteValidator, UpstreamValidator};
 
+// Re-export for use by proxy initialization
+
 use arc_swap::ArcSwap;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -28,6 +30,7 @@ use tracing::{debug, error, info, trace, warn};
 use sentinel_common::errors::{SentinelError, SentinelResult};
 use sentinel_config::Config;
 
+use crate::logging::{AuditLogEntry, SharedLogManager};
 use crate::tls::CertificateReloader;
 
 // ============================================================================
@@ -556,6 +559,80 @@ impl ConfigManager {
             reload_hooks: Arc::clone(&self.reload_hooks),
             cert_reloader: Arc::clone(&self.cert_reloader),
         }
+    }
+}
+
+// ============================================================================
+// Audit Reload Hook
+// ============================================================================
+
+/// Reload hook that logs configuration changes to the audit log.
+pub struct AuditReloadHook {
+    log_manager: SharedLogManager,
+}
+
+impl AuditReloadHook {
+    /// Create a new audit reload hook with the given log manager.
+    pub fn new(log_manager: SharedLogManager) -> Self {
+        Self { log_manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl ReloadHook for AuditReloadHook {
+    async fn pre_reload(&self, old_config: &Config, new_config: &Config) -> SentinelResult<()> {
+        // Log that reload is starting
+        let trace_id = uuid::Uuid::new_v4().to_string();
+        let audit_entry = AuditLogEntry::config_change(
+            &trace_id,
+            "reload_started",
+            format!(
+                "Configuration reload starting: {} routes -> {} routes, {} upstreams -> {} upstreams",
+                old_config.routes.len(),
+                new_config.routes.len(),
+                old_config.upstreams.len(),
+                new_config.upstreams.len()
+            ),
+        );
+        self.log_manager.log_audit(&audit_entry);
+        Ok(())
+    }
+
+    async fn post_reload(&self, old_config: &Config, new_config: &Config) {
+        // Log successful reload
+        let trace_id = uuid::Uuid::new_v4().to_string();
+        let audit_entry = AuditLogEntry::config_change(
+            &trace_id,
+            "reload_success",
+            format!(
+                "Configuration reload successful: {} routes, {} upstreams, {} listeners",
+                new_config.routes.len(),
+                new_config.upstreams.len(),
+                new_config.listeners.len()
+            ),
+        )
+        .with_metadata("old_routes", old_config.routes.len().to_string())
+        .with_metadata("new_routes", new_config.routes.len().to_string())
+        .with_metadata("old_upstreams", old_config.upstreams.len().to_string())
+        .with_metadata("new_upstreams", new_config.upstreams.len().to_string());
+        self.log_manager.log_audit(&audit_entry);
+    }
+
+    async fn on_failure(&self, config: &Config, error: &SentinelError) {
+        // Log failed reload
+        let trace_id = uuid::Uuid::new_v4().to_string();
+        let audit_entry = AuditLogEntry::config_change(
+            &trace_id,
+            "reload_failed",
+            format!("Configuration reload failed: {}", error),
+        )
+        .with_metadata("current_routes", config.routes.len().to_string())
+        .with_metadata("current_upstreams", config.upstreams.len().to_string());
+        self.log_manager.log_audit(&audit_entry);
+    }
+
+    fn name(&self) -> &str {
+        "audit_reload_hook"
     }
 }
 

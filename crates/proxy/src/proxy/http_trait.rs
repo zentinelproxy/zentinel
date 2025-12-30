@@ -17,7 +17,7 @@ use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::cache::{get_cache_eviction, get_cache_lock, get_cache_storage};
-use crate::logging::AccessLogEntry;
+use crate::logging::{AccessLogEntry, AuditEventType, AuditLogEntry};
 use crate::rate_limit::HeaderAccessor;
 use crate::routing::RequestInfo;
 
@@ -470,6 +470,18 @@ impl ProxyHttp for SentinelProxy {
                             "Request rate limited"
                         );
                         self.metrics.record_blocked_request("rate_limited");
+
+                        // Audit log the rate limit
+                        let audit_entry = AuditLogEntry::rate_limited(
+                            &ctx.trace_id,
+                            &ctx.method,
+                            &ctx.path,
+                            &ctx.client_ip,
+                            &rate_result.limiter,
+                        )
+                        .with_route_id(route_id)
+                        .with_status_code(rate_result.status_code);
+                        self.log_manager.log_audit(&audit_entry);
 
                         // Send rate limit response
                         let body = rate_result

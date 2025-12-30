@@ -526,7 +526,192 @@ pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
 // ============================================================================
 
 /// Parse observability configuration block
-pub fn parse_observability_config(_node: &kdl::KdlNode) -> Result<ObservabilityConfig> {
-    // TODO: Implement full observability config parsing
-    Ok(ObservabilityConfig::default())
+///
+/// KDL format:
+/// ```kdl
+/// observability {
+///     logging {
+///         level "info"
+///         format "json"
+///         access-log {
+///             enabled true
+///             file "/var/log/sentinel/access.log"
+///             format "json"
+///         }
+///         error-log {
+///             enabled true
+///             file "/var/log/sentinel/error.log"
+///             level "warn"
+///         }
+///         audit-log {
+///             enabled true
+///             file "/var/log/sentinel/audit.log"
+///             log-blocked true
+///             log-agent-decisions true
+///             log-waf-events true
+///         }
+///     }
+/// }
+/// ```
+pub fn parse_observability_config(node: &kdl::KdlNode) -> Result<ObservabilityConfig> {
+    use crate::observability::{
+        AccessLogConfig, AuditLogConfig, ErrorLogConfig, LoggingConfig, MetricsConfig,
+    };
+
+    let mut config = ObservabilityConfig::default();
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            let name = child.name().value();
+            match name {
+                "logging" => {
+                    config.logging = parse_logging_config(child)?;
+                }
+                "metrics" => {
+                    config.metrics = parse_metrics_config(child)?;
+                }
+                _ => {
+                    trace!(name = %name, "Unknown observability config block, ignoring");
+                }
+            }
+        }
+    }
+
+    Ok(config)
+}
+
+/// Parse logging configuration block
+fn parse_logging_config(node: &kdl::KdlNode) -> Result<crate::observability::LoggingConfig> {
+    use crate::observability::{AccessLogConfig, AuditLogConfig, ErrorLogConfig, LoggingConfig};
+    use std::path::PathBuf;
+
+    let mut config = LoggingConfig::default();
+
+    // Parse direct properties
+    if let Some(level) = get_string_entry(node, "level") {
+        config.level = level;
+    }
+    if let Some(format) = get_string_entry(node, "format") {
+        config.format = format;
+    }
+
+    // Parse child blocks
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            let name = child.name().value();
+            match name {
+                "access-log" => {
+                    config.access_log = Some(parse_access_log_config(child)?);
+                }
+                "error-log" => {
+                    config.error_log = Some(parse_error_log_config(child)?);
+                }
+                "audit-log" => {
+                    config.audit_log = Some(parse_audit_log_config(child)?);
+                }
+                _ => {
+                    trace!(name = %name, "Unknown logging config block, ignoring");
+                }
+            }
+        }
+    }
+
+    Ok(config)
+}
+
+/// Parse access log configuration
+fn parse_access_log_config(node: &kdl::KdlNode) -> Result<crate::observability::AccessLogConfig> {
+    use crate::observability::AccessLogConfig;
+    use std::path::PathBuf;
+
+    let mut config = AccessLogConfig::default();
+
+    if let Some(enabled) = get_bool_entry(node, "enabled") {
+        config.enabled = enabled;
+    }
+    if let Some(file) = get_string_entry(node, "file") {
+        config.file = PathBuf::from(file);
+    }
+    if let Some(format) = get_string_entry(node, "format") {
+        config.format = format;
+    }
+    if let Some(buffer_size) = get_int_entry(node, "buffer-size") {
+        config.buffer_size = buffer_size as usize;
+    }
+
+    Ok(config)
+}
+
+/// Parse error log configuration
+fn parse_error_log_config(node: &kdl::KdlNode) -> Result<crate::observability::ErrorLogConfig> {
+    use crate::observability::ErrorLogConfig;
+    use std::path::PathBuf;
+
+    let mut config = ErrorLogConfig::default();
+
+    if let Some(enabled) = get_bool_entry(node, "enabled") {
+        config.enabled = enabled;
+    }
+    if let Some(file) = get_string_entry(node, "file") {
+        config.file = PathBuf::from(file);
+    }
+    if let Some(level) = get_string_entry(node, "level") {
+        config.level = level;
+    }
+    if let Some(buffer_size) = get_int_entry(node, "buffer-size") {
+        config.buffer_size = buffer_size as usize;
+    }
+
+    Ok(config)
+}
+
+/// Parse audit log configuration
+fn parse_audit_log_config(node: &kdl::KdlNode) -> Result<crate::observability::AuditLogConfig> {
+    use crate::observability::AuditLogConfig;
+    use std::path::PathBuf;
+
+    let mut config = AuditLogConfig::default();
+
+    if let Some(enabled) = get_bool_entry(node, "enabled") {
+        config.enabled = enabled;
+    }
+    if let Some(file) = get_string_entry(node, "file") {
+        config.file = PathBuf::from(file);
+    }
+    if let Some(buffer_size) = get_int_entry(node, "buffer-size") {
+        config.buffer_size = buffer_size as usize;
+    }
+    if let Some(log_blocked) = get_bool_entry(node, "log-blocked") {
+        config.log_blocked = log_blocked;
+    }
+    if let Some(log_agent) = get_bool_entry(node, "log-agent-decisions") {
+        config.log_agent_decisions = log_agent;
+    }
+    if let Some(log_waf) = get_bool_entry(node, "log-waf-events") {
+        config.log_waf_events = log_waf;
+    }
+
+    Ok(config)
+}
+
+/// Parse metrics configuration block
+fn parse_metrics_config(node: &kdl::KdlNode) -> Result<crate::observability::MetricsConfig> {
+    use crate::observability::MetricsConfig;
+
+    let mut config = MetricsConfig::default();
+
+    if let Some(enabled) = get_bool_entry(node, "enabled") {
+        config.enabled = enabled;
+    }
+    if let Some(address) = get_string_entry(node, "address") {
+        config.address = address;
+    }
+    if let Some(path) = get_string_entry(node, "path") {
+        config.path = path;
+    }
+    if let Some(high_cardinality) = get_bool_entry(node, "high-cardinality") {
+        config.high_cardinality = high_cardinality;
+    }
+
+    Ok(config)
 }
