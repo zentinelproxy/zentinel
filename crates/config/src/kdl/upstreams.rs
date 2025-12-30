@@ -8,7 +8,7 @@ use sentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 
 use crate::upstreams::*;
 
-use super::helpers::{get_first_arg_string, get_int_entry, get_string_entry};
+use super::helpers::{get_first_arg_string, get_int_entry};
 
 /// Parse upstreams configuration block
 pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamConfig>> {
@@ -86,11 +86,27 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                     );
                 }
 
+                // Parse HTTP version configuration
+                let http_version = child
+                    .children()
+                    .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "http-version"))
+                    .map(|n| parse_http_version(n))
+                    .unwrap_or_default();
+
+                if http_version.max_version >= 2 {
+                    trace!(
+                        upstream_id = %id,
+                        max_version = http_version.max_version,
+                        "HTTP/2 enabled for upstream"
+                    );
+                }
+
                 trace!(
                     upstream_id = %id,
                     target_count = targets.len(),
                     load_balancing = ?load_balancing,
                     has_health_check = health_check.is_some(),
+                    http_version = http_version.max_version,
                     "Parsed upstream"
                 );
 
@@ -104,6 +120,7 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                         connection_pool: ConnectionPoolConfig::default(),
                         timeouts: UpstreamTimeouts::default(),
                         tls: None,
+                        http_version,
                     },
                 );
             }
@@ -126,6 +143,50 @@ fn parse_load_balancing(s: &str) -> LoadBalancingAlgorithm {
         "power_of_two_choices" | "p2c" => LoadBalancingAlgorithm::PowerOfTwoChoices,
         "adaptive" => LoadBalancingAlgorithm::Adaptive,
         _ => LoadBalancingAlgorithm::RoundRobin,
+    }
+}
+
+/// Parse HTTP version configuration
+///
+/// Example KDL:
+/// ```kdl
+/// http-version {
+///     min-version 1
+///     max-version 2
+///     h2-ping-interval 30
+///     max-h2-streams 100
+/// }
+/// ```
+fn parse_http_version(node: &kdl::KdlNode) -> HttpVersionConfig {
+    // Helper to get integer value from a child node's first argument
+    let get_child_int = |name: &str| -> Option<i128> {
+        node.children()
+            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == name))
+            .and_then(|n| n.entries().first())
+            .and_then(|e| e.value().as_integer())
+    };
+
+    let min_version = get_child_int("min-version")
+        .map(|v| v as u8)
+        .unwrap_or(1);
+
+    let max_version = get_child_int("max-version")
+        .map(|v| v as u8)
+        .unwrap_or(2); // Default to HTTP/2 support
+
+    let h2_ping_interval_secs = get_child_int("h2-ping-interval")
+        .map(|v| v as u64)
+        .unwrap_or(0);
+
+    let max_h2_streams = get_child_int("max-h2-streams")
+        .map(|v| v as usize)
+        .unwrap_or(100);
+
+    HttpVersionConfig {
+        min_version,
+        max_version,
+        h2_ping_interval_secs,
+        max_h2_streams,
     }
 }
 

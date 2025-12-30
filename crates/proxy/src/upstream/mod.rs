@@ -153,6 +153,12 @@ pub struct UpstreamPool {
     load_balancer: Arc<dyn LoadBalancer>,
     /// Connection pool configuration (Pingora handles actual pooling)
     pool_config: ConnectionPoolConfig,
+    /// HTTP version configuration
+    http_version: HttpVersionOptions,
+    /// Whether TLS is enabled for this upstream
+    tls_enabled: bool,
+    /// SNI for TLS connections
+    tls_sni: Option<String>,
     /// Circuit breakers per target
     circuit_breakers: Arc<RwLock<HashMap<String, CircuitBreaker>>>,
     /// Pool statistics
@@ -176,6 +182,18 @@ pub struct ConnectionPoolConfig {
     pub read_timeout: Duration,
     /// Write timeout
     pub write_timeout: Duration,
+}
+
+/// HTTP version configuration for upstream connections
+pub struct HttpVersionOptions {
+    /// Minimum HTTP version (1 or 2)
+    pub min_version: u8,
+    /// Maximum HTTP version (1 or 2)
+    pub max_version: u8,
+    /// H2 ping interval (0 to disable)
+    pub h2_ping_interval: Duration,
+    /// Maximum concurrent H2 streams per connection
+    pub max_h2_streams: usize,
 }
 
 impl ConnectionPoolConfig {
@@ -628,6 +646,29 @@ impl UpstreamPool {
         );
         let pool_config = ConnectionPoolConfig::new(config.connection_pool.idle_timeout_secs);
 
+        // Create HTTP version configuration
+        let http_version = HttpVersionOptions {
+            min_version: config.http_version.min_version,
+            max_version: config.http_version.max_version,
+            h2_ping_interval: if config.http_version.h2_ping_interval_secs > 0 {
+                Duration::from_secs(config.http_version.h2_ping_interval_secs)
+            } else {
+                Duration::ZERO
+            },
+            max_h2_streams: config.http_version.max_h2_streams,
+        };
+
+        // TLS configuration
+        let tls_enabled = config.tls.is_some();
+        let tls_sni = config.tls.as_ref().and_then(|t| t.sni.clone());
+
+        if http_version.max_version >= 2 && tls_enabled {
+            info!(
+                upstream_id = %config.id,
+                "HTTP/2 enabled for upstream (via ALPN)"
+            );
+        }
+
         // Initialize circuit breakers for each target
         let mut circuit_breakers = HashMap::new();
         for target in &targets {
@@ -647,6 +688,9 @@ impl UpstreamPool {
             targets,
             load_balancer,
             pool_config,
+            http_version,
+            tls_enabled,
+            tls_sni,
             circuit_breakers: Arc::new(RwLock::new(circuit_breakers)),
             stats: Arc::new(PoolStats::default()),
         };
@@ -802,10 +846,16 @@ impl UpstreamPool {
     /// is set on the peer options, Pingora will keep the connection alive and
     /// reuse it for subsequent requests to the same upstream.
     fn create_peer(&self, selection: &TargetSelection) -> SentinelResult<HttpPeer> {
+        // Determine SNI hostname for TLS connections
+        let sni_hostname = self.tls_sni.clone().unwrap_or_else(|| {
+            // Extract hostname from address (strip port)
+            selection.address.split(':').next().unwrap_or(&selection.address).to_string()
+        });
+
         let mut peer = HttpPeer::new(
             &selection.address,
-            false,
-            String::new(),
+            self.tls_enabled,
+            sni_hostname.clone(),
         );
 
         // Configure connection pooling options for better performance
@@ -831,10 +881,56 @@ impl UpstreamPool {
             user_timeout: Duration::from_secs(60),
         });
 
+        // Configure HTTP version and ALPN for TLS connections
+        if self.tls_enabled {
+            // Set ALPN protocols based on configured HTTP version range
+            let alpn = match (self.http_version.min_version, self.http_version.max_version) {
+                (2, _) => {
+                    // HTTP/2 only - use h2 ALPN
+                    pingora::upstreams::peer::ALPN::H2
+                }
+                (1, 2) | (_, 2) => {
+                    // Prefer HTTP/2 but fall back to HTTP/1.1
+                    pingora::upstreams::peer::ALPN::H2H1
+                }
+                _ => {
+                    // HTTP/1.1 only
+                    pingora::upstreams::peer::ALPN::H1
+                }
+            };
+            peer.options.alpn = alpn;
+
+            trace!(
+                upstream_id = %self.id,
+                target = %selection.address,
+                alpn = ?peer.options.alpn,
+                min_version = self.http_version.min_version,
+                max_version = self.http_version.max_version,
+                "Configured ALPN for HTTP version negotiation"
+            );
+        }
+
+        // Configure H2-specific settings when HTTP/2 is enabled
+        if self.http_version.max_version >= 2 {
+            // H2 ping interval for connection health monitoring
+            if !self.http_version.h2_ping_interval.is_zero() {
+                peer.options.h2_ping_interval = Some(self.http_version.h2_ping_interval);
+                trace!(
+                    upstream_id = %self.id,
+                    target = %selection.address,
+                    h2_ping_interval_secs = self.http_version.h2_ping_interval.as_secs(),
+                    "Configured H2 ping interval"
+                );
+            }
+        }
+
         trace!(
             upstream_id = %self.id,
             target = %selection.address,
+            tls = self.tls_enabled,
+            sni = %sni_hostname,
             idle_timeout_secs = self.pool_config.idle_timeout.as_secs(),
+            http_max_version = self.http_version.max_version,
             "Created peer with Pingora connection pooling enabled"
         );
 

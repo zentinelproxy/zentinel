@@ -41,6 +41,53 @@ pub struct UpstreamConfig {
 
     /// TLS configuration for upstream connections
     pub tls: Option<UpstreamTlsConfig>,
+
+    /// HTTP version configuration
+    #[serde(default)]
+    pub http_version: HttpVersionConfig,
+}
+
+/// HTTP version configuration for upstream connections
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpVersionConfig {
+    /// Minimum HTTP version (1 or 2)
+    #[serde(default = "default_min_http_version")]
+    pub min_version: u8,
+
+    /// Maximum HTTP version (1 or 2)
+    #[serde(default = "default_max_http_version")]
+    pub max_version: u8,
+
+    /// H2 ping interval in seconds (0 to disable)
+    #[serde(default)]
+    pub h2_ping_interval_secs: u64,
+
+    /// Maximum concurrent H2 streams per connection
+    #[serde(default = "default_max_h2_streams")]
+    pub max_h2_streams: usize,
+}
+
+impl Default for HttpVersionConfig {
+    fn default() -> Self {
+        Self {
+            min_version: default_min_http_version(),
+            max_version: default_max_http_version(),
+            h2_ping_interval_secs: 0,
+            max_h2_streams: default_max_h2_streams(),
+        }
+    }
+}
+
+fn default_min_http_version() -> u8 {
+    1
+}
+
+fn default_max_http_version() -> u8 {
+    2 // Enable HTTP/2 by default when TLS is used
+}
+
+fn default_max_h2_streams() -> usize {
+    100
 }
 
 /// Individual upstream target

@@ -35,10 +35,12 @@ pub mod agents;
 pub mod app;
 pub mod builtin_handlers;
 pub mod cache;
+pub mod discovery;
 pub mod errors;
 pub mod health;
 pub mod http_helpers;
 pub mod logging;
+pub mod memory_cache;
 pub mod proxy;
 pub mod rate_limit;
 pub mod reload;
@@ -109,6 +111,12 @@ pub use rate_limit::{RateLimitConfig, RateLimitManager, RateLimitResult};
 
 // HTTP caching
 pub use cache::{CacheConfig, CacheManager, HttpCacheStats};
+
+// Memory caching
+pub use memory_cache::{MemoryCacheConfig, MemoryCacheManager, MemoryCacheStats, RouteMatchEntry, TypedCache};
+
+// Service discovery
+pub use discovery::{DiscoveryConfig, DiscoveryManager, DnsDiscovery};
 
 // Re-export common error types for convenience
 pub use sentinel_common::errors::{LimitType, SentinelError, SentinelResult};

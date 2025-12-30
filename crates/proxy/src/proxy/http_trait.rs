@@ -955,6 +955,85 @@ impl ProxyHttp for SentinelProxy {
     // - should_serve_stale()
     // - response_cache_filter()
 
+    /// Handle Range header for byte-range requests (streaming support).
+    ///
+    /// This method is called when a Range header is present in the request.
+    /// It allows proper handling of:
+    /// - Video streaming (HTML5 video seeking)
+    /// - Large file downloads with resume support
+    /// - Partial content delivery
+    ///
+    /// Uses Pingora's built-in range handling with route-specific logging.
+    fn range_header_filter(
+        &self,
+        session: &mut Session,
+        response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> pingora_proxy::RangeType
+    where
+        Self::CTX: Send + Sync,
+    {
+        // Check if route supports range requests
+        let supports_range = ctx.route_config.as_ref().map_or(true, |config| {
+            // Static file routes and media routes should support range requests
+            matches!(
+                config.service_type,
+                sentinel_config::ServiceType::Static | sentinel_config::ServiceType::Web
+            )
+        });
+
+        if !supports_range {
+            trace!(
+                correlation_id = %ctx.trace_id,
+                route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                "Range request not supported for this route type"
+            );
+            return pingora_proxy::RangeType::None;
+        }
+
+        // Use Pingora's built-in range header parsing and handling
+        let range_type = pingora_proxy::range_header_filter(
+            session.req_header(),
+            response,
+        );
+
+        match &range_type {
+            pingora_proxy::RangeType::None => {
+                trace!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    "No range request or not applicable"
+                );
+            }
+            pingora_proxy::RangeType::Single(range) => {
+                trace!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    range_start = range.start,
+                    range_end = range.end,
+                    "Processing single-range request"
+                );
+            }
+            pingora_proxy::RangeType::Multi(multi) => {
+                trace!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    range_count = multi.ranges.len(),
+                    "Processing multi-range request"
+                );
+            }
+            pingora_proxy::RangeType::Invalid => {
+                debug!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    "Invalid range header"
+                );
+            }
+        }
+
+        range_type
+    }
+
     /// Handle fatal proxy errors by generating custom error pages.
     /// Called when the proxy itself fails to process the request.
     async fn fail_to_proxy(

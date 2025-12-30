@@ -83,8 +83,8 @@ pub use sentinel_common::TraceIdFormat;
 
 // Upstreams
 pub use upstreams::{
-    ConnectionPoolConfig, HealthCheck, UpstreamConfig, UpstreamPeer, UpstreamTarget,
-    UpstreamTimeouts, UpstreamTlsConfig,
+    ConnectionPoolConfig, HealthCheck, HttpVersionConfig, UpstreamConfig, UpstreamPeer,
+    UpstreamTarget, UpstreamTimeouts, UpstreamTlsConfig,
 };
 
 // WAF
@@ -433,6 +433,7 @@ impl Config {
                 connection_pool: ConnectionPoolConfig::default(),
                 timeouts: UpstreamTimeouts::default(),
                 tls: None,
+                http_version: HttpVersionConfig::default(),
             },
         );
 

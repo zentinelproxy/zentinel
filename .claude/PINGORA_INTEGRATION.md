@@ -126,9 +126,24 @@ Not implemented (25+):
 - [x] 6. pingora-cache HTTP caching infrastructure (2024-12-30)
   - Note: Core infrastructure implemented (CacheConfig, CacheManager, statistics)
   - ProxyHttp cache methods pending pingora-cache API stabilization
-- [ ] 7. HTTP/2 support
-- [ ] 8. pingora-memory-cache
+- [x] 7. HTTP/2 support (2024-12-30)
+  - HttpVersionConfig for upstream configuration (min/max version, H2 ping interval, max streams)
+  - ALPN negotiation (H2, H2H1, H1) based on configuration
+  - TLS SNI configuration for upstream connections
+  - KDL parsing for http-version block
+- [x] 8. pingora-memory-cache (2024-12-30)
+  - MemoryCacheManager for route matching cache
+  - TypedCache<K,V> generic wrapper for arbitrary types
+  - S3-FIFO + TinyLFU eviction via pingora-memory-cache
+  - Cache statistics (hits, misses, insertions)
 - [x] 9. upstream_request_filter() (2024-12-30)
 - [x] 10. fail_to_proxy() (2024-12-30)
-- [ ] 11. range_header_filter()
-- [ ] 12. Service discovery
+- [x] 11. range_header_filter() (2024-12-30)
+  - Route-based range request support (static/web routes)
+  - Logging for single-range, multi-range, and invalid range requests
+  - Uses Pingora's built-in RFC7232 compliant implementation
+- [x] 12. Service discovery (2024-12-30)
+  - DiscoveryManager for managing upstream service discovery
+  - Static discovery (fixed backend list)
+  - DNS-based discovery with caching and refresh intervals
+  - ServiceDiscovery trait integration with pingora-load-balancing

@@ -30,6 +30,7 @@ pingora-load-balancing = { workspace = true }
 pingora-timeout = { workspace = true }
 pingora-limits = { workspace = true }
 pingora-cache = { workspace = true }
+pingora-memory-cache = { workspace = true }
 
 # Local crates
 sentinel-config = { path = "../config", version = "0.1.8" }

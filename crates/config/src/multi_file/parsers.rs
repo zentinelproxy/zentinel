@@ -231,6 +231,7 @@ pub(super) fn parse_upstream(node: &KdlNode) -> Result<(String, UpstreamConfig)>
             connection_pool: crate::ConnectionPoolConfig::default(),
             timeouts: crate::UpstreamTimeouts::default(),
             tls: None,
+            http_version: crate::HttpVersionConfig::default(),
         },
     ))
 }
