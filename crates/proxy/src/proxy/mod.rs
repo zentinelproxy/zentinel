@@ -32,6 +32,7 @@ use crate::errors::ErrorHandler;
 use crate::health::PassiveHealthChecker;
 use crate::http_helpers;
 use crate::logging::{LogManager, SharedLogManager};
+use crate::rate_limit::{RateLimitConfig, RateLimitManager};
 use crate::reload::{
     ConfigManager, GracefulReloadCoordinator, ReloadEvent, RouteValidator, UpstreamValidator,
 };
@@ -75,6 +76,8 @@ pub struct SentinelProxy {
     pub(super) trace_id_format: TraceIdFormat,
     /// Active health check runner
     pub(super) health_check_runner: Arc<HealthCheckRunner>,
+    /// Rate limit manager
+    pub(super) rate_limit_manager: Arc<RateLimitManager>,
 }
 
 impl SentinelProxy {
@@ -215,6 +218,9 @@ impl SentinelProxy {
         // Get trace ID format from config
         let trace_id_format = config.server.trace_id_format;
 
+        // Initialize rate limit manager
+        let rate_limit_manager = Arc::new(Self::initialize_rate_limiters(&config));
+
         Ok(Self {
             config_manager,
             route_matcher,
@@ -231,6 +237,7 @@ impl SentinelProxy {
             log_manager,
             trace_id_format,
             health_check_runner,
+            rate_limit_manager,
         })
     }
 
@@ -366,6 +373,68 @@ impl SentinelProxy {
     /// Get or generate trace ID from session
     pub(super) fn get_trace_id(&self, session: &pingora::proxy::Session) -> String {
         http_helpers::get_or_create_trace_id(session, self.trace_id_format)
+    }
+
+    /// Initialize rate limiters from configuration
+    fn initialize_rate_limiters(config: &Config) -> RateLimitManager {
+        use sentinel_config::RateLimitAction;
+
+        let manager = RateLimitManager::new();
+
+        for route in &config.routes {
+            // Check for rate limit in route policies
+            if let Some(ref rate_limit) = route.policies.rate_limit {
+                let rl_config = RateLimitConfig {
+                    max_rps: rate_limit.requests_per_second,
+                    burst: rate_limit.burst,
+                    key: rate_limit.key.clone(),
+                    action: RateLimitAction::Reject,
+                    status_code: 429,
+                    message: None,
+                };
+                manager.register_route(&route.id, rl_config);
+                info!(
+                    route_id = %route.id,
+                    max_rps = rate_limit.requests_per_second,
+                    burst = rate_limit.burst,
+                    key = ?rate_limit.key,
+                    "Registered rate limiter for route"
+                );
+            }
+
+            // Also check for rate limit filters in the filter chain
+            for filter_id in &route.filters {
+                if let Some(filter_config) = config.filters.get(filter_id) {
+                    if let sentinel_config::Filter::RateLimit(ref rl_filter) = filter_config.filter
+                    {
+                        let rl_config = RateLimitConfig {
+                            max_rps: rl_filter.max_rps,
+                            burst: rl_filter.burst,
+                            key: rl_filter.key.clone(),
+                            action: rl_filter.on_limit.clone(),
+                            status_code: rl_filter.status_code,
+                            message: rl_filter.limit_message.clone(),
+                        };
+                        manager.register_route(&route.id, rl_config);
+                        info!(
+                            route_id = %route.id,
+                            filter_id = %filter_id,
+                            max_rps = rl_filter.max_rps,
+                            "Registered rate limiter from filter for route"
+                        );
+                    }
+                }
+            }
+        }
+
+        if manager.route_count() > 0 {
+            info!(
+                route_count = manager.route_count(),
+                "Rate limiting initialized"
+            );
+        }
+
+        manager
     }
 
     /// Apply security headers to response

@@ -122,11 +122,11 @@ Not implemented (25+):
 - [x] 2. connected_to_upstream() hook (2024-12-30)
 - [x] 3. request_body_filter() (2024-12-30)
 - [x] 4. response_body_filter() (2024-12-30)
-- [ ] 5. pingora-limits rate limiting
+- [x] 5. pingora-limits rate limiting (2024-12-30)
 - [ ] 6. pingora-cache HTTP caching
 - [ ] 7. HTTP/2 support
 - [ ] 8. pingora-memory-cache
-- [ ] 9. upstream_request_filter()
-- [ ] 10. fail_to_proxy()
+- [x] 9. upstream_request_filter() (2024-12-30)
+- [x] 10. fail_to_proxy() (2024-12-30)
 - [ ] 11. range_header_filter()
 - [ ] 12. Service discovery

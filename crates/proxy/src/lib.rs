@@ -39,6 +39,7 @@ pub mod health;
 pub mod http_helpers;
 pub mod logging;
 pub mod proxy;
+pub mod rate_limit;
 pub mod reload;
 pub mod routing;
 pub mod static_files;
@@ -101,6 +102,9 @@ pub use trace_id::{generate_for_format, generate_tinyflake, generate_uuid, Trace
 pub use logging::{
     AccessLogEntry, AccessLogFormat, AuditLogEntry, ErrorLogEntry, LogManager, SharedLogManager,
 };
+
+// Rate limiting
+pub use rate_limit::{RateLimitConfig, RateLimitManager, RateLimitResult};
 
 // Re-export common error types for convenience
 pub use sentinel_common::errors::{LimitType, SentinelError, SentinelResult};
