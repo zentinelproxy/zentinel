@@ -217,24 +217,48 @@ fn health_handler(request_id: &str) -> Response<Full<Bytes>> {
 
 /// Prometheus metrics handler
 fn metrics_handler(request_id: &str) -> Response<Full<Bytes>> {
-    // Get metrics from the global registry
-    // For now, return basic metrics format
-    let metrics = format!(
-        "# HELP sentinel_up Sentinel proxy is up and running\n\
-         # TYPE sentinel_up gauge\n\
-         sentinel_up 1\n\
-         # HELP sentinel_build_info Build information\n\
-         # TYPE sentinel_build_info gauge\n\
-         sentinel_build_info{{version=\"{}\"}} 1\n",
-        env!("CARGO_PKG_VERSION")
-    );
+    use prometheus::{Encoder, TextEncoder};
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-        .header("X-Request-Id", request_id)
-        .body(Full::new(Bytes::from(metrics)))
-        .expect("static response builder with valid headers cannot fail")
+    // Create encoder for Prometheus text format
+    let encoder = TextEncoder::new();
+
+    // Gather all metrics from the default registry
+    let metric_families = prometheus::gather();
+
+    // Encode metrics to text format
+    let mut buffer = Vec::new();
+    match encoder.encode(&metric_families, &mut buffer) {
+        Ok(()) => {
+            // Add sentinel_up and build_info metrics
+            let extra_metrics = format!(
+                "# HELP sentinel_up Sentinel proxy is up and running\n\
+                 # TYPE sentinel_up gauge\n\
+                 sentinel_up 1\n\
+                 # HELP sentinel_build_info Build information\n\
+                 # TYPE sentinel_build_info gauge\n\
+                 sentinel_build_info{{version=\"{}\"}} 1\n",
+                env!("CARGO_PKG_VERSION")
+            );
+            buffer.extend_from_slice(extra_metrics.as_bytes());
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", encoder.format_type())
+                .header("X-Request-Id", request_id)
+                .body(Full::new(Bytes::from(buffer)))
+                .expect("static response builder with valid headers cannot fail")
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to encode Prometheus metrics");
+            let error_body = format!("# ERROR: Failed to encode metrics: {}\n", e);
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("Content-Type", "text/plain; charset=utf-8")
+                .header("X-Request-Id", request_id)
+                .body(Full::new(Bytes::from(error_body)))
+                .expect("static response builder with valid headers cannot fail")
+        }
+    }
 }
 
 /// 404 Not Found handler

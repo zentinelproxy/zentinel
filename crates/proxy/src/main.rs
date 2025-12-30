@@ -260,8 +260,57 @@ fn run_server(
                 info!("HTTP listening on: {}", listener.address);
             }
             sentinel_config::ListenerProtocol::Https => {
-                if listener.tls.is_some() {
-                    warn!("HTTPS listener configured but TLS not yet implemented");
+                match &listener.tls {
+                    Some(tls_config) => {
+                        let cert_path = tls_config.cert_file.to_string_lossy();
+                        let key_path = tls_config.key_file.to_string_lossy();
+
+                        // Validate certificate files exist
+                        if !tls_config.cert_file.exists() {
+                            error!(
+                                listener_id = %listener.id,
+                                cert_file = %cert_path,
+                                "TLS certificate file not found"
+                            );
+                            continue;
+                        }
+                        if !tls_config.key_file.exists() {
+                            error!(
+                                listener_id = %listener.id,
+                                key_file = %key_path,
+                                "TLS key file not found"
+                            );
+                            continue;
+                        }
+
+                        match proxy_service.add_tls(&listener.address, &cert_path, &key_path) {
+                            Ok(()) => {
+                                info!(
+                                    listener_id = %listener.id,
+                                    address = %listener.address,
+                                    cert_file = %cert_path,
+                                    min_tls_version = ?tls_config.min_version,
+                                    client_auth = tls_config.client_auth,
+                                    "HTTPS listening on: {}", listener.address
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    listener_id = %listener.id,
+                                    address = %listener.address,
+                                    error = %e,
+                                    "Failed to configure TLS listener"
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        error!(
+                            listener_id = %listener.id,
+                            address = %listener.address,
+                            "HTTPS listener requires TLS configuration"
+                        );
+                    }
                 }
             }
             _ => {
