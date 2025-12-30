@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use std::path::PathBuf;
-use tracing::trace;
+use tracing::{debug, trace};
 
-use sentinel_common::types::TraceIdFormat;
+use sentinel_common::types::{TraceIdFormat, TlsVersion};
 
 use crate::server::*;
 
@@ -87,10 +87,23 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                     }
                 };
 
+                // Parse TLS configuration if present
+                let tls = if let Some(children) = child.children() {
+                    children
+                        .nodes()
+                        .iter()
+                        .find(|n| n.name().value() == "tls")
+                        .map(|tls_node| parse_tls_config(tls_node, &id))
+                        .transpose()?
+                } else {
+                    None
+                };
+
                 trace!(
                     listener_id = %id,
                     address = %address,
                     protocol = ?protocol,
+                    has_tls = tls.is_some(),
                     "Parsed listener"
                 );
 
@@ -98,7 +111,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                     id,
                     address,
                     protocol,
-                    tls: None, // TODO: Parse TLS config
+                    tls,
                     default_route: get_string_entry(child, "default-route"),
                     request_timeout_secs: get_int_entry(child, "request-timeout-secs")
                         .map(|v| v as u64)
@@ -116,4 +129,186 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
 
     trace!(listener_count = listeners.len(), "Finished parsing listeners");
     Ok(listeners)
+}
+
+/// Parse TLS configuration block
+///
+/// Example KDL:
+/// ```kdl
+/// tls {
+///     cert-file "/etc/certs/server.crt"
+///     key-file "/etc/certs/server.key"
+///     ca-file "/etc/certs/ca.crt"  // Optional, for mTLS
+///     min-version "1.2"
+///     client-auth true
+///
+///     // SNI certificates
+///     sni {
+///         hostnames "example.com" "www.example.com"
+///         cert-file "/etc/certs/example.crt"
+///         key-file "/etc/certs/example.key"
+///     }
+/// }
+/// ```
+fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsConfig> {
+    debug!(listener_id = %listener_id, "Parsing TLS configuration");
+
+    // Get required cert and key files
+    let cert_file = get_string_entry(node, "cert-file")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "TLS configuration for listener '{}' requires 'cert-file'",
+                listener_id
+            )
+        })?;
+
+    let key_file = get_string_entry(node, "key-file")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "TLS configuration for listener '{}' requires 'key-file'",
+                listener_id
+            )
+        })?;
+
+    // Optional CA file for client verification (mTLS)
+    let ca_file = get_string_entry(node, "ca-file").map(PathBuf::from);
+
+    // TLS version configuration
+    let min_version = get_string_entry(node, "min-version")
+        .map(|s| parse_tls_version(&s))
+        .unwrap_or(TlsVersion::Tls12);
+
+    let max_version = get_string_entry(node, "max-version").map(|s| parse_tls_version(&s));
+
+    // Client authentication (mTLS)
+    let client_auth = get_bool_entry(node, "client-auth").unwrap_or(false);
+
+    // OCSP and session options
+    let ocsp_stapling = get_bool_entry(node, "ocsp-stapling").unwrap_or(true);
+    let session_resumption = get_bool_entry(node, "session-resumption").unwrap_or(true);
+
+    // Cipher suites
+    let cipher_suites = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .filter(|n| n.name().value() == "cipher-suite")
+            .filter_map(|n| get_first_arg_string(n))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Parse SNI certificates
+    let additional_certs = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .filter(|n| n.name().value() == "sni")
+            .map(|sni_node| parse_sni_certificate(sni_node, listener_id))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+
+    debug!(
+        listener_id = %listener_id,
+        cert_file = %cert_file.display(),
+        has_ca = ca_file.is_some(),
+        client_auth = client_auth,
+        sni_cert_count = additional_certs.len(),
+        "Parsed TLS configuration"
+    );
+
+    Ok(TlsConfig {
+        cert_file,
+        key_file,
+        additional_certs,
+        ca_file,
+        min_version,
+        max_version,
+        cipher_suites,
+        client_auth,
+        ocsp_stapling,
+        session_resumption,
+    })
+}
+
+/// Parse an SNI certificate configuration
+///
+/// Example KDL:
+/// ```kdl
+/// sni {
+///     hostnames "example.com" "www.example.com"
+///     cert-file "/etc/certs/example.crt"
+///     key-file "/etc/certs/example.key"
+/// }
+/// ```
+fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCertificate> {
+    // Parse hostnames - can be multiple arguments or a single "hostnames" entry
+    let hostnames: Vec<String> = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .filter(|n| n.name().value() == "hostnames")
+            .flat_map(|n| {
+                n.entries()
+                    .iter()
+                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    if hostnames.is_empty() {
+        return Err(anyhow::anyhow!(
+            "SNI certificate for listener '{}' requires at least one hostname",
+            listener_id
+        ));
+    }
+
+    let cert_file = get_string_entry(node, "cert-file")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "SNI certificate for listener '{}' requires 'cert-file'",
+                listener_id
+            )
+        })?;
+
+    let key_file = get_string_entry(node, "key-file")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "SNI certificate for listener '{}' requires 'key-file'",
+                listener_id
+            )
+        })?;
+
+    debug!(
+        listener_id = %listener_id,
+        hostnames = ?hostnames,
+        cert_file = %cert_file.display(),
+        "Parsed SNI certificate"
+    );
+
+    Ok(SniCertificate {
+        hostnames,
+        cert_file,
+        key_file,
+    })
+}
+
+/// Parse TLS version string
+///
+/// Only TLS 1.2 and 1.3 are supported (TLS 1.0/1.1 are deprecated)
+fn parse_tls_version(s: &str) -> TlsVersion {
+    match s.to_lowercase().as_str() {
+        "1.3" | "tls1.3" | "tlsv1.3" => TlsVersion::Tls13,
+        // All other values default to TLS 1.2
+        _ => TlsVersion::Tls12,
+    }
 }

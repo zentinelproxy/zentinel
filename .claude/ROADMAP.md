@@ -40,24 +40,52 @@ This roadmap outlines the path from current state to production-ready, prioritiz
 ## Priority 1: Production Blockers
 
 ### 1.1 Complete HTTPS/TLS Implementation
-**Status:** DONE - Basic TLS termination working
+**Status:** DONE - SNI and mTLS client auth implemented
 **Impact:** CRITICAL - Cannot deploy to production without TLS
-**Effort:** 1-2 weeks (remaining: SNI, mTLS, OCSP)
+**Effort:** 1-2 weeks (remaining: cert hot-reload, OCSP)
 
 **Tasks:**
 - [x] Implement TLS listener in `main.rs` (uses Pingora's add_tls)
 - [x] Load certificates from PEM files
 - [x] Validate certificate files exist at startup
-- [ ] Support SNI for multiple certificates
+- [x] Support SNI for multiple certificates
+- [x] Implement mTLS client certificate verification
 - [ ] Add certificate hot-reload on SIGHUP
-- [ ] Implement mTLS for upstream connections
+- [ ] Implement mTLS for upstream connections (client cert to backends)
 - [ ] Add OCSP stapling support
 - [ ] Test with OpenSSL s_client and curl
 
+**Features Implemented:**
+- SNI-based certificate selection with wildcard support
+- mTLS client authentication (require client certs)
+- KDL configuration for TLS with SNI blocks
+- Certificate validation at startup
+
+**KDL Configuration:**
+```kdl
+listener "https" {
+    address "0.0.0.0:443"
+    protocol "https"
+    tls {
+        cert-file "/etc/certs/default.crt"
+        key-file "/etc/certs/default.key"
+        ca-file "/etc/certs/ca.crt"  // For mTLS
+        client-auth true
+
+        sni {
+            hostnames "example.com" "www.example.com"
+            cert-file "/etc/certs/example.crt"
+            key-file "/etc/certs/example.key"
+        }
+    }
+}
+```
+
 **Files:**
+- `crates/proxy/src/tls.rs` - SNI resolver and TLS configuration
 - `crates/proxy/src/main.rs` - Listener setup
-- `crates/config/src/listeners.rs` - TLS configuration
-- `crates/proxy/src/proxy/mod.rs` - TLS context
+- `crates/config/src/server.rs` - TlsConfig, SniCertificate types
+- `crates/config/src/kdl/server.rs` - KDL parsing for TLS
 
 ### 1.2 Enable HTTP Caching
 **Status:** Core infrastructure implemented, enabled for static routes

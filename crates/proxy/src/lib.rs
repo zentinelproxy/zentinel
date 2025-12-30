@@ -48,6 +48,7 @@ pub mod rate_limit;
 pub mod reload;
 pub mod routing;
 pub mod static_files;
+pub mod tls;
 pub mod trace_id;
 pub mod upstream;
 pub mod validation;
@@ -110,6 +111,9 @@ pub use otel::{
     shutdown_tracer, OtelError, OtelTracer, RequestSpan, TraceContext, TRACEPARENT_HEADER,
     TRACESTATE_HEADER,
 };
+
+// TLS / SNI support
+pub use tls::{build_server_config, load_client_ca, validate_tls_config, SniResolver, TlsError};
 
 // Logging
 pub use logging::{

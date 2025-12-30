@@ -114,13 +114,18 @@ pub enum ListenerProtocol {
 /// TLS configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct TlsConfig {
-    /// Certificate file path
+    /// Default certificate file path (used when no SNI match)
     pub cert_file: PathBuf,
 
-    /// Private key file path
+    /// Default private key file path
     pub key_file: PathBuf,
 
-    /// CA certificate file path for client verification
+    /// Additional certificates for SNI support
+    /// Maps hostname patterns to certificate configurations
+    #[serde(default)]
+    pub additional_certs: Vec<SniCertificate>,
+
+    /// CA certificate file path for client verification (mTLS)
     pub ca_file: Option<PathBuf>,
 
     /// Minimum TLS version
@@ -134,7 +139,7 @@ pub struct TlsConfig {
     #[serde(default)]
     pub cipher_suites: Vec<String>,
 
-    /// Require client certificates
+    /// Require client certificates (mTLS)
     #[serde(default)]
     pub client_auth: bool,
 
@@ -145,6 +150,19 @@ pub struct TlsConfig {
     /// Session resumption
     #[serde(default = "default_session_resumption")]
     pub session_resumption: bool,
+}
+
+/// SNI certificate configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SniCertificate {
+    /// Hostname patterns to match (e.g., "example.com", "*.example.com")
+    pub hostnames: Vec<String>,
+
+    /// Certificate file path
+    pub cert_file: PathBuf,
+
+    /// Private key file path
+    pub key_file: PathBuf,
 }
 
 // ============================================================================

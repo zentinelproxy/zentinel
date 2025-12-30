@@ -76,7 +76,7 @@ pub use routes::{
 };
 
 // Server
-pub use server::{ListenerConfig, ListenerProtocol, ServerConfig, TlsConfig};
+pub use server::{ListenerConfig, ListenerProtocol, ServerConfig, SniCertificate, TlsConfig};
 
 // Re-export TraceIdFormat from common for convenience
 pub use sentinel_common::TraceIdFormat;
