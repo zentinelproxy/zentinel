@@ -15,7 +15,7 @@ use tracing::{debug, info, trace};
 
 use sentinel_config::{BuiltinHandler, Config};
 
-use crate::cache::HttpCacheStats;
+use crate::cache::{CacheManager, HttpCacheStats};
 
 /// Application state for builtin handlers
 pub struct BuiltinHandlerState {
@@ -152,6 +152,7 @@ pub fn execute_handler(
     upstreams: Option<UpstreamHealthSnapshot>,
     cache_stats: Option<Arc<HttpCacheStats>>,
     cache_purge: Option<CachePurgeRequest>,
+    cache_manager: Option<&Arc<CacheManager>>,
 ) -> Response<Full<Bytes>> {
     trace!(
         handler = ?handler,
@@ -166,7 +167,7 @@ pub fn execute_handler(
         BuiltinHandler::NotFound => not_found_handler(request_id),
         BuiltinHandler::Config => config_handler(config, request_id),
         BuiltinHandler::Upstreams => upstreams_handler(upstreams, request_id),
-        BuiltinHandler::CachePurge => cache_purge_handler(cache_purge, request_id),
+        BuiltinHandler::CachePurge => cache_purge_handler(cache_purge, cache_manager, request_id),
         BuiltinHandler::CacheStats => cache_stats_handler(cache_stats, request_id),
     };
 
@@ -511,10 +512,11 @@ fn upstreams_handler(
 /// and optionally purges all matching entries if wildcard is enabled.
 fn cache_purge_handler(
     purge_request: Option<CachePurgeRequest>,
+    cache_manager: Option<&Arc<CacheManager>>,
     request_id: &str,
 ) -> Response<Full<Bytes>> {
-    let body = match &purge_request {
-        Some(request) => {
+    let body = match (&purge_request, cache_manager) {
+        (Some(request), Some(manager)) => {
             info!(
                 pattern = %request.pattern,
                 wildcard = request.wildcard,
@@ -522,15 +524,22 @@ fn cache_purge_handler(
                 "Processing cache purge request"
             );
 
-            // TODO: Implement actual cache purge logic via CacheManager
-            // For now, return success acknowledging the purge request
+            // Execute the actual purge via CacheManager
             let purged_count = if request.wildcard {
-                // Wildcard purge would clear matching entries
-                0 // Placeholder - actual implementation would return count
+                // Wildcard purge - register pattern for matching
+                manager.purge_wildcard(&request.pattern)
             } else {
                 // Single entry purge
-                0 // Placeholder - actual implementation would return 0 or 1
+                manager.purge(&request.pattern)
             };
+
+            info!(
+                pattern = %request.pattern,
+                wildcard = request.wildcard,
+                purged_count = purged_count,
+                request_id = %request_id,
+                "Cache purge completed"
+            );
 
             serde_json::to_vec_pretty(&serde_json::json!({
                 "status": "ok",
@@ -538,11 +547,30 @@ fn cache_purge_handler(
                 "pattern": request.pattern,
                 "wildcard": request.wildcard,
                 "purged_entries": purged_count,
+                "active_purges": manager.active_purge_count(),
                 "request_id": request_id,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             })).unwrap_or_default()
         }
-        None => {
+        (Some(request), None) => {
+            // Cache manager not available - log warning and acknowledge request
+            tracing::warn!(
+                pattern = %request.pattern,
+                request_id = %request_id,
+                "Cache purge requested but cache manager not available"
+            );
+
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "status": "warning",
+                "message": "Cache purge acknowledged but cache manager unavailable",
+                "pattern": request.pattern,
+                "wildcard": request.wildcard,
+                "purged_entries": 0,
+                "request_id": request_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            })).unwrap_or_default()
+        }
+        (None, _) => {
             // No purge request provided - return error
             serde_json::to_vec_pretty(&serde_json::json!({
                 "error": "Bad Request",
@@ -680,18 +708,48 @@ mod tests {
 
     #[test]
     fn test_cache_purge_handler_with_request() {
+        let cache_manager = Arc::new(CacheManager::new());
         let request = CachePurgeRequest {
             pattern: "/api/users/*".to_string(),
             wildcard: true,
         };
-        let response = cache_purge_handler(Some(request), "test-request-id");
+        let response = cache_purge_handler(Some(request), Some(&cache_manager), "test-request-id");
         assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the purge was actually registered
+        assert!(cache_manager.active_purge_count() > 0);
+    }
+
+    #[test]
+    fn test_cache_purge_handler_single_entry() {
+        let cache_manager = Arc::new(CacheManager::new());
+        let request = CachePurgeRequest {
+            pattern: "/api/users/123".to_string(),
+            wildcard: false,
+        };
+        let response = cache_purge_handler(Some(request), Some(&cache_manager), "test-request-id");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the purge was registered
+        assert!(cache_manager.should_invalidate("/api/users/123"));
     }
 
     #[test]
     fn test_cache_purge_handler_without_request() {
-        let response = cache_purge_handler(None, "test-request-id");
+        let cache_manager = Arc::new(CacheManager::new());
+        let response = cache_purge_handler(None, Some(&cache_manager), "test-request-id");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_cache_purge_handler_without_manager() {
+        let request = CachePurgeRequest {
+            pattern: "/api/users/*".to_string(),
+            wildcard: true,
+        };
+        // Without cache manager, should still return OK but with warning
+        let response = cache_purge_handler(Some(request), None, "test-request-id");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

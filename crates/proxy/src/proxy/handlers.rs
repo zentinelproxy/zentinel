@@ -148,6 +148,7 @@ impl SentinelProxy {
                 upstreams,
                 cache_stats,
                 cache_purge,
+                Some(&self.cache_manager),
             );
 
             self.write_http_response(session, response).await?;

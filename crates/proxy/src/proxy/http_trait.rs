@@ -1204,7 +1204,7 @@ impl ProxyHttp for SentinelProxy {
     /// to invalidate and refetch.
     async fn cache_hit_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         meta: &CacheMeta,
         _hit_handler: &mut HitHandler,
         is_fresh: bool,
@@ -1213,6 +1213,28 @@ impl ProxyHttp for SentinelProxy {
     where
         Self::CTX: Send + Sync,
     {
+        // Check if this cache entry should be invalidated due to a purge request
+        let req_header = session.req_header();
+        let method = req_header.method.as_str();
+        let path = req_header.uri.path();
+        let host = req_header.uri.host().unwrap_or("localhost");
+        let query = req_header.uri.query();
+
+        // Generate the cache key for this request
+        let cache_key = crate::cache::CacheManager::generate_cache_key(method, host, path, query);
+
+        // Check if this key should be invalidated
+        if self.cache_manager.should_invalidate(&cache_key) {
+            info!(
+                correlation_id = %ctx.trace_id,
+                route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                cache_key = %cache_key,
+                "Cache entry invalidated by purge request"
+            );
+            // Force expiration so the entry is refetched from upstream
+            return Ok(Some(ForcedInvalidationKind::ForceExpired));
+        }
+
         // Track cache hit statistics
         if is_fresh {
             self.cache_manager.stats().record_hit();
@@ -1232,7 +1254,7 @@ impl ProxyHttp for SentinelProxy {
             );
         }
 
-        // By default, serve the cached response without invalidation
+        // Serve the cached response without invalidation
         Ok(None)
     }
 
