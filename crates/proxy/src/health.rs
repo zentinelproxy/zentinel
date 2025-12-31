@@ -572,6 +572,8 @@ pub struct PassiveHealthChecker {
     window_size: usize,
     /// Request outcomes per target (ring buffer)
     outcomes: Arc<RwLock<HashMap<String, Vec<bool>>>>,
+    /// Last error per target
+    last_errors: Arc<RwLock<HashMap<String, String>>>,
     /// Active health checker reference
     active_checker: Option<Arc<ActiveHealthChecker>>,
 }
@@ -593,17 +595,30 @@ impl PassiveHealthChecker {
             failure_rate_threshold,
             window_size,
             outcomes: Arc::new(RwLock::new(HashMap::new())),
+            last_errors: Arc::new(RwLock::new(HashMap::new())),
             active_checker,
         }
     }
 
-    /// Record request outcome
-    pub async fn record_outcome(&self, target: &str, success: bool) {
+    /// Record request outcome with optional error message
+    pub async fn record_outcome(&self, target: &str, success: bool, error: Option<&str>) {
         trace!(
             target = %target,
             success = success,
+            error = ?error,
             "Recording request outcome"
         );
+
+        // Track last error
+        if let Some(err_msg) = error {
+            self.last_errors
+                .write()
+                .await
+                .insert(target.to_string(), err_msg.to_string());
+        } else if success {
+            // Clear last error on success
+            self.last_errors.write().await.remove(target);
+        }
 
         let mut outcomes = self.outcomes.write().await;
         let target_outcomes = outcomes
@@ -659,6 +674,11 @@ impl PassiveHealthChecker {
             failures as f64 / target_outcomes.len() as f64
         })
     }
+
+    /// Get last error for a target
+    pub async fn get_last_error(&self, target: &str) -> Option<String> {
+        self.last_errors.read().await.get(target).cloned()
+    }
 }
 
 #[cfg(test)]
@@ -679,10 +699,10 @@ mod tests {
 
         // Record some outcomes
         for _ in 0..5 {
-            checker.record_outcome("target1", true).await;
+            checker.record_outcome("target1", true, None).await;
         }
         for _ in 0..3 {
-            checker.record_outcome("target1", false).await;
+            checker.record_outcome("target1", false, Some("HTTP 503")).await;
         }
 
         let failure_rate = checker.get_failure_rate("target1").await.unwrap();

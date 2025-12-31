@@ -113,6 +113,8 @@ pub struct ReloadStats {
     pub failed_reloads: std::sync::atomic::AtomicU64,
     /// Rollbacks performed
     pub rollbacks: std::sync::atomic::AtomicU64,
+    /// Current config version (incremented on each successful reload)
+    pub config_version: std::sync::atomic::AtomicU64,
     /// Last successful reload time
     pub last_success: RwLock<Option<Instant>>,
     /// Last failure time
@@ -405,9 +407,16 @@ impl ConfigManager {
             *avg = (*avg * (total - 1.0) + duration.as_millis() as f64) / total;
         }
 
+        // Increment config version
+        let new_version = self
+            .stats
+            .config_version
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+
         let _ = self.reload_tx.send(ReloadEvent::Applied {
             timestamp: Instant::now(),
-            version: format!("{:?}", Instant::now()), // TODO: Use proper versioning
+            version: format!("v{}", new_version),
         });
 
         // Reload TLS certificates (hot-reload)

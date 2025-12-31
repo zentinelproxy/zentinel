@@ -1144,7 +1144,14 @@ impl ProxyHttp for SentinelProxy {
                 "Recording passive health check result"
             );
 
-            self.passive_health.record_outcome(upstream, success).await;
+            let error_msg = if !success {
+                Some(format!("HTTP {}", status))
+            } else {
+                None
+            };
+            self.passive_health
+                .record_outcome(upstream, success, error_msg.as_deref())
+                .await;
 
             // Report to upstream pool
             if let Some(pool) = self.upstream_pools.get(upstream).await {

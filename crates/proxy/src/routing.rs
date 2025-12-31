@@ -7,7 +7,7 @@
 use dashmap::DashMap;
 use regex::Regex;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, trace, warn};
 
@@ -77,6 +77,10 @@ struct RouteCache {
     max_size: usize,
     /// Current entry count (approximate, for eviction decisions)
     entry_count: AtomicUsize,
+    /// Cache hits counter
+    hits: AtomicU64,
+    /// Cache misses counter
+    misses: AtomicU64,
 }
 
 impl RouteMatcher {
@@ -194,6 +198,9 @@ impl RouteMatcher {
             }
         }
 
+        // Record cache miss
+        self.cache.record_miss();
+
         trace!(
             cache_key = %cache_key,
             route_count = self.routes.len(),
@@ -278,7 +285,7 @@ impl RouteMatcher {
         CacheStats {
             entries: self.cache.len(),
             max_size: self.cache.max_size,
-            hit_rate: 0.0, // TODO: Track hits and misses
+            hit_rate: self.cache.hit_rate(),
         }
     }
 }
@@ -449,12 +456,35 @@ impl RouteCache {
             entries: DashMap::with_capacity(max_size),
             max_size,
             entry_count: AtomicUsize::new(0),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
     /// Get a route from cache (lock-free)
     fn get(&self, key: &str) -> Option<dashmap::mapref::one::Ref<'_, String, RouteId>> {
-        self.entries.get(key)
+        let result = self.entries.get(key);
+        if result.is_some() {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+
+    /// Record a cache miss
+    fn record_miss(&self) {
+        self.misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get the hit rate (0.0 to 1.0)
+    fn hit_rate(&self) -> f64 {
+        let hits = self.hits.load(Ordering::Relaxed);
+        let misses = self.misses.load(Ordering::Relaxed);
+        let total = hits + misses;
+        if total == 0 {
+            0.0
+        } else {
+            hits as f64 / total as f64
+        }
     }
 
     /// Insert a route into cache (lock-free)

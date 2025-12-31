@@ -198,12 +198,14 @@ impl SentinelProxy {
                     None => builtin_handlers::TargetHealthStatus::Unknown,
                 };
 
+                let last_error = self.passive_health.get_last_error(&target.address).await;
+
                 targets.push(builtin_handlers::TargetStatus {
                     address: target.address.clone(),
                     weight: target.weight,
                     status,
                     failure_rate,
-                    last_error: None, // TODO: Track last error in passive health checker
+                    last_error,
                 });
             }
 
