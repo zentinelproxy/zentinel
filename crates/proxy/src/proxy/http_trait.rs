@@ -311,7 +311,7 @@ impl ProxyHttp for SentinelProxy {
             ));
         }
 
-        info!(
+        debug!(
             correlation_id = %ctx.trace_id,
             route_id = %route_match.route_id,
             upstream = ?ctx.upstream,
@@ -1063,7 +1063,7 @@ impl ProxyHttp for SentinelProxy {
                 "Request completed with client error"
             );
         } else {
-            info!(
+            debug!(
                 correlation_id = %ctx.trace_id,
                 route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                 upstream = ctx.upstream.as_deref().unwrap_or("none"),
