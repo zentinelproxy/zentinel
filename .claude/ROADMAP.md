@@ -461,7 +461,7 @@ rate-limit {
 - [x] Configurable fail-open/fail-closed on lookup errors
 - [x] IP→Country caching with configurable TTL
 - [x] Integrate as filter in route configuration
-- [ ] Add file-watch for DB reload without restart
+- [x] Add file-watch for DB reload without restart
 
 **KDL Configuration:**
 ```kdl

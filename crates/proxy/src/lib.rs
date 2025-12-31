@@ -146,7 +146,9 @@ pub use rate_limit::{
 };
 
 // GeoIP filtering
-pub use geo_filter::{GeoFilterManager, GeoFilterPool, GeoFilterResult, GeoLookupError};
+pub use geo_filter::{
+    GeoDatabaseWatcher, GeoFilterManager, GeoFilterPool, GeoFilterResult, GeoLookupError,
+};
 
 // Distributed rate limiting
 #[cfg(feature = "distributed-rate-limit")]

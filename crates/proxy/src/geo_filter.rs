@@ -11,14 +11,17 @@
 //! - Configurable fail-open/fail-closed on lookup errors
 //! - X-GeoIP-Country response header injection
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use tracing::{debug, trace, warn};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
+use parking_lot::RwLock;
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, trace, warn};
 
 use sentinel_config::{GeoDatabaseType, GeoFailureMode, GeoFilter, GeoFilterAction};
 
@@ -207,8 +210,8 @@ pub struct GeoFilterResult {
 
 /// A single geo filter instance with its database and cache
 pub struct GeoFilterPool {
-    /// The underlying GeoIP database
-    database: Arc<dyn GeoDatabase>,
+    /// The underlying GeoIP database (wrapped in RwLock for hot reload)
+    database: RwLock<Arc<dyn GeoDatabase>>,
     /// IP → Country cache
     cache: DashMap<IpAddr, CachedCountry>,
     /// Filter configuration
@@ -217,6 +220,10 @@ pub struct GeoFilterPool {
     countries_set: HashSet<String>,
     /// Cache TTL duration
     cache_ttl: Duration,
+    /// Database file path for reload
+    database_path: PathBuf,
+    /// Database type
+    database_type: GeoDatabaseType,
 }
 
 impl GeoFilterPool {
@@ -230,6 +237,8 @@ impl GeoFilterPool {
                 GeoDatabaseType::Ip2Location
             }
         });
+
+        let database_path = PathBuf::from(&config.database_path);
 
         // Open the database
         let database: Arc<dyn GeoDatabase> = match db_type {
@@ -254,12 +263,54 @@ impl GeoFilterPool {
         );
 
         Ok(Self {
-            database,
+            database: RwLock::new(database),
             cache: DashMap::new(),
             config,
             countries_set,
             cache_ttl,
+            database_path,
+            database_type: db_type,
         })
+    }
+
+    /// Reload the database from disk
+    ///
+    /// This atomically swaps the database and clears the cache.
+    pub fn reload_database(&self) -> Result<(), GeoLookupError> {
+        info!(
+            database_path = %self.database_path.display(),
+            database_type = ?self.database_type,
+            "Reloading geo database"
+        );
+
+        // Open the new database
+        let new_database: Arc<dyn GeoDatabase> = match self.database_type {
+            GeoDatabaseType::MaxMind => Arc::new(MaxMindDatabase::open(&self.database_path)?),
+            GeoDatabaseType::Ip2Location => {
+                Arc::new(Ip2LocationDatabase::open(&self.database_path)?)
+            }
+        };
+
+        // Atomically swap the database
+        {
+            let mut db = self.database.write();
+            *db = new_database;
+        }
+
+        // Clear the cache since country mappings may have changed
+        self.cache.clear();
+
+        info!(
+            database_path = %self.database_path.display(),
+            "Geo database reloaded successfully"
+        );
+
+        Ok(())
+    }
+
+    /// Get the database file path
+    pub fn database_path(&self) -> &Path {
+        &self.database_path
     }
 
     /// Check if a client IP should be allowed or blocked
@@ -284,7 +335,8 @@ impl GeoFilterPool {
         }
 
         // Lookup in database
-        match self.database.lookup(ip) {
+        let database = self.database.read();
+        match database.lookup(ip) {
             Ok(country_code) => {
                 // Cache the result
                 self.cache.insert(
@@ -444,11 +496,168 @@ impl GeoFilterManager {
             pool.clear_expired();
         }
     }
+
+    /// Reload a filter's database from disk
+    pub fn reload_filter(&self, filter_id: &str) -> Result<(), GeoLookupError> {
+        if let Some(pool) = self.filter_pools.get(filter_id) {
+            pool.reload_database()
+        } else {
+            Err(GeoLookupError::LoadError(format!(
+                "Filter '{}' not found",
+                filter_id
+            )))
+        }
+    }
+
+    /// Reload database for all filters using the given path
+    pub fn reload_by_path(&self, path: &Path) -> Vec<(String, Result<(), GeoLookupError>)> {
+        let mut results = Vec::new();
+        for entry in self.filter_pools.iter() {
+            if entry.value().database_path() == path {
+                let filter_id = entry.key().clone();
+                let result = entry.value().reload_database();
+                results.push((filter_id, result));
+            }
+        }
+        results
+    }
+
+    /// Get all unique database paths being used
+    pub fn database_paths(&self) -> Vec<(String, PathBuf)> {
+        self.filter_pools
+            .iter()
+            .map(|e| (e.key().clone(), e.value().database_path().to_path_buf()))
+            .collect()
+    }
 }
 
 impl Default for GeoFilterManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// =============================================================================
+// GeoDatabaseWatcher
+// =============================================================================
+
+/// Watches geo database files for changes and triggers reloads
+pub struct GeoDatabaseWatcher {
+    /// The watcher instance
+    watcher: RwLock<Option<notify::RecommendedWatcher>>,
+    /// Mapping from database path to filter IDs using it
+    path_to_filters: RwLock<HashMap<PathBuf, Vec<String>>>,
+    /// Reference to the geo filter manager
+    manager: Arc<GeoFilterManager>,
+}
+
+impl GeoDatabaseWatcher {
+    /// Create a new database watcher
+    pub fn new(manager: Arc<GeoFilterManager>) -> Self {
+        Self {
+            watcher: RwLock::new(None),
+            path_to_filters: RwLock::new(HashMap::new()),
+            manager,
+        }
+    }
+
+    /// Start watching all registered database files
+    pub fn start_watching(&self) -> Result<mpsc::Receiver<PathBuf>, GeoLookupError> {
+        // Build path → filter ID mapping
+        let db_paths = self.manager.database_paths();
+        let mut path_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        for (filter_id, path) in db_paths {
+            path_map
+                .entry(path)
+                .or_insert_with(Vec::new)
+                .push(filter_id);
+        }
+
+        if path_map.is_empty() {
+            debug!("No geo databases to watch");
+            let (_tx, rx) = mpsc::channel(1);
+            return Ok(rx);
+        }
+
+        // Store the mapping
+        *self.path_to_filters.write() = path_map.clone();
+
+        // Create channel for events
+        let (tx, rx) = mpsc::channel::<PathBuf>(10);
+
+        // Create file watcher
+        let paths: Vec<PathBuf> = path_map.keys().cloned().collect();
+        let watcher = notify::recommended_watcher(move |event: Result<Event, notify::Error>| {
+            if let Ok(event) = event {
+                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                    for path in &event.paths {
+                        let _ = tx.blocking_send(path.clone());
+                    }
+                }
+            }
+        })
+        .map_err(|e| {
+            GeoLookupError::LoadError(format!("Failed to create file watcher: {}", e))
+        })?;
+
+        // Store watcher
+        *self.watcher.write() = Some(watcher);
+
+        // Add watches for each database path
+        if let Some(ref mut watcher) = *self.watcher.write() {
+            for path in &paths {
+                if let Err(e) = watcher.watch(path, RecursiveMode::NonRecursive) {
+                    warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to watch geo database file"
+                    );
+                } else {
+                    info!(
+                        path = %path.display(),
+                        "Watching geo database for changes"
+                    );
+                }
+            }
+        }
+
+        Ok(rx)
+    }
+
+    /// Handle a file change event
+    pub fn handle_change(&self, path: &Path) {
+        let path_map = self.path_to_filters.read();
+        if let Some(filter_ids) = path_map.get(path) {
+            info!(
+                path = %path.display(),
+                filters = ?filter_ids,
+                "Geo database file changed, reloading"
+            );
+
+            for filter_id in filter_ids {
+                match self.manager.reload_filter(filter_id) {
+                    Ok(()) => {
+                        info!(
+                            filter_id = %filter_id,
+                            "Geo filter database reloaded successfully"
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            filter_id = %filter_id,
+                            error = %e,
+                            "Failed to reload geo filter database"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stop watching
+    pub fn stop(&self) {
+        *self.watcher.write() = None;
+        info!("Stopped watching geo database files");
     }
 }
 

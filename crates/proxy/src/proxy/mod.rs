@@ -30,7 +30,7 @@ use crate::app::AppState;
 use crate::builtin_handlers::BuiltinHandlerState;
 use crate::cache::{CacheConfig, CacheManager};
 use crate::errors::ErrorHandler;
-use crate::geo_filter::GeoFilterManager;
+use crate::geo_filter::{GeoDatabaseWatcher, GeoFilterManager};
 use crate::health::PassiveHealthChecker;
 use crate::http_helpers;
 use crate::logging::{LogManager, SharedLogManager};
@@ -234,6 +234,9 @@ impl SentinelProxy {
 
         // Start periodic cleanup task for rate limiters and geo caches
         Self::spawn_cleanup_task(rate_limit_manager.clone(), geo_filter_manager.clone());
+
+        // Start geo database file watcher for hot reload
+        Self::spawn_geo_database_watcher(geo_filter_manager.clone());
 
         // Mark as ready
         app_state.set_ready(true);
@@ -610,5 +613,40 @@ impl SentinelProxy {
             interval_secs = CLEANUP_INTERVAL.as_secs(),
             "Started periodic cleanup task"
         );
+    }
+
+    /// Spawn background task to watch geo database files for changes
+    fn spawn_geo_database_watcher(geo_filter_manager: Arc<GeoFilterManager>) {
+        let watcher = Arc::new(GeoDatabaseWatcher::new(geo_filter_manager));
+
+        // Try to start watching
+        match watcher.start_watching() {
+            Ok(mut rx) => {
+                let watcher_clone = watcher.clone();
+                tokio::spawn(async move {
+                    // Debounce interval
+                    const DEBOUNCE_MS: u64 = 500;
+
+                    while let Some(path) = rx.recv().await {
+                        // Debounce rapid changes (e.g., temp file then rename)
+                        tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS)).await;
+
+                        // Drain any additional events for the same path during debounce
+                        while rx.try_recv().is_ok() {}
+
+                        // Handle the change
+                        watcher_clone.handle_change(&path);
+                    }
+                });
+
+                info!("Started geo database file watcher");
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "Failed to start geo database file watcher, auto-reload disabled"
+                );
+            }
+        }
     }
 }
