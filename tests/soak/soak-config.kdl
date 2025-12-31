@@ -4,87 +4,81 @@
 // Exercises core proxy functionality without external agents.
 
 server {
-    // Bind addresses
-    http-port 8080
-    metrics-port 9090
-
-    // Worker configuration
-    workers 2
-
-    // Request limits (production-like)
-    max-header-size "16KB"
-    max-body-size "1MB"
-
-    // Timeouts
-    request-timeout 30
-    connect-timeout 5
-    keepalive-timeout 60
+    worker-threads 2
+    max-connections 10000
+    graceful-shutdown-timeout-secs 30
 }
 
-// Simple upstream for testing
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 30
+    }
+}
+
+routes {
+    route "api" {
+        priority "high"
+        matches {
+            path-prefix "/api"
+        }
+        upstream "backend"
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+
+    route "default" {
+        priority "low"
+        matches {
+            path-prefix "/"
+        }
+        upstream "backend"
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+}
+
 upstreams {
     upstream "backend" {
         target "127.0.0.1:8081" weight=1
-
-        // Connection pool settings
+        load-balancing "round_robin"
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
         connection-pool {
             max-connections 100
             max-idle 20
             idle-timeout 60
         }
-
-        // Health checking
-        health-check {
-            interval 10
-            timeout 5
-            path "/health"
-            healthy-threshold 2
-            unhealthy-threshold 3
-        }
     }
 }
 
-// Routes for testing various code paths
-routes {
-    // Basic proxy route (exercises core proxy path)
-    route "api" {
-        match {
-            path-prefix "/api"
-        }
-        upstream "backend"
-        priority 100
-    }
-
-    // Static response (exercises response generation)
-    route "health" {
-        match {
-            path "/health"
-        }
-        service-type "static"
-        priority 200
-    }
-
-    // Default route
-    route "default" {
-        match {
-            path-prefix "/"
-        }
-        upstream "backend"
-        priority 1
-    }
+limits {
+    max-header-size-bytes 16384
+    max-header-count 100
+    max-body-size-bytes 1048576
 }
 
-// Rate limiting (exercises rate limit code paths)
-rate-limits {
-    defaults {
-        window-seconds 1
-        max-requests 1000
-        burst 100
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
     }
-}
-
-// Logging configuration
-logging {
-    level "warn"  // Reduce logging overhead during soak test
-    format "json"
+    logging {
+        level "warn"
+        format "json"
+    }
 }

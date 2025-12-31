@@ -23,6 +23,7 @@ set -euo pipefail
 
 # Default configuration
 DURATION_HOURS=24
+DURATION_MINUTES=0  # Alternative: specify in minutes
 RPS=100
 CONNECTIONS=10
 OUTPUT_DIR="./results"
@@ -49,6 +50,11 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --duration)
             DURATION_HOURS="$2"
+            shift 2
+            ;;
+        --minutes)
+            DURATION_MINUTES="$2"
+            DURATION_HOURS=0
             shift 2
             ;;
         --rps)
@@ -87,7 +93,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Calculate duration in seconds
-DURATION_SECS=$((DURATION_HOURS * 3600))
+if [[ "$DURATION_MINUTES" -gt 0 ]]; then
+    DURATION_SECS=$((DURATION_MINUTES * 60))
+    DURATION_DISPLAY="${DURATION_MINUTES} minutes"
+else
+    DURATION_SECS=$((DURATION_HOURS * 3600))
+    DURATION_DISPLAY="${DURATION_HOURS} hours"
+fi
 
 # Logging functions
 log_info() {
@@ -147,10 +159,14 @@ check_dependencies() {
 # Setup output directory
 setup_output() {
     local timestamp=$(date '+%Y%m%d_%H%M%S')
-    OUTPUT_DIR="${OUTPUT_DIR}/${timestamp}"
-    mkdir -p "$OUTPUT_DIR"
 
-    # Create subdirectories
+    # Convert to absolute path
+    if [[ "$OUTPUT_DIR" != /* ]]; then
+        OUTPUT_DIR="${SCRIPT_DIR}/${OUTPUT_DIR}"
+    fi
+    OUTPUT_DIR="${OUTPUT_DIR}/${timestamp}"
+
+    # Create all subdirectories first
     mkdir -p "$OUTPUT_DIR/memory"
     mkdir -p "$OUTPUT_DIR/metrics"
     mkdir -p "$OUTPUT_DIR/logs"
@@ -237,7 +253,12 @@ start_sentinel() {
     log_info "Waiting for Sentinel to start..."
     local retries=30
     while [[ $retries -gt 0 ]]; do
-        if curl -sf "http://localhost:$METRICS_PORT/health" >/dev/null 2>&1; then
+        # Try metrics endpoint first, then main proxy port
+        if curl -sf "http://localhost:$METRICS_PORT/metrics" >/dev/null 2>&1; then
+            log_success "Sentinel started (PID: $SENTINEL_PID)"
+            return 0
+        fi
+        if curl -sf "http://localhost:$SENTINEL_PORT/" -o /dev/null 2>&1; then
             log_success "Sentinel started (PID: $SENTINEL_PID)"
             return 0
         fi
@@ -295,7 +316,7 @@ collect_metrics() {
 # Run load test
 run_load_test() {
     log_info "Starting load test..."
-    log_info "  Duration: ${DURATION_HOURS} hours (${DURATION_SECS} seconds)"
+    log_info "  Duration: ${DURATION_DISPLAY} (${DURATION_SECS} seconds)"
     log_info "  Target RPS: $RPS"
     log_info "  Connections: $CONNECTIONS"
 
