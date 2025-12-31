@@ -114,14 +114,15 @@ impl ErrorHandler {
             return page.format;
         }
 
-        // Use default format based on service type
+        // Check if there's a default format configured
+        if let Some(ref config) = self.config {
+            return config.default_format;
+        }
+
+        // Fall back to service type default
         match self.service_type {
             ServiceType::Api | ServiceType::Builtin => ErrorFormat::Json,
-            ServiceType::Web | ServiceType::Static => self
-                .config
-                .as_ref()
-                .map(|c| c.default_format)
-                .unwrap_or(ErrorFormat::Html),
+            ServiceType::Web | ServiceType::Static => ErrorFormat::Html,
         }
     }
 

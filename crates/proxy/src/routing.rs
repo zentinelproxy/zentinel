@@ -681,6 +681,7 @@ mod tests {
             api_schema: None,
             error_pages: None,
             websocket: false,
+            websocket_inspection: false,
         }
     }
 

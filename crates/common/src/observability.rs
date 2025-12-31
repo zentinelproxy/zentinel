@@ -95,6 +95,11 @@ pub struct RequestMetrics {
     memory_usage: IntGauge,
     cpu_usage: Gauge,
     open_connections: IntGauge,
+    /// WebSocket metrics
+    websocket_frames_total: IntCounterVec,
+    websocket_connections_total: IntCounterVec,
+    websocket_inspection_duration: HistogramVec,
+    websocket_frame_size: HistogramVec,
 }
 
 impl RequestMetrics {
@@ -239,6 +244,47 @@ impl RequestMetrics {
             register_int_gauge!("sentinel_open_connections", "Number of open connections")
                 .context("Failed to register open_connections metric")?;
 
+        // WebSocket metrics
+        let websocket_frames_total = register_int_counter_vec!(
+            "sentinel_websocket_frames_total",
+            "Total WebSocket frames processed",
+            &["route", "direction", "opcode", "decision"]
+        )
+        .context("Failed to register websocket_frames_total metric")?;
+
+        let websocket_connections_total = register_int_counter_vec!(
+            "sentinel_websocket_connections_total",
+            "Total WebSocket connections with inspection enabled",
+            &["route"]
+        )
+        .context("Failed to register websocket_connections_total metric")?;
+
+        // Use smaller latency buckets for frame inspection (typically fast)
+        let frame_latency_buckets = vec![
+            0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+        ];
+
+        let websocket_inspection_duration = register_histogram_vec!(
+            "sentinel_websocket_inspection_duration_seconds",
+            "WebSocket frame inspection duration in seconds",
+            &["route"],
+            frame_latency_buckets
+        )
+        .context("Failed to register websocket_inspection_duration metric")?;
+
+        // Frame size buckets (bytes)
+        let frame_size_buckets = vec![
+            64.0, 256.0, 1024.0, 4096.0, 16384.0, 65536.0, 262144.0, 1048576.0,
+        ];
+
+        let websocket_frame_size = register_histogram_vec!(
+            "sentinel_websocket_frame_size_bytes",
+            "WebSocket frame payload size in bytes",
+            &["route", "direction", "opcode"],
+            frame_size_buckets
+        )
+        .context("Failed to register websocket_frame_size metric")?;
+
         Ok(Self {
             request_duration,
             request_count,
@@ -258,6 +304,10 @@ impl RequestMetrics {
             memory_usage,
             cpu_usage,
             open_connections,
+            websocket_frames_total,
+            websocket_connections_total,
+            websocket_inspection_duration,
+            websocket_frame_size,
         })
     }
 
@@ -381,6 +431,60 @@ impl RequestMetrics {
     /// Set open connections count
     pub fn set_open_connections(&self, count: i64) {
         self.open_connections.set(count);
+    }
+
+    // === WebSocket Metrics ===
+
+    /// Record a WebSocket frame being processed
+    ///
+    /// # Arguments
+    /// * `route` - The route ID
+    /// * `direction` - Frame direction: "c2s" (client to server) or "s2c" (server to client)
+    /// * `opcode` - Frame opcode: "text", "binary", "ping", "pong", "close", "continuation"
+    /// * `decision` - Inspection decision: "allow", "drop", or "close"
+    pub fn record_websocket_frame(
+        &self,
+        route: &str,
+        direction: &str,
+        opcode: &str,
+        decision: &str,
+    ) {
+        self.websocket_frames_total
+            .with_label_values(&[route, direction, opcode, decision])
+            .inc();
+    }
+
+    /// Record a WebSocket connection with inspection enabled
+    pub fn record_websocket_connection(&self, route: &str) {
+        self.websocket_connections_total
+            .with_label_values(&[route])
+            .inc();
+    }
+
+    /// Record WebSocket frame inspection duration
+    pub fn record_websocket_inspection_duration(&self, route: &str, duration: Duration) {
+        self.websocket_inspection_duration
+            .with_label_values(&[route])
+            .observe(duration.as_secs_f64());
+    }
+
+    /// Record WebSocket frame size
+    ///
+    /// # Arguments
+    /// * `route` - The route ID
+    /// * `direction` - Frame direction: "c2s" or "s2c"
+    /// * `opcode` - Frame opcode
+    /// * `size_bytes` - Frame payload size in bytes
+    pub fn record_websocket_frame_size(
+        &self,
+        route: &str,
+        direction: &str,
+        opcode: &str,
+        size_bytes: usize,
+    ) {
+        self.websocket_frame_size
+            .with_label_values(&[route, direction, opcode])
+            .observe(size_bytes as f64);
     }
 }
 

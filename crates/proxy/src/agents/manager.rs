@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use pingora_timeout::timeout;
 use sentinel_agent_protocol::{
-    EventType, RequestBodyChunkEvent, RequestHeadersEvent, ResponseBodyChunkEvent,
-    ResponseHeadersEvent,
+    AgentResponse, EventType, RequestBodyChunkEvent, RequestHeadersEvent, ResponseBodyChunkEvent,
+    ResponseHeadersEvent, WebSocketFrameEvent,
 };
 use sentinel_common::{
     errors::{SentinelError, SentinelResult},
@@ -262,6 +262,134 @@ impl AgentManager {
             .await
     }
 
+    /// Process a WebSocket frame through agents.
+    ///
+    /// This is used for WebSocket frame inspection after an upgrade.
+    /// Returns the agent response directly to allow the caller to access
+    /// the websocket_decision field.
+    pub async fn process_websocket_frame(
+        &self,
+        route_id: &str,
+        event: WebSocketFrameEvent,
+    ) -> SentinelResult<AgentResponse> {
+        trace!(
+            correlation_id = %event.correlation_id,
+            route_id = %route_id,
+            frame_index = event.frame_index,
+            opcode = %event.opcode,
+            "Processing WebSocket frame through agents"
+        );
+
+        // Get relevant agents for this route that handle WebSocket frames
+        let agents = self.agents.read().await;
+        let relevant_agents: Vec<_> = agents
+            .values()
+            .filter(|agent| agent.handles_event(EventType::WebSocketFrame))
+            .collect();
+
+        if relevant_agents.is_empty() {
+            trace!(
+                correlation_id = %event.correlation_id,
+                "No agents handle WebSocket frames, allowing"
+            );
+            return Ok(AgentResponse::websocket_allow());
+        }
+
+        debug!(
+            correlation_id = %event.correlation_id,
+            route_id = %route_id,
+            agent_count = relevant_agents.len(),
+            "Processing WebSocket frame through agents"
+        );
+
+        // Process through each agent sequentially
+        for agent in relevant_agents {
+            // Check circuit breaker
+            if !agent.circuit_breaker().is_closed().await {
+                warn!(
+                    agent_id = %agent.id(),
+                    correlation_id = %event.correlation_id,
+                    failure_mode = ?agent.failure_mode(),
+                    "Circuit breaker open, skipping agent for WebSocket frame"
+                );
+
+                if agent.failure_mode() == FailureMode::Closed {
+                    debug!(
+                        correlation_id = %event.correlation_id,
+                        agent_id = %agent.id(),
+                        "Closing WebSocket due to circuit breaker (fail-closed mode)"
+                    );
+                    return Ok(AgentResponse::websocket_close(1011, "Service unavailable".to_string()));
+                }
+                continue;
+            }
+
+            // Call agent with timeout
+            let start = Instant::now();
+            let timeout_duration = Duration::from_millis(agent.timeout_ms());
+
+            match timeout(timeout_duration, agent.call_event(EventType::WebSocketFrame, &event)).await
+            {
+                Ok(Ok(response)) => {
+                    let duration = start.elapsed();
+                    agent.record_success(duration).await;
+
+                    trace!(
+                        correlation_id = %event.correlation_id,
+                        agent_id = %agent.id(),
+                        duration_ms = duration.as_millis(),
+                        "WebSocket frame agent call succeeded"
+                    );
+
+                    // If agent returned a WebSocket decision that's not Allow, return immediately
+                    if let Some(ref ws_decision) = response.websocket_decision {
+                        if !matches!(ws_decision, sentinel_agent_protocol::WebSocketDecision::Allow) {
+                            debug!(
+                                correlation_id = %event.correlation_id,
+                                agent_id = %agent.id(),
+                                decision = ?ws_decision,
+                                "Agent returned non-allow WebSocket decision"
+                            );
+                            return Ok(response);
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    agent.record_failure().await;
+                    error!(
+                        agent_id = %agent.id(),
+                        correlation_id = %event.correlation_id,
+                        error = %e,
+                        duration_ms = start.elapsed().as_millis(),
+                        failure_mode = ?agent.failure_mode(),
+                        "WebSocket frame agent call failed"
+                    );
+
+                    if agent.failure_mode() == FailureMode::Closed {
+                        return Ok(AgentResponse::websocket_close(1011, "Agent error".to_string()));
+                    }
+                }
+                Err(_) => {
+                    agent.record_timeout().await;
+                    warn!(
+                        agent_id = %agent.id(),
+                        correlation_id = %event.correlation_id,
+                        timeout_ms = agent.timeout_ms(),
+                        failure_mode = ?agent.failure_mode(),
+                        "WebSocket frame agent call timed out"
+                    );
+
+                    if agent.failure_mode() == FailureMode::Closed {
+                        return Ok(AgentResponse::websocket_close(1011, "Gateway timeout".to_string()));
+                    }
+                }
+            }
+        }
+
+        // All agents allowed the frame
+        Ok(AgentResponse::websocket_allow())
+    }
+
     /// Process an event through relevant agents.
     async fn process_event<T: serde::Serialize>(
         &self,
@@ -498,5 +626,23 @@ impl AgentManager {
     /// Get agent metrics.
     pub fn metrics(&self) -> &AgentMetrics {
         &self.metrics
+    }
+
+    /// Get agent IDs that handle a specific event type.
+    ///
+    /// This is useful for pre-filtering agents before making calls,
+    /// e.g., to check if any agents handle WebSocket frames.
+    pub fn get_agents_for_event(&self, event_type: EventType) -> Vec<String> {
+        // Use try_read to avoid blocking - return empty if lock is held
+        // This is acceptable since this is only used for informational purposes
+        if let Ok(agents) = self.agents.try_read() {
+            agents
+                .values()
+                .filter(|agent| agent.handles_event(event_type))
+                .map(|agent| agent.id().to_string())
+                .collect()
+        } else {
+            Vec::new()
+        }
     }
 }

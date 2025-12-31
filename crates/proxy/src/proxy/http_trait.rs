@@ -568,6 +568,41 @@ impl ProxyHttp for SentinelProxy {
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                     "WebSocket upgrade request allowed"
                 );
+
+                // Check for WebSocket frame inspection
+                if route_config.websocket_inspection {
+                    // Check for compression negotiation - skip inspection if permessage-deflate
+                    let has_compression = session
+                        .req_header()
+                        .headers
+                        .get("Sec-WebSocket-Extensions")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.contains("permessage-deflate"))
+                        .unwrap_or(false);
+
+                    if has_compression {
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                            "WebSocket inspection skipped: permessage-deflate negotiated"
+                        );
+                        ctx.websocket_skip_inspection = true;
+                    } else {
+                        ctx.websocket_inspection_enabled = true;
+
+                        // Get agents that handle WebSocketFrame events
+                        ctx.websocket_inspection_agents = self
+                            .agent_manager
+                            .get_agents_for_event(sentinel_agent_protocol::EventType::WebSocketFrame);
+
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                            agent_count = ctx.websocket_inspection_agents.len(),
+                            "WebSocket frame inspection enabled"
+                        );
+                    }
+                }
             }
         }
 
@@ -724,6 +759,33 @@ impl ProxyHttp for SentinelProxy {
     ) -> Result<(), Box<Error>> {
         use sentinel_config::BodyStreamingMode;
 
+        // Handle WebSocket frame inspection (client -> server)
+        if ctx.is_websocket_upgrade {
+            if let Some(ref handler) = ctx.websocket_handler {
+                let result = handler.process_client_data(body.take()).await;
+                match result {
+                    crate::websocket::ProcessResult::Forward(data) => {
+                        *body = data;
+                    }
+                    crate::websocket::ProcessResult::Close(reason) => {
+                        warn!(
+                            correlation_id = %ctx.trace_id,
+                            code = reason.code,
+                            reason = %reason.reason,
+                            "WebSocket connection closed by agent (client->server)"
+                        );
+                        // Return an error to close the connection
+                        return Err(Error::explain(
+                            ErrorType::InternalError,
+                            format!("WebSocket closed: {} {}", reason.code, reason.reason),
+                        ));
+                    }
+                }
+            }
+            // Skip normal body processing for WebSocket
+            return Ok(());
+        }
+
         // Track request body size
         let chunk_len = body.as_ref().map(|b| b.len()).unwrap_or(0);
         if chunk_len > 0 {
@@ -877,6 +939,47 @@ impl ProxyHttp for SentinelProxy {
             status = status,
             "Starting response filter phase"
         );
+
+        // Handle WebSocket 101 Switching Protocols
+        if status == 101 && ctx.is_websocket_upgrade {
+            if ctx.websocket_inspection_enabled && !ctx.websocket_skip_inspection {
+                // Create WebSocket inspector and handler with metrics
+                let inspector = crate::websocket::WebSocketInspector::with_metrics(
+                    self.agent_manager.clone(),
+                    ctx.route_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    ctx.trace_id.clone(),
+                    ctx.client_ip.clone(),
+                    100, // 100ms timeout per frame inspection
+                    Some(self.metrics.clone()),
+                );
+
+                let handler = crate::websocket::WebSocketHandler::new(
+                    std::sync::Arc::new(inspector),
+                    1024 * 1024, // 1MB max frame size
+                );
+
+                ctx.websocket_handler = Some(std::sync::Arc::new(handler));
+
+                info!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    agent_count = ctx.websocket_inspection_agents.len(),
+                    "WebSocket upgrade successful, frame inspection enabled"
+                );
+            } else if ctx.websocket_skip_inspection {
+                debug!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    "WebSocket upgrade successful, inspection skipped (compression negotiated)"
+                );
+            } else {
+                debug!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    "WebSocket upgrade successful"
+                );
+            }
+        }
 
         // Apply security headers
         trace!(
@@ -1046,6 +1149,46 @@ impl ProxyHttp for SentinelProxy {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<Option<Duration>, Box<Error>> {
+        // Handle WebSocket frame inspection (server -> client)
+        // Note: This filter is synchronous, so we use block_in_place for async agent calls
+        if ctx.is_websocket_upgrade {
+            if let Some(ref handler) = ctx.websocket_handler {
+                let handler = handler.clone();
+                let data = body.take();
+
+                // Use block_in_place to run async handler from sync context
+                // This is safe because Pingora uses a multi-threaded tokio runtime
+                let result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        handler.process_server_data(data).await
+                    })
+                });
+
+                match result {
+                    crate::websocket::ProcessResult::Forward(data) => {
+                        *body = data;
+                    }
+                    crate::websocket::ProcessResult::Close(reason) => {
+                        warn!(
+                            correlation_id = %ctx.trace_id,
+                            code = reason.code,
+                            reason = %reason.reason,
+                            "WebSocket connection closed by agent (server->client)"
+                        );
+                        // For sync filter, we can't return an error that closes the connection
+                        // Instead, inject a close frame
+                        let close_frame = crate::websocket::WebSocketFrame::close(reason.code, &reason.reason);
+                        let codec = crate::websocket::WebSocketCodec::new(1024 * 1024);
+                        if let Ok(encoded) = codec.encode_frame(&close_frame, false) {
+                            *body = Some(Bytes::from(encoded));
+                        }
+                    }
+                }
+            }
+            // Skip normal body processing for WebSocket
+            return Ok(None);
+        }
+
         // Track response body size
         if let Some(ref chunk) = body {
             ctx.response_bytes += chunk.len() as u64;

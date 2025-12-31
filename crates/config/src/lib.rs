@@ -478,6 +478,7 @@ impl Config {
                 api_schema: None,
                 error_pages: None,
                 websocket: false,
+                websocket_inspection: false,
             }],
             upstreams,
             filters: HashMap::new(),

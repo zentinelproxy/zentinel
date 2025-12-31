@@ -89,6 +89,7 @@ impl Agent {
             (AgentEvent::ResponseHeaders, EventType::ResponseHeaders) => true,
             (AgentEvent::ResponseBody, EventType::ResponseBodyChunk) => true,
             (AgentEvent::Log, EventType::RequestComplete) => true,
+            (AgentEvent::WebSocketFrame, EventType::WebSocketFrame) => true,
             _ => false,
         })
     }
