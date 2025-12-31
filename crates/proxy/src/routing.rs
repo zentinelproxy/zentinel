@@ -192,7 +192,6 @@ impl RouteMatcher {
                 return Some(RouteMatch {
                     route_id,
                     config: route.config.clone(),
-                    policies: route.config.policies.clone(),
                 });
             }
         }
@@ -236,7 +235,6 @@ impl RouteMatcher {
                 return Some(RouteMatch {
                     route_id: route.id.clone(),
                     config: route.config.clone(),
-                    policies: route.config.policies.clone(),
                 });
             }
         }
@@ -253,7 +251,6 @@ impl RouteMatcher {
                 return Some(RouteMatch {
                     route_id: default_id.clone(),
                     config: route.config.clone(),
-                    policies: route.config.policies.clone(),
                 });
             }
         }
@@ -620,7 +617,14 @@ impl<'a> RequestInfo<'a> {
 pub struct RouteMatch {
     pub route_id: RouteId,
     pub config: Arc<RouteConfig>,
-    pub policies: RoutePolicies,
+}
+
+impl RouteMatch {
+    /// Access route policies (convenience accessor to avoid repeated .config.policies)
+    #[inline]
+    pub fn policies(&self) -> &RoutePolicies {
+        &self.config.policies
+    }
 }
 
 /// Cache statistics

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use sentinel_config::{BodyStreamingMode, RouteConfig, ServiceType};
+use sentinel_config::{BodyStreamingMode, Config, RouteConfig, ServiceType};
 
 use crate::websocket::WebSocketHandler;
 
@@ -22,6 +22,10 @@ pub struct RequestContext {
     // === Tracing ===
     /// Unique trace ID for request tracing (also used as correlation_id)
     pub(crate) trace_id: String,
+
+    // === Global config (cached once per request) ===
+    /// Cached global configuration snapshot for this request
+    pub(crate) config: Option<Arc<Config>>,
 
     // === Routing ===
     /// Selected route ID
@@ -112,6 +116,7 @@ impl RequestContext {
         Self {
             start_time: Instant::now(),
             trace_id: String::new(),
+            config: None,
             route_id: None,
             route_config: None,
             upstream: None,
@@ -191,6 +196,12 @@ impl RequestContext {
     #[inline]
     pub fn route_config(&self) -> Option<&Arc<RouteConfig>> {
         self.route_config.as_ref()
+    }
+
+    /// Get the cached global configuration, if set.
+    #[inline]
+    pub fn global_config(&self) -> Option<&Arc<Config>> {
+        self.config.as_ref()
     }
 
     /// Get the service type from cached route config.

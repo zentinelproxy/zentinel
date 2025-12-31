@@ -466,6 +466,21 @@ impl RateLimitManager {
     pub fn route_count(&self) -> usize {
         self.route_limiters.len()
     }
+
+    /// Check if any rate limiting is configured (fast path)
+    ///
+    /// Returns true if there's a global limiter or any route-specific limiters.
+    /// Use this to skip rate limit checks entirely when no limiting is configured.
+    #[inline]
+    pub fn is_enabled(&self) -> bool {
+        self.global_limiter.is_some() || !self.route_limiters.is_empty()
+    }
+
+    /// Check if a specific route has rate limiting configured (fast path)
+    #[inline]
+    pub fn has_route_limiter(&self, route_id: &str) -> bool {
+        self.global_limiter.is_some() || self.route_limiters.contains_key(route_id)
+    }
 }
 
 impl Default for RateLimitManager {

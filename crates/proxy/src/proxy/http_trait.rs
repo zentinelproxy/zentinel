@@ -128,6 +128,11 @@ impl ProxyHttp for SentinelProxy {
         // Track active request
         self.reload_coordinator.inc_requests();
 
+        // Cache global config once per request (avoids repeated Arc clones)
+        if ctx.config.is_none() {
+            ctx.config = Some(self.config_manager.current());
+        }
+
         // Cache client address for logging if not already set
         if ctx.client_ip.is_empty() {
             ctx.client_ip = session
@@ -172,7 +177,6 @@ impl ProxyHttp for SentinelProxy {
             crate::routing::RouteMatch {
                 route_id: sentinel_common::RouteId::new(route_id),
                 config: route_config.clone(),
-                policies: route_config.policies.clone(),
             }
         } else {
             // Match route using sync RwLock (scoped to ensure lock is released before async ops)
@@ -449,15 +453,17 @@ impl ProxyHttp for SentinelProxy {
         );
 
         // Check rate limiting early (before other processing)
+        // Fast path: skip if no rate limiting is configured for this route
         if let Some(route_id) = ctx.route_id.as_deref() {
-            let rate_result = self.rate_limit_manager.check(
-                route_id,
-                &ctx.client_ip,
-                &ctx.path,
-                Option::<&NoHeaderAccessor>::None,
-            );
+            if self.rate_limit_manager.has_route_limiter(route_id) {
+                let rate_result = self.rate_limit_manager.check(
+                    route_id,
+                    &ctx.client_ip,
+                    &ctx.path,
+                    Option::<&NoHeaderAccessor>::None,
+                );
 
-            if !rate_result.allowed {
+                if !rate_result.allowed {
                 use sentinel_config::RateLimitAction;
 
                 match rate_result.action {
@@ -512,6 +518,7 @@ impl ProxyHttp for SentinelProxy {
                             "Rate limit delay mode not yet implemented, allowing request"
                         );
                     }
+                }
                 }
             }
         }
@@ -619,7 +626,6 @@ impl ProxyHttp for SentinelProxy {
                 let route_match = crate::routing::RouteMatch {
                     route_id: sentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
                     config: route_config.clone(),
-                    policies: route_config.policies.clone(),
                 };
                 return self.handle_static_route(session, ctx, &route_match).await;
             } else if route_config.service_type == sentinel_config::ServiceType::Builtin {
@@ -633,7 +639,6 @@ impl ProxyHttp for SentinelProxy {
                 let route_match = crate::routing::RouteMatch {
                     route_id: sentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
                     config: route_config.clone(),
-                    policies: route_config.policies.clone(),
                 };
                 return self.handle_builtin_route(session, ctx, &route_match).await;
             }
@@ -677,17 +682,17 @@ impl ProxyHttp for SentinelProxy {
             .ok();
         req_header.insert_header("X-Forwarded-By", "Sentinel").ok();
 
-        // Get current config for limits
-        let config = self.config_manager.current();
+        // Use cached config (set in upstream_peer, or fetch now if needed)
+        let config = ctx.config.get_or_insert_with(|| self.config_manager.current());
 
-        trace!(
-            correlation_id = %ctx.trace_id,
-            "Checking request limits"
-        );
+        // Enforce header limits (fast path: skip if limits are very high)
+        const HEADER_LIMIT_THRESHOLD: usize = 1024 * 1024; // 1MB = effectively unlimited
 
-        // Enforce header limits
+        // Header count check - O(1)
         let header_count = req_header.headers.len();
-        if header_count > config.limits.max_header_count {
+        if config.limits.max_header_count < HEADER_LIMIT_THRESHOLD
+            && header_count > config.limits.max_header_count
+        {
             warn!(
                 correlation_id = %ctx.trace_id,
                 header_count = header_count,
@@ -699,34 +704,29 @@ impl ProxyHttp for SentinelProxy {
             return Err(Error::explain(ErrorType::InternalError, "Too many headers"));
         }
 
-        // Check header size
-        let total_header_size: usize = req_header
-            .headers
-            .iter()
-            .map(|(k, v)| k.as_str().len() + v.len())
-            .sum();
+        // Header size check - O(n), skip if limit is very high
+        if config.limits.max_header_size_bytes < HEADER_LIMIT_THRESHOLD {
+            let total_header_size: usize = req_header
+                .headers
+                .iter()
+                .map(|(k, v)| k.as_str().len() + v.len())
+                .sum();
 
-        if total_header_size > config.limits.max_header_size_bytes {
-            warn!(
-                correlation_id = %ctx.trace_id,
-                header_size = total_header_size,
-                limit = config.limits.max_header_size_bytes,
-                "Request blocked: exceeds header size limit"
-            );
+            if total_header_size > config.limits.max_header_size_bytes {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    header_size = total_header_size,
+                    limit = config.limits.max_header_size_bytes,
+                    "Request blocked: exceeds header size limit"
+                );
 
-            self.metrics.record_blocked_request("header_size_exceeded");
-            return Err(Error::explain(
-                ErrorType::InternalError,
-                "Headers too large",
-            ));
+                self.metrics.record_blocked_request("header_size_exceeded");
+                return Err(Error::explain(
+                    ErrorType::InternalError,
+                    "Headers too large",
+                ));
+            }
         }
-
-        trace!(
-            correlation_id = %ctx.trace_id,
-            header_count = header_count,
-            header_size = total_header_size,
-            "Request limits check passed"
-        );
 
         // Process through external agents
         trace!(
@@ -800,8 +800,8 @@ impl ProxyHttp for SentinelProxy {
                 "Processing request body chunk"
             );
 
-            // Check body size limit
-            let config = self.config_manager.current();
+            // Check body size limit (use cached config)
+            let config = ctx.config.get_or_insert_with(|| self.config_manager.current());
             if ctx.request_body_bytes > config.limits.max_body_size_bytes as u64 {
                 warn!(
                     correlation_id = %ctx.trace_id,
@@ -819,7 +819,7 @@ impl ProxyHttp for SentinelProxy {
 
         // Body inspection for agents (WAF, etc.)
         if ctx.body_inspection_enabled && !ctx.body_inspection_agents.is_empty() {
-            let config = self.config_manager.current();
+            let config = ctx.config.get_or_insert_with(|| self.config_manager.current());
             let max_inspection_bytes = config.waf.as_ref()
                 .map(|w| w.body_inspection.max_inspection_bytes as u64)
                 .unwrap_or(1024 * 1024);
@@ -1205,7 +1205,7 @@ impl ProxyHttp for SentinelProxy {
             // Note: Streaming mode for response bodies is not currently supported
             // due to Pingora's synchronous response_body_filter design
             if ctx.response_body_inspection_enabled && !ctx.response_body_inspection_agents.is_empty() {
-                let config = self.config_manager.current();
+                let config = ctx.config.get_or_insert_with(|| self.config_manager.current());
                 let max_inspection_bytes = config.waf.as_ref()
                     .map(|w| w.body_inspection.max_inspection_bytes as u64)
                     .unwrap_or(1024 * 1024);

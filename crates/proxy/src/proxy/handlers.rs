@@ -331,8 +331,8 @@ impl SentinelProxy {
             return Ok(());
         };
 
-        // Only fetch config if we actually have filters to process
-        let config = self.config_manager.current();
+        // Use cached config (or fetch if not yet cached)
+        let config = ctx.config.get_or_insert_with(|| self.config_manager.current());
 
         // Extract agent IDs from filter chain by looking up filter definitions
         let agent_ids: Vec<String> = route_config
