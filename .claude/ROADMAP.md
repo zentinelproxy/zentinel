@@ -261,7 +261,7 @@ exceeds Envoy performance.
 - [ ] Add Memcached as alternative backend
 - [x] Support rate limit synchronization across instances
 - [x] Add fallback to local rate limiting if backend unavailable
-- [ ] Document distributed deployment patterns
+- [x] Document distributed deployment patterns (`docs/DISTRIBUTED_DEPLOYMENT.md`)
 
 **Features:**
 - Sliding window log algorithm using Redis sorted sets
