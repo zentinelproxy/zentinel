@@ -226,20 +226,23 @@ impl SentinelProxy {
             );
         }
 
+        // Initialize rate limit manager
+        let rate_limit_manager = Arc::new(Self::initialize_rate_limiters(&config));
+
+        // Initialize geo filter manager
+        let geo_filter_manager = Arc::new(Self::initialize_geo_filters(&config));
+
+        // Start periodic cleanup task for rate limiters and geo caches
+        Self::spawn_cleanup_task(rate_limit_manager.clone(), geo_filter_manager.clone());
+
         // Mark as ready
         app_state.set_ready(true);
 
         // Get trace ID format from config
         let trace_id_format = config.server.trace_id_format;
 
-        // Initialize rate limit manager
-        let rate_limit_manager = Arc::new(Self::initialize_rate_limiters(&config));
-
         // Initialize cache manager
         let cache_manager = Arc::new(Self::initialize_cache_manager(&config));
-
-        // Initialize geo filter manager
-        let geo_filter_manager = Arc::new(Self::initialize_geo_filters(&config));
 
         Ok(Self {
             config_manager,
@@ -573,5 +576,37 @@ impl SentinelProxy {
         header.remove_header("Server");
         header.remove_header("X-Powered-By");
         Ok(())
+    }
+
+    /// Spawn background task to periodically clean up idle rate limiters and expired geo caches
+    fn spawn_cleanup_task(
+        rate_limit_manager: Arc<RateLimitManager>,
+        geo_filter_manager: Arc<GeoFilterManager>,
+    ) {
+        // Cleanup interval: 5 minutes
+        const CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
+            // First tick completes immediately; skip it
+            interval.tick().await;
+
+            loop {
+                interval.tick().await;
+
+                // Clean up rate limiters (removes entries when pool exceeds max size)
+                rate_limit_manager.cleanup();
+
+                // Clean up expired geo filter caches
+                geo_filter_manager.clear_expired_caches();
+
+                debug!("Periodic cleanup completed");
+            }
+        });
+
+        info!(
+            interval_secs = CLEANUP_INTERVAL.as_secs(),
+            "Started periodic cleanup task"
+        );
     }
 }
