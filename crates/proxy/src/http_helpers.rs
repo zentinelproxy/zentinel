@@ -193,7 +193,7 @@ pub async fn write_error(
 ) -> Result<(), Box<Error>> {
     let mut resp_header = ResponseHeader::build(status, None)?;
     resp_header.insert_header("Content-Type", content_type)?;
-    resp_header.insert_header("Content-Length", &body.len().to_string())?;
+    resp_header.insert_header("Content-Length", body.len().to_string())?;
 
     session.set_keepalive(None);
     session

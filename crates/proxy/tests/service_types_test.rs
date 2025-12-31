@@ -3,17 +3,14 @@
 //! Tests static file serving, API validation, and custom error pages
 
 use anyhow::Result;
-use bytes::Bytes;
-use http::{Request, Response, StatusCode};
+use http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use sentinel_config::{
-    ApiSchemaConfig, Config, ErrorFormat, ErrorPage, ErrorPageConfig, ListenerConfig,
-    MatchCondition, RouteConfig, ServiceType, StaticFileConfig, UpstreamConfig,
+    ApiSchemaConfig, ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType, StaticFileConfig,
 };
 use sentinel_proxy::{ErrorHandler, SchemaValidator, StaticFileServer};
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use tempfile::TempDir;
 use tokio::fs;
 

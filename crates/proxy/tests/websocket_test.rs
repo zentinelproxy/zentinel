@@ -872,7 +872,7 @@ async fn test_fragmented_message_handling() {
     .expect("Client should connect");
 
     // Send fragmented message (fin=false, then fin=true)
-    let events = vec![
+    let events = [
         (false, "First fragment"),
         (false, "Second fragment"),
         (true, "Final fragment"),

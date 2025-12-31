@@ -1,3 +1,6 @@
+// Allow large enum variants in generated protobuf code
+#![allow(clippy::large_enum_variant)]
+
 //! Agent protocol for Sentinel proxy
 //!
 //! This crate defines the protocol for communication between the proxy dataplane

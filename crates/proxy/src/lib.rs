@@ -1,3 +1,15 @@
+// Allow lints for work-in-progress features and code patterns
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::manual_strip)]
+#![allow(clippy::only_used_in_recursion)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::manual_try_fold)]
+#![allow(private_interfaces)]
+
 //! Sentinel Proxy Library
 //!
 //! A security-first reverse proxy built on Pingora with sleepable ops at the edge.

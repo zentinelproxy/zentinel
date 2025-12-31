@@ -138,10 +138,7 @@ impl SchemaValidator {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read OpenAPI spec: {:?}", path))?;
 
-        let spec: OpenApiSpec = if path
-            .extension()
-            .map_or(false, |e| e == "yaml" || e == "yml")
-        {
+        let spec: OpenApiSpec = if path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
             serde_yaml::from_str(&content)?
         } else {
             serde_json::from_str(&content)?

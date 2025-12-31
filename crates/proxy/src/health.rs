@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::time;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use sentinel_common::{errors::SentinelResult, types::HealthCheckType};
 use sentinel_config::{HealthCheck as HealthCheckConfig, UpstreamTarget};
@@ -388,6 +388,12 @@ impl ActiveHealthChecker {
     }
 }
 
+impl Default for TargetHealthInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TargetHealthInfo {
     /// Create new health status (initially healthy)
     pub fn new() -> Self {
@@ -658,7 +664,6 @@ impl PassiveHealthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_config::HealthCheck as HealthCheckConfig;
 
     #[tokio::test]
     async fn test_health_status() {

@@ -23,12 +23,14 @@ use crate::routes::FailureMode;
 /// - `Hybrid`: Buffer small bodies, stream large ones
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BodyStreamingMode {
     /// Buffer entire body before sending to agent (default)
     ///
     /// - Simpler agent implementation
     /// - Higher memory usage for large bodies
     /// - Agent sees complete body for decisions
+    #[default]
     Buffer,
 
     /// Stream body chunks as they arrive
@@ -48,12 +50,6 @@ pub enum BodyStreamingMode {
         #[serde(default = "default_hybrid_threshold")]
         buffer_threshold: usize,
     },
-}
-
-impl Default for BodyStreamingMode {
-    fn default() -> Self {
-        BodyStreamingMode::Buffer
-    }
 }
 
 fn default_hybrid_threshold() -> usize {

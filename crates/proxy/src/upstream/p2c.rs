@@ -13,9 +13,10 @@ use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 use sentinel_common::errors::{SentinelError, SentinelResult};
 
 /// Load metric type for P2C selection
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum LoadMetric {
     /// Active connection count
+    #[default]
     Connections,
     /// Average response latency
     Latency,
@@ -25,12 +26,6 @@ pub enum LoadMetric {
     CpuUsage,
     /// Request rate
     RequestRate,
-}
-
-impl Default for LoadMetric {
-    fn default() -> Self {
-        LoadMetric::Connections
-    }
 }
 
 /// Configuration for P2C load balancer
@@ -640,7 +635,7 @@ mod tests {
             balancer.metrics[i].connections.store(5, Ordering::Relaxed);
         }
 
-        let mut selections = vec![0usize; 3];
+        let mut selections = [0usize; 3];
         for _ in 0..1000 {
             if let Some(idx) = balancer.random_healthy_target().await {
                 selections[idx] += 1;

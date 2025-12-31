@@ -1,3 +1,6 @@
+// Allow field reassignment for Pingora's Opt/ServerConf structs
+#![allow(clippy::field_reassign_with_default)]
+
 //! Sentinel Proxy - Main entry point
 //!
 //! A security-first reverse proxy built on Pingora with sleepable ops at the edge.
@@ -86,15 +89,13 @@ fn main() -> Result<()> {
 
     // Handle subcommands
     match cli.command {
-        Some(Commands::Test { config }) => {
-            return test_config(config.as_deref().or(cli.config.as_deref()));
-        }
+        Some(Commands::Test { config }) => test_config(config.as_deref().or(cli.config.as_deref())),
         Some(Commands::Run { config }) => {
-            return run_server(config.or(cli.config), cli.verbose, cli.daemon, cli.upgrade);
+            run_server(config.or(cli.config), cli.verbose, cli.daemon, cli.upgrade)
         }
         None => {
             // Default: run the server
-            return run_server(cli.config, cli.verbose, cli.daemon, cli.upgrade);
+            run_server(cli.config, cli.verbose, cli.daemon, cli.upgrade)
         }
     }
 }

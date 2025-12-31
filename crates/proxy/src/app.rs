@@ -130,6 +130,12 @@ pub struct ComponentHealth {
     pub last_success: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+impl Default for HealthCheck {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HealthCheck {
     /// Create a new health check result
     pub fn new() -> Self {

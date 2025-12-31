@@ -11,7 +11,7 @@ use std::path::PathBuf;
 // ============================================================================
 
 /// Observability configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ObservabilityConfig {
     /// Metrics configuration
     #[serde(default)]
@@ -24,16 +24,6 @@ pub struct ObservabilityConfig {
     /// Tracing configuration
     #[serde(default)]
     pub tracing: Option<TracingConfig>,
-}
-
-impl Default for ObservabilityConfig {
-    fn default() -> Self {
-        Self {
-            metrics: MetricsConfig::default(),
-            logging: LoggingConfig::default(),
-            tracing: None,
-        }
-    }
 }
 
 // ============================================================================

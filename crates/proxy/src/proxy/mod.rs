@@ -267,46 +267,42 @@ impl SentinelProxy {
 
         tokio::spawn(async move {
             while let Ok(event) = reload_rx.recv().await {
-                match event {
-                    ReloadEvent::Applied { .. } => {
-                        // Reload routes and upstreams
-                        let new_config = config_manager_clone.current();
+                if let ReloadEvent::Applied { .. } = event {
+                    // Reload routes and upstreams
+                    let new_config = config_manager_clone.current();
 
-                        // Update route matcher (sync parking_lot::RwLock)
-                        if let Ok(new_matcher) = RouteMatcher::new(new_config.routes.clone(), None)
-                        {
-                            *route_matcher.write() = new_matcher;
-                            info!("Routes reloaded successfully");
-                        }
-
-                        // Update upstream pools
-                        let mut new_pools = HashMap::new();
-                        for (upstream_id, upstream_config) in &new_config.upstreams {
-                            let mut config_with_id = upstream_config.clone();
-                            config_with_id.id = upstream_id.clone();
-                            match UpstreamPool::new(config_with_id).await {
-                                Ok(pool) => {
-                                    new_pools.insert(upstream_id.clone(), Arc::new(pool));
-                                }
-                                Err(e) => {
-                                    error!("Failed to create upstream pool {}: {}", upstream_id, e);
-                                }
-                            }
-                        }
-
-                        // Gracefully swap pools
-                        let old_pools = upstream_pools.replace(new_pools).await;
-
-                        // Shutdown old pools after delay
-                        tokio::spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(60)).await;
-                            for (name, pool) in old_pools {
-                                info!("Shutting down old pool: {}", name);
-                                pool.shutdown().await;
-                            }
-                        });
+                    // Update route matcher (sync parking_lot::RwLock)
+                    if let Ok(new_matcher) = RouteMatcher::new(new_config.routes.clone(), None) {
+                        *route_matcher.write() = new_matcher;
+                        info!("Routes reloaded successfully");
                     }
-                    _ => {}
+
+                    // Update upstream pools
+                    let mut new_pools = HashMap::new();
+                    for (upstream_id, upstream_config) in &new_config.upstreams {
+                        let mut config_with_id = upstream_config.clone();
+                        config_with_id.id = upstream_id.clone();
+                        match UpstreamPool::new(config_with_id).await {
+                            Ok(pool) => {
+                                new_pools.insert(upstream_id.clone(), Arc::new(pool));
+                            }
+                            Err(e) => {
+                                error!("Failed to create upstream pool {}: {}", upstream_id, e);
+                            }
+                        }
+                    }
+
+                    // Gracefully swap pools
+                    let old_pools = upstream_pools.replace(new_pools).await;
+
+                    // Shutdown old pools after delay
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        for (name, pool) in old_pools {
+                            info!("Shutting down old pool: {}", name);
+                            pool.shutdown().await;
+                        }
+                    });
                 }
             }
         });

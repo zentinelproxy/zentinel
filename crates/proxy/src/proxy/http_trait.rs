@@ -1667,7 +1667,7 @@ impl ProxyHttp for SentinelProxy {
         Self::CTX: Send + Sync,
     {
         // Check if route supports range requests
-        let supports_range = ctx.route_config.as_ref().map_or(true, |config| {
+        let supports_range = ctx.route_config.as_ref().is_none_or(|config| {
             // Static file routes and media routes should support range requests
             matches!(
                 config.service_type,

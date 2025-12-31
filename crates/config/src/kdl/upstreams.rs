@@ -73,7 +73,7 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                             .iter()
                             .find(|n| n.name().value() == "load-balancing")
                     })
-                    .and_then(|n| get_first_arg_string(n))
+                    .and_then(get_first_arg_string)
                     .map(|s| parse_load_balancing(&s))
                     .unwrap_or(LoadBalancingAlgorithm::RoundRobin);
 
@@ -102,7 +102,7 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                             .iter()
                             .find(|n| n.name().value() == "http-version")
                     })
-                    .map(|n| parse_http_version(n))
+                    .map(parse_http_version)
                     .unwrap_or_default();
 
                 if http_version.max_version >= 2 {
@@ -121,14 +121,14 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                             .iter()
                             .find(|n| n.name().value() == "connection-pool")
                     })
-                    .map(|n| parse_connection_pool(n))
+                    .map(parse_connection_pool)
                     .unwrap_or_default();
 
                 // Parse timeouts configuration
                 let timeouts = child
                     .children()
                     .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "timeouts"))
-                    .map(|n| parse_upstream_timeouts(n))
+                    .map(parse_upstream_timeouts)
                     .unwrap_or_default();
 
                 trace!(
@@ -301,7 +301,7 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
                     let path = type_node
                         .children()
                         .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "path"))
-                        .and_then(|n| get_first_arg_string(n))
+                        .and_then(get_first_arg_string)
                         .unwrap_or_else(|| "/health".to_string());
 
                     let expected_status = type_node
@@ -311,14 +311,14 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
                                 .iter()
                                 .find(|n| n.name().value() == "expected-status")
                         })
-                        .and_then(|n| get_first_arg_string(n))
+                        .and_then(get_first_arg_string)
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(200);
 
                     let host = type_node
                         .children()
                         .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "host"))
-                        .and_then(|n| get_first_arg_string(n));
+                        .and_then(get_first_arg_string);
 
                     HealthCheckType::Http {
                         path,
@@ -330,7 +330,7 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
                     let service = type_node
                         .children()
                         .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "service"))
-                        .and_then(|n| get_first_arg_string(n))
+                        .and_then(get_first_arg_string)
                         .unwrap_or_else(|| "grpc.health.v1.Health".to_string());
                     HealthCheckType::Grpc { service }
                 }

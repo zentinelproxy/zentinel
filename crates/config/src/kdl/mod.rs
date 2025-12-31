@@ -22,8 +22,8 @@ pub use helpers::{
     get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, offset_to_line_col,
 };
 
-pub use filters::{parse_filter_definitions, parse_single_filter_definition};
-pub use routes::{parse_routes, parse_static_file_config};
+pub use filters::parse_filter_definitions;
+pub use routes::parse_routes;
 pub use server::{parse_listeners, parse_server_config};
 pub use upstreams::parse_upstreams;
 
@@ -551,10 +551,6 @@ pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
 /// }
 /// ```
 pub fn parse_observability_config(node: &kdl::KdlNode) -> Result<ObservabilityConfig> {
-    use crate::observability::{
-        AccessLogConfig, AuditLogConfig, ErrorLogConfig, LoggingConfig, MetricsConfig,
-    };
-
     let mut config = ObservabilityConfig::default();
 
     if let Some(children) = node.children() {
@@ -579,8 +575,7 @@ pub fn parse_observability_config(node: &kdl::KdlNode) -> Result<ObservabilityCo
 
 /// Parse logging configuration block
 fn parse_logging_config(node: &kdl::KdlNode) -> Result<crate::observability::LoggingConfig> {
-    use crate::observability::{AccessLogConfig, AuditLogConfig, ErrorLogConfig, LoggingConfig};
-    use std::path::PathBuf;
+    use crate::observability::LoggingConfig;
 
     let mut config = LoggingConfig::default();
 

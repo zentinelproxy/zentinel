@@ -808,7 +808,6 @@ pub fn validate_tls_config(config: &TlsConfig) -> Result<(), TlsError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_wildcard_matching() {

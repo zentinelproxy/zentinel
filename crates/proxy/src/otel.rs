@@ -25,7 +25,7 @@
 //! ```
 
 use std::sync::OnceLock;
-use tracing::{info, warn};
+use tracing::warn;
 
 use sentinel_config::TracingConfig;
 

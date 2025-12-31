@@ -198,7 +198,7 @@ fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsConfig>
             .nodes()
             .iter()
             .filter(|n| n.name().value() == "cipher-suite")
-            .filter_map(|n| get_first_arg_string(n))
+            .filter_map(get_first_arg_string)
             .collect()
     } else {
         Vec::new()

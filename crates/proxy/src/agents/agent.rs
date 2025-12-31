@@ -68,7 +68,7 @@ impl Agent {
 
     /// Get the agent's failure mode.
     pub fn failure_mode(&self) -> sentinel_config::FailureMode {
-        self.config.failure_mode.clone()
+        self.config.failure_mode
     }
 
     /// Get the agent's timeout in milliseconds.

@@ -586,6 +586,12 @@ pub struct ComponentHealthTracker {
     components: parking_lot::RwLock<Vec<ComponentHealth>>,
 }
 
+impl Default for ComponentHealthTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ComponentHealthTracker {
     /// Create new health checker
     pub fn new() -> Self {

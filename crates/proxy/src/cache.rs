@@ -76,12 +76,12 @@ pub fn get_cache_storage() -> &'static (dyn Storage + Sync) {
 
 /// Get a static reference to the cache eviction manager
 pub fn get_cache_eviction() -> &'static LruEvictionManager {
-    &*HTTP_CACHE_EVICTION
+    &HTTP_CACHE_EVICTION
 }
 
 /// Get a static reference to the cache lock
 pub fn get_cache_lock() -> &'static CacheLock {
-    &*HTTP_CACHE_LOCK
+    &HTTP_CACHE_LOCK
 }
 
 /// Cache configuration for a route

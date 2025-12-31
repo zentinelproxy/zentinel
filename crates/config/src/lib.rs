@@ -398,7 +398,7 @@ impl Config {
             }
 
             if let AgentTransport::UnixSocket { path } = &agent.transport {
-                if !path.exists() && !path.parent().map_or(false, |p| p.exists()) {
+                if !path.exists() && !path.parent().is_some_and(|p| p.exists()) {
                     return Err(SentinelError::Config {
                         message: format!(
                             "Agent '{}' unix socket path parent directory doesn't exist: {:?}",

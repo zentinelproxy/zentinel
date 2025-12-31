@@ -553,7 +553,7 @@ pub struct ConnectionGuard<'a> {
     route: String,
 }
 
-impl<'a> Drop for ConnectionGuard<'a> {
+impl Drop for ConnectionGuard<'_> {
     fn drop(&mut self) {
         self.limiter.release(&self.client_id, &self.route);
     }

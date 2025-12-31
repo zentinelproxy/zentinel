@@ -125,8 +125,10 @@ pub enum MatchCondition {
 /// Service type for route handling
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ServiceType {
     /// Traditional web service (default)
+    #[default]
     Web,
     /// REST API service with JSON responses
     Api,
@@ -134,12 +136,6 @@ pub enum ServiceType {
     Static,
     /// Built-in handler (status page, health check, etc.)
     Builtin,
-}
-
-impl Default for ServiceType {
-    fn default() -> Self {
-        ServiceType::Web
-    }
 }
 
 /// Built-in handler types for ServiceType::Builtin routes
@@ -459,8 +455,10 @@ pub struct ErrorPage {
 /// Error response format
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ErrorFormat {
     /// HTML error page
+    #[default]
     Html,
     /// JSON error response
     Json,
@@ -468,10 +466,4 @@ pub enum ErrorFormat {
     Text,
     /// XML error response
     Xml,
-}
-
-impl Default for ErrorFormat {
-    fn default() -> Self {
-        ErrorFormat::Html
-    }
 }

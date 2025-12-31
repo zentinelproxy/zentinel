@@ -388,7 +388,7 @@ impl CompiledMatcher {
             Self::Host(host_matcher) => host_matcher.matches(req.host),
             Self::Header { name, value } => {
                 if let Some(header_value) = req.headers().get(name) {
-                    value.as_ref().map_or(true, |v| header_value == v)
+                    value.as_ref().is_none_or(|v| header_value == v)
                 } else {
                     false
                 }
@@ -396,7 +396,7 @@ impl CompiledMatcher {
             Self::Method(methods) => methods.iter().any(|m| m == req.method),
             Self::QueryParam { name, value } => {
                 if let Some(param_value) = req.query_params().get(name) {
-                    value.as_ref().map_or(true, |v| param_value == v)
+                    value.as_ref().is_none_or(|v| param_value == v)
                 } else {
                     false
                 }

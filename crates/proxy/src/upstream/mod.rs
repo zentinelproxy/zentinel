@@ -638,7 +638,7 @@ impl UpstreamPool {
         let targets: Vec<UpstreamTarget> = config
             .targets
             .iter()
-            .filter_map(|t| UpstreamTarget::from_config(t))
+            .filter_map(UpstreamTarget::from_config)
             .collect();
 
         if targets.is_empty() {
@@ -884,7 +884,7 @@ impl UpstreamPool {
             "Failed to select upstream after max attempts"
         );
         Err(SentinelError::upstream(
-            &self.id.to_string(),
+            self.id.to_string(),
             "Failed to select upstream after max attempts",
         ))
     }

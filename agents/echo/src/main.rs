@@ -1,3 +1,6 @@
+// Allow field reassignment pattern for building AuditMetadata with HashMap
+#![allow(clippy::field_reassign_with_default)]
+
 //! Echo Agent - Reference implementation for Sentinel external agents
 //!
 //! This agent demonstrates the agent protocol by echoing request information

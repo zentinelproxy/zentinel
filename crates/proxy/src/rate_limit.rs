@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
 
-use sentinel_config::{RateLimitAction, RateLimitBackend, RateLimitKey, RedisBackendConfig};
+use sentinel_config::{RateLimitAction, RateLimitBackend, RateLimitKey};
 
 #[cfg(feature = "distributed-rate-limit")]
 use crate::distributed_rate_limit::{create_redis_rate_limiter, RedisRateLimiter};
