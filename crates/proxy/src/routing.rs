@@ -680,6 +680,7 @@ mod tests {
             static_files: None,
             api_schema: None,
             error_pages: None,
+            websocket: false,
         }
     }
 

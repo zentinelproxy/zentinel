@@ -58,6 +58,8 @@ pub struct RequestContext {
     // === Connection tracking ===
     /// Whether the upstream connection was reused
     pub(crate) connection_reused: bool,
+    /// Whether this request is a WebSocket upgrade
+    pub(crate) is_websocket_upgrade: bool,
 
     // === Caching ===
     /// Whether this request is eligible for caching
@@ -112,6 +114,7 @@ impl RequestContext {
             request_body_bytes: 0,
             response_bytes: 0,
             connection_reused: false,
+            is_websocket_upgrade: false,
             cache_eligible: false,
             body_inspection_enabled: false,
             body_bytes_inspected: 0,

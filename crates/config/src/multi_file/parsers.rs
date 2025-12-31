@@ -170,6 +170,7 @@ pub(super) fn parse_route(node: &KdlNode) -> Result<RouteConfig> {
         static_files: None,
         api_schema: None,
         error_pages: None,
+        websocket: get_bool_entry(node, "websocket").unwrap_or(false),
     })
 }
 

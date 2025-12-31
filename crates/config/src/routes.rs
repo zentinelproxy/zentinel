@@ -72,6 +72,12 @@ pub struct RouteConfig {
     /// Error page configuration
     #[serde(default)]
     pub error_pages: Option<ErrorPageConfig>,
+
+    /// Enable WebSocket upgrade support for this route (default: false)
+    /// When enabled, HTTP Upgrade requests with "websocket" protocol are allowed.
+    /// Pingora handles the actual WebSocket tunneling transparently.
+    #[serde(default)]
+    pub websocket: bool,
 }
 
 // ============================================================================

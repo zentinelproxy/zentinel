@@ -95,6 +95,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     static_files,
                     api_schema: None,
                     error_pages: None,
+                    websocket: get_bool_entry(child, "websocket").unwrap_or(false),
                 });
             }
         }

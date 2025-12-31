@@ -516,6 +516,61 @@ impl ProxyHttp for SentinelProxy {
             }
         }
 
+        // Check for WebSocket upgrade requests
+        let is_websocket_upgrade = session
+            .req_header()
+            .headers
+            .get(http::header::UPGRADE)
+            .map(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"))
+            .unwrap_or(false);
+
+        if is_websocket_upgrade {
+            ctx.is_websocket_upgrade = true;
+
+            // Check if route allows WebSocket upgrades
+            if let Some(ref route_config) = ctx.route_config {
+                if !route_config.websocket {
+                    warn!(
+                        correlation_id = %ctx.trace_id,
+                        route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                        client_ip = %ctx.client_ip,
+                        "WebSocket upgrade rejected: not enabled for route"
+                    );
+
+                    self.metrics.record_blocked_request("websocket_not_enabled");
+
+                    // Audit log the rejection
+                    let audit_entry = AuditLogEntry::new(
+                        &ctx.trace_id,
+                        AuditEventType::Blocked,
+                        &ctx.method,
+                        &ctx.path,
+                        &ctx.client_ip,
+                    )
+                    .with_route_id(ctx.route_id.as_deref().unwrap_or("unknown"))
+                    .with_action("websocket_rejected")
+                    .with_reason("WebSocket not enabled for route");
+                    self.log_manager.log_audit(&audit_entry);
+
+                    // Send 403 Forbidden response
+                    crate::http_helpers::write_error(
+                        session,
+                        403,
+                        "WebSocket not enabled for this route",
+                        "text/plain",
+                    )
+                    .await?;
+                    return Ok(true); // Request complete, don't continue
+                }
+
+                debug!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    "WebSocket upgrade request allowed"
+                );
+            }
+        }
+
         // Use cached route config from upstream_peer (avoids duplicate route matching)
         // Handle static file and builtin routes
         if let Some(route_config) = ctx.route_config.clone() {
@@ -1701,6 +1756,17 @@ impl ProxyHttp for SentinelProxy {
                 upstream_attempts = ctx.upstream_attempts,
                 error = ?_error.map(|e| e.to_string()),
                 "Request completed"
+            );
+        }
+
+        // Log WebSocket upgrades at info level
+        if ctx.is_websocket_upgrade && status == 101 {
+            info!(
+                trace_id = %ctx.trace_id,
+                route_id = ?ctx.route_id,
+                upstream = ?ctx.upstream,
+                client_ip = %ctx.client_ip,
+                "WebSocket connection established"
             );
         }
     }

@@ -170,6 +170,7 @@ pub fn create_default_config() -> Config {
                 static_files: None,
                 api_schema: None,
                 error_pages: None,
+                websocket: false,
             },
             RouteConfig {
                 id: "health".to_string(),
@@ -190,6 +191,7 @@ pub fn create_default_config() -> Config {
                 static_files: None,
                 api_schema: None,
                 error_pages: None,
+                websocket: false,
             },
             RouteConfig {
                 id: "metrics".to_string(),
@@ -206,6 +208,7 @@ pub fn create_default_config() -> Config {
                 static_files: None,
                 api_schema: None,
                 error_pages: None,
+                websocket: false,
             },
             RouteConfig {
                 id: "config".to_string(),
@@ -225,6 +228,7 @@ pub fn create_default_config() -> Config {
                 static_files: None,
                 api_schema: None,
                 error_pages: None,
+                websocket: false,
             },
             RouteConfig {
                 id: "upstreams".to_string(),
@@ -244,6 +248,7 @@ pub fn create_default_config() -> Config {
                 static_files: None,
                 api_schema: None,
                 error_pages: None,
+                websocket: false,
             },
         ],
         upstreams: HashMap::new(),

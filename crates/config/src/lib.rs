@@ -477,6 +477,7 @@ impl Config {
                 static_files: None,
                 api_schema: None,
                 error_pages: None,
+                websocket: false,
             }],
             upstreams,
             filters: HashMap::new(),
