@@ -67,6 +67,8 @@ pub struct RateLimitConfig {
     pub message: Option<String>,
     /// Backend for rate limiting (local or distributed)
     pub backend: RateLimitBackend,
+    /// Maximum delay in milliseconds for Delay action
+    pub max_delay_ms: u64,
 }
 
 impl Default for RateLimitConfig {
@@ -79,6 +81,7 @@ impl Default for RateLimitConfig {
             status_code: 429,
             message: None,
             backend: RateLimitBackend::Local,
+            max_delay_ms: 5000,
         }
     }
 }
@@ -333,6 +336,11 @@ impl RateLimiterPool {
         self.config.read().message.clone()
     }
 
+    /// Get the maximum delay in milliseconds for Delay action
+    pub fn max_delay_ms(&self) -> u64 {
+        self.config.read().max_delay_ms
+    }
+
     /// Update the configuration
     pub fn update_config(&self, config: RateLimitConfig) {
         *self.config.write() = config;
@@ -424,6 +432,7 @@ impl RateLimitManager {
             status_code: 429,
             message: None,
             backend: RateLimitBackend::Local,
+            max_delay_ms: 5000,
         };
         Self {
             route_limiters: DashMap::new(),
@@ -489,6 +498,7 @@ impl RateLimitManager {
                     remaining: check_info.remaining,
                     reset_at: check_info.reset_at,
                     suggested_delay_ms,
+                    max_delay_ms: global.max_delay_ms(),
                 };
             }
 
@@ -525,6 +535,7 @@ impl RateLimitManager {
                     remaining: check_info.remaining,
                     reset_at: check_info.reset_at,
                     suggested_delay_ms,
+                    max_delay_ms: pool.max_delay_ms(),
                 };
             }
 
@@ -561,6 +572,7 @@ impl RateLimitManager {
             remaining,
             reset_at,
             suggested_delay_ms: None,
+            max_delay_ms: 5000, // Default max delay for allowed requests (unused)
         }
     }
 
@@ -622,6 +634,8 @@ pub struct RateLimitResult {
     pub reset_at: u64,
     /// Suggested delay in milliseconds (for Delay action)
     pub suggested_delay_ms: Option<u64>,
+    /// Maximum delay in milliseconds (configured cap for Delay action)
+    pub max_delay_ms: u64,
 }
 
 #[cfg(test)]

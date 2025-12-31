@@ -537,16 +537,15 @@ impl ProxyHttp for SentinelProxy {
                         RateLimitAction::Delay => {
                             // Apply delay if suggested by rate limiter
                             if let Some(delay_ms) = rate_result.suggested_delay_ms {
-                                // Cap delay at a reasonable maximum (5 seconds by default)
-                                // TODO: Make this configurable per-route via max_delay_ms
-                                const MAX_DELAY_MS: u64 = 5000;
-                                let actual_delay = delay_ms.min(MAX_DELAY_MS);
+                                // Cap delay at the configured maximum
+                                let actual_delay = delay_ms.min(rate_result.max_delay_ms);
 
                                 if actual_delay > 0 {
                                     debug!(
                                         correlation_id = %ctx.trace_id,
                                         route_id = route_id,
                                         suggested_delay_ms = delay_ms,
+                                        max_delay_ms = rate_result.max_delay_ms,
                                         actual_delay_ms = actual_delay,
                                         "Applying rate limit delay"
                                     );

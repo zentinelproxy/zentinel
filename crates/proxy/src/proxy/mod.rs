@@ -421,6 +421,7 @@ impl SentinelProxy {
                     status_code: 429,
                     message: None,
                     backend: sentinel_config::RateLimitBackend::Local,
+                    max_delay_ms: 5000, // Default for policy-based rate limits
                 };
                 manager.register_route(&route.id, rl_config);
                 info!(
@@ -445,6 +446,7 @@ impl SentinelProxy {
                             status_code: rl_filter.status_code,
                             message: rl_filter.limit_message.clone(),
                             backend: rl_filter.backend.clone(),
+                            max_delay_ms: rl_filter.max_delay_ms,
                         };
                         manager.register_route(&route.id, rl_config);
                         info!(
