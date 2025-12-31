@@ -26,6 +26,8 @@ pub enum EventType {
     ResponseBodyChunk,
     /// Request/response complete (for logging)
     RequestComplete,
+    /// WebSocket frame received (after upgrade)
+    WebSocketFrame,
 }
 
 /// Agent decision
@@ -249,6 +251,116 @@ pub struct RequestCompleteEvent {
     pub error: Option<String>,
 }
 
+// ============================================================================
+// WebSocket Frame Events
+// ============================================================================
+
+/// WebSocket frame event
+///
+/// Sent to agents after a WebSocket upgrade when frame inspection is enabled.
+/// Each frame is sent individually for inspection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSocketFrameEvent {
+    /// Correlation ID (same as the original HTTP upgrade request)
+    pub correlation_id: String,
+    /// Frame opcode: "text", "binary", "ping", "pong", "close", "continuation"
+    pub opcode: String,
+    /// Frame payload (base64 encoded for JSON transport)
+    pub data: String,
+    /// Direction: true = client->server, false = server->client
+    pub client_to_server: bool,
+    /// Frame index for this connection (0-based, per direction)
+    pub frame_index: u64,
+    /// FIN bit - true if final frame of message (for fragmented messages)
+    pub fin: bool,
+    /// Route ID
+    pub route_id: Option<String>,
+    /// Client IP
+    pub client_ip: String,
+}
+
+/// WebSocket opcode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSocketOpcode {
+    /// Continuation frame (0x0)
+    Continuation,
+    /// Text frame (0x1)
+    Text,
+    /// Binary frame (0x2)
+    Binary,
+    /// Connection close (0x8)
+    Close,
+    /// Ping (0x9)
+    Ping,
+    /// Pong (0xA)
+    Pong,
+}
+
+impl WebSocketOpcode {
+    /// Convert opcode to string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Continuation => "continuation",
+            Self::Text => "text",
+            Self::Binary => "binary",
+            Self::Close => "close",
+            Self::Ping => "ping",
+            Self::Pong => "pong",
+        }
+    }
+
+    /// Parse from byte value
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0x0 => Some(Self::Continuation),
+            0x1 => Some(Self::Text),
+            0x2 => Some(Self::Binary),
+            0x8 => Some(Self::Close),
+            0x9 => Some(Self::Ping),
+            0xA => Some(Self::Pong),
+            _ => None,
+        }
+    }
+
+    /// Convert to byte value
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            Self::Continuation => 0x0,
+            Self::Text => 0x1,
+            Self::Binary => 0x2,
+            Self::Close => 0x8,
+            Self::Ping => 0x9,
+            Self::Pong => 0xA,
+        }
+    }
+}
+
+/// WebSocket frame decision
+///
+/// Agents return this decision for WebSocket frame events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSocketDecision {
+    /// Allow frame to pass through
+    Allow,
+    /// Drop this frame silently (don't forward)
+    Drop,
+    /// Close the WebSocket connection
+    Close {
+        /// Close code (RFC 6455 section 7.4.1)
+        code: u16,
+        /// Close reason
+        reason: String,
+    },
+}
+
+impl Default for WebSocketDecision {
+    fn default() -> Self {
+        Self::Allow
+    }
+}
+
 /// Agent request message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRequest {
@@ -307,6 +419,12 @@ pub struct AgentResponse {
     /// Only valid for `ResponseBodyChunk` events.
     #[serde(default)]
     pub response_body_mutation: Option<BodyMutation>,
+
+    /// WebSocket frame decision
+    ///
+    /// Only valid for `WebSocketFrame` events. If not set, defaults to Allow.
+    #[serde(default)]
+    pub websocket_decision: Option<WebSocketDecision>,
 }
 
 impl AgentResponse {
@@ -322,6 +440,7 @@ impl AgentResponse {
             needs_more: false,
             request_body_mutation: None,
             response_body_mutation: None,
+            websocket_decision: None,
         }
     }
 
@@ -341,6 +460,7 @@ impl AgentResponse {
             needs_more: false,
             request_body_mutation: None,
             response_body_mutation: None,
+            websocket_decision: None,
         }
     }
 
@@ -356,6 +476,7 @@ impl AgentResponse {
             needs_more: false,
             request_body_mutation: None,
             response_body_mutation: None,
+            websocket_decision: None,
         }
     }
 
@@ -371,7 +492,38 @@ impl AgentResponse {
             needs_more: true,
             request_body_mutation: None,
             response_body_mutation: None,
+            websocket_decision: None,
         }
+    }
+
+    /// Create a WebSocket allow response
+    pub fn websocket_allow() -> Self {
+        Self {
+            websocket_decision: Some(WebSocketDecision::Allow),
+            ..Self::default_allow()
+        }
+    }
+
+    /// Create a WebSocket drop response (drop the frame, don't forward)
+    pub fn websocket_drop() -> Self {
+        Self {
+            websocket_decision: Some(WebSocketDecision::Drop),
+            ..Self::default_allow()
+        }
+    }
+
+    /// Create a WebSocket close response (close the connection)
+    pub fn websocket_close(code: u16, reason: String) -> Self {
+        Self {
+            websocket_decision: Some(WebSocketDecision::Close { code, reason }),
+            ..Self::default_allow()
+        }
+    }
+
+    /// Set WebSocket decision
+    pub fn with_websocket_decision(mut self, decision: WebSocketDecision) -> Self {
+        self.websocket_decision = Some(decision);
+        self
     }
 
     /// Create a streaming response with body mutation

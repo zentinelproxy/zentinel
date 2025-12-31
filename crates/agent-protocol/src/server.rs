@@ -18,7 +18,7 @@ use crate::grpc::{self, agent_processor_server::AgentProcessor, agent_processor_
 use crate::protocol::{
     AgentRequest, AgentResponse, AuditMetadata, Decision, EventType, HeaderOp, RequestBodyChunkEvent,
     RequestCompleteEvent, RequestHeadersEvent, RequestMetadata, ResponseBodyChunkEvent, ResponseHeadersEvent,
-    MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
+    WebSocketDecision, WebSocketFrameEvent, MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
 };
 
 /// Agent server for testing and reference implementations
@@ -57,6 +57,16 @@ pub trait AgentHandler: Send + Sync {
     /// Handle a request complete event
     async fn on_request_complete(&self, _event: RequestCompleteEvent) -> AgentResponse {
         AgentResponse::default_allow()
+    }
+
+    /// Handle a WebSocket frame event
+    ///
+    /// Called for each WebSocket frame when inspection is enabled.
+    /// Return `AgentResponse::websocket_allow()` to forward the frame,
+    /// `AgentResponse::websocket_drop()` to silently drop it, or
+    /// `AgentResponse::websocket_close(code, reason)` to close the connection.
+    async fn on_websocket_frame(&self, _event: WebSocketFrameEvent) -> AgentResponse {
+        AgentResponse::websocket_allow()
     }
 }
 
@@ -243,6 +253,18 @@ impl AgentServer {
                         "Processing request_complete event"
                     );
                     handler.on_request_complete(event).await
+                }
+                EventType::WebSocketFrame => {
+                    let event: WebSocketFrameEvent = serde_json::from_value(request.payload)
+                        .map_err(|e| AgentProtocolError::InvalidMessage(e.to_string()))?;
+                    trace!(
+                        correlation_id = %event.correlation_id,
+                        opcode = %event.opcode,
+                        frame_index = event.frame_index,
+                        client_to_server = event.client_to_server,
+                        "Processing websocket_frame event"
+                    );
+                    handler.on_websocket_frame(event).await
                 }
             };
 
@@ -478,6 +500,16 @@ impl AgentProcessor for GrpcAgentHandler {
                 );
                 self.handler.on_request_complete(event).await
             }
+            Some(grpc::agent_request::Event::WebsocketFrame(e)) => {
+                let event = Self::convert_websocket_frame_from_grpc(e);
+                trace!(
+                    agent_id = %self.id,
+                    correlation_id = %event.correlation_id,
+                    opcode = %event.opcode,
+                    "Processing websocket_frame via gRPC"
+                );
+                self.handler.on_websocket_frame(event).await
+            }
             None => {
                 warn!(agent_id = %self.id, "Missing event in gRPC request");
                 return Err(Status::invalid_argument("Missing event in request"));
@@ -540,6 +572,10 @@ impl AgentProcessor for GrpcAgentHandler {
                 Some(grpc::agent_request::Event::RequestComplete(e)) => {
                     let event = Self::convert_request_complete_from_grpc(e);
                     self.handler.on_request_complete(event).await
+                }
+                Some(grpc::agent_request::Event::WebsocketFrame(e)) => {
+                    let event = Self::convert_websocket_frame_from_grpc(e);
+                    self.handler.on_websocket_frame(event).await
                 }
                 None => continue,
             };
@@ -624,6 +660,21 @@ impl GrpcAgentHandler {
             response_body_size: e.response_body_size as usize,
             upstream_attempts: e.upstream_attempts,
             error: e.error,
+        }
+    }
+
+    /// Convert gRPC WebSocketFrameEvent to internal format
+    fn convert_websocket_frame_from_grpc(e: grpc::WebSocketFrameEvent) -> WebSocketFrameEvent {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        WebSocketFrameEvent {
+            correlation_id: e.correlation_id,
+            opcode: e.opcode,
+            data: STANDARD.encode(&e.data),
+            client_to_server: e.client_to_server,
+            frame_index: e.frame_index,
+            fin: e.fin,
+            route_id: e.route_id,
+            client_ip: e.client_ip,
         }
     }
 
@@ -715,6 +766,24 @@ impl GrpcAgentHandler {
             chunk_index: m.chunk_index,
         });
 
+        // Convert WebSocket decision
+        let websocket_decision = response.websocket_decision.map(|ws_decision| {
+            match ws_decision {
+                WebSocketDecision::Allow => {
+                    grpc::agent_response::WebsocketDecision::WebsocketAllow(grpc::WebSocketAllowDecision {})
+                }
+                WebSocketDecision::Drop => {
+                    grpc::agent_response::WebsocketDecision::WebsocketDrop(grpc::WebSocketDropDecision {})
+                }
+                WebSocketDecision::Close { code, reason } => {
+                    grpc::agent_response::WebsocketDecision::WebsocketClose(grpc::WebSocketCloseDecision {
+                        code: code as u32,
+                        reason,
+                    })
+                }
+            }
+        });
+
         grpc::AgentResponse {
             version: PROTOCOL_VERSION,
             decision,
@@ -725,6 +794,7 @@ impl GrpcAgentHandler {
             needs_more: response.needs_more,
             request_body_mutation,
             response_body_mutation,
+            websocket_decision,
         }
     }
 

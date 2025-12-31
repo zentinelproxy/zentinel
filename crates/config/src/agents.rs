@@ -194,6 +194,8 @@ pub enum AgentEvent {
     ResponseHeaders,
     ResponseBody,
     Log,
+    /// WebSocket frame inspection (after upgrade)
+    WebSocketFrame,
 }
 
 // ============================================================================

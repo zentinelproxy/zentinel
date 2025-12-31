@@ -171,6 +171,7 @@ pub fn create_default_config() -> Config {
                 api_schema: None,
                 error_pages: None,
                 websocket: false,
+                websocket_inspection: false,
             },
             RouteConfig {
                 id: "health".to_string(),
@@ -192,6 +193,7 @@ pub fn create_default_config() -> Config {
                 api_schema: None,
                 error_pages: None,
                 websocket: false,
+                websocket_inspection: false,
             },
             RouteConfig {
                 id: "metrics".to_string(),
@@ -209,6 +211,7 @@ pub fn create_default_config() -> Config {
                 api_schema: None,
                 error_pages: None,
                 websocket: false,
+                websocket_inspection: false,
             },
             RouteConfig {
                 id: "config".to_string(),
@@ -229,6 +232,7 @@ pub fn create_default_config() -> Config {
                 api_schema: None,
                 error_pages: None,
                 websocket: false,
+                websocket_inspection: false,
             },
             RouteConfig {
                 id: "upstreams".to_string(),
@@ -249,6 +253,7 @@ pub fn create_default_config() -> Config {
                 api_schema: None,
                 error_pages: None,
                 websocket: false,
+                websocket_inspection: false,
             },
         ],
         upstreams: HashMap::new(),

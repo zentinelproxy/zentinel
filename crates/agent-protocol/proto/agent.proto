@@ -14,6 +14,7 @@ enum EventType {
   EVENT_TYPE_RESPONSE_HEADERS = 3;
   EVENT_TYPE_RESPONSE_BODY_CHUNK = 4;
   EVENT_TYPE_REQUEST_COMPLETE = 5;
+  EVENT_TYPE_WEBSOCKET_FRAME = 6;
 }
 
 // Request metadata included with every event
@@ -88,6 +89,32 @@ message RequestCompleteEvent {
   optional string error = 7;
 }
 
+// WebSocket frame event - sent for each frame when inspection is enabled
+message WebSocketFrameEvent {
+  string correlation_id = 1;  // Same as the original HTTP upgrade request
+  string opcode = 2;  // "text", "binary", "ping", "pong", "close", "continuation"
+  bytes data = 3;  // Frame payload (raw bytes for gRPC)
+  bool client_to_server = 4;  // Direction: true = client->server, false = server->client
+  uint64 frame_index = 5;  // 0-based frame index for this connection (per direction)
+  bool fin = 6;  // FIN bit - true if final frame of message
+  optional string route_id = 7;
+  string client_ip = 8;
+}
+
+// WebSocket decision types
+message WebSocketAllowDecision {
+  // Empty - frame is allowed to pass through
+}
+
+message WebSocketDropDecision {
+  // Empty - frame is dropped silently (not forwarded)
+}
+
+message WebSocketCloseDecision {
+  uint32 code = 1;  // Close code (RFC 6455 section 7.4.1)
+  string reason = 2;  // Close reason
+}
+
 // Header operation for modifying request/response headers
 message HeaderOp {
   oneof operation {
@@ -152,6 +179,7 @@ message AgentRequest {
     ResponseHeadersEvent response_headers = 12;
     ResponseBodyChunkEvent response_body_chunk = 13;
     RequestCompleteEvent request_complete = 14;
+    WebSocketFrameEvent websocket_frame = 15;
   }
 }
 
@@ -181,6 +209,13 @@ message AgentResponse {
   bool needs_more = 20;  // Agent needs more data to make final decision
   optional BodyMutation request_body_mutation = 21;  // Mutation for request body chunk
   optional BodyMutation response_body_mutation = 22;  // Mutation for response body chunk
+
+  // WebSocket-specific fields (only for WebSocketFrame events)
+  oneof websocket_decision {
+    WebSocketAllowDecision websocket_allow = 30;
+    WebSocketDropDecision websocket_drop = 31;
+    WebSocketCloseDecision websocket_close = 32;
+  }
 }
 
 // Agent Processor Service

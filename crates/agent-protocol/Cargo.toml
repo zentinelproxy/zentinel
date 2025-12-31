@@ -37,6 +37,7 @@ http = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
+base64 = { workspace = true }
 
 # Unix sockets
 tokio-util = { version = "0.7", features = ["codec"] }

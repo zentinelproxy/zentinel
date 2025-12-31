@@ -52,6 +52,7 @@ pub mod tls;
 pub mod trace_id;
 pub mod upstream;
 pub mod validation;
+pub mod websocket;
 
 // ============================================================================
 // Public API Re-exports

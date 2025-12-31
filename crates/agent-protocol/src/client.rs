@@ -16,7 +16,8 @@ use crate::grpc::{self, agent_processor_client::AgentProcessorClient};
 use crate::protocol::{
     AgentRequest, AgentResponse, AuditMetadata, BodyMutation, Decision, EventType, HeaderOp,
     RequestBodyChunkEvent, RequestCompleteEvent, RequestHeadersEvent, RequestMetadata,
-    ResponseBodyChunkEvent, ResponseHeadersEvent, MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
+    ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketDecision, WebSocketFrameEvent,
+    MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
 };
 
 /// Agent client for communicating with external agents
@@ -248,6 +249,7 @@ impl AgentClient {
             EventType::ResponseHeaders => grpc::EventType::ResponseHeaders,
             EventType::ResponseBodyChunk => grpc::EventType::ResponseBodyChunk,
             EventType::RequestComplete => grpc::EventType::RequestComplete,
+            EventType::WebSocketFrame => grpc::EventType::WebsocketFrame,
         };
 
         let event = match event_type {
@@ -309,6 +311,21 @@ impl AgentClient {
                     response_body_size: event.response_body_size as u64,
                     upstream_attempts: event.upstream_attempts,
                     error: event.error,
+                })
+            }
+            EventType::WebSocketFrame => {
+                use base64::{Engine as _, engine::general_purpose::STANDARD};
+                let event: WebSocketFrameEvent = serde_json::from_value(payload_json)
+                    .map_err(|e| AgentProtocolError::Serialization(e.to_string()))?;
+                grpc::agent_request::Event::WebsocketFrame(grpc::WebSocketFrameEvent {
+                    correlation_id: event.correlation_id,
+                    opcode: event.opcode,
+                    data: STANDARD.decode(&event.data).unwrap_or_default(),
+                    client_to_server: event.client_to_server,
+                    frame_index: event.frame_index,
+                    fin: event.fin,
+                    route_id: event.route_id,
+                    client_ip: event.client_ip,
                 })
             }
         };
@@ -390,6 +407,18 @@ impl AgentClient {
             chunk_index: m.chunk_index,
         });
 
+        // Convert WebSocket decision
+        let websocket_decision = response.websocket_decision.map(|ws_decision| {
+            match ws_decision {
+                grpc::agent_response::WebsocketDecision::WebsocketAllow(_) => WebSocketDecision::Allow,
+                grpc::agent_response::WebsocketDecision::WebsocketDrop(_) => WebSocketDecision::Drop,
+                grpc::agent_response::WebsocketDecision::WebsocketClose(c) => WebSocketDecision::Close {
+                    code: c.code as u16,
+                    reason: c.reason,
+                },
+            }
+        });
+
         Ok(AgentResponse {
             version: response.version,
             decision,
@@ -400,6 +429,7 @@ impl AgentClient {
             needs_more: response.needs_more,
             request_body_mutation,
             response_body_mutation,
+            websocket_decision,
         })
     }
 

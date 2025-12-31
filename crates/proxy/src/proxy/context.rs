@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use sentinel_config::{BodyStreamingMode, RouteConfig, ServiceType};
 
+use crate::websocket::WebSocketHandler;
+
 /// Request context maintained throughout the request lifecycle.
 ///
 /// This struct uses a hybrid approach:
@@ -60,6 +62,16 @@ pub struct RequestContext {
     pub(crate) connection_reused: bool,
     /// Whether this request is a WebSocket upgrade
     pub(crate) is_websocket_upgrade: bool,
+
+    // === WebSocket Inspection ===
+    /// Whether WebSocket frame inspection is enabled for this connection
+    pub(crate) websocket_inspection_enabled: bool,
+    /// Whether to skip inspection (e.g., due to compression negotiation)
+    pub(crate) websocket_skip_inspection: bool,
+    /// Agent IDs for WebSocket frame inspection
+    pub(crate) websocket_inspection_agents: Vec<String>,
+    /// WebSocket frame handler (created after 101 upgrade)
+    pub(crate) websocket_handler: Option<Arc<WebSocketHandler>>,
 
     // === Caching ===
     /// Whether this request is eligible for caching
@@ -115,6 +127,10 @@ impl RequestContext {
             response_bytes: 0,
             connection_reused: false,
             is_websocket_upgrade: false,
+            websocket_inspection_enabled: false,
+            websocket_skip_inspection: false,
+            websocket_inspection_agents: Vec::new(),
+            websocket_handler: None,
             cache_eligible: false,
             body_inspection_enabled: false,
             body_bytes_inspected: 0,

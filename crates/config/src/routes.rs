@@ -78,6 +78,14 @@ pub struct RouteConfig {
     /// Pingora handles the actual WebSocket tunneling transparently.
     #[serde(default)]
     pub websocket: bool,
+
+    /// Enable WebSocket frame inspection (default: false)
+    /// When enabled, individual WebSocket frames are sent to agents for inspection.
+    /// Agents can allow, drop, or close the connection based on frame content.
+    /// Requires `websocket: true` to have any effect.
+    /// Note: If `permessage-deflate` compression is negotiated, inspection is skipped.
+    #[serde(default)]
+    pub websocket_inspection: bool,
 }
 
 // ============================================================================
