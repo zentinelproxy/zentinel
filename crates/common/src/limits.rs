@@ -290,6 +290,11 @@ impl RateLimiter {
         let mut last_refill = self.last_refill.write();
         *last_refill = Instant::now();
     }
+
+    /// Get the time of last activity (used for cleanup of idle limiters)
+    pub fn last_accessed(&self) -> Instant {
+        *self.last_refill.read()
+    }
 }
 
 /// Multi-level rate limiter for different scopes
@@ -403,9 +408,59 @@ impl MultiRateLimiter {
     }
 
     /// Clean up old rate limiters that haven't been used recently
-    pub fn cleanup(&self, _max_age: Duration) {
-        // TODO: Implement cleanup of unused rate limiters
-        // This would track last access time and remove old entries
+    ///
+    /// Returns the number of entries removed (clients, routes).
+    pub fn cleanup(&self, max_age: Duration) -> (usize, usize) {
+        let now = Instant::now();
+
+        // Clean up per-client limiters
+        let clients_before = self.per_client.read().len();
+        self.per_client.write().retain(|client_id, limiter| {
+            let age = now.duration_since(limiter.last_accessed());
+            let keep = age < max_age;
+            if !keep {
+                trace!(
+                    client_id = %client_id,
+                    age_secs = age.as_secs(),
+                    "Removing idle client rate limiter"
+                );
+            }
+            keep
+        });
+        let clients_removed = clients_before - self.per_client.read().len();
+
+        // Clean up per-route limiters
+        let routes_before = self.per_route.read().len();
+        self.per_route.write().retain(|route, limiter| {
+            let age = now.duration_since(limiter.last_accessed());
+            let keep = age < max_age;
+            if !keep {
+                trace!(
+                    route = %route,
+                    age_secs = age.as_secs(),
+                    "Removing idle route rate limiter"
+                );
+            }
+            keep
+        });
+        let routes_removed = routes_before - self.per_route.read().len();
+
+        if clients_removed > 0 || routes_removed > 0 {
+            debug!(
+                clients_removed = clients_removed,
+                routes_removed = routes_removed,
+                clients_remaining = self.per_client.read().len(),
+                routes_remaining = self.per_route.read().len(),
+                "Rate limiter cleanup completed"
+            );
+        }
+
+        (clients_removed, routes_removed)
+    }
+
+    /// Get the current number of tracked clients and routes
+    pub fn entry_counts(&self) -> (usize, usize) {
+        (self.per_client.read().len(), self.per_route.read().len())
     }
 }
 
@@ -625,5 +680,103 @@ mod tests {
         assert_eq!(stats.total, 2);
 
         // Guards will release on drop
+    }
+
+    #[test]
+    fn test_rate_limiter_last_accessed() {
+        let limiter = RateLimiter::new(10, 10);
+        let before = Instant::now();
+
+        // Access the limiter
+        limiter.try_acquire(1);
+
+        let last_accessed = limiter.last_accessed();
+        assert!(last_accessed >= before);
+        assert!(last_accessed <= Instant::now());
+    }
+
+    #[test]
+    fn test_multi_rate_limiter_entry_counts() {
+        let limits = Limits {
+            max_requests_per_second_per_client: Some(100),
+            max_requests_per_second_per_route: Some(1000),
+            ..Default::default()
+        };
+
+        let limiter = MultiRateLimiter::new(&limits);
+
+        // Initially empty
+        assert_eq!(limiter.entry_counts(), (0, 0));
+
+        // Make requests from different clients/routes
+        let _ = limiter.check_request("client1", "route1");
+        let _ = limiter.check_request("client2", "route1");
+        let _ = limiter.check_request("client1", "route2");
+
+        // Should have 2 clients and 2 routes
+        assert_eq!(limiter.entry_counts(), (2, 2));
+    }
+
+    #[test]
+    fn test_multi_rate_limiter_cleanup() {
+        let limits = Limits {
+            max_requests_per_second_per_client: Some(100),
+            max_requests_per_second_per_route: Some(1000),
+            ..Default::default()
+        };
+
+        let limiter = MultiRateLimiter::new(&limits);
+
+        // Make requests to create entries
+        let _ = limiter.check_request("client1", "route1");
+        let _ = limiter.check_request("client2", "route2");
+
+        assert_eq!(limiter.entry_counts(), (2, 2));
+
+        // Cleanup with very long max_age should remove nothing
+        let (clients_removed, routes_removed) = limiter.cleanup(Duration::from_secs(3600));
+        assert_eq!(clients_removed, 0);
+        assert_eq!(routes_removed, 0);
+        assert_eq!(limiter.entry_counts(), (2, 2));
+
+        // Wait a bit
+        thread::sleep(Duration::from_millis(50));
+
+        // Cleanup with very short max_age should remove all
+        let (clients_removed, routes_removed) = limiter.cleanup(Duration::from_millis(10));
+        assert_eq!(clients_removed, 2);
+        assert_eq!(routes_removed, 2);
+        assert_eq!(limiter.entry_counts(), (0, 0));
+    }
+
+    #[test]
+    fn test_multi_rate_limiter_cleanup_partial() {
+        let limits = Limits {
+            max_requests_per_second_per_client: Some(100),
+            max_requests_per_second_per_route: Some(1000),
+            ..Default::default()
+        };
+
+        let limiter = MultiRateLimiter::new(&limits);
+
+        // Create old entry
+        let _ = limiter.check_request("old_client", "old_route");
+
+        // Wait
+        thread::sleep(Duration::from_millis(60));
+
+        // Create new entry
+        let _ = limiter.check_request("new_client", "new_route");
+
+        assert_eq!(limiter.entry_counts(), (2, 2));
+
+        // Cleanup with age that only removes old entries
+        let (clients_removed, routes_removed) = limiter.cleanup(Duration::from_millis(30));
+        assert_eq!(clients_removed, 1);
+        assert_eq!(routes_removed, 1);
+        assert_eq!(limiter.entry_counts(), (1, 1));
+
+        // Verify the new entries remain
+        // (they were accessed recently so should still exist)
     }
 }
