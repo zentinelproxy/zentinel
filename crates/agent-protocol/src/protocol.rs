@@ -31,10 +31,11 @@ pub enum EventType {
 }
 
 /// Agent decision
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     /// Allow the request/response to continue
+    #[default]
     Allow,
     /// Block the request/response
     Block {
@@ -59,12 +60,6 @@ pub enum Decision {
         /// Challenge parameters
         params: HashMap<String, String>,
     },
-}
-
-impl Default for Decision {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 /// Header modification operation
@@ -339,10 +334,11 @@ impl WebSocketOpcode {
 /// WebSocket frame decision
 ///
 /// Agents return this decision for WebSocket frame events.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WebSocketDecision {
     /// Allow frame to pass through
+    #[default]
     Allow,
     /// Drop this frame silently (don't forward)
     Drop,
@@ -353,12 +349,6 @@ pub enum WebSocketDecision {
         /// Close reason
         reason: String,
     },
-}
-
-impl Default for WebSocketDecision {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 /// Agent request message
