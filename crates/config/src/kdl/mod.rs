@@ -1017,7 +1017,6 @@ mod tests {
                     status-code 403
                     block-message "Access denied from your region"
                     cache-ttl-secs 7200
-                    add-country-header true
                 }
             }
 
@@ -1047,6 +1046,7 @@ mod tests {
                     Some("Access denied from your region".to_string())
                 );
                 assert_eq!(geo.cache_ttl_secs, 7200);
+                // add_country_header defaults to true
                 assert!(geo.add_country_header);
             }
             _ => panic!("Expected Geo filter"),
