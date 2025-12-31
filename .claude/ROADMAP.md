@@ -317,7 +317,7 @@ exceeds Envoy performance.
 - [x] Add span creation for request lifecycle phases
 - [x] Export traces to Jaeger/Tempo/etc. via OTLP
 - [x] Add trace sampling configuration
-- [ ] Document tracing deployment
+- [x] Document tracing deployment (`docs/TRACING.md`)
 
 **Features:**
 - W3C Trace Context header parsing (traceparent/tracestate)
