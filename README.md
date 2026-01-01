@@ -26,8 +26,9 @@
 <p align="center">
   <a href="MANIFESTO.md">Manifesto</a> •
   <a href="docs/why-sentinel.md">Why Sentinel</a> •
-  <a href="https://raskell-io.github.io/sentinel/">Documentation</a> •
-  <a href="CONTRIBUTING.md">Contributing</a> •
+  <a href="https://sentinel.raskell.io/docs">Documentation</a> •
+  <a href="https://github.com/raskell-io/sentinel/discussions">Discussions</a> •
+  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 <hr />
@@ -83,3 +84,13 @@ The goal is to build infrastructure that is **correct, calm, and trustworthy**.
   Features ship only when they can be bounded, observed, tested, and rolled back.
 
 For a deeper explanation of these principles, see [`MANIFESTO.md`](MANIFESTO.md).
+
+---
+
+## Community
+
+- 💬 [Discussions](https://github.com/raskell-io/sentinel/discussions) — Questions, ideas, show & tell
+- 🐛 [Issues](https://github.com/raskell-io/sentinel/issues) — Bug reports and feature requests
+- 📖 [Documentation](https://sentinel.raskell.io/docs) — Guides, reference, and examples
+
+Contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) to get started.
