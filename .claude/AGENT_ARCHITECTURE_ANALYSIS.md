@@ -1,7 +1,7 @@
 # Agent Architecture Analysis: Core vs External
 
-**Last Updated:** 2025-12-31
-**Analysis Scope:** All 13 Official Agents (Stable, Beta, Planned)
+**Last Updated:** 2026-01-01
+**Analysis Scope:** All 10 Official Agents (Stable, Beta, Planned)
 
 ---
 
@@ -9,7 +9,13 @@
 
 This document analyzes which Sentinel agents should be integral to the reverse proxy core versus remaining as independent external agents. The analysis is grounded in Sentinel's MANIFESTO principle: *"parsing-heavy, policy-rich, or operationally risky belongs outside the core."*
 
-**Recommendation:** The current architecture is mostly correct. Only **basic rate limiting** and **geo filtering** are strong candidates for core integration. Everything else is correctly isolated.
+**Current State:** The following features are now **built into the core**:
+- **Geo Filtering** — MaxMind and IP2Location database support
+- **Response Caching** — Pingora cache with PURGE API
+- **Telemetry** — Metrics, access logs, audit logs, OTLP tracing
+- **Basic Rate Limiting** — Token bucket with global and per-route limits
+
+**Recommendation:** The remaining agents are correctly isolated as external processes.
 
 ---
 

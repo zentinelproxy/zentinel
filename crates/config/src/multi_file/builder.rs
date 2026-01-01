@@ -228,6 +228,7 @@ impl ConfigBuilder {
     /// Build the final configuration.
     pub fn build(self) -> Result<Config> {
         Ok(Config {
+            schema_version: crate::CURRENT_SCHEMA_VERSION.to_string(),
             server: self
                 .server
                 .ok_or_else(|| anyhow!("Server configuration is required"))?,

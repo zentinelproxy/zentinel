@@ -1,0 +1,89 @@
+// Test configuration for WAF agent config block
+// Tests that the proxy sends Configure event to agent
+
+server {
+    worker-threads 2
+    max-connections 1000
+    graceful-shutdown-timeout-secs 5
+}
+
+listeners {
+    listener "http" {
+        address "127.0.0.1:18080"
+        protocol "http"
+        request-timeout-secs 30
+    }
+}
+
+filters {
+    filter "waf-filter" {
+        type "agent"
+        agent "waf-agent"
+        timeout-ms 200
+        failure-mode "closed"
+    }
+}
+
+routes {
+    // All traffic goes through WAF
+    route "default" {
+        priority "low"
+        matches {
+            path-prefix "/"
+        }
+        upstream "test-backend"
+        filters "waf-filter"
+        policies {
+            failure-mode "closed"
+        }
+    }
+}
+
+upstreams {
+    upstream "test-backend" {
+        target "httpbin.org:80" weight=1
+        load-balancing "round_robin"
+    }
+}
+
+agents {
+    agent "waf-agent" type="waf" {
+        unix-socket "/tmp/sentinel-waf-e2e-test.sock"
+        events "request_headers" "request_body"
+        timeout-ms 200
+        failure-mode "closed"
+
+        // Config block - sent to agent via Configure event
+        config {
+            paranoia-level 2
+            sqli #true
+            xss #true
+            path-traversal #true
+            command-injection #true
+            protocol #true
+            block-mode #true
+            exclude-paths "/health" "/metrics"
+            body-inspection #true
+            max-body-size 1048576
+            response-inspection #false
+        }
+    }
+}
+
+limits {
+    max-header-count 100
+    max-header-size-bytes 8192
+    max-body-size-bytes 1048576
+}
+
+observability {
+    metrics {
+        enabled #true
+        address "127.0.0.1:19090"
+        path "/metrics"
+    }
+    logging {
+        level "debug"
+        format "json"
+    }
+}

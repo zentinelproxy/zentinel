@@ -15,6 +15,9 @@ pub const DEFAULT_CONFIG_KDL: &str = r#"
 // This minimal config is used when no configuration file is provided.
 // For production use, create a configuration file with your routes and upstreams.
 
+// Configuration schema version - used for compatibility checking
+schema-version "1.0"
+
 server {
     worker-threads 0  // Auto-detect CPU cores
     max-connections 10000
@@ -142,6 +145,7 @@ use std::collections::HashMap;
 /// This serves as a fallback if KDL parsing fails for any reason.
 pub fn create_default_config() -> Config {
     Config {
+        schema_version: crate::CURRENT_SCHEMA_VERSION.to_string(),
         server: ServerConfig {
             worker_threads: 0, // Auto-detect
             max_connections: 10000,

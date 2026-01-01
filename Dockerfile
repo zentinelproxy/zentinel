@@ -125,9 +125,10 @@ COPY agents/ agents/
 RUN find . -name "main.rs" -exec touch {} \; && \
     find . -name "lib.rs" -exec touch {} \;
 
-# Build release binary with optimizations (proxy only)
-RUN cargo build --release --package sentinel-proxy && \
-    strip /app/target/release/sentinel
+# Build release binaries with optimizations
+RUN cargo build --release --package sentinel-proxy --package sentinel-echo-agent && \
+    strip /app/target/release/sentinel && \
+    strip /app/target/release/sentinel-echo-agent
 
 ################################################################################
 # Create runtime stage for the proxy
@@ -198,5 +199,22 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["sentinel", "-c", "/etc/sentinel/config.kdl"]
 
 ################################################################################
-# NOTE: Additional agents (echo, ratelimit, waf, etc.) are available as
+# Echo agent runtime stage
+FROM runtime-base AS echo-agent
+
+# Copy echo agent binary
+COPY --from=builder /app/target/release/sentinel-echo-agent /usr/local/bin/
+
+# Switch to non-root user
+USER sentinel
+
+# Environment variables
+ENV RUST_LOG=info,sentinel_echo_agent=debug \
+    SOCKET_PATH=/var/run/sentinel/echo.sock
+
+# The echo agent listens on a Unix socket
+CMD ["sentinel-echo-agent"]
+
+################################################################################
+# NOTE: Additional agents (ratelimit, waf, etc.) are available as
 # separate repositories. See https://github.com/raskell-io for community agents.

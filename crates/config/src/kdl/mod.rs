@@ -34,7 +34,7 @@ use sentinel_common::limits::Limits;
 
 use crate::observability::ObservabilityConfig;
 use crate::waf::WafConfig;
-use crate::{AgentConfig, Config};
+use crate::{AgentConfig, Config, CURRENT_SCHEMA_VERSION};
 
 // ============================================================================
 // Top-Level Document Parser
@@ -44,6 +44,7 @@ use crate::{AgentConfig, Config};
 pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
     trace!(node_count = doc.nodes().len(), "Parsing KDL document");
 
+    let mut schema_version = None;
     let mut server = None;
     let mut listeners = Vec::new();
     let mut routes = Vec::new();
@@ -61,6 +62,10 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
         trace!(node = node_name, "Processing top-level node");
 
         match node_name {
+            "schema-version" | "version" => {
+                schema_version = get_first_arg_string(node);
+                trace!(version = ?schema_version, "Parsed schema version");
+            }
             "server" => {
                 server = Some(parse_server_config(node)?);
                 trace!("Parsed server configuration");
@@ -108,7 +113,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
             other => {
                 return Err(anyhow::anyhow!(
                     "Unknown top-level configuration block: '{}'\n\
-                     Valid blocks are: server, listeners, routes, upstreams, filters, agents, waf, limits, observability, rate-limits, cache",
+                     Valid blocks are: schema-version, server, listeners, routes, upstreams, filters, agents, waf, limits, observability, rate-limits, cache",
                     other
                 ));
             }
@@ -151,6 +156,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
     );
 
     Ok(Config {
+        schema_version: schema_version.unwrap_or_else(|| CURRENT_SCHEMA_VERSION.to_string()),
         server,
         listeners,
         routes,

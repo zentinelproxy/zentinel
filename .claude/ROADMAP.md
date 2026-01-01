@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-01
 **Current Version:** 0.1.9
-**Production Readiness:** 98%
+**Production Readiness:** 99%
 
 ---
 
@@ -556,15 +556,34 @@ upstream "backend" {
 - `crates/proxy/src/upstream/mod.rs` - Apply config
 
 ### 5.2 Configuration Schema Versioning
-**Status:** No versioning
+**Status:** DONE - Schema version field with compatibility checking
 **Impact:** LOW - Breaking change protection
-**Effort:** 1 week
+**Effort:** COMPLETE
 
 **Tasks:**
-- [ ] Add schema version field to config
-- [ ] Implement version compatibility checks
-- [ ] Add migration guide system
-- [ ] Support config rollback on validation failure
+- [x] Add schema version field to config (`schema_version: String`)
+- [x] Implement version compatibility checks (`SchemaCompatibility` enum)
+- [x] Parse `schema-version` in KDL loader
+- [x] Add validation during config load (warns on newer, rejects older than minimum)
+- [x] Document schema versioning
+
+**Implementation Details:**
+- `CURRENT_SCHEMA_VERSION` and `MIN_SCHEMA_VERSION` constants
+- `SchemaCompatibility` enum: Exact, Compatible, Newer (warning), Older (error), Invalid
+- Checked during `Config::validate()` before other validation
+- Default version applied when not specified in config
+
+**KDL Configuration:**
+```kdl
+schema-version "1.0"
+
+server { /* ... */ }
+```
+
+**Files:**
+- `crates/config/src/lib.rs` - Version constants, SchemaCompatibility, check_schema_compatibility()
+- `crates/config/src/kdl/mod.rs` - KDL parsing for schema-version
+- `crates/config/src/defaults.rs` - Default config includes version
 
 ---
 

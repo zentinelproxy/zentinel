@@ -101,10 +101,21 @@ pub use sentinel_common::types::LoadBalancingAlgorithm;
 // Main Configuration Structure
 // ============================================================================
 
+/// Current schema version supported by this build
+pub const CURRENT_SCHEMA_VERSION: &str = "1.0";
+
+/// Minimum schema version supported by this build
+pub const MIN_SCHEMA_VERSION: &str = "1.0";
+
 /// Main configuration structure for Sentinel proxy
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[validate(schema(function = "validation::validate_config_semantics"))]
 pub struct Config {
+    /// Configuration schema version for compatibility checking
+    /// If not specified, defaults to current version
+    #[serde(default = "default_schema_version")]
+    pub schema_version: String,
+
     /// Global server configuration
     pub server: ServerConfig,
 
@@ -150,6 +161,108 @@ pub struct Config {
     /// Default upstream for Phase 0 testing
     #[serde(skip)]
     pub default_upstream: Option<UpstreamPeer>,
+}
+
+/// Default schema version (current version)
+fn default_schema_version() -> String {
+    CURRENT_SCHEMA_VERSION.to_string()
+}
+
+/// Schema version compatibility result
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaCompatibility {
+    /// Version matches exactly
+    Exact,
+    /// Version is compatible (within supported range)
+    Compatible,
+    /// Version is newer than supported - may have unsupported features
+    Newer { config_version: String, max_supported: String },
+    /// Version is older than minimum supported
+    Older { config_version: String, min_supported: String },
+    /// Version format is invalid
+    Invalid { config_version: String, reason: String },
+}
+
+impl SchemaCompatibility {
+    /// Returns true if the config can be loaded (Exact, Compatible, or Newer with warning)
+    pub fn is_loadable(&self) -> bool {
+        matches!(self, Self::Exact | Self::Compatible | Self::Newer { .. })
+    }
+
+    /// Returns a warning message if applicable
+    pub fn warning(&self) -> Option<String> {
+        match self {
+            Self::Newer { config_version, max_supported } => Some(format!(
+                "Config schema version {} is newer than supported version {}. Some features may not work.",
+                config_version, max_supported
+            )),
+            _ => None,
+        }
+    }
+
+    /// Returns an error message if not loadable
+    pub fn error(&self) -> Option<String> {
+        match self {
+            Self::Older { config_version, min_supported } => Some(format!(
+                "Config schema version {} is older than minimum supported version {}. Please update your configuration.",
+                config_version, min_supported
+            )),
+            Self::Invalid { config_version, reason } => Some(format!(
+                "Invalid schema version '{}': {}",
+                config_version, reason
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// Parse a version string into (major, minor) tuple
+fn parse_version(version: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = version.trim().split('.').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let major = parts[0].parse().ok()?;
+    let minor = parts[1].parse().ok()?;
+    Some((major, minor))
+}
+
+/// Check schema version compatibility
+pub fn check_schema_compatibility(config_version: &str) -> SchemaCompatibility {
+    let config_ver = match parse_version(config_version) {
+        Some(v) => v,
+        None => return SchemaCompatibility::Invalid {
+            config_version: config_version.to_string(),
+            reason: "Expected format: major.minor (e.g., '1.0')".to_string(),
+        },
+    };
+
+    let current_ver = parse_version(CURRENT_SCHEMA_VERSION).unwrap();
+    let min_ver = parse_version(MIN_SCHEMA_VERSION).unwrap();
+
+    // Check if older than minimum
+    if config_ver < min_ver {
+        return SchemaCompatibility::Older {
+            config_version: config_version.to_string(),
+            min_supported: MIN_SCHEMA_VERSION.to_string(),
+        };
+    }
+
+    // Check if newer than current
+    if config_ver > current_ver {
+        return SchemaCompatibility::Newer {
+            config_version: config_version.to_string(),
+            max_supported: CURRENT_SCHEMA_VERSION.to_string(),
+        };
+    }
+
+    // Check if exact match
+    if config_ver == current_ver {
+        return SchemaCompatibility::Exact;
+    }
+
+    // Within range
+    SchemaCompatibility::Compatible
 }
 
 // ============================================================================
@@ -302,13 +415,36 @@ impl Config {
         toml::from_str(content).context("Failed to parse TOML configuration")
     }
 
+    /// Check schema version compatibility
+    pub fn check_schema_version(&self) -> SchemaCompatibility {
+        check_schema_compatibility(&self.schema_version)
+    }
+
     /// Validate the configuration
     pub fn validate(&self) -> SentinelResult<()> {
         trace!(
             routes = self.routes.len(),
             upstreams = self.upstreams.len(),
             agents = self.agents.len(),
+            schema_version = %self.schema_version,
             "Starting configuration validation"
+        );
+
+        // Check schema version compatibility
+        let compat = self.check_schema_version();
+        if let Some(warning) = compat.warning() {
+            warn!("{}", warning);
+        }
+        if !compat.is_loadable() {
+            return Err(SentinelError::Config {
+                message: compat.error().unwrap_or_else(|| "Unknown schema version error".to_string()),
+                source: None,
+            });
+        }
+        trace!(
+            schema_version = %self.schema_version,
+            compatibility = ?compat,
+            "Schema version check passed"
         );
 
         Validate::validate(self).map_err(|e| SentinelError::Config {
@@ -445,6 +581,7 @@ impl Config {
         );
 
         Self {
+            schema_version: CURRENT_SCHEMA_VERSION.to_string(),
             server: ServerConfig {
                 worker_threads: 4,
                 max_connections: 1000,
@@ -543,5 +680,105 @@ impl Config {
     /// Get an agent by ID
     pub fn get_agent(&self, id: &str) -> Option<&AgentConfig> {
         self.agents.iter().find(|a| a.id == id)
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_version() {
+        assert_eq!(parse_version("1.0"), Some((1, 0)));
+        assert_eq!(parse_version("2.5"), Some((2, 5)));
+        assert_eq!(parse_version("10.20"), Some((10, 20)));
+        assert_eq!(parse_version("1"), None);
+        assert_eq!(parse_version("1.0.0"), None);
+        assert_eq!(parse_version("abc"), None);
+        assert_eq!(parse_version(""), None);
+    }
+
+    #[test]
+    fn test_schema_compatibility_exact() {
+        let compat = check_schema_compatibility(CURRENT_SCHEMA_VERSION);
+        assert_eq!(compat, SchemaCompatibility::Exact);
+        assert!(compat.is_loadable());
+        assert!(compat.warning().is_none());
+        assert!(compat.error().is_none());
+    }
+
+    #[test]
+    fn test_schema_compatibility_newer() {
+        let compat = check_schema_compatibility("99.0");
+        assert!(matches!(compat, SchemaCompatibility::Newer { .. }));
+        assert!(compat.is_loadable()); // Newer versions are loadable with warning
+        assert!(compat.warning().is_some());
+        assert!(compat.error().is_none());
+    }
+
+    #[test]
+    fn test_schema_compatibility_older() {
+        // This test assumes MIN_SCHEMA_VERSION is "1.0"
+        let compat = check_schema_compatibility("0.5");
+        assert!(matches!(compat, SchemaCompatibility::Older { .. }));
+        assert!(!compat.is_loadable());
+        assert!(compat.warning().is_none());
+        assert!(compat.error().is_some());
+    }
+
+    #[test]
+    fn test_schema_compatibility_invalid() {
+        let compat = check_schema_compatibility("not-a-version");
+        assert!(matches!(compat, SchemaCompatibility::Invalid { .. }));
+        assert!(!compat.is_loadable());
+        assert!(compat.error().is_some());
+
+        let compat = check_schema_compatibility("1.0.0");
+        assert!(matches!(compat, SchemaCompatibility::Invalid { .. }));
+    }
+
+    #[test]
+    fn test_default_schema_version() {
+        let config = Config::default_for_testing();
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_kdl_with_schema_version() {
+        let kdl = r#"
+            schema-version "1.0"
+            server {
+                worker-threads 4
+            }
+            listeners {
+                listener "http" {
+                    address "0.0.0.0:8080"
+                    protocol "http"
+                }
+            }
+        "#;
+        let config = Config::from_kdl(kdl).unwrap();
+        assert_eq!(config.schema_version, "1.0");
+    }
+
+    #[test]
+    fn test_kdl_without_schema_version_uses_default() {
+        let kdl = r#"
+            server {
+                worker-threads 4
+            }
+            listeners {
+                listener "http" {
+                    address "0.0.0.0:8080"
+                    protocol "http"
+                }
+            }
+        "#;
+        let config = Config::from_kdl(kdl).unwrap();
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     }
 }
