@@ -148,8 +148,8 @@ listener "https" {
 - [x] Hot-path logging optimization (INFO→DEBUG, 40% improvement)
 - [x] Soak tests for memory leaks (**PASSED** - 1-hour test, no leaks detected)
 - [x] Chaos tests (agent crashes, upstream failures, network partitions)
-- [ ] Concurrent reload tests (requests in-flight during config change)
-- [ ] TLS certificate rotation tests
+- [x] Concurrent reload tests (requests in-flight during config change)
+- [x] TLS certificate rotation tests
 - [ ] Add CI/CD gates for performance regressions
 
 **Soak Testing Infrastructure:**
@@ -193,6 +193,29 @@ cd tests/chaos && make test-agent-crash  # Individual scenario
 | Resilience | `fail-closed` | Traffic blocked when agent fails |
 | Resilience | `health-recovery` | Detection of backend recovery |
 | Resilience | `memory-stability` | No memory leaks during 20 chaos cycles |
+
+**Concurrent Reload Testing:**
+- `crates/proxy/src/reload/mod.rs` - Unit tests for concurrent config access
+- `tests/scenarios/test_concurrent_reload.sh` - Integration test for live reload
+
+Unit tests validate:
+- Concurrent config reads during reload (no blocking/panics)
+- Multiple simultaneous reloads (atomic swap correctness)
+- Config visibility after reload (immediate propagation)
+- Rapid successive reloads (stability under rapid changes)
+- Rollback preserves previous config
+- Reload events broadcast correctly
+- Graceful coordinator request tracking and drain timeout
+
+**TLS Certificate Rotation Testing:**
+- `crates/proxy/tests/tls_sni_test.rs` - Unit tests for cert hot-reload
+- `tests/scenarios/test_tls_cert_rotation.sh` - Integration test for SIGHUP rotation
+
+Unit tests validate:
+- Certificate file swap and reload picks up new certs
+- Graceful failure with invalid replacement certs
+- Missing file handling during reload
+- CertificateReloader multi-listener management
 
 **Soak Test Results (2026-01-01):**
 

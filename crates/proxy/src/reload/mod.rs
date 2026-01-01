@@ -762,4 +762,368 @@ routes {
             "Successful reload should be recorded"
         );
     }
+
+    // ========================================================================
+    // Concurrent Reload Tests
+    // ========================================================================
+
+    /// Helper to create a valid config file with a specified route count
+    fn write_config_with_routes(path: &Path, route_count: usize) {
+        let mut routes = String::new();
+        for i in 0..route_count {
+            routes.push_str(&format!(
+                r#"
+    route "route{i}" {{
+        priority "medium"
+        matches {{
+            path-prefix "/route{i}/"
+        }}
+        upstream "backend"
+    }}
+"#
+            ));
+        }
+
+        let config = format!(
+            r#"
+server {{
+    worker-threads 4
+}}
+
+listeners {{
+    listener "http" {{
+        address "0.0.0.0:8080"
+        protocol "http"
+    }}
+}}
+
+upstreams {{
+    upstream "backend" {{
+        target "127.0.0.1:3000"
+    }}
+}}
+
+routes {{
+{routes}
+}}
+"#
+        );
+
+        std::fs::write(path, config).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_config_reads_during_reload() {
+        // Test that config reads don't block or panic during reload
+        let initial_config = Config::default_for_testing();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.kdl");
+
+        write_config_with_routes(&config_path, 5);
+
+        let manager = Arc::new(
+            ConfigManager::new(&config_path, initial_config)
+                .await
+                .unwrap(),
+        );
+
+        // Spawn multiple readers that continuously read config
+        let mut readers = Vec::new();
+        for _ in 0..10 {
+            let manager_clone = Arc::clone(&manager);
+            readers.push(tokio::spawn(async move {
+                let mut read_count = 0;
+                for _ in 0..100 {
+                    let config = manager_clone.current();
+                    // Access config to ensure it's valid
+                    let _ = config.routes.len();
+                    read_count += 1;
+                    tokio::task::yield_now().await;
+                }
+                read_count
+            }));
+        }
+
+        // Simultaneously trigger reload
+        let manager_reload = Arc::clone(&manager);
+        let reload_handle = tokio::spawn(async move {
+            manager_reload.reload(ReloadTrigger::Manual).await
+        });
+
+        // Wait for all readers and the reload
+        let mut total_reads = 0;
+        for reader in readers {
+            total_reads += reader.await.unwrap();
+        }
+
+        let reload_result = reload_handle.await.unwrap();
+        assert!(reload_result.is_ok(), "Reload should succeed");
+        assert_eq!(total_reads, 1000, "All reads should complete");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_concurrent_reloads() {
+        // Test that multiple simultaneous reloads don't cause panics or corruption
+        let initial_config = Config::default_for_testing();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.kdl");
+
+        write_config_with_routes(&config_path, 3);
+
+        let manager = Arc::new(
+            ConfigManager::new(&config_path, initial_config)
+                .await
+                .unwrap(),
+        );
+
+        // Trigger multiple reloads concurrently
+        let mut reload_handles = Vec::new();
+        for i in 0..5 {
+            let manager_clone = Arc::clone(&manager);
+            let trigger = if i % 2 == 0 {
+                ReloadTrigger::Manual
+            } else {
+                ReloadTrigger::Signal
+            };
+            reload_handles.push(tokio::spawn(async move {
+                manager_clone.reload(trigger).await
+            }));
+        }
+
+        // All reloads should complete (some may fail due to racing, but no panics)
+        let mut success_count = 0;
+        for handle in reload_handles {
+            if handle.await.unwrap().is_ok() {
+                success_count += 1;
+            }
+        }
+
+        // At least one reload should succeed
+        assert!(success_count >= 1, "At least one reload should succeed");
+
+        // Stats should reflect all attempts
+        let total = manager
+            .stats()
+            .total_reloads
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(total, 5, "All reload attempts should be counted");
+    }
+
+    #[tokio::test]
+    async fn test_config_visibility_after_reload() {
+        // Test that new config is immediately visible after reload completes
+        let initial_config = Config::default_for_testing();
+        let initial_route_count = initial_config.routes.len();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.kdl");
+
+        // Start with 2 routes
+        write_config_with_routes(&config_path, 2);
+
+        let manager = ConfigManager::new(&config_path, initial_config)
+            .await
+            .unwrap();
+
+        // Verify initial config
+        assert_eq!(manager.current().routes.len(), initial_route_count);
+
+        // Reload to get 2 routes from file
+        manager.reload(ReloadTrigger::Manual).await.unwrap();
+        assert_eq!(manager.current().routes.len(), 2);
+
+        // Update file to 5 routes and reload
+        write_config_with_routes(&config_path, 5);
+        manager.reload(ReloadTrigger::Manual).await.unwrap();
+        assert_eq!(
+            manager.current().routes.len(),
+            5,
+            "New config should be visible immediately after reload"
+        );
+
+        // Update file to 1 route and reload
+        write_config_with_routes(&config_path, 1);
+        manager.reload(ReloadTrigger::Manual).await.unwrap();
+        assert_eq!(
+            manager.current().routes.len(),
+            1,
+            "Config changes should be visible after each reload"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rapid_successive_reloads() {
+        // Test rapid-fire reloads don't cause issues
+        let initial_config = Config::default_for_testing();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.kdl");
+
+        write_config_with_routes(&config_path, 3);
+
+        let manager = ConfigManager::new(&config_path, initial_config)
+            .await
+            .unwrap();
+
+        // Perform 20 rapid reloads
+        for i in 0..20 {
+            // Alternate between different route counts
+            write_config_with_routes(&config_path, (i % 5) + 1);
+            let result = manager.reload(ReloadTrigger::Manual).await;
+            assert!(result.is_ok(), "Reload {} should succeed", i);
+        }
+
+        // Verify final state
+        let stats = manager.stats();
+        assert_eq!(
+            stats
+                .successful_reloads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            20,
+            "All 20 reloads should succeed"
+        );
+        assert_eq!(
+            stats
+                .failed_reloads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "No reloads should fail"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rollback_preserves_previous_config() {
+        // Test that rollback correctly restores previous configuration
+        let initial_config = Config::default_for_testing();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.kdl");
+
+        // Start with 3 routes
+        write_config_with_routes(&config_path, 3);
+
+        let manager = ConfigManager::new(&config_path, initial_config)
+            .await
+            .unwrap();
+
+        // First reload to establish baseline
+        manager.reload(ReloadTrigger::Manual).await.unwrap();
+        assert_eq!(manager.current().routes.len(), 3);
+
+        // Second reload with 5 routes
+        write_config_with_routes(&config_path, 5);
+        manager.reload(ReloadTrigger::Manual).await.unwrap();
+        assert_eq!(manager.current().routes.len(), 5);
+
+        // Rollback should restore 3 routes
+        manager
+            .rollback("Testing rollback".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.current().routes.len(),
+            3,
+            "Rollback should restore previous config"
+        );
+
+        // Verify rollback was recorded
+        assert_eq!(
+            manager
+                .stats()
+                .rollbacks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "Rollback should be recorded in stats"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reload_events_broadcast() {
+        // Test that reload events are properly broadcast to subscribers
+        let initial_config = Config::default_for_testing();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.kdl");
+
+        write_config_with_routes(&config_path, 2);
+
+        let manager = ConfigManager::new(&config_path, initial_config)
+            .await
+            .unwrap();
+
+        // Subscribe to reload events
+        let mut receiver = manager.subscribe();
+
+        // Trigger reload
+        manager.reload(ReloadTrigger::Manual).await.unwrap();
+
+        // Collect events (non-blocking with timeout)
+        let mut events = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
+                Ok(Ok(event)) => events.push(event),
+                _ => break,
+            }
+        }
+
+        // Verify we received the expected events
+        assert!(events.len() >= 2, "Should receive at least Started and Applied/Validated events");
+
+        // Check for Started event
+        assert!(
+            events.iter().any(|e| matches!(e, ReloadEvent::Started { .. })),
+            "Should receive Started event"
+        );
+
+        // Check for Applied event (successful reload)
+        assert!(
+            events.iter().any(|e| matches!(e, ReloadEvent::Applied { .. })),
+            "Should receive Applied event on success"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_graceful_coordinator_with_reload() {
+        // Test that GracefulReloadCoordinator correctly tracks requests during reload
+        let coordinator = GracefulReloadCoordinator::new(Duration::from_secs(5));
+
+        // Simulate requests starting
+        coordinator.inc_requests();
+        coordinator.inc_requests();
+        coordinator.inc_requests();
+        assert_eq!(coordinator.active_count(), 3);
+
+        // Simulate one request completing during reload prep
+        coordinator.dec_requests();
+        assert_eq!(coordinator.active_count(), 2);
+
+        // Start drain in background
+        let coord_clone = Arc::new(coordinator);
+        let coord_for_drain = Arc::clone(&coord_clone);
+        let drain_handle = tokio::spawn(async move {
+            coord_for_drain.wait_for_drain().await
+        });
+
+        // Simulate remaining requests completing
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        coord_clone.dec_requests();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        coord_clone.dec_requests();
+
+        // Drain should complete successfully
+        let drained = drain_handle.await.unwrap();
+        assert!(drained, "All requests should drain successfully");
+    }
+
+    #[tokio::test]
+    async fn test_graceful_coordinator_drain_timeout() {
+        // Test that drain times out correctly when requests don't complete
+        let coordinator = GracefulReloadCoordinator::new(Duration::from_millis(200));
+
+        // Simulate stuck requests
+        coordinator.inc_requests();
+        coordinator.inc_requests();
+
+        // Start drain - should timeout
+        let drained = coordinator.wait_for_drain().await;
+        assert!(!drained, "Drain should timeout with stuck requests");
+        assert_eq!(coordinator.active_count(), 2, "Requests should still be tracked");
+    }
 }
