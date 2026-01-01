@@ -123,10 +123,24 @@ pub struct AgentConfig {
     /// when the agent connects. The structure depends on the agent type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
+
+    /// Maximum concurrent calls to this agent
+    ///
+    /// Limits the number of simultaneous requests that can be processed by this agent.
+    /// This provides per-agent queue isolation to prevent a slow agent from affecting
+    /// other agents (noisy neighbor problem).
+    ///
+    /// Default: 100 concurrent calls per agent
+    #[serde(default = "default_max_concurrent_calls")]
+    pub max_concurrent_calls: usize,
 }
 
 fn default_chunk_timeout() -> u64 {
     5000 // 5 seconds
+}
+
+fn default_max_concurrent_calls() -> usize {
+    100 // Per-agent concurrency limit
 }
 
 // ============================================================================

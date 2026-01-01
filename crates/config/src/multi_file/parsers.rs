@@ -275,6 +275,9 @@ pub(super) fn parse_agent(node: &KdlNode) -> Result<AgentConfig> {
         response_body_mode: Default::default(),
         chunk_timeout_ms: 5000,
         config: None,
+        max_concurrent_calls: get_int_entry(node, "max-concurrent-calls")
+            .map(|v| v as usize)
+            .unwrap_or(100),
     })
 }
 

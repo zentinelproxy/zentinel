@@ -35,28 +35,23 @@ pub struct AgentManager {
     circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
     /// Global agent metrics
     metrics: Arc<AgentMetrics>,
-    /// Maximum concurrent agent calls
-    #[allow(dead_code)]
-    max_concurrent_calls: usize,
-    /// Global semaphore for agent calls
-    call_semaphore: Arc<Semaphore>,
+    /// Per-agent semaphores for queue isolation (prevents noisy neighbor problem)
+    agent_semaphores: Arc<RwLock<HashMap<String, Arc<Semaphore>>>>,
 }
 
 impl AgentManager {
     /// Create new agent manager.
-    pub async fn new(
-        agents: Vec<AgentConfig>,
-        max_concurrent_calls: usize,
-    ) -> SentinelResult<Self> {
-        info!(
-            agent_count = agents.len(),
-            max_concurrent_calls = max_concurrent_calls,
-            "Creating agent manager"
-        );
+    ///
+    /// Each agent gets its own semaphore for queue isolation, preventing a slow
+    /// agent from affecting other agents (noisy neighbor problem). The concurrency
+    /// limit is configured per-agent via `max_concurrent_calls` in the agent config.
+    pub async fn new(agents: Vec<AgentConfig>) -> SentinelResult<Self> {
+        info!(agent_count = agents.len(), "Creating agent manager");
 
         let mut agent_map = HashMap::new();
         let mut pools = HashMap::new();
         let mut breakers = HashMap::new();
+        let mut semaphores = HashMap::new();
 
         for config in agents {
             debug!(
@@ -64,6 +59,7 @@ impl AgentManager {
                 transport = ?config.transport,
                 timeout_ms = config.timeout_ms,
                 failure_mode = ?config.failure_mode,
+                max_concurrent_calls = config.max_concurrent_calls,
                 "Configuring agent"
             );
 
@@ -81,9 +77,13 @@ impl AgentManager {
                     .unwrap_or_else(CircuitBreakerConfig::default),
             ));
 
+            // Create per-agent semaphore for queue isolation
+            let semaphore = Arc::new(Semaphore::new(config.max_concurrent_calls));
+
             trace!(
                 agent_id = %config.id,
-                "Creating agent instance"
+                max_concurrent_calls = config.max_concurrent_calls,
+                "Creating agent instance with isolated queue"
             );
 
             let agent = Arc::new(Agent::new(
@@ -95,6 +95,7 @@ impl AgentManager {
             agent_map.insert(config.id.clone(), agent);
             pools.insert(config.id.clone(), pool);
             breakers.insert(config.id.clone(), circuit_breaker);
+            semaphores.insert(config.id.clone(), semaphore);
 
             debug!(
                 agent_id = %config.id,
@@ -104,7 +105,7 @@ impl AgentManager {
 
         info!(
             configured_agents = agent_map.len(),
-            "Agent manager created successfully"
+            "Agent manager created successfully with per-agent queue isolation"
         );
 
         Ok(Self {
@@ -112,8 +113,7 @@ impl AgentManager {
             connection_pools: Arc::new(RwLock::new(pools)),
             circuit_breakers: Arc::new(RwLock::new(breakers)),
             metrics: Arc::new(AgentMetrics::default()),
-            max_concurrent_calls,
-            call_semaphore: Arc::new(Semaphore::new(max_concurrent_calls)),
+            agent_semaphores: Arc::new(RwLock::new(semaphores)),
         })
     }
 
@@ -463,24 +463,41 @@ impl AgentManager {
                 "Processing event through agent"
             );
 
-            // Acquire semaphore permit
-            trace!(
-                correlation_id = %ctx.correlation_id,
-                agent_id = %agent.id(),
-                "Acquiring agent call semaphore permit"
-            );
-            let _permit = self.call_semaphore.acquire().await.map_err(|_| {
-                error!(
-                    correlation_id = %ctx.correlation_id,
-                    agent_id = %agent.id(),
-                    "Failed to acquire agent call semaphore permit"
-                );
-                SentinelError::Internal {
-                    message: "Failed to acquire agent call permit".to_string(),
-                    correlation_id: Some(ctx.correlation_id.to_string()),
-                    source: None,
+            // Acquire per-agent semaphore permit (queue isolation)
+            let semaphores = self.agent_semaphores.read().await;
+            let agent_semaphore = semaphores.get(agent.id()).cloned();
+            drop(semaphores); // Release lock before awaiting
+
+            let _permit = match agent_semaphore {
+                Some(semaphore) => {
+                    trace!(
+                        correlation_id = %ctx.correlation_id,
+                        agent_id = %agent.id(),
+                        "Acquiring per-agent semaphore permit"
+                    );
+                    Some(semaphore.acquire_owned().await.map_err(|_| {
+                        error!(
+                            correlation_id = %ctx.correlation_id,
+                            agent_id = %agent.id(),
+                            "Failed to acquire agent call semaphore permit"
+                        );
+                        SentinelError::Internal {
+                            message: "Failed to acquire agent call permit".to_string(),
+                            correlation_id: Some(ctx.correlation_id.to_string()),
+                            source: None,
+                        }
+                    })?)
                 }
-            })?;
+                None => {
+                    // No semaphore found (shouldn't happen, but fail gracefully)
+                    warn!(
+                        correlation_id = %ctx.correlation_id,
+                        agent_id = %agent.id(),
+                        "No semaphore found for agent, proceeding without queue isolation"
+                    );
+                    None
+                }
+            };
 
             // Check circuit breaker
             if !agent.circuit_breaker().is_closed().await {
@@ -646,19 +663,38 @@ impl AgentManager {
                 "Processing event through agent with filter failure mode"
             );
 
-            // Acquire semaphore permit
-            let _permit = self.call_semaphore.acquire().await.map_err(|_| {
-                error!(
+            // Acquire per-agent semaphore permit (queue isolation)
+            let semaphores = self.agent_semaphores.read().await;
+            let agent_semaphore = semaphores.get(agent.id()).cloned();
+            drop(semaphores); // Release lock before awaiting
+
+            let _permit = if let Some(semaphore) = agent_semaphore {
+                trace!(
                     correlation_id = %ctx.correlation_id,
                     agent_id = %agent.id(),
-                    "Failed to acquire agent call semaphore permit"
+                    "Acquiring per-agent semaphore permit"
                 );
-                SentinelError::Internal {
-                    message: "Failed to acquire agent call permit".to_string(),
-                    correlation_id: Some(ctx.correlation_id.to_string()),
-                    source: None,
-                }
-            })?;
+                Some(semaphore.acquire_owned().await.map_err(|_| {
+                    error!(
+                        correlation_id = %ctx.correlation_id,
+                        agent_id = %agent.id(),
+                        "Failed to acquire agent call semaphore permit"
+                    );
+                    SentinelError::Internal {
+                        message: "Failed to acquire agent call permit".to_string(),
+                        correlation_id: Some(ctx.correlation_id.to_string()),
+                        source: None,
+                    }
+                })?)
+            } else {
+                // No semaphore found (shouldn't happen, but fail gracefully)
+                warn!(
+                    correlation_id = %ctx.correlation_id,
+                    agent_id = %agent.id(),
+                    "No semaphore found for agent, proceeding without queue isolation"
+                );
+                None
+            };
 
             // Check circuit breaker
             if !agent.circuit_breaker().is_closed().await {

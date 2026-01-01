@@ -160,8 +160,8 @@ impl SentinelProxy {
             None, // Will be linked to active health checkers
         ));
 
-        // Create agent manager
-        let agent_manager = Arc::new(AgentManager::new(config.agents.clone(), 1000).await?);
+        // Create agent manager (per-agent queue isolation)
+        let agent_manager = Arc::new(AgentManager::new(config.agents.clone()).await?);
         agent_manager.initialize().await?;
 
         // Create metrics collector

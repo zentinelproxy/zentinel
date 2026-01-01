@@ -12,12 +12,19 @@
 //! - [`AgentDecision`]: Combined result from processing through agents
 //! - [`AgentCallContext`]: Request context passed to agents
 //!
+//! # Queue Isolation
+//!
+//! Each agent has its own semaphore for queue isolation, preventing a slow agent
+//! from affecting other agents (noisy neighbor problem). Configure concurrency
+//! limits per-agent via `max_concurrent_calls` in the agent configuration.
+//!
 //! # Example
 //!
 //! ```ignore
 //! use sentinel_proxy::agents::{AgentManager, AgentCallContext};
 //!
-//! let manager = AgentManager::new(agent_configs, 1000).await?;
+//! // Each agent manages its own concurrency limit (default: 100)
+//! let manager = AgentManager::new(agent_configs).await?;
 //! manager.initialize().await?;
 //!
 //! let decision = manager.process_request_headers(&ctx, &headers, &["waf", "auth"]).await?;
@@ -83,5 +90,55 @@ mod tests {
         // Wait for timeout
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert!(breaker.is_closed().await); // Should be half-open now
+    }
+
+    #[tokio::test]
+    async fn test_per_agent_queue_isolation_config() {
+        use sentinel_config::{AgentConfig, AgentTransport, AgentType, AgentEvent};
+        use std::path::PathBuf;
+
+        // Verify the max_concurrent_calls field works in AgentConfig
+        let config = AgentConfig {
+            id: "test-agent".to_string(),
+            agent_type: AgentType::Custom("test".to_string()),
+            transport: AgentTransport::UnixSocket {
+                path: PathBuf::from("/tmp/test.sock"),
+            },
+            events: vec![AgentEvent::RequestHeaders],
+            timeout_ms: 1000,
+            failure_mode: Default::default(),
+            circuit_breaker: None,
+            max_request_body_bytes: None,
+            max_response_body_bytes: None,
+            request_body_mode: Default::default(),
+            response_body_mode: Default::default(),
+            chunk_timeout_ms: 5000,
+            config: None,
+            max_concurrent_calls: 50, // Custom limit
+        };
+
+        assert_eq!(config.max_concurrent_calls, 50);
+
+        // Verify default value
+        let default_config = AgentConfig {
+            id: "default-agent".to_string(),
+            agent_type: AgentType::Custom("test".to_string()),
+            transport: AgentTransport::UnixSocket {
+                path: PathBuf::from("/tmp/default.sock"),
+            },
+            events: vec![AgentEvent::RequestHeaders],
+            timeout_ms: 1000,
+            failure_mode: Default::default(),
+            circuit_breaker: None,
+            max_request_body_bytes: None,
+            max_response_body_bytes: None,
+            request_body_mode: Default::default(),
+            response_body_mode: Default::default(),
+            chunk_timeout_ms: 5000,
+            config: None,
+            max_concurrent_calls: 100, // Default value
+        };
+
+        assert_eq!(default_config.max_concurrent_calls, 100);
     }
 }

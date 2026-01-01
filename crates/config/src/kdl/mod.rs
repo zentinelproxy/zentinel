@@ -336,6 +336,7 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
     let mut response_body_mode = BodyStreamingMode::Buffer;
     let mut chunk_timeout_ms = 5000u64;
     let mut config: Option<serde_json::Value> = None;
+    let mut max_concurrent_calls = 100usize; // Per-agent concurrency limit
 
     for child in children.nodes() {
         match child.name().value() {
@@ -441,6 +442,13 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
             "config" => {
                 config = Some(kdl_to_json(child)?);
             }
+            "max-concurrent-calls" => {
+                if let Some(entry) = child.entries().first() {
+                    if let Some(v) = entry.value().as_integer() {
+                        max_concurrent_calls = v as usize;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -471,6 +479,7 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
         response_body_mode,
         chunk_timeout_ms,
         config,
+        max_concurrent_calls,
     })
 }
 
@@ -1553,5 +1562,54 @@ mod tests {
         assert_eq!(cache.backend, CacheBackend::Memory);
         assert_eq!(cache.max_size_bytes, 209715200);
         assert_eq!(cache.lock_timeout_secs, 15);
+    }
+
+    #[test]
+    fn test_parse_agent_max_concurrent_calls() {
+        let kdl = r#"
+            server {
+                worker-threads 4
+            }
+
+            listeners {
+                listener "http" {
+                    address "0.0.0.0:8080"
+                    protocol "http"
+                }
+            }
+
+            agents {
+                agent "waf" type="custom" {
+                    unix-socket path="/tmp/waf.sock"
+                    events "request_headers" "request_body"
+                    max-concurrent-calls 50
+                }
+                agent "auth" type="auth" {
+                    unix-socket path="/tmp/auth.sock"
+                    events "request_headers"
+                }
+            }
+
+            routes {
+                route "default" {
+                    match {
+                        path-prefix "/"
+                    }
+                    builtin "status"
+                }
+            }
+        "#;
+
+        let config = Config::from_kdl(kdl).unwrap();
+
+        assert_eq!(config.agents.len(), 2);
+
+        // Verify custom max-concurrent-calls
+        let waf_agent = config.agents.iter().find(|a| a.id == "waf").unwrap();
+        assert_eq!(waf_agent.max_concurrent_calls, 50);
+
+        // Verify default max-concurrent-calls (100)
+        let auth_agent = config.agents.iter().find(|a| a.id == "auth").unwrap();
+        assert_eq!(auth_agent.max_concurrent_calls, 100);
     }
 }
