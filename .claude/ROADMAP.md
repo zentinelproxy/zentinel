@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-01
 **Current Version:** 0.1.9
-**Production Readiness:** 92%
+**Production Readiness:** 95%
 
 ---
 
@@ -33,7 +33,7 @@ This roadmap outlines the path from current state to production-ready, prioritiz
 - ~~Metrics collected but not exposed~~ → **DONE**: /metrics endpoint available
 - ~~No distributed rate limiting~~ → **DONE**: Redis backend with feature flag
 - ~~No production load testing~~ → **DONE**: 23K RPS validated (native)
-- No WAF reference implementation
+- ~~No WAF reference implementation~~ → **DONE**: sentinel-waf-agent crate
 - ~~No soak testing~~ → **DONE**: 1-hour test passed (1M requests, no memory leaks)
 
 ---
@@ -303,22 +303,22 @@ exceeds Envoy performance.
 ## Priority 2: Security Hardening
 
 ### 2.1 WAF Agent Reference Implementation
-**Status:** Protocol ready, no reference engine
-**Impact:** HIGH - Security-first architecture incomplete
-**Effort:** 3-4 weeks
+**Status:** DONE - Reference implementation complete
+**Impact:** HIGH - Security-first architecture complete
+**Effort:** COMPLETE
 
 **Tasks:**
-- [ ] Create `sentinel-waf-agent` crate
-- [ ] Integrate ModSecurity or compatible CRS engine
-- [ ] Implement request header inspection
-- [ ] Implement request body inspection (with size limits)
-- [ ] Add OWASP CRS rule set support
-- [ ] Create audit logging for WAF decisions
-- [ ] Add rule exclusion/tuning workflow
-- [ ] Document WAF deployment patterns
+- [x] Create `sentinel-waf-agent` crate
+- [x] Integrate ModSecurity or compatible CRS engine
+- [x] Implement request header inspection
+- [x] Implement request body inspection (with size limits)
+- [x] Add OWASP CRS rule set support
+- [x] Create audit logging for WAF decisions
+- [x] Add rule exclusion/tuning workflow
+- [x] Document WAF deployment patterns
 
 **Files:**
-- `crates/waf-agent/` - New crate
+- `crates/waf-agent/` - WAF agent crate
 - `examples/waf-config.kdl` - Example configuration
 
 ### 2.2 Request Body Inspection
@@ -714,10 +714,10 @@ The following agents were analyzed and confirmed to be correctly positioned as e
 - [x] Zero-downtime config reload verified
 
 ### For Security-First Deployment (M3)
-- [ ] WAF agent blocking OWASP Top 10 attacks
-- [ ] Request body inspection for SQL injection/XSS
-- [ ] Audit logs capturing all security decisions
-- [ ] CRS regression tests passing
+- [x] WAF agent blocking OWASP Top 10 attacks
+- [x] Request body inspection for SQL injection/XSS
+- [x] Audit logs capturing all security decisions
+- [x] CRS regression tests passing
 
 ### For Enterprise Deployment (M5)
 - [ ] Multi-instance deployment with shared rate limits
