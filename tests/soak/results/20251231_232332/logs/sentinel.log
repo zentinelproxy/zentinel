@@ -1,0 +1,65 @@
+[2m2025-12-31T22:23:35.018174Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Loading configuration from: ./soak-config.kdl
+[2m2025-12-31T22:23:35.019210Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Starting Sentinel Proxy
+[2m2025-12-31T22:23:35.020774Z[0m [32m INFO[0m [2msentinel_config[0m[2m:[0m Configuration loaded successfully [3mpath[0m[2m=[0m./soak-config.kdl [3mroutes[0m[2m=[0m2 [3mupstreams[0m[2m=[0m1 [3magents[0m[2m=[0m0 [3mlisteners[0m[2m=[0m1
+[2m2025-12-31T22:23:35.020974Z[0m [32m INFO[0m [2msentinel_proxy::reload[0m[2m:[0m Initializing configuration manager [3mconfig_path[0m[2m=[0m./soak-config.kdl [3mroute_count[0m[2m=[0m2 [3mupstream_count[0m[2m=[0m1 [3mlistener_count[0m[2m=[0m1
+[2m2025-12-31T22:23:35.021001Z[0m [32m INFO[0m [2msentinel_proxy::reload[0m[2m:[0m Adding configuration validator: RouteValidator
+[2m2025-12-31T22:23:35.021121Z[0m [32m INFO[0m [2msentinel_proxy::reload[0m[2m:[0m Adding configuration validator: UpstreamValidator
+[2m2025-12-31T22:23:35.021261Z[0m [32m INFO[0m [2msentinel_proxy::routing[0m[2m:[0m Initializing route matcher [3mroute_count[0m[2m=[0m2 [3mdefault_route[0m[2m=[0mNone
+[2m2025-12-31T22:23:35.021428Z[0m [32m INFO[0m [2msentinel_proxy::routing[0m[2m:[0m Route matcher initialized [3mcompiled_routes[0m[2m=[0m2 [3mneeds_headers[0m[2m=[0mfalse [3mneeds_query_params[0m[2m=[0mfalse
+[2m2025-12-31T22:23:35.021442Z[0m [32m INFO[0m [2msentinel_proxy::upstream[0m[2m:[0m Creating upstream pool [3mupstream_id[0m[2m=[0mbackend [3mtarget_count[0m[2m=[0m1 [3malgorithm[0m[2m=[0mRoundRobin
+[2m2025-12-31T22:23:35.021859Z[0m [32m INFO[0m [2msentinel_proxy::upstream[0m[2m:[0m Upstream pool created successfully [3mupstream_id[0m[2m=[0mbackend [3mtarget_count[0m[2m=[0m1
+[2m2025-12-31T22:23:35.021990Z[0m [32m INFO[0m [2msentinel_proxy::upstream::health[0m[2m:[0m Creating active health checker [3mupstream_id[0m[2m=[0mbackend [3mcheck_type[0m[2m=[0mHttp { path: "/health", expected_status: 200, host: None } [3minterval_secs[0m[2m=[0m10
+[2m2025-12-31T22:23:35.022943Z[0m [32m INFO[0m [2msentinel_proxy::upstream::health[0m[2m:[0m Added health checker to runner [3mupstream_id[0m[2m=[0mbackend [3minterval_secs[0m[2m=[0m10
+[2m2025-12-31T22:23:35.022950Z[0m [32m INFO[0m [2msentinel_proxy::agents::manager[0m[2m:[0m Creating agent manager [3magent_count[0m[2m=[0m0 [3mmax_concurrent_calls[0m[2m=[0m1000
+[2m2025-12-31T22:23:35.022953Z[0m [32m INFO[0m [2msentinel_proxy::agents::manager[0m[2m:[0m Agent manager created successfully [3mconfigured_agents[0m[2m=[0m0
+[2m2025-12-31T22:23:35.022957Z[0m [32m INFO[0m [2msentinel_proxy::agents::manager[0m[2m:[0m Initializing agent connections [3magent_count[0m[2m=[0m0
+[2m2025-12-31T22:23:35.022969Z[0m [32m INFO[0m [2msentinel_proxy::agents::manager[0m[2m:[0m Agent initialization complete [3minitialized[0m[2m=[0m0 [3mfailed[0m[2m=[0m0 [3mtotal[0m[2m=[0m0
+[2m2025-12-31T22:23:35.023554Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Initializing components for route: api with service type: Web
+[2m2025-12-31T22:23:35.023653Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Initializing components for route: default with service type: Web
+[2m2025-12-31T22:23:35.023669Z[0m [32m INFO[0m [2msentinel_proxy::reload[0m[2m:[0m Adding reload hook: audit_reload_hook
+[2m2025-12-31T22:23:35.023676Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Started active health checking for 1 upstreams
+[2m2025-12-31T22:23:35.023729Z[0m [32m INFO[0m [2msentinel_proxy::upstream::health[0m[2m:[0m Starting health check runner [3mchecker_count[0m[2m=[0m1
+[2m2025-12-31T22:23:35.023966Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Started periodic cleanup task [3minterval_secs[0m[2m=[0m300
+[2m2025-12-31T22:23:35.023970Z[0m [32m INFO[0m [2msentinel_proxy::app[0m[2m:[0m Application marked as ready
+[2m2025-12-31T22:23:35.024034Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Configuring Pingora server [3mworker_threads[0m[2m=[0m2 [3mupstream_pool_size[0m[2m=[0m256
+[2m2025-12-31T22:23:35.024038Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Bootstrap starting
+[2m2025-12-31T22:23:35.024050Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Bootstrap done
+[2m2025-12-31T22:23:35.024065Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m HTTP listening on: 0.0.0.0:8080
+[2m2025-12-31T22:23:35.024069Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Sentinel proxy started successfully
+[2m2025-12-31T22:23:35.024071Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Configuration hot reload enabled (SIGHUP)
+[2m2025-12-31T22:23:35.024073Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Graceful shutdown enabled (SIGTERM/SIGINT)
+[2m2025-12-31T22:23:35.024085Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Server starting
+[2m2025-12-31T22:23:35.024087Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Server starting
+[2m2025-12-31T22:23:35.024560Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:36.026665Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:37.028776Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:38.030904Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:39.033015Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:40.034531Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:41.036647Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:42.038758Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:43.040619Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:44.043052Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:45.045165Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:46.047272Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:47.049259Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:48.051392Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:49.054158Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:50.055413Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:51.057542Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:52.059667Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:53.061786Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:54.063887Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:55.065802Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:56.067920Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:57.070046Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:58.071086Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:23:59.072874Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:24:00.075214Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:24:01.076646Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:24:02.078759Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+[2m2025-12-31T22:24:03.080870Z[0m [33m WARN[0m [2mpingora_core::listeners::l4[0m[2m:[0m 0.0.0.0:8080 is in use, will try again
+
+thread 'Pingora HTTP Proxy Service' (11257101) panicked at /Users/zara/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pingora-core-0.6.0/src/services/listening.rs:231:14:
+Failed to build listeners: Error { etype: BindError, esource: Unset, retry: Decided(false), cause: Some(Os { code: 48, kind: AddrInUse, message: "Address already in use" }), context: Some(Owned("bind() failed, after retries, 0.0.0.0:8080 still in use")) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

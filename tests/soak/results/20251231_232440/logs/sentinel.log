@@ -1,0 +1,41 @@
+[2m2025-12-31T22:24:42.470206Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Loading configuration from: ./soak-config.kdl
+[2m2025-12-31T22:24:42.471422Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Starting Sentinel Proxy
+[2m2025-12-31T22:24:42.473206Z[0m [32m INFO[0m [2msentinel_config[0m[2m:[0m Configuration loaded successfully [3mpath[0m[2m=[0m./soak-config.kdl [3mroutes[0m[2m=[0m2 [3mupstreams[0m[2m=[0m1 [3magents[0m[2m=[0m0 [3mlisteners[0m[2m=[0m1
+[2m2025-12-31T22:24:42.473417Z[0m [32m INFO[0m [2msentinel_proxy::reload[0m[2m:[0m Initializing configuration manager [3mconfig_path[0m[2m=[0m./soak-config.kdl [3mroute_count[0m[2m=[0m2 [3mupstream_count[0m[2m=[0m1 [3mlistener_count[0m[2m=[0m1
+[2m2025-12-31T22:24:42.473450Z[0m [32m INFO[0m [2msentinel_proxy::reload[0m[2m:[0m Adding configuration validator: RouteValidator
+[2m2025-12-31T22:24:42.473567Z[0m [32m INFO[0m [2msentinel_proxy::reload[0m[2m:[0m Adding configuration validator: UpstreamValidator
+[2m2025-12-31T22:24:42.473695Z[0m [32m INFO[0m [2msentinel_proxy::routing[0m[2m:[0m Initializing route matcher [3mroute_count[0m[2m=[0m2 [3mdefault_route[0m[2m=[0mNone
+[2m2025-12-31T22:24:42.473864Z[0m [32m INFO[0m [2msentinel_proxy::routing[0m[2m:[0m Route matcher initialized [3mcompiled_routes[0m[2m=[0m2 [3mneeds_headers[0m[2m=[0mfalse [3mneeds_query_params[0m[2m=[0mfalse
+[2m2025-12-31T22:24:42.473880Z[0m [32m INFO[0m [2msentinel_proxy::upstream[0m[2m:[0m Creating upstream pool [3mupstream_id[0m[2m=[0mbackend [3mtarget_count[0m[2m=[0m1 [3malgorithm[0m[2m=[0mRoundRobin
+[2m2025-12-31T22:24:42.474317Z[0m [32m INFO[0m [2msentinel_proxy::upstream[0m[2m:[0m Upstream pool created successfully [3mupstream_id[0m[2m=[0mbackend [3mtarget_count[0m[2m=[0m1
+[2m2025-12-31T22:24:42.474471Z[0m [32m INFO[0m [2msentinel_proxy::upstream::health[0m[2m:[0m Creating active health checker [3mupstream_id[0m[2m=[0mbackend [3mcheck_type[0m[2m=[0mHttp { path: "/health", expected_status: 200, host: None } [3minterval_secs[0m[2m=[0m10
+[2m2025-12-31T22:24:42.475504Z[0m [32m INFO[0m [2msentinel_proxy::upstream::health[0m[2m:[0m Added health checker to runner [3mupstream_id[0m[2m=[0mbackend [3minterval_secs[0m[2m=[0m10
+[2m2025-12-31T22:24:42.475522Z[0m [32m INFO[0m [2msentinel_proxy::agents::manager[0m[2m:[0m Creating agent manager [3magent_count[0m[2m=[0m0 [3mmax_concurrent_calls[0m[2m=[0m1000
+[2m2025-12-31T22:24:42.475527Z[0m [32m INFO[0m [2msentinel_proxy::agents::manager[0m[2m:[0m Agent manager created successfully [3mconfigured_agents[0m[2m=[0m0
+[2m2025-12-31T22:24:42.475530Z[0m [32m INFO[0m [2msentinel_proxy::agents::manager[0m[2m:[0m Initializing agent connections [3magent_count[0m[2m=[0m0
+[2m2025-12-31T22:24:42.475543Z[0m [32m INFO[0m [2msentinel_proxy::agents::manager[0m[2m:[0m Agent initialization complete [3minitialized[0m[2m=[0m0 [3mfailed[0m[2m=[0m0 [3mtotal[0m[2m=[0m0
+[2m2025-12-31T22:24:42.476278Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Initializing components for route: api with service type: Web
+[2m2025-12-31T22:24:42.476401Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Initializing components for route: default with service type: Web
+[2m2025-12-31T22:24:42.476424Z[0m [32m INFO[0m [2msentinel_proxy::reload[0m[2m:[0m Adding reload hook: audit_reload_hook
+[2m2025-12-31T22:24:42.476430Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Started active health checking for 1 upstreams
+[2m2025-12-31T22:24:42.476508Z[0m [32m INFO[0m [2msentinel_proxy::upstream::health[0m[2m:[0m Starting health check runner [3mchecker_count[0m[2m=[0m1
+[2m2025-12-31T22:24:42.476727Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Started periodic cleanup task [3minterval_secs[0m[2m=[0m300
+[2m2025-12-31T22:24:42.476733Z[0m [32m INFO[0m [2msentinel_proxy::app[0m[2m:[0m Application marked as ready
+[2m2025-12-31T22:24:42.476793Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Configuring Pingora server [3mworker_threads[0m[2m=[0m2 [3mupstream_pool_size[0m[2m=[0m256
+[2m2025-12-31T22:24:42.476798Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Bootstrap starting
+[2m2025-12-31T22:24:42.476810Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Bootstrap done
+[2m2025-12-31T22:24:42.476825Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m HTTP listening on: 0.0.0.0:8080
+[2m2025-12-31T22:24:42.476829Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Sentinel proxy started successfully
+[2m2025-12-31T22:24:42.476831Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Configuration hot reload enabled (SIGHUP)
+[2m2025-12-31T22:24:42.476833Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Graceful shutdown enabled (SIGTERM/SIGINT)
+[2m2025-12-31T22:24:42.476853Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Server starting
+[2m2025-12-31T22:24:42.476854Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Server starting
+[2m2025-12-31T22:25:12.824684Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m SIGTERM received, gracefully exiting
+[2m2025-12-31T22:25:12.824711Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Broadcasting graceful shutdown
+[2m2025-12-31T22:25:12.824677Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Received shutdown signal (SIGTERM), initiating graceful shutdown
+[2m2025-12-31T22:25:12.824722Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Graceful shutdown started!
+[2m2025-12-31T22:25:12.824773Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Broadcast graceful shutdown complete
+[2m2025-12-31T22:25:12.824784Z[0m [32m INFO[0m [2mpingora_core::server[0m[2m:[0m Graceful shutdown: grace period 300s starts
+[2m2025-12-31T22:25:12.824747Z[0m [32m INFO[0m [2mpingora_core::services::listening[0m[2m:[0m Shutting down 0.0.0.0:8080
+[2m2025-12-31T22:25:12.824826Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Processing graceful shutdown request
+[2m2025-12-31T22:25:12.824834Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Shutdown initiated, draining connections...

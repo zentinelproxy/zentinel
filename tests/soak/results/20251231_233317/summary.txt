@@ -1,0 +1,28 @@
+Sentinel Soak Test Summary
+==========================
+Date: Thu Jan  1 02:15:53 CET 2026
+Duration: 1 hours
+Target RPS: 100
+Connections: 10
+
+Memory Analysis
+---------------
+Samples: 60
+Initial: 12 MB
+Final: 1 MB
+Min: 1 MB
+Max: 12 MB
+Average: 0 MB
+Growth: -11 MB (-91%)
+
+Leak Detection
+--------------
+STATUS: OK - No significant memory growth
+Memory grew by -91% which is within acceptable limits.
+
+Files
+-----
+Memory data: memory/memory.csv
+Load results: load_results.*
+Metrics snapshots: metrics/
+Logs: logs/

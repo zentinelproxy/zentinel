@@ -1,0 +1,10 @@
+[2m2025-12-31T22:22:44.530284Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Loading configuration from: ./soak-config.kdl
+[2m2025-12-31T22:22:44.531442Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Starting Sentinel Proxy
+[2m2025-12-31T22:22:44.533030Z[0m [32m INFO[0m [2msentinel_config[0m[2m:[0m Configuration loaded successfully [3mpath[0m[2m=[0m./soak-config.kdl [3mroutes[0m[2m=[0m3 [3mupstreams[0m[2m=[0m1 [3magents[0m[2m=[0m0 [3mlisteners[0m[2m=[0m1
+Error: Initial configuration validation failed
+
+Caused by:
+    Configuration error: Configuration validation failed: __all__: Route 'health' has no upstream and no static-files configuration.
+    Each route must either:
+    1. Reference an upstream: upstream "my-backend"
+    2. Serve static files: static-files { root "/var/www/html" }
