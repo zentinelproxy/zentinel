@@ -194,6 +194,10 @@ main() {
         return 1
     }
 
+    # Ensure agent is ready - may need time after proxy restart
+    restore_agent "echo" 2>/dev/null || true
+    sleep 2
+
     # Run tests
     test_baseline
     test_failopen_agent_crash

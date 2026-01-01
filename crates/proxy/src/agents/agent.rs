@@ -237,20 +237,47 @@ impl Agent {
             "Sending event to agent"
         );
 
-        client.send_event(event_type, event).await.map_err(|e| {
-            error!(
-                agent_id = %self.config.id,
-                event_type = ?event_type,
-                error = %e,
-                "Agent call failed"
-            );
-            SentinelError::Agent {
-                agent: self.config.id.clone(),
-                message: e.to_string(),
-                event: format!("{:?}", event_type),
-                source: None,
+        let result = client.send_event(event_type, event).await;
+
+        // Handle result - clear stale connection on connection errors
+        match result {
+            Ok(response) => Ok(response),
+            Err(e) => {
+                let error_str = e.to_string();
+                let is_connection_error = error_str.contains("Broken pipe")
+                    || error_str.contains("Connection reset")
+                    || error_str.contains("Connection refused")
+                    || error_str.contains("not connected")
+                    || error_str.contains("transport error");
+
+                error!(
+                    agent_id = %self.config.id,
+                    event_type = ?event_type,
+                    error = %e,
+                    is_connection_error = is_connection_error,
+                    "Agent call failed"
+                );
+
+                // Drop the client guard to release the lock
+                drop(client_guard);
+
+                // Clear cached client on connection errors to force reconnect on next call
+                if is_connection_error {
+                    warn!(
+                        agent_id = %self.config.id,
+                        "Clearing cached client due to connection error, next call will reconnect"
+                    );
+                    *self.client.write().await = None;
+                }
+
+                Err(SentinelError::Agent {
+                    agent: self.config.id.clone(),
+                    message: e.to_string(),
+                    event: format!("{:?}", event_type),
+                    source: None,
+                })
             }
-        })
+        }
     }
 
     /// Record successful call.
