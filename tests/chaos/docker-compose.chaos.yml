@@ -1,0 +1,116 @@
+version: '3.8'
+#
+# Sentinel Chaos Test Environment
+#
+# This compose file creates an isolated environment for chaos testing.
+# Services can be killed, paused, and restarted to test resilience.
+#
+# Usage:
+#   docker compose -p chaos -f docker-compose.chaos.yml up -d
+#   docker compose -p chaos -f docker-compose.chaos.yml down
+#
+
+services:
+  # Main proxy service under test
+  proxy:
+    build:
+      context: ../..
+      target: proxy
+    container_name: chaos-proxy
+    ports:
+      - "8080:8080"   # HTTP
+      - "9090:9090"   # Health/Metrics
+    volumes:
+      - ./chaos-config.kdl:/etc/sentinel/config.kdl:ro
+      - chaos-agent-sockets:/var/run/sentinel
+    environment:
+      RUST_LOG: info,sentinel_proxy=debug
+      SENTINEL_CONFIG: /etc/sentinel/config.kdl
+    networks:
+      - chaos-net
+    depends_on:
+      backend-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: "no"  # Don't auto-restart during chaos tests
+
+  # Echo agent for testing agent failures
+  echo:
+    build:
+      context: ../..
+      target: echo-agent
+    container_name: chaos-echo
+    volumes:
+      - chaos-agent-sockets:/var/run/sentinel
+    environment:
+      RUST_LOG: info,sentinel_echo_agent=debug
+    networks:
+      - chaos-net
+    restart: "no"  # Don't auto-restart during chaos tests
+
+  # Primary backend (httpbin)
+  backend-primary:
+    image: kennethreitz/httpbin:latest
+    container_name: chaos-backend-primary
+    networks:
+      - chaos-net
+    environment:
+      GUNICORN_CMD_ARGS: "--workers=2"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/status/200"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: "no"
+
+  # Secondary backend for failover testing
+  backend-secondary:
+    image: kennethreitz/httpbin:latest
+    container_name: chaos-backend-secondary
+    networks:
+      - chaos-net
+    environment:
+      GUNICORN_CMD_ARGS: "--workers=2"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/status/200"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: "no"
+
+  # Slow backend for timeout testing (adds artificial delay)
+  backend-slow:
+    image: kennethreitz/httpbin:latest
+    container_name: chaos-backend-slow
+    networks:
+      - chaos-net
+    environment:
+      GUNICORN_CMD_ARGS: "--workers=1 --timeout=60"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/status/200"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: "no"
+    # NET_ADMIN capability for network chaos injection (optional)
+    cap_add:
+      - NET_ADMIN
+
+volumes:
+  chaos-agent-sockets:
+    driver: local
+
+networks:
+  chaos-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16

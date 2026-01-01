@@ -1,8 +1,8 @@
 # Sentinel Short-Term Roadmap
 
 **Last Updated:** 2026-01-01
-**Current Version:** 0.1.8
-**Production Readiness:** 90%
+**Current Version:** 0.1.9
+**Production Readiness:** 92%
 
 ---
 
@@ -147,7 +147,7 @@ listener "https" {
 - [x] **RESOLVED:** Performance investigation complete (see results below)
 - [x] Hot-path logging optimization (INFO→DEBUG, 40% improvement)
 - [x] Soak tests for memory leaks (**PASSED** - 1-hour test, no leaks detected)
-- [ ] Chaos tests (agent crashes, upstream failures, network partitions)
+- [x] Chaos tests (agent crashes, upstream failures, network partitions)
 - [ ] Concurrent reload tests (requests in-flight during config change)
 - [ ] TLS certificate rotation tests
 - [ ] Add CI/CD gates for performance regressions
@@ -164,6 +164,35 @@ make test-soak-quick    # 1-hour validation
 make test-soak          # 24-hour standard test
 make test-soak-extended # 72-hour extended test
 ```
+
+**Chaos Testing Infrastructure:**
+- `tests/chaos/run-chaos-test.sh` - Main test orchestrator
+- `tests/chaos/analyze-chaos-results.py` - Results analysis
+- `tests/chaos/lib/common.sh` - Shared utilities
+- `tests/chaos/lib/chaos-injectors.sh` - Chaos injection functions
+- `tests/chaos/scenarios/` - Test scenario scripts
+
+Commands:
+```bash
+make test-chaos-quick   # Quick validation (4 scenarios)
+make test-chaos         # All scenarios (10 tests)
+cd tests/chaos && make test-agent-crash  # Individual scenario
+```
+
+**Chaos Test Scenarios:**
+
+| Category | Scenario | Validates |
+|----------|----------|-----------|
+| Agent | `agent-crash` | Fail-open/closed behavior, circuit breaker opens |
+| Agent | `agent-timeout` | Timeout enforcement, metrics recording |
+| Agent | `circuit-breaker` | CB state transitions (CLOSED→OPEN→HALF-OPEN→CLOSED) |
+| Upstream | `backend-crash` | Health check detection, failover to secondary |
+| Upstream | `backend-5xx` | 5xx handling, retry policy |
+| Upstream | `all-backends-down` | Graceful degradation, proxy stability |
+| Resilience | `fail-open` | Traffic continues when agent fails |
+| Resilience | `fail-closed` | Traffic blocked when agent fails |
+| Resilience | `health-recovery` | Detection of backend recovery |
+| Resilience | `memory-stability` | No memory leaks during 20 chaos cycles |
 
 **Soak Test Results (2026-01-01):**
 
