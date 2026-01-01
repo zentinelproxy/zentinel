@@ -158,8 +158,8 @@ pub use distributed_rate_limit::{
 
 // HTTP caching
 pub use cache::{
-    get_cache_eviction, get_cache_lock, get_cache_storage, CacheConfig, CacheManager,
-    HttpCacheStats,
+    configure_cache, get_cache_eviction, get_cache_lock, get_cache_storage, is_cache_enabled,
+    CacheConfig, CacheManager, HttpCacheStats,
 };
 
 // Memory caching

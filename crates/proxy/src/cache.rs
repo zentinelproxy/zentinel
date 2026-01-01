@@ -16,7 +16,7 @@
 //! single-instance deployments. For production with large cache sizes or
 //! persistence needs, consider implementing a disk-based storage backend.
 
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::RwLock;
 use pingora_cache::eviction::simple_lru::Manager as LruEvictionManager;
 use pingora_cache::lock::CacheLock;
@@ -28,8 +28,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace, warn};
 
+use sentinel_config::CacheStorageConfig;
+
 // ============================================================================
-// Static Cache Storage
+// Cache Configuration
 // ============================================================================
 
 /// Default cache size: 100MB
@@ -38,6 +40,59 @@ const DEFAULT_CACHE_SIZE_BYTES: usize = 100 * 1024 * 1024;
 /// Default eviction limit: 100MB
 const DEFAULT_EVICTION_LIMIT_BYTES: usize = 100 * 1024 * 1024;
 
+/// Default lock timeout: 10 seconds
+const DEFAULT_LOCK_TIMEOUT_SECS: u64 = 10;
+
+/// Global cache configuration holder
+///
+/// This should be set during proxy startup, before the cache is accessed.
+/// If not set, default values will be used.
+static CACHE_CONFIG: OnceCell<CacheStorageConfig> = OnceCell::new();
+
+/// Configure the global cache storage settings.
+///
+/// This must be called before the first cache access to take effect.
+/// If called after cache initialization, returns false and logs a warning.
+///
+/// # Example
+/// ```ignore
+/// use sentinel_config::CacheStorageConfig;
+/// use sentinel_proxy::cache::configure_cache;
+///
+/// let config = CacheStorageConfig {
+///     max_size_bytes: 200 * 1024 * 1024, // 200MB
+///     lock_timeout_secs: 15,
+///     ..Default::default()
+/// };
+/// configure_cache(config);
+/// ```
+pub fn configure_cache(config: CacheStorageConfig) -> bool {
+    match CACHE_CONFIG.set(config) {
+        Ok(()) => {
+            info!("Cache storage configured");
+            true
+        }
+        Err(_) => {
+            warn!("Cache already initialized, configuration ignored");
+            false
+        }
+    }
+}
+
+/// Get the current cache configuration
+fn get_cache_config() -> &'static CacheStorageConfig {
+    CACHE_CONFIG.get_or_init(CacheStorageConfig::default)
+}
+
+/// Check if caching is globally enabled
+pub fn is_cache_enabled() -> bool {
+    get_cache_config().enabled
+}
+
+// ============================================================================
+// Static Cache Storage
+// ============================================================================
+
 /// Static in-memory cache storage instance
 ///
 /// This provides a `&'static` reference required by Pingora's cache API.
@@ -45,26 +100,34 @@ const DEFAULT_EVICTION_LIMIT_BYTES: usize = 100 * 1024 * 1024;
 /// deployments with large cache requirements, consider implementing a disk-based
 /// storage backend.
 static HTTP_CACHE_STORAGE: Lazy<MemCache> = Lazy::new(|| {
+    let config = get_cache_config();
     info!(
-        cache_size_mb = DEFAULT_CACHE_SIZE_BYTES / 1024 / 1024,
-        "Initializing HTTP cache storage (in-memory)"
+        cache_size_mb = config.max_size_bytes / 1024 / 1024,
+        backend = ?config.backend,
+        "Initializing HTTP cache storage"
     );
     MemCache::new()
 });
 
 /// Static LRU eviction manager for cache entries
 static HTTP_CACHE_EVICTION: Lazy<LruEvictionManager> = Lazy::new(|| {
+    let config = get_cache_config();
+    let limit = config.eviction_limit_bytes.unwrap_or(config.max_size_bytes);
     info!(
-        eviction_limit_mb = DEFAULT_EVICTION_LIMIT_BYTES / 1024 / 1024,
+        eviction_limit_mb = limit / 1024 / 1024,
         "Initializing HTTP cache eviction manager"
     );
-    LruEvictionManager::new(DEFAULT_EVICTION_LIMIT_BYTES)
+    LruEvictionManager::new(limit)
 });
 
 /// Static cache lock for preventing thundering herd
 static HTTP_CACHE_LOCK: Lazy<CacheLock> = Lazy::new(|| {
-    info!("Initializing HTTP cache lock");
-    CacheLock::new(Duration::from_secs(10))
+    let config = get_cache_config();
+    info!(
+        lock_timeout_secs = config.lock_timeout_secs,
+        "Initializing HTTP cache lock"
+    );
+    CacheLock::new(Duration::from_secs(config.lock_timeout_secs))
 });
 
 /// Get a static reference to the HTTP cache storage

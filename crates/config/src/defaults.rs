@@ -327,6 +327,7 @@ pub fn create_default_config() -> Config {
         limits: Limits::default(),
         observability: ObservabilityConfig::default(),
         rate_limits: GlobalRateLimitConfig::default(),
+        cache: None,
         default_upstream: None,
     }
 }

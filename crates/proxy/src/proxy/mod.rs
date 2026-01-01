@@ -112,6 +112,16 @@ impl SentinelProxy {
             .validate()
             .context("Initial configuration validation failed")?;
 
+        // Configure global cache storage (must be done before cache is accessed)
+        if let Some(ref cache_config) = config.cache {
+            info!(
+                max_size_mb = cache_config.max_size_bytes / 1024 / 1024,
+                backend = ?cache_config.backend,
+                "Configuring HTTP cache storage"
+            );
+            crate::cache::configure_cache(cache_config.clone());
+        }
+
         // Create configuration manager
         let config_manager =
             Arc::new(ConfigManager::new(&effective_config_path, config.clone()).await?);

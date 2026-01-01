@@ -290,6 +290,89 @@ fn default_cacheable_status_codes() -> Vec<u16> {
     vec![200, 203, 204, 206, 300, 301, 308, 404, 410]
 }
 
+// ============================================================================
+// Global Cache Storage Configuration
+// ============================================================================
+
+/// Global cache storage configuration
+///
+/// Controls the underlying storage backend for HTTP caching.
+/// This is separate from per-route cache policies which control
+/// what gets cached and for how long.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStorageConfig {
+    /// Enable HTTP caching globally (default: true when cache block is present)
+    #[serde(default = "default_cache_enabled")]
+    pub enabled: bool,
+
+    /// Storage backend type
+    #[serde(default)]
+    pub backend: CacheBackend,
+
+    /// Maximum cache size in bytes (default: 100MB)
+    #[serde(default = "default_cache_storage_size")]
+    pub max_size_bytes: usize,
+
+    /// Eviction limit in bytes (when to start evicting, default: same as max_size)
+    #[serde(default)]
+    pub eviction_limit_bytes: Option<usize>,
+
+    /// Cache lock timeout in seconds (prevents thundering herd)
+    #[serde(default = "default_cache_lock_timeout")]
+    pub lock_timeout_secs: u64,
+
+    /// Path for disk-based cache (only used with Disk backend)
+    #[serde(default)]
+    pub disk_path: Option<PathBuf>,
+
+    /// Number of shards for disk cache (improves concurrent access)
+    #[serde(default = "default_disk_shards")]
+    pub disk_shards: u32,
+}
+
+impl Default for CacheStorageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            backend: CacheBackend::Memory,
+            max_size_bytes: default_cache_storage_size(),
+            eviction_limit_bytes: None,
+            lock_timeout_secs: default_cache_lock_timeout(),
+            disk_path: None,
+            disk_shards: default_disk_shards(),
+        }
+    }
+}
+
+/// Cache storage backend type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheBackend {
+    /// In-memory cache (fast, but lost on restart)
+    #[default]
+    Memory,
+    /// Disk-based cache (persistent, larger capacity)
+    Disk,
+    /// Hybrid: memory for hot entries, disk for cold
+    Hybrid,
+}
+
+fn default_cache_enabled() -> bool {
+    true
+}
+
+fn default_cache_storage_size() -> usize {
+    100 * 1024 * 1024 // 100MB
+}
+
+fn default_cache_lock_timeout() -> u64 {
+    10 // 10 seconds
+}
+
+fn default_disk_shards() -> u32 {
+    16
+}
+
 /// Header modification rules
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HeaderModifications {

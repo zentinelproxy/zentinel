@@ -72,9 +72,9 @@ pub use observability::{
 
 // Routes
 pub use routes::{
-    ApiSchemaConfig, BuiltinHandler, ErrorFormat, ErrorPage, ErrorPageConfig, FailureMode,
-    HeaderModifications, MatchCondition, RateLimitPolicy, RouteCacheConfig, RouteConfig,
-    RoutePolicies, ServiceType, StaticFileConfig,
+    ApiSchemaConfig, BuiltinHandler, CacheBackend, CacheStorageConfig, ErrorFormat, ErrorPage,
+    ErrorPageConfig, FailureMode, HeaderModifications, MatchCondition, RateLimitPolicy,
+    RouteCacheConfig, RouteConfig, RoutePolicies, ServiceType, StaticFileConfig,
 };
 
 // Server
@@ -142,6 +142,10 @@ pub struct Config {
     /// Global rate limit configuration
     #[serde(default)]
     pub rate_limits: GlobalRateLimitConfig,
+
+    /// Global cache storage configuration
+    #[serde(default)]
+    pub cache: Option<CacheStorageConfig>,
 
     /// Default upstream for Phase 0 testing
     #[serde(skip)]
@@ -488,6 +492,7 @@ impl Config {
             limits: Limits::for_testing(),
             observability: ObservabilityConfig::default(),
             rate_limits: GlobalRateLimitConfig::default(),
+            cache: None,
             default_upstream: Some(UpstreamPeer {
                 address: "127.0.0.1:8081".to_string(),
                 tls: false,

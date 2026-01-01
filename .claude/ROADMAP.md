@@ -111,13 +111,27 @@ listener "https" {
 - [x] Enable caching by default for static routes (1 hour TTL)
 - [x] Implement cache invalidation API (PURGE method)
 - [x] Add cache statistics endpoint (`/cache/stats`, `/admin/cache/stats`)
-- [ ] Add cache storage configuration to KDL schema
+- [x] Add cache storage configuration to KDL schema
 - [ ] Test stale-while-revalidate and stale-if-error
 
 **Files:**
-- `crates/proxy/src/cache.rs` - Cache manager + static storage
+- `crates/proxy/src/cache.rs` - Cache manager + static storage + `configure_cache()`
 - `crates/proxy/src/proxy/http_trait.rs` - Cache lifecycle methods
-- `crates/config/src/routes.rs` - Per-route cache config
+- `crates/config/src/routes.rs` - Per-route cache config + `CacheStorageConfig`
+- `crates/config/src/kdl/mod.rs` - KDL parsing for `cache {}` block
+
+**Cache KDL Configuration:**
+```kdl
+cache {
+    enabled true
+    backend "memory"         // "memory", "disk", or "hybrid"
+    max-size 104857600       // 100MB in bytes
+    eviction-limit 104857600 // When to start evicting
+    lock-timeout 10          // Seconds (prevents thundering herd)
+    disk-path "/var/cache/sentinel"  // For disk backend
+    disk-shards 16           // Parallelism for disk cache
+}
+```
 
 ### 1.3 Expose Metrics Endpoint
 **Status:** DONE - /metrics endpoint exposes Prometheus format

@@ -54,6 +54,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
     let mut limits = None;
     let mut observability = None;
     let mut rate_limits = None;
+    let mut cache = None;
 
     for node in doc.nodes() {
         let node_name = node.name().value();
@@ -100,10 +101,14 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
                 rate_limits = Some(parse_rate_limits_config(node)?);
                 trace!("Parsed rate-limits configuration");
             }
+            "cache" => {
+                cache = Some(parse_cache_config(node)?);
+                trace!("Parsed cache configuration");
+            }
             other => {
                 return Err(anyhow::anyhow!(
                     "Unknown top-level configuration block: '{}'\n\
-                     Valid blocks are: server, listeners, routes, upstreams, filters, agents, waf, limits, observability, rate-limits",
+                     Valid blocks are: server, listeners, routes, upstreams, filters, agents, waf, limits, observability, rate-limits, cache",
                     other
                 ));
             }
@@ -156,6 +161,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
         limits: limits.unwrap_or_default(),
         observability: observability.unwrap_or_default(),
         rate_limits: rate_limits.unwrap_or_default(),
+        cache,
         default_upstream: None,
     })
 }
@@ -610,6 +616,80 @@ pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
     }
 
     Ok(limits)
+}
+
+// ============================================================================
+// Cache Storage Parsing
+// ============================================================================
+
+use crate::routes::{CacheBackend, CacheStorageConfig};
+
+/// Parse cache configuration block
+///
+/// KDL format:
+/// ```kdl
+/// cache {
+///     enabled true
+///     backend "memory"          // "memory", "disk", or "hybrid"
+///     max-size 104857600        // 100MB in bytes
+///     eviction-limit 104857600  // When to start evicting
+///     lock-timeout 10           // Seconds
+///     disk-path "/var/cache/sentinel"  // For disk backend
+///     disk-shards 16            // Parallelism for disk cache
+/// }
+/// ```
+pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
+    let mut config = CacheStorageConfig::default();
+
+    // Parse enabled flag
+    if let Some(v) = get_bool_entry(node, "enabled") {
+        config.enabled = v;
+    }
+
+    // Parse backend type
+    if let Some(backend) = get_string_entry(node, "backend") {
+        config.backend = match backend.to_lowercase().as_str() {
+            "memory" => CacheBackend::Memory,
+            "disk" => CacheBackend::Disk,
+            "hybrid" => CacheBackend::Hybrid,
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Invalid cache backend '{}'. Valid options: memory, disk, hybrid",
+                    other
+                ));
+            }
+        };
+    }
+
+    // Parse size limits
+    if let Some(v) = get_int_entry(node, "max-size") {
+        config.max_size_bytes = v as usize;
+    }
+    if let Some(v) = get_int_entry(node, "eviction-limit") {
+        config.eviction_limit_bytes = Some(v as usize);
+    }
+
+    // Parse lock timeout
+    if let Some(v) = get_int_entry(node, "lock-timeout") {
+        config.lock_timeout_secs = v as u64;
+    }
+
+    // Parse disk options
+    if let Some(path) = get_string_entry(node, "disk-path") {
+        config.disk_path = Some(std::path::PathBuf::from(path));
+    }
+    if let Some(v) = get_int_entry(node, "disk-shards") {
+        config.disk_shards = v as u32;
+    }
+
+    // Validate disk backend has a path
+    if config.backend == CacheBackend::Disk && config.disk_path.is_none() {
+        return Err(anyhow::anyhow!(
+            "Disk cache backend requires 'disk-path' to be specified"
+        ));
+    }
+
+    Ok(config)
 }
 
 // ============================================================================
@@ -1294,5 +1374,178 @@ mod tests {
             }
             _ => panic!("Expected Geo filter"),
         }
+    }
+
+    // =========================================================================
+    // Cache Configuration Tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_cache_config_defaults() {
+        let kdl = r#"cache {}"#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+
+        let config = parse_cache_config(node).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.backend, CacheBackend::Memory);
+        assert_eq!(config.max_size_bytes, 100 * 1024 * 1024); // 100MB default
+        assert!(config.eviction_limit_bytes.is_none());
+        assert_eq!(config.lock_timeout_secs, 10);
+        assert!(config.disk_path.is_none());
+        assert_eq!(config.disk_shards, 16);
+    }
+
+    #[test]
+    fn test_parse_cache_config_memory_backend() {
+        let kdl = r#"
+            cache {
+                enabled #true
+                backend "memory"
+                max-size 209715200
+                eviction-limit 104857600
+                lock-timeout 5
+            }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+
+        let config = parse_cache_config(node).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.backend, CacheBackend::Memory);
+        assert_eq!(config.max_size_bytes, 209715200); // 200MB
+        assert_eq!(config.eviction_limit_bytes, Some(104857600)); // 100MB
+        assert_eq!(config.lock_timeout_secs, 5);
+    }
+
+    #[test]
+    fn test_parse_cache_config_disk_backend() {
+        let kdl = r#"
+            cache {
+                enabled #true
+                backend "disk"
+                max-size 1073741824
+                disk-path "/var/cache/sentinel"
+                disk-shards 32
+            }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+
+        let config = parse_cache_config(node).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.backend, CacheBackend::Disk);
+        assert_eq!(config.max_size_bytes, 1073741824); // 1GB
+        assert_eq!(
+            config.disk_path,
+            Some(std::path::PathBuf::from("/var/cache/sentinel"))
+        );
+        assert_eq!(config.disk_shards, 32);
+    }
+
+    #[test]
+    fn test_parse_cache_config_hybrid_backend() {
+        let kdl = r#"
+            cache {
+                backend "hybrid"
+                disk-path "/var/cache/sentinel"
+            }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+
+        let config = parse_cache_config(node).unwrap();
+        assert_eq!(config.backend, CacheBackend::Hybrid);
+    }
+
+    #[test]
+    fn test_parse_cache_config_disabled() {
+        let kdl = r#"
+            cache {
+                enabled #false
+            }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+
+        let config = parse_cache_config(node).unwrap();
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn test_parse_cache_config_invalid_backend() {
+        let kdl = r#"
+            cache {
+                backend "invalid"
+            }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+
+        let result = parse_cache_config(node);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid cache backend"));
+    }
+
+    #[test]
+    fn test_parse_cache_config_disk_without_path() {
+        let kdl = r#"
+            cache {
+                backend "disk"
+            }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+
+        let result = parse_cache_config(node);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("disk-path"));
+    }
+
+    #[test]
+    fn test_parse_full_config_with_cache() {
+        let kdl = r#"
+            server {
+                worker-threads 4
+            }
+
+            listeners {
+                listener "http" {
+                    address "0.0.0.0:8080"
+                    protocol "http"
+                }
+            }
+
+            cache {
+                enabled #true
+                backend "memory"
+                max-size 209715200
+                lock-timeout 15
+            }
+
+            routes {
+                route "default" {
+                    match {
+                        path-prefix "/"
+                    }
+                    builtin "status"
+                }
+            }
+        "#;
+
+        let config = Config::from_kdl(kdl).unwrap();
+
+        assert!(config.cache.is_some());
+        let cache = config.cache.unwrap();
+        assert!(cache.enabled);
+        assert_eq!(cache.backend, CacheBackend::Memory);
+        assert_eq!(cache.max_size_bytes, 209715200);
+        assert_eq!(cache.lock_timeout_secs, 15);
     }
 }

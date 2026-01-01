@@ -240,6 +240,7 @@ impl ConfigBuilder {
             limits: self.limits.unwrap_or_default(),
             observability: self.observability.unwrap_or_default(),
             rate_limits: GlobalRateLimitConfig::default(),
+            cache: None,
             default_upstream: None,
         })
     }
