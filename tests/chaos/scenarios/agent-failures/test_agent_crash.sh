@@ -20,9 +20,9 @@ source "${SCRIPT_DIR}/../../lib/chaos-injectors.sh"
 # Test Configuration
 # ============================================================================
 
-FAILOPEN_URL="${PROXY_URL}/failopen/status/200"
-PROTECTED_URL="${PROXY_URL}/protected/status/200"
-CIRCUIT_URL="${PROXY_URL}/circuit/status/200"
+FAILOPEN_URL="${PROXY_URL}/failopen/"
+PROTECTED_URL="${PROXY_URL}/protected/"
+CIRCUIT_URL="${PROXY_URL}/circuit/"
 
 # ============================================================================
 # Test Cases

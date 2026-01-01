@@ -26,9 +26,7 @@ agents {
     // Echo agent with circuit breaker for testing
     agent "echo" {
         type "echo"
-        transport "unix_socket" {
-            path "/var/run/sentinel/echo.sock"
-        }
+        unix-socket path="/var/run/sentinel/echo.sock"
         events "request_headers"
         timeout-ms 1000
         failure-mode "closed"
@@ -204,7 +202,7 @@ upstreams {
 
         health-check {
             type "http" {
-                path "/status/200"
+                path "/"
                 expected-status 200
             }
             interval-secs 5
@@ -222,7 +220,7 @@ upstreams {
 
         health-check {
             type "http" {
-                path "/status/200"
+                path "/"
                 expected-status 200
             }
             interval-secs 5
@@ -239,7 +237,7 @@ upstreams {
 
         health-check {
             type "http" {
-                path "/status/200"
+                path "/"
                 expected-status 200
             }
             interval-secs 10
