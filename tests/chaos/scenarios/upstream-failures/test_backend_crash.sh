@@ -20,8 +20,8 @@ source "${SCRIPT_DIR}/../../lib/chaos-injectors.sh"
 # Test Configuration
 # ============================================================================
 
-PRIMARY_URL="${PROXY_URL}/primary/status/200"
-FAILOVER_URL="${PROXY_URL}/failover/status/200"
+PRIMARY_URL="${PROXY_URL}/primary/"
+FAILOVER_URL="${PROXY_URL}/failover/"
 HEALTH_CHECK_INTERVAL=5  # From chaos-config.kdl
 
 # ============================================================================
@@ -120,25 +120,51 @@ test_recovery_after_restart() {
     # Restore the primary backend
     restore_backend "backend-primary"
 
-    # Wait for health check to detect recovery
-    log_info "Waiting for health check to detect recovery..."
-    sleep $((HEALTH_CHECK_INTERVAL * 4))
+    # Wait for the backend container to be healthy first
+    log_info "Waiting for backend container to be healthy..."
+    local container_ready=0
+    for i in {1..15}; do
+        local container_status
+        container_status=$(docker inspect --format='{{.State.Health.Status}}' chaos-backend-primary 2>/dev/null || echo "unknown")
+        if [[ "$container_status" == "healthy" ]]; then
+            container_ready=1
+            log_info "Backend container is healthy"
+            break
+        fi
+        log_info "  Container status: $container_status (attempt $i/15)"
+        sleep 2
+    done
 
-    # Primary route should work again
+    if [[ $container_ready -eq 0 ]]; then
+        log_warn "Backend container did not become healthy in time"
+    fi
+
+    # Wait for proxy health check to detect recovery
+    # healthy-threshold is 2, interval is 5s, so need at least 10s + buffer
+    log_info "Waiting for proxy health check to detect recovery..."
+    sleep $((HEALTH_CHECK_INTERVAL * 3))
+
+    # Poll until route works or timeout
     local successes=0
-    for i in {1..5}; do
+    local attempts=0
+    local max_attempts=10
+    while [[ $attempts -lt $max_attempts ]]; do
         local status
         status=$(http_status "$PRIMARY_URL")
         if [[ "$status" == "200" ]]; then
             ((successes++))
+            if [[ $successes -ge 3 ]]; then
+                break
+            fi
         fi
-        sleep 0.5
+        ((attempts++))
+        sleep 1
     done
 
     if [[ $successes -ge 3 ]]; then
-        log_pass "Primary route recovered ($successes/5 success)"
+        log_pass "Primary route recovered ($successes/$attempts success)"
     else
-        log_fail "Primary route not recovered ($successes/5 success)"
+        log_fail "Primary route not recovered ($successes/$attempts success)"
     fi
 
     # Check healthy count restored

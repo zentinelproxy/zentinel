@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use pingora::upstreams::peer::HttpPeer;
 use std::collections::HashMap;
+use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -906,7 +907,42 @@ impl UpstreamPool {
                 .to_string()
         });
 
-        let mut peer = HttpPeer::new(&selection.address, self.tls_enabled, sni_hostname.clone());
+        // Pre-resolve the address to avoid panics in Pingora's HttpPeer::new
+        // when DNS resolution fails (e.g., when a container is killed)
+        let resolved_address = selection
+            .address
+            .to_socket_addrs()
+            .map_err(|e| {
+                error!(
+                    upstream = %self.id,
+                    address = %selection.address,
+                    error = %e,
+                    "Failed to resolve upstream address"
+                );
+                SentinelError::Upstream {
+                    upstream: self.id.to_string(),
+                    message: format!("DNS resolution failed for {}: {}", selection.address, e),
+                    retryable: true,
+                    source: None,
+                }
+            })?
+            .next()
+            .ok_or_else(|| {
+                error!(
+                    upstream = %self.id,
+                    address = %selection.address,
+                    "No addresses returned from DNS resolution"
+                );
+                SentinelError::Upstream {
+                    upstream: self.id.to_string(),
+                    message: format!("No addresses for {}", selection.address),
+                    retryable: true,
+                    source: None,
+                }
+            })?;
+
+        // Use the resolved IP address to create the peer
+        let mut peer = HttpPeer::new(resolved_address, self.tls_enabled, sni_hostname.clone());
 
         // Configure connection pooling options for better performance
         // idle_timeout enables Pingora's connection pooling - connections are

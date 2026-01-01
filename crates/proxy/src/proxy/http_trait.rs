@@ -1869,7 +1869,7 @@ impl ProxyHttp for SentinelProxy {
     /// Called when the proxy itself fails to process the request.
     async fn fail_to_proxy(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         e: &Error,
         ctx: &mut Self::CTX,
     ) -> pingora_proxy::FailToProxy
@@ -1901,8 +1901,19 @@ impl ProxyHttp for SentinelProxy {
             // Explicit HTTP status (e.g., from agent fail-closed blocking)
             ErrorType::HTTPStatus(status) => *status,
 
-            // Internal errors
-            ErrorType::InternalError => 500,
+            // Internal errors - return 502 for upstream issues (more accurate than 500)
+            ErrorType::InternalError => {
+                // Check if this is an upstream-related error
+                let error_str = e.to_string();
+                if error_str.contains("upstream")
+                    || error_str.contains("DNS")
+                    || error_str.contains("resolve")
+                {
+                    502
+                } else {
+                    500
+                }
+            }
 
             // Default to 502 for unknown errors
             _ => 502,
@@ -1922,11 +1933,62 @@ impl ProxyHttp for SentinelProxy {
         self.metrics
             .record_blocked_request(&format!("proxy_error_{}", error_code));
 
+        // Write error response to ensure client receives a proper HTTP response
+        // This is necessary because some errors occur before the upstream connection
+        // is established, and Pingora may not send a response automatically
+        let error_message = match error_code {
+            400 => "Bad Request",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            504 => "Gateway Timeout",
+            _ => "Internal Server Error",
+        };
+
+        // Build a minimal error response body
+        let body = format!(
+            r#"{{"error":"{} {}","trace_id":"{}"}}"#,
+            error_code, error_message, ctx.trace_id
+        );
+
+        // Write the response header
+        let mut header = pingora::http::ResponseHeader::build(error_code, None).unwrap();
+        header
+            .insert_header("Content-Type", "application/json")
+            .ok();
+        header
+            .insert_header("Content-Length", body.len().to_string())
+            .ok();
+        header
+            .insert_header("X-Correlation-Id", ctx.trace_id.as_str())
+            .ok();
+        header.insert_header("Connection", "close").ok();
+
+        // Write headers and body
+        if let Err(write_err) = session.write_response_header(Box::new(header), false).await {
+            warn!(
+                correlation_id = %ctx.trace_id,
+                error = %write_err,
+                "Failed to write error response header"
+            );
+        } else {
+            // Write the body
+            if let Err(write_err) = session
+                .write_response_body(Some(bytes::Bytes::from(body)), true)
+                .await
+            {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    error = %write_err,
+                    "Failed to write error response body"
+                );
+            }
+        }
+
         // Return the error response info
-        // can_reuse_downstream: allow connection reuse for client errors, not for server errors
+        // can_reuse_downstream: false since we already wrote and closed the response
         pingora_proxy::FailToProxy {
             error_code,
-            can_reuse_downstream: error_code < 500,
+            can_reuse_downstream: false,
         }
     }
 
