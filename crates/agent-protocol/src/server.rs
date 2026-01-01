@@ -720,6 +720,7 @@ impl GrpcAgentHandler {
                 route_id: m.route_id,
                 upstream_id: m.upstream_id,
                 timestamp: m.timestamp,
+                traceparent: m.traceparent,
             },
             None => RequestMetadata {
                 correlation_id: String::new(),
@@ -733,6 +734,7 @@ impl GrpcAgentHandler {
                 route_id: None,
                 upstream_id: None,
                 timestamp: String::new(),
+                traceparent: None,
             },
         }
     }

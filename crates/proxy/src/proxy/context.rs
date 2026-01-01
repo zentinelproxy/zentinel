@@ -334,6 +334,18 @@ impl RequestContext {
         self.geo_lookup_performed
     }
 
+    /// Get traceparent header value for distributed tracing.
+    ///
+    /// Returns the W3C Trace Context traceparent header value if tracing is enabled.
+    /// Format: `{version}-{trace-id}-{span-id}-{trace-flags}`
+    #[inline]
+    pub fn traceparent(&self) -> Option<String> {
+        self.otel_span.as_ref().map(|span| {
+            let sampled = self.trace_context.as_ref().map(|c| c.sampled).unwrap_or(true);
+            crate::otel::create_traceparent(&span.trace_id, &span.span_id, sampled)
+        })
+    }
+
     // === Mutation helpers ===
 
     /// Set the trace ID.
@@ -352,6 +364,12 @@ impl RequestContext {
     #[inline]
     pub fn set_upstream(&mut self, upstream: impl Into<String>) {
         self.upstream = Some(upstream.into());
+    }
+
+    /// Set the selected upstream peer address (IP:port).
+    #[inline]
+    pub fn set_selected_upstream_address(&mut self, address: impl Into<String>) {
+        self.selected_upstream_address = Some(address.into());
     }
 
     /// Increment upstream attempt counter.

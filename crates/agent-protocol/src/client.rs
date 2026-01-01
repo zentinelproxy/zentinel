@@ -359,6 +359,7 @@ impl AgentClient {
             route_id: metadata.route_id.clone(),
             upstream_id: metadata.upstream_id.clone(),
             timestamp: metadata.timestamp.clone(),
+            traceparent: metadata.traceparent.clone(),
         }
     }
 

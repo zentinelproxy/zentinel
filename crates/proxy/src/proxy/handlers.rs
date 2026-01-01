@@ -501,6 +501,7 @@ impl SentinelProxy {
                 route_id: Some(route_id.clone()),
                 upstream_id: ctx.upstream.clone(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                traceparent: ctx.traceparent(),
             },
             route_id: Some(route_id.clone()),
             upstream_id: ctx.upstream.clone(),

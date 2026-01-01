@@ -426,10 +426,13 @@ impl ProxyHttp for SentinelProxy {
             match pool.select_peer(None).await {
                 Ok(peer) => {
                     let selection_duration = selection_start.elapsed();
+                    // Store selected peer address for feedback reporting in logging()
+                    let peer_addr = peer.address().to_string();
+                    ctx.selected_upstream_address = Some(peer_addr.clone());
                     debug!(
                         correlation_id = %ctx.trace_id,
                         upstream = %upstream_name,
-                        peer_address = %peer.address(),
+                        peer_address = %peer_addr,
                         attempt = attempt,
                         selection_duration_us = selection_duration.as_micros(),
                         "Selected upstream peer"
@@ -2152,6 +2155,29 @@ impl ProxyHttp for SentinelProxy {
             .map(|r| r.status.as_u16())
             .unwrap_or(0);
 
+        // Report result to load balancer for adaptive LB feedback
+        // This enables latency-aware weight adjustment
+        if let (Some(ref peer_addr), Some(ref upstream_id)) =
+            (&ctx.selected_upstream_address, &ctx.upstream)
+        {
+            // Success = status code < 500 (client errors are not upstream failures)
+            let success = status > 0 && status < 500;
+
+            if let Some(pool) = self.upstream_pools.get(upstream_id).await {
+                pool.report_result_with_latency(peer_addr, success, Some(duration))
+                    .await;
+                trace!(
+                    correlation_id = %ctx.trace_id,
+                    upstream = %upstream_id,
+                    peer_address = %peer_addr,
+                    success = success,
+                    duration_ms = duration.as_millis(),
+                    status = status,
+                    "Reported result to adaptive load balancer"
+                );
+            }
+        }
+
         // Write to access log file if configured
         if self.log_manager.access_log_enabled() {
             let access_entry = AccessLogEntry {
@@ -2251,6 +2277,7 @@ impl SentinelProxy {
                 route_id: ctx.route_id.clone(),
                 upstream_id: ctx.upstream.clone(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                traceparent: ctx.traceparent(),
             },
             route_id: ctx.route_id.clone(),
             upstream_id: ctx.upstream.clone(),
@@ -2471,6 +2498,7 @@ impl SentinelProxy {
                 route_id: ctx.route_id.clone(),
                 upstream_id: ctx.upstream.clone(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                traceparent: ctx.traceparent(),
             },
             route_id: ctx.route_id.clone(),
             upstream_id: ctx.upstream.clone(),

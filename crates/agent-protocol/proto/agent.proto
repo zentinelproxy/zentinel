@@ -30,6 +30,8 @@ message RequestMetadata {
   optional string route_id = 9;
   optional string upstream_id = 10;
   string timestamp = 11;
+  // W3C Trace Context traceparent header for distributed tracing
+  optional string traceparent = 12;
 }
 
 // Header values (supports multiple values per header name)

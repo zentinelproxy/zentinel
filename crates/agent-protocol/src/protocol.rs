@@ -163,6 +163,14 @@ pub struct RequestMetadata {
     pub upstream_id: Option<String>,
     /// Request start timestamp (RFC3339)
     pub timestamp: String,
+    /// W3C Trace Context traceparent header (for distributed tracing)
+    ///
+    /// Format: `{version}-{trace-id}-{parent-id}-{trace-flags}`
+    /// Example: `00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01`
+    ///
+    /// Agents can use this to create child spans that link to the proxy's span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
 }
 
 /// Configure event
