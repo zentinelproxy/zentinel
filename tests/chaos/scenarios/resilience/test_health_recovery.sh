@@ -21,8 +21,8 @@ source "${SCRIPT_DIR}/../../lib/chaos-injectors.sh"
 # Test Configuration
 # ============================================================================
 
-PRIMARY_URL="${PROXY_URL}/primary/status/200"
-FAILOVER_URL="${PROXY_URL}/failover/status/200"
+PRIMARY_URL="${PROXY_URL}/primary/"
+FAILOVER_URL="${PROXY_URL}/failover/"
 HEALTH_CHECK_INTERVAL=5  # From chaos-config.kdl
 HEALTHY_THRESHOLD=2      # Probes needed to mark healthy
 
