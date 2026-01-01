@@ -1,0 +1,273 @@
+// Sentinel Chaos Testing Configuration
+//
+// This configuration is designed for chaos testing scenarios:
+// - Fail-open vs fail-closed mode validation
+// - Circuit breaker state transitions
+// - Agent failure handling
+// - Upstream failover testing
+
+server {
+    worker-threads 2
+    max-connections 1000
+    graceful-shutdown-timeout-secs 10
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 30
+        keepalive-timeout-secs 30
+    }
+}
+
+// Agent definitions
+agents {
+    // Echo agent with circuit breaker for testing
+    agent "echo" {
+        type "echo"
+        transport "unix_socket" {
+            path "/var/run/sentinel/echo.sock"
+        }
+        events "request_headers"
+        timeout-ms 1000
+        failure-mode "closed"
+
+        circuit-breaker {
+            failure-threshold 5
+            success-threshold 2
+            timeout-seconds 10
+            half-open-max-requests 2
+        }
+    }
+}
+
+// Filter definitions
+filters {
+    // Echo filter with fail-closed (default for security)
+    filter "echo-closed" {
+        type "agent"
+        agent "echo"
+        timeout-ms 1000
+        failure-mode "closed"
+    }
+
+    // Echo filter with fail-open (for non-critical routes)
+    filter "echo-open" {
+        type "agent"
+        agent "echo"
+        timeout-ms 1000
+        failure-mode "open"
+    }
+}
+
+// Route configurations for chaos testing
+routes {
+    // Health check endpoint (builtin, always available)
+    route "health" {
+        priority "high"
+        matches {
+            path "/health"
+        }
+        builtin-handler "health"
+        policies {
+            timeout-secs 5
+            failure-mode "open"
+        }
+    }
+
+    // Metrics endpoint (builtin)
+    route "metrics" {
+        priority "high"
+        matches {
+            path "/metrics"
+        }
+        builtin-handler "metrics"
+        policies {
+            timeout-secs 5
+        }
+    }
+
+    // Route with fail-OPEN mode - traffic continues when agent fails
+    route "failopen" {
+        priority "high"
+        matches {
+            path-prefix "/failopen/"
+        }
+        upstream "primary"
+        filters "echo-open"
+        policies {
+            timeout-secs 10
+            failure-mode "open"
+        }
+    }
+
+    // Route with fail-CLOSED mode - traffic blocked when agent fails
+    route "protected" {
+        priority "high"
+        matches {
+            path-prefix "/protected/"
+        }
+        upstream "primary"
+        filters "echo-closed"
+        policies {
+            timeout-secs 10
+            failure-mode "closed"
+        }
+    }
+
+    // Route for circuit breaker testing (uses echo agent with CB config)
+    route "circuit" {
+        priority "high"
+        matches {
+            path-prefix "/circuit/"
+        }
+        upstream "primary"
+        filters "echo-closed"
+        policies {
+            timeout-secs 10
+            failure-mode "closed"
+        }
+        circuit-breaker {
+            failure-threshold 5
+            success-threshold 2
+            timeout-seconds 10
+            half-open-max-requests 2
+        }
+    }
+
+    // Route to primary backend only
+    route "primary-only" {
+        priority "high"
+        matches {
+            path-prefix "/primary/"
+        }
+        upstream "primary"
+        policies {
+            timeout-secs 10
+            failure-mode "closed"
+        }
+    }
+
+    // Route with failover from primary to secondary
+    route "failover" {
+        priority "high"
+        matches {
+            path-prefix "/failover/"
+        }
+        upstream "with-failover"
+        policies {
+            timeout-secs 10
+            failure-mode "closed"
+        }
+        retry-policy {
+            max-attempts 2
+            timeout-ms 5000
+            backoff-base-ms 100
+            retryable-status-codes 502 503 504
+        }
+    }
+
+    // Route to slow backend for timeout testing
+    route "slow" {
+        priority "normal"
+        matches {
+            path-prefix "/slow/"
+        }
+        upstream "slow"
+        policies {
+            timeout-secs 2  // Short timeout to test upstream timeout handling
+            failure-mode "closed"
+        }
+    }
+
+    // Default route to primary backend
+    route "default" {
+        priority "low"
+        matches {
+            path-prefix "/"
+        }
+        upstream "primary"
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+}
+
+// Upstream configurations
+upstreams {
+    // Primary backend
+    upstream "primary" {
+        target "backend-primary:80" weight=1
+        load-balancing "round_robin"
+
+        health-check {
+            type "http" {
+                path "/status/200"
+                expected-status 200
+            }
+            interval-secs 5
+            timeout-secs 3
+            healthy-threshold 2
+            unhealthy-threshold 2
+        }
+    }
+
+    // Upstream with primary + secondary failover
+    upstream "with-failover" {
+        target "backend-primary:80" weight=2
+        target "backend-secondary:80" weight=1
+        load-balancing "round_robin"
+
+        health-check {
+            type "http" {
+                path "/status/200"
+                expected-status 200
+            }
+            interval-secs 5
+            timeout-secs 3
+            healthy-threshold 2
+            unhealthy-threshold 2
+        }
+    }
+
+    // Slow backend for timeout testing
+    upstream "slow" {
+        target "backend-slow:80" weight=1
+        load-balancing "round_robin"
+
+        health-check {
+            type "http" {
+                path "/status/200"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 1
+            unhealthy-threshold 2
+        }
+    }
+}
+
+// Resource limits
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 1048576
+    max-connections-per-client 100
+}
+
+// Observability for testing
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
+    }
+
+    logging {
+        level "debug"
+        format "json"
+    }
+}
