@@ -13,7 +13,7 @@ categories = ["network-programming"]
 
 [dependencies]
 # Local crates
-sentinel-common = { path = "../common", version = "0.2.0" }
+sentinel-common = { path = "../common", version = "0.2.1" }
 
 # Protocol and serialization
 prost = { workspace = true }
