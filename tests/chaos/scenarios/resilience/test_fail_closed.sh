@@ -256,6 +256,25 @@ main() {
     restore_agent "echo" 2>/dev/null || true
     sleep 3
 
+    # Wait for agent to be fully ready with warmup requests
+    # The proxy may need time to establish connection to the agent
+    log_info "Waiting for agent connection to be established..."
+    local warmup_success=0
+    for i in {1..10}; do
+        local status
+        status=$(http_status "$PROTECTED_URL")
+        if [[ "$status" == "200" ]]; then
+            warmup_success=1
+            break
+        fi
+        log_info "  Warmup attempt $i: $status (waiting...)"
+        sleep 2
+    done
+
+    if [[ $warmup_success -eq 0 ]]; then
+        log_warn "Agent warmup failed - proceeding anyway"
+    fi
+
     # Run tests
     test_baseline
     test_failclosed_agent_crash
