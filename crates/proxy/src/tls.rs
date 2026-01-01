@@ -170,7 +170,10 @@ impl SniResolver {
     }
 
     /// Resolve certificate for a given server name
-    fn resolve(&self, server_name: Option<&str>) -> Arc<CertifiedKey> {
+    ///
+    /// This is the core resolution logic. For the rustls trait implementation,
+    /// see `ResolvesServerCert`.
+    pub fn resolve(&self, server_name: Option<&str>) -> Arc<CertifiedKey> {
         let Some(name) = server_name else {
             debug!("No SNI provided, using default certificate");
             return self.default_cert.clone();
@@ -292,6 +295,13 @@ impl HotReloadableSniResolver {
     /// Get time since last reload
     pub fn last_reload_age(&self) -> Duration {
         self.last_reload.read().elapsed()
+    }
+
+    /// Resolve certificate for a given server name
+    ///
+    /// This is the core resolution logic exposed for testing.
+    pub fn resolve(&self, server_name: Option<&str>) -> Arc<CertifiedKey> {
+        self.inner.read().resolve(server_name)
     }
 }
 
