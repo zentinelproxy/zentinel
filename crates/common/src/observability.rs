@@ -101,6 +101,9 @@ pub struct RequestMetrics {
     websocket_connections_total: IntCounterVec,
     websocket_inspection_duration: HistogramVec,
     websocket_frame_size: HistogramVec,
+    /// Body decompression metrics
+    decompression_total: IntCounterVec,
+    decompression_ratio: HistogramVec,
 }
 
 impl RequestMetrics {
@@ -286,6 +289,25 @@ impl RequestMetrics {
         )
         .context("Failed to register websocket_frame_size metric")?;
 
+        // Body decompression metrics
+        let decompression_total = register_int_counter_vec!(
+            "sentinel_decompression_total",
+            "Total body decompression operations",
+            &["encoding", "result"]
+        )
+        .context("Failed to register decompression_total metric")?;
+
+        // Decompression ratio buckets (compressed:decompressed)
+        let ratio_buckets = vec![1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0];
+
+        let decompression_ratio = register_histogram_vec!(
+            "sentinel_decompression_ratio",
+            "Decompression ratio (decompressed_size / compressed_size)",
+            &["encoding"],
+            ratio_buckets
+        )
+        .context("Failed to register decompression_ratio metric")?;
+
         Ok(Self {
             request_duration,
             request_count,
@@ -309,6 +331,8 @@ impl RequestMetrics {
             websocket_connections_total,
             websocket_inspection_duration,
             websocket_frame_size,
+            decompression_total,
+            decompression_ratio,
         })
     }
 
@@ -486,6 +510,33 @@ impl RequestMetrics {
         self.websocket_frame_size
             .with_label_values(&[route, direction, opcode])
             .observe(size_bytes as f64);
+    }
+
+    // === Decompression Metrics ===
+
+    /// Record a successful body decompression
+    ///
+    /// # Arguments
+    /// * `encoding` - Content-Encoding (gzip, deflate, br)
+    /// * `ratio` - Decompression ratio (decompressed_size / compressed_size)
+    pub fn record_decompression_success(&self, encoding: &str, ratio: f64) {
+        self.decompression_total
+            .with_label_values(&[encoding, "success"])
+            .inc();
+        self.decompression_ratio
+            .with_label_values(&[encoding])
+            .observe(ratio);
+    }
+
+    /// Record a failed body decompression
+    ///
+    /// # Arguments
+    /// * `encoding` - Content-Encoding (gzip, deflate, br)
+    /// * `reason` - Failure reason (ratio_exceeded, size_exceeded, invalid_data, unsupported)
+    pub fn record_decompression_failure(&self, encoding: &str, reason: &str) {
+        self.decompression_total
+            .with_label_values(&[encoding, reason])
+            .inc();
     }
 }
 

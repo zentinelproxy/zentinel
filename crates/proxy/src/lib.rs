@@ -46,6 +46,7 @@ pub mod agents;
 pub mod app;
 pub mod builtin_handlers;
 pub mod cache;
+pub mod decompression;
 pub mod discovery;
 pub mod distributed_rate_limit;
 pub mod memcached_rate_limit;
@@ -153,6 +154,12 @@ pub use rate_limit::{
 // GeoIP filtering
 pub use geo_filter::{
     GeoDatabaseWatcher, GeoFilterManager, GeoFilterPool, GeoFilterResult, GeoLookupError,
+};
+
+// Body decompression with ratio limits
+pub use decompression::{
+    decompress_body, decompress_body_with_stats, is_supported_encoding, parse_content_encoding,
+    DecompressionConfig, DecompressionError, DecompressionResult, DecompressionStats,
 };
 
 // Distributed rate limiting - Redis

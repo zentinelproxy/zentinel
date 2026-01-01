@@ -402,10 +402,54 @@ impl SentinelProxy {
                 ctx.body_inspection_enabled = true;
                 ctx.body_inspection_agents = agent_ids.clone();
 
+                // Set up decompression if enabled in WAF config
+                let decompress_enabled = config
+                    .waf
+                    .as_ref()
+                    .map(|w| w.body_inspection.decompress)
+                    .unwrap_or(false);
+
+                if decompress_enabled {
+                    // Get Content-Encoding header
+                    let content_encoding = session
+                        .req_header()
+                        .headers
+                        .get("content-encoding")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+
+                    if let Some(ref encoding) = content_encoding {
+                        if crate::decompression::is_supported_encoding(encoding) {
+                            ctx.decompression_enabled = true;
+                            ctx.body_content_encoding = Some(encoding.clone());
+                            ctx.max_decompression_ratio = config
+                                .waf
+                                .as_ref()
+                                .map(|w| w.body_inspection.max_decompression_ratio as f64)
+                                .unwrap_or(100.0);
+                            // Use 10x max inspection bytes as decompression limit
+                            ctx.max_decompression_bytes = config
+                                .waf
+                                .as_ref()
+                                .map(|w| w.body_inspection.max_inspection_bytes * 10)
+                                .unwrap_or(10 * 1024 * 1024);
+
+                            debug!(
+                                correlation_id = %ctx.trace_id,
+                                encoding = %encoding,
+                                max_ratio = ctx.max_decompression_ratio,
+                                max_bytes = ctx.max_decompression_bytes,
+                                "Decompression enabled for body inspection"
+                            );
+                        }
+                    }
+                }
+
                 debug!(
                     correlation_id = %ctx.trace_id,
                     content_type = %content_type,
                     agent_count = agent_ids.len(),
+                    decompression = ctx.decompression_enabled,
                     "Body inspection enabled for request"
                 );
             } else {

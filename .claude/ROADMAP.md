@@ -322,7 +322,7 @@ exceeds Envoy performance.
 - `examples/waf-config.kdl` - Example configuration
 
 ### 2.2 Request Body Inspection
-**Status:** DONE - Core infrastructure implemented
+**Status:** DONE - Core infrastructure implemented including decompression
 **Impact:** MEDIUM - Required for WAF effectiveness
 **Effort:** 1 week
 
@@ -333,14 +333,36 @@ exceeds Envoy performance.
 - [x] Buffer body chunks before sending to agents
 - [x] Handle agent block decisions with proper error responses
 - [x] Support fail-open/fail-closed modes per route
-- [ ] Implement decompression with ratio limits
-- [ ] Add body buffering metrics
+- [x] Implement decompression with ratio limits (gzip, deflate, brotli)
+- [x] Add decompression metrics (`sentinel_decompression_total`, `sentinel_decompression_ratio`)
+
+**Decompression Features:**
+- Supports gzip, deflate, and brotli encodings
+- Configurable max decompression ratio (default: 100x) for zip bomb protection
+- Configurable max decompressed size (default: 10MB)
+- Fail-open/fail-closed on decompression errors
+- Prometheus metrics for success/failure tracking
+
+**WAF Body Inspection KDL Configuration:**
+```kdl
+waf {
+    body-inspection {
+        inspect-request-body true
+        decompress true
+        max-decompression-ratio 100.0
+        max-body-inspection-bytes 1048576
+        content-types "application/json" "application/x-www-form-urlencoded"
+    }
+}
+```
 
 **Files:**
+- `crates/proxy/src/decompression.rs` - Decompression with ratio limits
 - `crates/proxy/src/proxy/http_trait.rs` - Body filter implementation
 - `crates/proxy/src/proxy/handlers.rs` - Body inspection setup
 - `crates/proxy/src/proxy/context.rs` - Body inspection state
 - `crates/config/src/waf.rs` - Body inspection config
+- `crates/common/src/observability.rs` - Decompression metrics
 
 ---
 

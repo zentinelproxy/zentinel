@@ -102,6 +102,18 @@ pub struct RequestContext {
     /// Agent IDs to use for body inspection
     pub(crate) body_inspection_agents: Vec<String>,
 
+    // === Body Decompression ===
+    /// Whether decompression is enabled for body inspection
+    pub(crate) decompression_enabled: bool,
+    /// Content-Encoding of the request body (if compressed)
+    pub(crate) body_content_encoding: Option<String>,
+    /// Maximum decompression ratio allowed
+    pub(crate) max_decompression_ratio: f64,
+    /// Maximum decompressed size allowed
+    pub(crate) max_decompression_bytes: usize,
+    /// Whether decompression was performed
+    pub(crate) body_was_decompressed: bool,
+
     // === Rate Limiting ===
     /// Rate limit info for response headers (set during request_filter)
     pub(crate) rate_limit_info: Option<RateLimitHeaderInfo>,
@@ -162,6 +174,11 @@ impl RequestContext {
             body_bytes_inspected: 0,
             body_buffer: Vec::new(),
             body_inspection_agents: Vec::new(),
+            decompression_enabled: false,
+            body_content_encoding: None,
+            max_decompression_ratio: 100.0,
+            max_decompression_bytes: 10 * 1024 * 1024, // 10MB
+            body_was_decompressed: false,
             rate_limit_info: None,
             geo_country_code: None,
             geo_lookup_performed: false,

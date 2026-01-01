@@ -2310,8 +2310,92 @@ impl SentinelProxy {
             buffer_size = ctx.body_buffer.len(),
             end_of_stream = end_of_stream,
             agent_count = ctx.body_inspection_agents.len(),
+            decompression_enabled = ctx.decompression_enabled,
             "Sending buffered body to agents for inspection"
         );
+
+        // Decompress body if enabled and we have a supported encoding
+        let body_for_inspection = if ctx.decompression_enabled {
+            if let Some(ref encoding) = ctx.body_content_encoding {
+                let config = crate::decompression::DecompressionConfig {
+                    max_ratio: ctx.max_decompression_ratio,
+                    max_output_bytes: ctx.max_decompression_bytes,
+                };
+
+                match crate::decompression::decompress_body(
+                    &ctx.body_buffer,
+                    encoding,
+                    &config,
+                ) {
+                    Ok(result) => {
+                        ctx.body_was_decompressed = true;
+                        self.metrics
+                            .record_decompression_success(encoding, result.ratio);
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            encoding = %encoding,
+                            compressed_size = result.compressed_size,
+                            decompressed_size = result.decompressed_size,
+                            ratio = result.ratio,
+                            "Body decompressed for agent inspection"
+                        );
+                        result.data
+                    }
+                    Err(e) => {
+                        // Record failure metric
+                        let failure_reason = match &e {
+                            crate::decompression::DecompressionError::RatioExceeded { .. } => {
+                                "ratio_exceeded"
+                            }
+                            crate::decompression::DecompressionError::SizeExceeded { .. } => {
+                                "size_exceeded"
+                            }
+                            crate::decompression::DecompressionError::InvalidData { .. } => {
+                                "invalid_data"
+                            }
+                            crate::decompression::DecompressionError::UnsupportedEncoding { .. } => {
+                                "unsupported"
+                            }
+                            crate::decompression::DecompressionError::IoError(_) => "io_error",
+                        };
+                        self.metrics
+                            .record_decompression_failure(encoding, failure_reason);
+
+                        // Decompression failed - decide based on failure mode
+                        let fail_closed = ctx
+                            .route_config
+                            .as_ref()
+                            .map(|r| r.policies.failure_mode == sentinel_config::FailureMode::Closed)
+                            .unwrap_or(false);
+
+                        if fail_closed {
+                            error!(
+                                correlation_id = %ctx.trace_id,
+                                error = %e,
+                                encoding = %encoding,
+                                "Decompression failed, blocking (fail-closed)"
+                            );
+                            return Err(Error::explain(
+                                ErrorType::HTTPStatus(400),
+                                "Invalid compressed body",
+                            ));
+                        } else {
+                            warn!(
+                                correlation_id = %ctx.trace_id,
+                                error = %e,
+                                encoding = %encoding,
+                                "Decompression failed, sending compressed body (fail-open)"
+                            );
+                            ctx.body_buffer.clone()
+                        }
+                    }
+                }
+            } else {
+                ctx.body_buffer.clone()
+            }
+        } else {
+            ctx.body_buffer.clone()
+        };
 
         let agent_ctx = crate::agents::AgentCallContext {
             correlation_id: sentinel_common::CorrelationId::from_string(&ctx.trace_id),
@@ -2330,14 +2414,14 @@ impl SentinelProxy {
             },
             route_id: ctx.route_id.clone(),
             upstream_id: ctx.upstream.clone(),
-            request_body: Some(ctx.body_buffer.clone()),
+            request_body: Some(body_for_inspection.clone()),
             response_body: None,
         };
 
         let agent_ids = ctx.body_inspection_agents.clone();
         match self
             .agent_manager
-            .process_request_body(&agent_ctx, &ctx.body_buffer, end_of_stream, &agent_ids)
+            .process_request_body(&agent_ctx, &body_for_inspection, end_of_stream, &agent_ids)
             .await
         {
             Ok(decision) => {
