@@ -129,6 +129,22 @@ pub trait LoadBalancer: Send + Sync {
     ) {
         // Default implementation - no-op
     }
+
+    /// Report request result by address with latency (for adaptive algorithms)
+    ///
+    /// This method allows reporting results without needing the full TargetSelection,
+    /// which is useful when the selection is not available (e.g., in logging callback).
+    /// The default implementation just calls report_health; adaptive balancers override
+    /// this to update their metrics.
+    async fn report_result_with_latency(
+        &self,
+        address: &str,
+        success: bool,
+        _latency: Option<Duration>,
+    ) {
+        // Default implementation - just report health
+        self.report_health(address, success).await;
+    }
 }
 
 /// Selected upstream target
@@ -1100,6 +1116,43 @@ impl UpstreamPool {
                 "Connection failure reported for target"
             );
         }
+    }
+
+    /// Report request result with latency for adaptive load balancing
+    ///
+    /// This method passes latency information to the load balancer for
+    /// adaptive weight adjustment. It updates circuit breakers, health
+    /// status, and load balancer metrics.
+    pub async fn report_result_with_latency(
+        &self,
+        target: &str,
+        success: bool,
+        latency: Option<Duration>,
+    ) {
+        trace!(
+            upstream_id = %self.id,
+            target = %target,
+            success = success,
+            latency_ms = latency.map(|l| l.as_millis() as u64),
+            "Reporting result with latency for adaptive LB"
+        );
+
+        // Update circuit breaker
+        if success {
+            if let Some(breaker) = self.circuit_breakers.read().await.get(target) {
+                breaker.record_success().await;
+            }
+        } else {
+            if let Some(breaker) = self.circuit_breakers.read().await.get(target) {
+                breaker.record_failure().await;
+            }
+            self.stats.failures.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Report to load balancer with latency (enables adaptive weight adjustment)
+        self.load_balancer
+            .report_result_with_latency(target, success, latency)
+            .await;
     }
 
     /// Get pool statistics

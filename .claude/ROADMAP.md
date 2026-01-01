@@ -749,11 +749,11 @@ The following agents were analyzed and confirmed to be correctly positioned as e
 
 | Item | Severity | Notes |
 |------|----------|-------|
-| Global agent semaphore | Medium | Add per-agent queue isolation |
+| ~~Global agent semaphore~~ | ~~Medium~~ | ✓ Per-agent queue isolation (commit 78e5ccd) |
 | Hardcoded pool sizes | Medium | Expose in configuration |
 | Async pool shutdown | Low | Bound spawned tasks |
-| gRPC health checks | Medium | Implement full protocol |
-| Adaptive LB not wired | Medium | Integrate into request path |
+| ~~gRPC health checks~~ | ~~Medium~~ | ✓ Full grpc.health.v1 protocol |
+| ~~Adaptive LB not wired~~ | ~~Medium~~ | ✓ Wired into request path with latency feedback |
 
 ---
 

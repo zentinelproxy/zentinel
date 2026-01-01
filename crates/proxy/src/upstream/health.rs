@@ -15,6 +15,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
+use crate::grpc_health::GrpcHealthCheck;
+
 use sentinel_common::types::HealthCheckType;
 use sentinel_config::{HealthCheck as HealthCheckConfig, UpstreamConfig};
 
@@ -162,17 +164,21 @@ impl ActiveHealthChecker {
                 hc
             }
             HealthCheckType::Grpc { service } => {
-                // Fall back to TCP health check for gRPC (Pingora doesn't have gRPC health check)
-                warn!(
-                    upstream_id = %upstream_id,
-                    service = %service,
-                    "gRPC health check not supported, falling back to TCP"
-                );
-                // TcpHealthCheck::new() returns Box<Self>
-                let mut hc = TcpHealthCheck::new();
+                let timeout = Duration::from_secs(config.timeout_secs);
+                let mut hc = GrpcHealthCheck::new(service.clone(), timeout);
                 hc.consecutive_success = config.healthy_threshold as usize;
                 hc.consecutive_failure = config.unhealthy_threshold as usize;
-                hc
+
+                info!(
+                    upstream_id = %upstream_id,
+                    service = %service,
+                    timeout_secs = config.timeout_secs,
+                    consecutive_success = hc.consecutive_success,
+                    consecutive_failure = hc.consecutive_failure,
+                    "Created gRPC health check"
+                );
+
+                Box::new(hc)
             }
         }
     }

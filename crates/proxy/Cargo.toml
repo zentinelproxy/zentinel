@@ -131,6 +131,10 @@ notify = "6.1"
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 
+# gRPC health checking
+tonic = { workspace = true }
+tonic-health = "0.12"
+
 # Kubernetes service discovery (optional)
 reqwest = { version = "0.12", features = ["rustls-tls", "json"], optional = true }
 

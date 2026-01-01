@@ -661,6 +661,40 @@ impl LoadBalancer for AdaptiveBalancer {
             }
         }
     }
+
+    async fn report_result_with_latency(
+        &self,
+        address: &str,
+        success: bool,
+        latency: Option<Duration>,
+    ) {
+        // Find target index by address
+        let target_index = self
+            .targets
+            .iter()
+            .position(|t| format!("{}:{}", t.address, t.port) == address);
+
+        if let Some(index) = target_index {
+            trace!(
+                target_index = index,
+                address = %address,
+                success = success,
+                latency_ms = latency.map(|l| l.as_millis() as u64),
+                "Adaptive recording result with latency"
+            );
+            self.metrics[index]
+                .record_result(success, latency, &self.config)
+                .await;
+        } else {
+            // Fall back to health reporting only
+            trace!(
+                address = %address,
+                success = success,
+                "Address not found in adaptive targets, reporting health only"
+            );
+            self.report_health(address, success).await;
+        }
+    }
 }
 
 #[cfg(test)]

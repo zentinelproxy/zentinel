@@ -3950,7 +3950,7 @@ checksum = "689224d06523904ebcc9b482c6a3f4f7fb396096645c4cd10c0d2ff7371a34d3"
 
 [[package]]
 name = "sentinel-agent-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3979,7 +3979,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-common"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4001,7 +4001,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4048,7 +4048,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-proxy"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4115,6 +4115,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "tonic",
+ "tonic-health",
  "tracing",
  "tracing-subscriber",
  "urlencoding",
@@ -4125,7 +4127,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-stack"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4913,6 +4915,19 @@ dependencies = [
  "prost-types",
  "quote",
  "syn 2.0.111",
+]
+
+[[package]]
+name = "tonic-health"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1eaf34ddb812120f5c601162d5429933c9b527d901ab0e7f930d3147e33a09b2"
+dependencies = [
+ "async-stream",
+ "prost",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]
