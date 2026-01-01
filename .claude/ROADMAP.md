@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-01
 **Current Version:** 0.1.9
-**Production Readiness:** 97%
+**Production Readiness:** 98%
 
 ---
 
@@ -493,19 +493,27 @@ upstream "k8s-backend" {
 - `crates/config/src/observability.rs` - Tracing config
 
 ### 4.2 Enhanced Audit Logging
-**Status:** Access logs only
+**Status:** DONE - Comprehensive audit logging with JSON format
 **Impact:** MEDIUM - Security compliance
-**Effort:** 1 week
+**Effort:** COMPLETE
 
 **Tasks:**
-- [ ] Add structured audit log format
-- [ ] Log WAF decisions with rule IDs
-- [ ] Log authentication events
-- [ ] Log configuration changes
-- [ ] Add log shipping configuration (syslog, Kafka)
+- [x] Add structured audit log format (JSON with 15+ fields)
+- [x] Log WAF decisions with rule IDs (`rule_ids: Vec<String>`, tags, agent_id)
+- [x] Log authentication events (`user_id`, `session_id` fields in AuditLogEntry)
+- [x] Log configuration changes (`AuditReloadHook` logs reload_started/success/failed)
+- [ ] Add log shipping configuration (syslog, Kafka) - use external collectors
+
+**Implementation Details:**
+- 12 event types: Blocked, AgentDecision, WafMatch, WafBlock, RateLimitExceeded, AuthEvent, ConfigChange, CertReload, CircuitBreakerChange, CachePurge, AdminAction, Custom
+- Builder pattern for audit entries with convenience constructors
+- Configurable via KDL: `log-blocked`, `log-agent-decisions`, `log-waf-events`
+- JSON output compatible with ELK, Datadog, Splunk, Grafana Loki
 
 **Files:**
-- `crates/proxy/src/logging.rs` - Audit log implementation
+- `crates/proxy/src/logging.rs` - AuditLogEntry, AuditEventType, LogManager (808 lines)
+- `crates/config/src/observability.rs` - AuditLogConfig
+- `crates/proxy/src/reload/mod.rs` - AuditReloadHook for config changes
 
 ---
 
