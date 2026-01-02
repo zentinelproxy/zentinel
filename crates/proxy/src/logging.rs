@@ -72,6 +72,12 @@ pub struct AccessLogEntry {
     pub upstream_attempts: u32,
     /// Instance ID of the proxy
     pub instance_id: String,
+    /// Namespace (for scoped requests)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Service (for scoped requests)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 }
 
 impl AccessLogEntry {
@@ -247,6 +253,12 @@ pub struct AuditLogEntry {
     /// Additional metadata as key-value pairs
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub metadata: std::collections::HashMap<String, String>,
+    /// Namespace (for scoped requests)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Service (for scoped requests)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 }
 
 impl AuditLogEntry {
@@ -275,7 +287,28 @@ impl AuditLogEntry {
             user_id: None,
             session_id: None,
             metadata: std::collections::HashMap::new(),
+            namespace: None,
+            service: None,
         }
+    }
+
+    /// Builder: set namespace
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+
+    /// Builder: set service
+    pub fn with_service(mut self, service: impl Into<String>) -> Self {
+        self.service = Some(service.into());
+        self
+    }
+
+    /// Builder: set scope from namespace and service
+    pub fn with_scope(mut self, namespace: Option<String>, service: Option<String>) -> Self {
+        self.namespace = namespace;
+        self.service = service;
+        self
     }
 
     /// Builder: set route ID
@@ -695,11 +728,42 @@ mod tests {
             upstream: Some("backend-1".to_string()),
             upstream_attempts: 1,
             instance_id: "instance-1".to_string(),
+            namespace: None,
+            service: None,
         };
 
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"trace_id\":\"abc123\""));
         assert!(json.contains("\"status\":200"));
+    }
+
+    #[test]
+    fn test_access_log_entry_with_scope() {
+        let entry = AccessLogEntry {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            trace_id: "abc123".to_string(),
+            method: "GET".to_string(),
+            path: "/api/users".to_string(),
+            query: None,
+            protocol: "HTTP/1.1".to_string(),
+            status: 200,
+            body_bytes: 1024,
+            duration_ms: 50,
+            client_ip: "192.168.1.1".to_string(),
+            user_agent: None,
+            referer: None,
+            host: None,
+            route_id: Some("api-route".to_string()),
+            upstream: Some("backend-1".to_string()),
+            upstream_attempts: 1,
+            instance_id: "instance-1".to_string(),
+            namespace: Some("api".to_string()),
+            service: Some("payments".to_string()),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"namespace\":\"api\""));
+        assert!(json.contains("\"service\":\"payments\""));
     }
 
     #[test]
@@ -763,6 +827,8 @@ mod tests {
             upstream: Some("backend-1".to_string()),
             upstream_attempts: 1,
             instance_id: "instance-1".to_string(),
+            namespace: None,
+            service: None,
         };
 
         let combined = entry.format(AccessLogFormat::Combined);

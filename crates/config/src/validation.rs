@@ -2,12 +2,19 @@
 //!
 //! This module contains all validation logic for the configuration,
 //! including semantic validation and cross-reference checking.
+//!
+//! # Scoped Validation
+//!
+//! The [`ValidationContext`] provides scope-aware validation for namespaced
+//! configurations. It tracks resources by scope and validates cross-references
+//! using the resolution rules (local → parent → exported → global).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use tracing::{debug, trace, warn};
 
-use crate::{Config, Filter, ServiceType};
+use crate::{Config, Filter, NamespaceConfig, ServiceConfig, ServiceType};
+use sentinel_common::ids::Scope;
 use sentinel_common::types::Priority;
 
 // ============================================================================
@@ -26,6 +33,314 @@ pub fn validate_socket_addr(addr: &str) -> Result<(), validator::ValidationError
             )));
             err
         })
+}
+
+// ============================================================================
+// Validation Context
+// ============================================================================
+
+/// Context for scope-aware configuration validation.
+///
+/// This struct tracks all resources by scope and enables validation of
+/// cross-references between scopes following the resolution rules.
+#[derive(Debug, Default)]
+pub struct ValidationContext {
+    /// All canonical IDs for duplicate detection (e.g., "api:payments:checkout")
+    pub all_ids: HashSet<String>,
+
+    /// Upstreams indexed by scope
+    upstreams_by_scope: HashMap<Scope, HashSet<String>>,
+
+    /// Agents indexed by scope
+    agents_by_scope: HashMap<Scope, HashSet<String>>,
+
+    /// Filters indexed by scope
+    filters_by_scope: HashMap<Scope, HashSet<String>>,
+
+    /// Routes indexed by scope
+    routes_by_scope: HashMap<Scope, HashSet<String>>,
+
+    /// Exported upstream names (local name only)
+    exported_upstreams: HashSet<String>,
+
+    /// Exported agent names (local name only)
+    exported_agents: HashSet<String>,
+
+    /// Exported filter names (local name only)
+    exported_filters: HashSet<String>,
+}
+
+impl ValidationContext {
+    /// Create a new validation context from a configuration.
+    pub fn from_config(config: &Config) -> Self {
+        let mut ctx = Self::default();
+
+        // Register global resources
+        ctx.register_global_resources(config);
+
+        // Register namespace and service resources
+        for ns in &config.namespaces {
+            ctx.register_namespace_resources(ns);
+        }
+
+        ctx
+    }
+
+    fn register_global_resources(&mut self, config: &Config) {
+        let scope = Scope::Global;
+
+        // Global upstreams
+        for id in config.upstreams.keys() {
+            self.upstreams_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(id.clone());
+            self.all_ids.insert(id.clone());
+        }
+
+        // Global agents
+        for agent in &config.agents {
+            self.agents_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(agent.id.clone());
+            self.all_ids.insert(agent.id.clone());
+        }
+
+        // Global filters
+        for id in config.filters.keys() {
+            self.filters_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(id.clone());
+            self.all_ids.insert(id.clone());
+        }
+
+        // Global routes
+        for route in &config.routes {
+            self.routes_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(route.id.clone());
+            self.all_ids.insert(route.id.clone());
+        }
+    }
+
+    fn register_namespace_resources(&mut self, ns: &NamespaceConfig) {
+        let scope = Scope::Namespace(ns.id.clone());
+
+        // Namespace upstreams
+        for id in ns.upstreams.keys() {
+            self.upstreams_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(id.clone());
+            self.all_ids.insert(format!("{}:{}", ns.id, id));
+
+            // Track exports
+            if ns.exports.upstreams.contains(id) {
+                self.exported_upstreams.insert(id.clone());
+            }
+        }
+
+        // Namespace agents
+        for agent in &ns.agents {
+            self.agents_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(agent.id.clone());
+            self.all_ids.insert(format!("{}:{}", ns.id, agent.id));
+
+            // Track exports
+            if ns.exports.agents.contains(&agent.id) {
+                self.exported_agents.insert(agent.id.clone());
+            }
+        }
+
+        // Namespace filters
+        for id in ns.filters.keys() {
+            self.filters_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(id.clone());
+            self.all_ids.insert(format!("{}:{}", ns.id, id));
+
+            // Track exports
+            if ns.exports.filters.contains(id) {
+                self.exported_filters.insert(id.clone());
+            }
+        }
+
+        // Namespace routes
+        for route in &ns.routes {
+            self.routes_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(route.id.clone());
+            self.all_ids.insert(format!("{}:{}", ns.id, route.id));
+        }
+
+        // Register services within namespace
+        for svc in &ns.services {
+            self.register_service_resources(&ns.id, svc);
+        }
+    }
+
+    fn register_service_resources(&mut self, ns_id: &str, svc: &ServiceConfig) {
+        let scope = Scope::Service {
+            namespace: ns_id.to_string(),
+            service: svc.id.clone(),
+        };
+
+        // Service upstreams
+        for id in svc.upstreams.keys() {
+            self.upstreams_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(id.clone());
+            self.all_ids.insert(format!("{}:{}:{}", ns_id, svc.id, id));
+        }
+
+        // Service agents
+        for agent in &svc.agents {
+            self.agents_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(agent.id.clone());
+            self.all_ids
+                .insert(format!("{}:{}:{}", ns_id, svc.id, agent.id));
+        }
+
+        // Service filters
+        for id in svc.filters.keys() {
+            self.filters_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(id.clone());
+            self.all_ids.insert(format!("{}:{}:{}", ns_id, svc.id, id));
+        }
+
+        // Service routes
+        for route in &svc.routes {
+            self.routes_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(route.id.clone());
+            self.all_ids
+                .insert(format!("{}:{}:{}", ns_id, svc.id, route.id));
+        }
+    }
+
+    /// Check if an upstream reference can be resolved from the given scope.
+    ///
+    /// Resolution order: local scope → parent scope → exported → global
+    pub fn can_resolve_upstream(&self, reference: &str, from_scope: &Scope) -> bool {
+        // Check if it's a qualified reference (contains ':')
+        if reference.contains(':') {
+            // Qualified references must match exactly
+            return self.all_ids.contains(reference);
+        }
+
+        // Unqualified reference - search scope chain
+        for scope in from_scope.chain() {
+            if let Some(upstreams) = self.upstreams_by_scope.get(&scope) {
+                if upstreams.contains(reference) {
+                    return true;
+                }
+            }
+        }
+
+        // Check exports (for cross-namespace access)
+        if self.exported_upstreams.contains(reference) {
+            return true;
+        }
+
+        false
+    }
+
+    /// Check if an agent reference can be resolved from the given scope.
+    pub fn can_resolve_agent(&self, reference: &str, from_scope: &Scope) -> bool {
+        if reference.contains(':') {
+            return self.all_ids.contains(reference);
+        }
+
+        for scope in from_scope.chain() {
+            if let Some(agents) = self.agents_by_scope.get(&scope) {
+                if agents.contains(reference) {
+                    return true;
+                }
+            }
+        }
+
+        if self.exported_agents.contains(reference) {
+            return true;
+        }
+
+        false
+    }
+
+    /// Check if a filter reference can be resolved from the given scope.
+    pub fn can_resolve_filter(&self, reference: &str, from_scope: &Scope) -> bool {
+        if reference.contains(':') {
+            return self.all_ids.contains(reference);
+        }
+
+        for scope in from_scope.chain() {
+            if let Some(filters) = self.filters_by_scope.get(&scope) {
+                if filters.contains(reference) {
+                    return true;
+                }
+            }
+        }
+
+        if self.exported_filters.contains(reference) {
+            return true;
+        }
+
+        false
+    }
+
+    /// Get all upstreams available from a given scope.
+    pub fn available_upstreams(&self, from_scope: &Scope) -> HashSet<String> {
+        let mut available = HashSet::new();
+
+        for scope in from_scope.chain() {
+            if let Some(upstreams) = self.upstreams_by_scope.get(&scope) {
+                available.extend(upstreams.iter().cloned());
+            }
+        }
+
+        available.extend(self.exported_upstreams.iter().cloned());
+        available
+    }
+
+    /// Get all agents available from a given scope.
+    pub fn available_agents(&self, from_scope: &Scope) -> HashSet<String> {
+        let mut available = HashSet::new();
+
+        for scope in from_scope.chain() {
+            if let Some(agents) = self.agents_by_scope.get(&scope) {
+                available.extend(agents.iter().cloned());
+            }
+        }
+
+        available.extend(self.exported_agents.iter().cloned());
+        available
+    }
+
+    /// Get all filters available from a given scope.
+    pub fn available_filters(&self, from_scope: &Scope) -> HashSet<String> {
+        let mut available = HashSet::new();
+
+        for scope in from_scope.chain() {
+            if let Some(filters) = self.filters_by_scope.get(&scope) {
+                available.extend(filters.iter().cloned());
+            }
+        }
+
+        available.extend(self.exported_filters.iter().cloned());
+        available
+    }
 }
 
 // ============================================================================
@@ -78,6 +393,11 @@ pub fn validate_config_semantics(config: &Config) -> Result<(), validator::Valid
     // Validate duplicates
     trace!("Checking for duplicates");
     validate_duplicates(config, &mut errors);
+
+    // Validate namespaces and services
+    trace!("Validating namespaces");
+    let ctx = ValidationContext::from_config(config);
+    validate_namespaces(config, &ctx, &mut errors);
 
     // Warn about orphaned upstreams
     warn_orphaned_upstreams(config, &upstream_ids);
@@ -388,6 +708,185 @@ fn format_available(ids: &HashSet<&str>) -> String {
     }
 }
 
+// ============================================================================
+// Namespace Validation
+// ============================================================================
+
+fn validate_namespaces(config: &Config, ctx: &ValidationContext, errors: &mut Vec<String>) {
+    trace!(
+        namespace_count = config.namespaces.len(),
+        "Validating namespace configurations"
+    );
+
+    // Check for duplicate namespace IDs
+    let mut seen_ns_ids = HashSet::new();
+    for ns in &config.namespaces {
+        if !seen_ns_ids.insert(&ns.id) {
+            errors.push(format!(
+                "Duplicate namespace ID '{}'. Each namespace must have a unique identifier.",
+                ns.id
+            ));
+        }
+
+        // Validate IDs don't contain reserved ':' character
+        if ns.id.contains(':') {
+            errors.push(format!(
+                "Namespace ID '{}' contains reserved character ':'. \
+                 The colon is reserved for qualified references.",
+                ns.id
+            ));
+        }
+
+        validate_namespace_resources(ns, ctx, errors);
+    }
+}
+
+fn validate_namespace_resources(ns: &NamespaceConfig, ctx: &ValidationContext, errors: &mut Vec<String>) {
+    let scope = Scope::Namespace(ns.id.clone());
+
+    // Validate namespace routes reference valid upstreams/filters
+    for route in &ns.routes {
+        if let Some(ref upstream) = route.upstream {
+            if !ctx.can_resolve_upstream(upstream, &scope) {
+                let available = ctx.available_upstreams(&scope);
+                errors.push(format!(
+                    "Route '{}' in namespace '{}' references upstream '{}' which cannot be resolved.\n\
+                     Available upstreams: {}",
+                    route.id,
+                    ns.id,
+                    upstream,
+                    format_available_owned(&available)
+                ));
+            }
+        }
+
+        for filter_id in &route.filters {
+            if !ctx.can_resolve_filter(filter_id, &scope) {
+                let available = ctx.available_filters(&scope);
+                errors.push(format!(
+                    "Route '{}' in namespace '{}' references filter '{}' which cannot be resolved.\n\
+                     Available filters: {}",
+                    route.id,
+                    ns.id,
+                    filter_id,
+                    format_available_owned(&available)
+                ));
+            }
+        }
+    }
+
+    // Validate exports reference existing resources
+    for export_name in &ns.exports.upstreams {
+        if !ns.upstreams.contains_key(export_name) {
+            errors.push(format!(
+                "Namespace '{}' exports upstream '{}' which doesn't exist in this namespace.",
+                ns.id, export_name
+            ));
+        }
+    }
+
+    for export_name in &ns.exports.agents {
+        if !ns.agents.iter().any(|a| &a.id == export_name) {
+            errors.push(format!(
+                "Namespace '{}' exports agent '{}' which doesn't exist in this namespace.",
+                ns.id, export_name
+            ));
+        }
+    }
+
+    for export_name in &ns.exports.filters {
+        if !ns.filters.contains_key(export_name) {
+            errors.push(format!(
+                "Namespace '{}' exports filter '{}' which doesn't exist in this namespace.",
+                ns.id, export_name
+            ));
+        }
+    }
+
+    // Validate services within namespace
+    let mut seen_svc_ids = HashSet::new();
+    for svc in &ns.services {
+        if !seen_svc_ids.insert(&svc.id) {
+            errors.push(format!(
+                "Duplicate service ID '{}' in namespace '{}'. Each service must have a unique identifier.",
+                svc.id, ns.id
+            ));
+        }
+
+        if svc.id.contains(':') {
+            errors.push(format!(
+                "Service ID '{}' in namespace '{}' contains reserved character ':'.",
+                svc.id, ns.id
+            ));
+        }
+
+        validate_service_resources(&ns.id, svc, ctx, errors);
+    }
+}
+
+fn validate_service_resources(
+    ns_id: &str,
+    svc: &ServiceConfig,
+    ctx: &ValidationContext,
+    errors: &mut Vec<String>,
+) {
+    let scope = Scope::Service {
+        namespace: ns_id.to_string(),
+        service: svc.id.clone(),
+    };
+
+    // Validate service routes reference valid upstreams/filters
+    for route in &svc.routes {
+        if let Some(ref upstream) = route.upstream {
+            if !ctx.can_resolve_upstream(upstream, &scope) {
+                let available = ctx.available_upstreams(&scope);
+                errors.push(format!(
+                    "Route '{}' in service '{}:{}' references upstream '{}' which cannot be resolved.\n\
+                     Available upstreams: {}",
+                    route.id,
+                    ns_id,
+                    svc.id,
+                    upstream,
+                    format_available_owned(&available)
+                ));
+            }
+        }
+
+        for filter_id in &route.filters {
+            if !ctx.can_resolve_filter(filter_id, &scope) {
+                let available = ctx.available_filters(&scope);
+                errors.push(format!(
+                    "Route '{}' in service '{}:{}' references filter '{}' which cannot be resolved.\n\
+                     Available filters: {}",
+                    route.id,
+                    ns_id,
+                    svc.id,
+                    filter_id,
+                    format_available_owned(&available)
+                ));
+            }
+        }
+    }
+}
+
+fn format_available_owned(ids: &HashSet<String>) -> String {
+    if ids.is_empty() {
+        "(none defined)".to_string()
+    } else {
+        let mut sorted: Vec<_> = ids.iter().collect();
+        sorted.sort();
+        sorted
+            .iter()
+            .map(|s| format!("'{}'", s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+// ============================================================================
+// Result Building
+// ============================================================================
+
 fn build_validation_result(errors: Vec<String>) -> Result<(), validator::ValidationError> {
     if errors.is_empty() {
         Ok(())
@@ -409,5 +908,194 @@ fn build_validation_result(errors: Vec<String>) -> Result<(), validator::Validat
         };
         err.message = Some(std::borrow::Cow::Owned(error_summary));
         Err(err)
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
+    use crate::{
+        ConnectionPoolConfig, HttpVersionConfig, MatchCondition, RoutePolicies, RouteConfig,
+        UpstreamConfig, UpstreamTarget, UpstreamTimeouts,
+    };
+    use sentinel_common::types::LoadBalancingAlgorithm;
+
+    fn test_upstream(id: &str) -> UpstreamConfig {
+        UpstreamConfig {
+            id: id.to_string(),
+            targets: vec![UpstreamTarget {
+                address: "127.0.0.1:8080".to_string(),
+                weight: 1,
+                max_requests: None,
+                metadata: HashMap::new(),
+            }],
+            load_balancing: LoadBalancingAlgorithm::RoundRobin,
+            health_check: None,
+            connection_pool: ConnectionPoolConfig::default(),
+            timeouts: UpstreamTimeouts::default(),
+            tls: None,
+            http_version: HttpVersionConfig::default(),
+        }
+    }
+
+    fn test_route(id: &str, upstream: Option<&str>) -> RouteConfig {
+        RouteConfig {
+            id: id.to_string(),
+            priority: Priority::Normal,
+            matches: vec![MatchCondition::PathPrefix("/".to_string())],
+            upstream: upstream.map(String::from),
+            service_type: ServiceType::Web,
+            policies: RoutePolicies::default(),
+            filters: vec![],
+            builtin_handler: None,
+            waf_enabled: false,
+            circuit_breaker: None,
+            retry_policy: None,
+            static_files: None,
+            api_schema: None,
+            error_pages: None,
+            websocket: false,
+            websocket_inspection: false,
+        }
+    }
+
+    #[test]
+    fn test_validation_context_from_config() {
+        let mut config = Config::default_for_testing();
+
+        // Add a namespace with an upstream
+        let mut ns = NamespaceConfig::new("api");
+        ns.upstreams
+            .insert("ns-backend".to_string(), test_upstream("ns-backend"));
+        ns.routes.push(test_route("ns-route", Some("ns-backend")));
+        config.namespaces.push(ns);
+
+        let ctx = ValidationContext::from_config(&config);
+
+        // Should have global upstream
+        assert!(ctx.can_resolve_upstream("default", &Scope::Global));
+
+        // Should have namespace upstream from namespace scope
+        let ns_scope = Scope::Namespace("api".to_string());
+        assert!(ctx.can_resolve_upstream("ns-backend", &ns_scope));
+
+        // Should also see global from namespace scope
+        assert!(ctx.can_resolve_upstream("default", &ns_scope));
+
+        // Global scope should NOT see namespace-local upstream
+        assert!(!ctx.can_resolve_upstream("ns-backend", &Scope::Global));
+    }
+
+    #[test]
+    fn test_validation_context_exports() {
+        let mut config = Config::default_for_testing();
+
+        // Add a namespace with exported upstream
+        let mut ns = NamespaceConfig::new("shared");
+        ns.upstreams
+            .insert("shared-backend".to_string(), test_upstream("shared-backend"));
+        ns.exports = ExportConfig {
+            upstreams: vec!["shared-backend".to_string()],
+            agents: vec![],
+            filters: vec![],
+        };
+        config.namespaces.push(ns);
+
+        let ctx = ValidationContext::from_config(&config);
+
+        // Exported upstream should be visible from global scope
+        assert!(ctx.can_resolve_upstream("shared-backend", &Scope::Global));
+
+        // And from other namespaces
+        let other_ns = Scope::Namespace("other".to_string());
+        assert!(ctx.can_resolve_upstream("shared-backend", &other_ns));
+    }
+
+    #[test]
+    fn test_validation_context_service_scope() {
+        let mut config = Config::default_for_testing();
+
+        // Add a namespace with a service
+        let mut ns = NamespaceConfig::new("api");
+        ns.upstreams
+            .insert("ns-backend".to_string(), test_upstream("ns-backend"));
+
+        let mut svc = ServiceConfig::new("payments");
+        svc.upstreams
+            .insert("svc-backend".to_string(), test_upstream("svc-backend"));
+        ns.services.push(svc);
+
+        config.namespaces.push(ns);
+
+        let ctx = ValidationContext::from_config(&config);
+
+        let svc_scope = Scope::Service {
+            namespace: "api".to_string(),
+            service: "payments".to_string(),
+        };
+
+        // Service should see its own upstream
+        assert!(ctx.can_resolve_upstream("svc-backend", &svc_scope));
+
+        // Service should see namespace upstream
+        assert!(ctx.can_resolve_upstream("ns-backend", &svc_scope));
+
+        // Service should see global upstream
+        assert!(ctx.can_resolve_upstream("default", &svc_scope));
+
+        // Namespace scope should NOT see service-local upstream
+        let ns_scope = Scope::Namespace("api".to_string());
+        assert!(!ctx.can_resolve_upstream("svc-backend", &ns_scope));
+    }
+
+    #[test]
+    fn test_validation_context_qualified_references() {
+        let mut config = Config::default_for_testing();
+
+        let mut ns = NamespaceConfig::new("api");
+        ns.upstreams
+            .insert("backend".to_string(), test_upstream("backend"));
+        config.namespaces.push(ns);
+
+        let ctx = ValidationContext::from_config(&config);
+
+        // Qualified reference should work
+        assert!(ctx.can_resolve_upstream("api:backend", &Scope::Global));
+
+        // Wrong qualified reference should fail
+        assert!(!ctx.can_resolve_upstream("other:backend", &Scope::Global));
+    }
+
+    #[test]
+    fn test_available_upstreams() {
+        let mut config = Config::default_for_testing();
+
+        let mut ns = NamespaceConfig::new("api");
+        ns.upstreams
+            .insert("ns-backend".to_string(), test_upstream("ns-backend"));
+        ns.exports = ExportConfig {
+            upstreams: vec!["ns-backend".to_string()],
+            agents: vec![],
+            filters: vec![],
+        };
+        config.namespaces.push(ns);
+
+        let ctx = ValidationContext::from_config(&config);
+
+        // Global scope should see: default (global) + ns-backend (exported)
+        let global_available = ctx.available_upstreams(&Scope::Global);
+        assert!(global_available.contains("default"));
+        assert!(global_available.contains("ns-backend"));
+
+        // Namespace scope should see: default (global) + ns-backend (local) + exported
+        let ns_scope = Scope::Namespace("api".to_string());
+        let ns_available = ctx.available_upstreams(&ns_scope);
+        assert!(ns_available.contains("default"));
+        assert!(ns_available.contains("ns-backend"));
     }
 }

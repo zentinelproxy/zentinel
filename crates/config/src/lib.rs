@@ -37,9 +37,12 @@ use sentinel_common::{
 pub mod agents;
 mod defaults;
 pub mod filters;
+pub mod flatten;
 mod kdl;
 pub mod multi_file;
+pub mod namespace;
 pub mod observability;
+pub mod resolution;
 pub mod routes;
 pub mod server;
 pub mod upstreams;
@@ -63,6 +66,15 @@ pub use filters::*;
 
 // Multi-file
 pub use multi_file::{ConfigDirectory, MultiFileLoader};
+
+// Namespace
+pub use namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
+
+// Flatten
+pub use flatten::FlattenedConfig;
+
+// Resolution
+pub use resolution::ResourceResolver;
 
 // Observability
 pub use observability::{
@@ -88,6 +100,9 @@ pub use upstreams::{
     ConnectionPoolConfig, HealthCheck, HttpVersionConfig, UpstreamConfig, UpstreamPeer,
     UpstreamTarget, UpstreamTimeouts, UpstreamTlsConfig,
 };
+
+// Validation
+pub use validation::ValidationContext;
 
 // WAF
 pub use waf::{
@@ -141,6 +156,15 @@ pub struct Config {
     /// WAF configuration
     #[serde(default)]
     pub waf: Option<WafConfig>,
+
+    /// Namespace configurations for hierarchical organization.
+    ///
+    /// Namespaces provide domain-driven boundaries within the configuration,
+    /// grouping related resources (routes, upstreams, agents, etc.) together.
+    /// Resources within namespaces can reference each other without qualification,
+    /// and can optionally be exported for global visibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<NamespaceConfig>,
 
     /// Global limits configuration
     #[serde(default)]
@@ -626,6 +650,7 @@ impl Config {
             filters: HashMap::new(),
             agents: vec![],
             waf: None,
+            namespaces: vec![],
             limits: Limits::for_testing(),
             observability: ObservabilityConfig::default(),
             rate_limits: GlobalRateLimitConfig::default(),

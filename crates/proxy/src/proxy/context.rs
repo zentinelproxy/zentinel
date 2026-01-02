@@ -50,6 +50,12 @@ pub struct RequestContext {
     /// Number of upstream attempts
     pub(crate) upstream_attempts: u32,
 
+    // === Scope (for namespaced configurations) ===
+    /// Namespace for this request (if routed to a namespace scope)
+    pub(crate) namespace: Option<String>,
+    /// Service for this request (if routed to a service scope)
+    pub(crate) service: Option<String>,
+
     // === Request metadata (cached for logging) ===
     /// HTTP method
     pub(crate) method: String,
@@ -163,6 +169,8 @@ impl RequestContext {
             upstream: None,
             selected_upstream_address: None,
             upstream_attempts: 0,
+            namespace: None,
+            service: None,
             method: String::new(),
             path: String::new(),
             query: None,

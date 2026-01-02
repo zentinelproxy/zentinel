@@ -23,7 +23,8 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use sentinel_common::Registry;
+use sentinel_common::ids::{QualifiedId, Scope};
+use sentinel_common::{Registry, ScopedMetrics, ScopedRegistry};
 
 use crate::agents::AgentManager;
 use crate::app::AppState;
@@ -39,27 +40,34 @@ use crate::reload::{
     ConfigManager, GracefulReloadCoordinator, ReloadEvent, RouteValidator, UpstreamValidator,
 };
 use crate::routing::RouteMatcher;
+use crate::scoped_routing::ScopedRouteMatcher;
 use crate::static_files::StaticFileServer;
 use crate::upstream::{ActiveHealthChecker, HealthCheckRunner, UpstreamPool};
 use crate::validation::SchemaValidator;
 
 use sentinel_common::TraceIdFormat;
-use sentinel_config::Config;
+use sentinel_config::{Config, FlattenedConfig};
 
 /// Main proxy service implementing Pingora's ProxyHttp trait
 pub struct SentinelProxy {
     /// Configuration manager with hot reload
     pub config_manager: Arc<ConfigManager>,
-    /// Route matcher
+    /// Route matcher (global routes only, for backward compatibility)
     pub(super) route_matcher: Arc<RwLock<RouteMatcher>>,
-    /// Upstream pools (keyed by upstream ID)
+    /// Scoped route matcher (namespace/service aware)
+    pub(super) scoped_route_matcher: Arc<tokio::sync::RwLock<ScopedRouteMatcher>>,
+    /// Upstream pools (keyed by upstream ID, global only)
     pub(super) upstream_pools: Registry<UpstreamPool>,
+    /// Scoped upstream pools (namespace/service aware)
+    pub(super) scoped_upstream_pools: ScopedRegistry<UpstreamPool>,
     /// Agent manager for external processing
     pub(super) agent_manager: Arc<AgentManager>,
     /// Passive health checker
     pub(super) passive_health: Arc<PassiveHealthChecker>,
     /// Metrics collector
     pub(super) metrics: Arc<sentinel_common::observability::RequestMetrics>,
+    /// Scoped metrics collector (with namespace/service labels)
+    pub(super) scoped_metrics: Arc<ScopedMetrics>,
     /// Application state
     pub(super) app_state: Arc<AppState>,
     /// Graceful reload coordinator
@@ -132,10 +140,20 @@ impl SentinelProxy {
             .add_validator(Box::new(UpstreamValidator))
             .await;
 
-        // Create route matcher
+        // Create route matcher (global routes only)
         let route_matcher = Arc::new(RwLock::new(RouteMatcher::new(config.routes.clone(), None)?));
 
-        // Create upstream pools and active health checkers
+        // Flatten config for namespace/service resources
+        let flattened = config.flatten();
+
+        // Create scoped route matcher
+        let scoped_route_matcher = Arc::new(tokio::sync::RwLock::new(
+            ScopedRouteMatcher::from_flattened(&flattened)
+                .await
+                .context("Failed to create scoped route matcher")?,
+        ));
+
+        // Create upstream pools and active health checkers (global only)
         let mut pools = HashMap::new();
         let mut health_check_runner = HealthCheckRunner::new();
 
@@ -151,6 +169,11 @@ impl SentinelProxy {
             }
         }
         let upstream_pools = Registry::from_map(pools);
+
+        // Create scoped upstream pools from flattened config
+        let scoped_upstream_pools =
+            Self::create_scoped_upstream_pools(&flattened, &mut health_check_runner).await?;
+
         let health_check_runner = Arc::new(health_check_runner);
 
         // Create passive health checker
@@ -164,8 +187,11 @@ impl SentinelProxy {
         let agent_manager = Arc::new(AgentManager::new(config.agents.clone()).await?);
         agent_manager.initialize().await?;
 
-        // Create metrics collector
+        // Create metrics collectors
         let metrics = Arc::new(sentinel_common::observability::RequestMetrics::new()?);
+        let scoped_metrics = Arc::new(
+            ScopedMetrics::new().context("Failed to create scoped metrics collector")?,
+        );
 
         // Create application state
         let app_state = Arc::new(AppState::new(Uuid::new_v4().to_string()));
@@ -180,6 +206,8 @@ impl SentinelProxy {
             config_manager.clone(),
             route_matcher.clone(),
             upstream_pools.clone(),
+            scoped_route_matcher.clone(),
+            scoped_upstream_pools.clone(),
         )
         .await;
 
@@ -260,10 +288,13 @@ impl SentinelProxy {
         Ok(Self {
             config_manager,
             route_matcher,
+            scoped_route_matcher,
             upstream_pools,
+            scoped_upstream_pools,
             agent_manager,
             passive_health,
             metrics,
+            scoped_metrics,
             app_state,
             reload_coordinator,
             error_handlers,
@@ -284,6 +315,8 @@ impl SentinelProxy {
         config_manager: Arc<ConfigManager>,
         route_matcher: Arc<RwLock<RouteMatcher>>,
         upstream_pools: Registry<UpstreamPool>,
+        scoped_route_matcher: Arc<tokio::sync::RwLock<ScopedRouteMatcher>>,
+        scoped_upstream_pools: ScopedRegistry<UpstreamPool>,
     ) {
         let mut reload_rx = config_manager.subscribe();
         let config_manager_clone = config_manager.clone();
@@ -293,14 +326,30 @@ impl SentinelProxy {
                 if let ReloadEvent::Applied { .. } = event {
                     // Reload routes and upstreams
                     let new_config = config_manager_clone.current();
+                    let flattened = new_config.flatten();
 
                     // Update route matcher (sync parking_lot::RwLock)
                     if let Ok(new_matcher) = RouteMatcher::new(new_config.routes.clone(), None) {
                         *route_matcher.write() = new_matcher;
-                        info!("Routes reloaded successfully");
+                        info!("Global routes reloaded successfully");
                     }
 
-                    // Update upstream pools
+                    // Update scoped route matcher
+                    if let Err(e) = scoped_route_matcher
+                        .write()
+                        .await
+                        .load_from_flattened(&flattened)
+                        .await
+                    {
+                        error!("Failed to reload scoped routes: {}", e);
+                    } else {
+                        info!(
+                            "Scoped routes reloaded ({} scopes)",
+                            scoped_route_matcher.read().await.scope_count().await
+                        );
+                    }
+
+                    // Update global upstream pools
                     let mut new_pools = HashMap::new();
                     for (upstream_id, upstream_config) in &new_config.upstreams {
                         let mut config_with_id = upstream_config.clone();
@@ -315,20 +364,113 @@ impl SentinelProxy {
                         }
                     }
 
-                    // Gracefully swap pools
+                    // Gracefully swap global pools
                     let old_pools = upstream_pools.replace(new_pools).await;
+
+                    // Update scoped upstream pools
+                    let new_scoped_pools =
+                        Self::build_scoped_pools_list(&flattened).await;
+                    let old_scoped_pools = scoped_upstream_pools.replace_all(new_scoped_pools).await;
+
+                    info!(
+                        "Scoped upstream pools reloaded ({} pools)",
+                        scoped_upstream_pools.len().await
+                    );
 
                     // Shutdown old pools after delay
                     tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(60)).await;
+
+                        // Shutdown old global pools
                         for (name, pool) in old_pools {
-                            info!("Shutting down old pool: {}", name);
+                            info!("Shutting down old global pool: {}", name);
+                            pool.shutdown().await;
+                        }
+
+                        // Shutdown old scoped pools
+                        for (name, pool) in old_scoped_pools {
+                            info!("Shutting down old scoped pool: {}", name);
                             pool.shutdown().await;
                         }
                     });
                 }
             }
         });
+    }
+
+    /// Create scoped upstream pools from flattened config
+    async fn create_scoped_upstream_pools(
+        flattened: &FlattenedConfig,
+        health_check_runner: &mut HealthCheckRunner,
+    ) -> Result<ScopedRegistry<UpstreamPool>> {
+        let registry = ScopedRegistry::new();
+
+        for (qid, upstream_config) in &flattened.upstreams {
+            let mut config_with_id = upstream_config.clone();
+            config_with_id.id = qid.canonical();
+
+            let pool = Arc::new(
+                UpstreamPool::new(config_with_id.clone())
+                    .await
+                    .with_context(|| format!("Failed to create upstream pool '{}'", qid.canonical()))?,
+            );
+
+            // Track exports
+            let is_exported = flattened.exported_upstreams.contains_key(&upstream_config.id);
+
+            if is_exported {
+                registry.insert_exported(qid.clone(), pool).await;
+            } else {
+                registry.insert(qid.clone(), pool).await;
+            }
+
+            // Create active health checker if configured
+            if let Some(checker) = ActiveHealthChecker::new(&config_with_id) {
+                health_check_runner.add_checker(checker);
+            }
+
+            debug!(
+                upstream_id = %qid.canonical(),
+                scope = ?qid.scope,
+                exported = is_exported,
+                "Created scoped upstream pool"
+            );
+        }
+
+        info!(
+            "Created {} scoped upstream pools",
+            registry.len().await
+        );
+
+        Ok(registry)
+    }
+
+    /// Build list of scoped pools for atomic replacement
+    async fn build_scoped_pools_list(
+        flattened: &FlattenedConfig,
+    ) -> Vec<(QualifiedId, Arc<UpstreamPool>, bool)> {
+        let mut result = Vec::new();
+
+        for (qid, upstream_config) in &flattened.upstreams {
+            let mut config_with_id = upstream_config.clone();
+            config_with_id.id = qid.canonical();
+
+            match UpstreamPool::new(config_with_id).await {
+                Ok(pool) => {
+                    let is_exported = flattened.exported_upstreams.contains_key(&upstream_config.id);
+                    result.push((qid.clone(), Arc::new(pool), is_exported));
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to create scoped upstream pool {}: {}",
+                        qid.canonical(),
+                        e
+                    );
+                }
+            }
+        }
+
+        result
     }
 
     /// Initialize route-specific components (error handlers, validators, static servers)

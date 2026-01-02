@@ -238,6 +238,7 @@ impl ConfigBuilder {
             filters: self.filters,
             agents: self.agents,
             waf: self.waf,
+            namespaces: vec![], // TODO: Support namespaces in multi-file loading
             limits: self.limits.unwrap_or_default(),
             observability: self.observability.unwrap_or_default(),
             rate_limits: GlobalRateLimitConfig::default(),

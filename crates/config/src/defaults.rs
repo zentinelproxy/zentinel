@@ -328,6 +328,7 @@ pub fn create_default_config() -> Config {
         filters: HashMap::new(),
         agents: vec![],
         waf: None,
+        namespaces: vec![],
         limits: Limits::default(),
         observability: ObservabilityConfig::default(),
         rate_limits: GlobalRateLimitConfig::default(),

@@ -8,14 +8,16 @@
 //! - `routes`: Route and static file parsing
 //! - `upstreams`: Upstream target parsing
 //! - `filters`: Filter definition parsing
+//! - `namespace`: Namespace and service parsing
 
 mod filters;
 mod helpers;
+mod namespace;
 mod routes;
 mod server;
 mod upstreams;
 
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 // Re-export commonly used items
 pub use helpers::{
@@ -53,6 +55,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
     let mut filters = HashMap::new();
     let mut agents = Vec::new();
     let mut waf = None;
+    let mut namespaces = Vec::new();
     let mut limits = None;
     let mut observability = None;
     let mut rate_limits = None;
@@ -67,9 +70,18 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
                 schema_version = get_first_arg_string(node);
                 trace!(version = ?schema_version, "Parsed schema version");
             }
-            "server" => {
+            // Accept both "system" (preferred) and "server" (deprecated)
+            "system" => {
                 server = Some(parse_server_config(node)?);
-                trace!("Parsed server configuration");
+                trace!("Parsed system configuration");
+            }
+            "server" => {
+                warn!(
+                    "The 'server' block is deprecated. Please use 'system' instead. \
+                     This will be removed in a future version."
+                );
+                server = Some(parse_server_config(node)?);
+                trace!("Parsed server configuration (deprecated)");
             }
             "listeners" => {
                 listeners = parse_listeners(node)?;
@@ -95,6 +107,11 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
                 waf = Some(parse_waf_config(node)?);
                 trace!("Parsed WAF configuration");
             }
+            "namespace" => {
+                let ns = namespace::parse_namespace(node)?;
+                trace!(namespace = %ns.id, "Parsed namespace");
+                namespaces.push(ns);
+            }
             "limits" => {
                 limits = Some(parse_limits_config(node)?);
                 trace!("Parsed limits configuration");
@@ -114,7 +131,8 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
             other => {
                 return Err(anyhow::anyhow!(
                     "Unknown top-level configuration block: '{}'\n\
-                     Valid blocks are: schema-version, server, listeners, routes, upstreams, filters, agents, waf, limits, observability, rate-limits, cache",
+                     Valid blocks are: schema-version, system, listeners, routes, upstreams, \
+                     filters, agents, waf, namespace, limits, observability, rate-limits, cache",
                     other
                 ));
             }
@@ -124,9 +142,9 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
     // Validate required sections
     let server = server.ok_or_else(|| {
         anyhow::anyhow!(
-            "Missing required 'server' configuration block\n\
+            "Missing required 'system' configuration block\n\
              Example:\n\
-             server {{\n\
+             system {{\n\
                  worker-threads 4\n\
                  max-connections 10000\n\
              }}"
@@ -152,6 +170,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
         upstreams = upstreams.len(),
         filters = filters.len(),
         agents = agents.len(),
+        namespaces = namespaces.len(),
         has_waf = waf.is_some(),
         "KDL document parsed successfully"
     );
@@ -165,6 +184,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
         filters,
         agents,
         waf,
+        namespaces,
         limits: limits.unwrap_or_default(),
         observability: observability.unwrap_or_default(),
         rate_limits: rate_limits.unwrap_or_default(),

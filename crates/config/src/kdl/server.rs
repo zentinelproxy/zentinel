@@ -153,7 +153,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
 ///     }
 /// }
 /// ```
-fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsConfig> {
+pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsConfig> {
     debug!(listener_id = %listener_id, "Parsing TLS configuration");
 
     // Get required cert and key files

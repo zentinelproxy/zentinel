@@ -2198,6 +2198,8 @@ impl ProxyHttp for SentinelProxy {
                 upstream: ctx.upstream.clone(),
                 upstream_attempts: ctx.upstream_attempts,
                 instance_id: self.app_state.instance_id.clone(),
+                namespace: ctx.namespace.clone(),
+                service: ctx.service.clone(),
             };
             self.log_manager.log_access(&access_entry);
         }

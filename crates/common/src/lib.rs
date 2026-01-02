@@ -19,6 +19,8 @@ pub mod ids;
 pub mod limits;
 pub mod observability;
 pub mod registry;
+pub mod scoped_metrics;
+pub mod scoped_registry;
 pub mod types;
 
 // Re-export commonly used items at the crate root
@@ -38,7 +40,7 @@ pub use errors::{SentinelError, SentinelResult};
 pub use limits::{Limits, RateLimiter};
 
 // Re-export identifier types
-pub use ids::{AgentId, CorrelationId, RequestId, RouteId, UpstreamId};
+pub use ids::{AgentId, CorrelationId, QualifiedId, RequestId, RouteId, Scope, UpstreamId};
 
 // Re-export common types
 pub use types::{CircuitBreakerConfig, TraceIdFormat};
@@ -46,5 +48,9 @@ pub use types::{CircuitBreakerConfig, TraceIdFormat};
 // Re-export circuit breaker
 pub use circuit_breaker::CircuitBreaker;
 
-// Re-export registry
+// Re-export registries
 pub use registry::Registry;
+pub use scoped_registry::ScopedRegistry;
+
+// Re-export scoped metrics
+pub use scoped_metrics::{ScopedMetrics, ScopeLabels};

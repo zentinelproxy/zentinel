@@ -65,7 +65,10 @@ pub mod otel;
 pub mod proxy;
 pub mod rate_limit;
 pub mod reload;
+pub mod scoped_circuit_breaker;
+pub mod scoped_rate_limit;
 pub mod routing;
+pub mod scoped_routing;
 pub mod static_files;
 pub mod tls;
 pub mod trace_id;
@@ -88,6 +91,7 @@ pub use validation::SchemaValidator;
 
 // Routing
 pub use routing::{RequestInfo, RouteMatch, RouteMatcher};
+pub use scoped_routing::{ScopedRouteMatch, ScopedRouteMatcher};
 
 // Upstream management
 pub use upstream::{
@@ -151,6 +155,12 @@ pub use logging::{
 pub use rate_limit::{
     RateLimitConfig, RateLimitManager, RateLimitOutcome, RateLimitResult, RateLimiterPool,
 };
+
+// Scoped rate limiting
+pub use scoped_rate_limit::{ScopedRateLimitManager, ScopedRateLimitResult};
+
+// Scoped circuit breakers
+pub use scoped_circuit_breaker::{ScopedBreakerStatus, ScopedCircuitBreakerManager};
 
 // GeoIP filtering
 pub use geo_filter::{
