@@ -21,8 +21,7 @@ use tracing::{debug, trace, warn};
 
 // Re-export commonly used items
 pub use helpers::{
-    get_bool_entry, get_first_arg_string, get_float_entry, get_int_entry, get_string_entry,
-    offset_to_line_col,
+    get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, offset_to_line_col,
 };
 
 pub use filters::parse_filter_definitions;

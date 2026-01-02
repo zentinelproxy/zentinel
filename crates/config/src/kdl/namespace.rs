@@ -98,15 +98,6 @@ pub fn parse_namespace(node: &kdl::KdlNode) -> Result<NamespaceConfig> {
     Ok(ns)
 }
 
-/// Parse multiple namespace blocks from a document.
-pub fn parse_namespaces(nodes: &[&kdl::KdlNode]) -> Result<Vec<NamespaceConfig>> {
-    let mut namespaces = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        namespaces.push(parse_namespace(node)?);
-    }
-    Ok(namespaces)
-}
-
 // ============================================================================
 // Service Parsing
 // ============================================================================
