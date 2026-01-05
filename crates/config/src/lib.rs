@@ -646,6 +646,7 @@ impl Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                shadow: None,
             }],
             upstreams,
             filters: HashMap::new(),

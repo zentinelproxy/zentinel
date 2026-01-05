@@ -1347,6 +1347,60 @@ impl ProxyHttp for SentinelProxy {
         upstream_request.remove_header("X-Internal-Token");
         upstream_request.remove_header("Authorization-Internal");
 
+        // === Traffic Mirroring / Shadowing ===
+        // Check if this route has shadow configuration
+        if let Some(ref route_config) = ctx.route_config {
+            if let Some(ref shadow_config) = route_config.shadow {
+                // Get snapshot of upstream pools for shadow manager
+                let pools_snapshot = self.upstream_pools.snapshot().await;
+                let upstream_pools = std::sync::Arc::new(pools_snapshot);
+
+                // Get route ID for metrics labeling
+                let route_id = ctx.route_id.clone().unwrap_or_else(|| "unknown".to_string());
+
+                // Create shadow manager
+                let shadow_manager = crate::shadow::ShadowManager::new(
+                    upstream_pools,
+                    shadow_config.clone(),
+                    Some(std::sync::Arc::clone(&self.metrics)),
+                    route_id,
+                );
+
+                // Check if we should shadow this request (sampling + header check)
+                if shadow_manager.should_shadow(upstream_request) {
+                    trace!(
+                        correlation_id = %ctx.trace_id,
+                        shadow_upstream = %shadow_config.upstream,
+                        percentage = shadow_config.percentage,
+                        "Shadowing request"
+                    );
+
+                    // Clone headers for shadow request
+                    let shadow_headers = upstream_request.clone();
+
+                    // Create request context for shadow (simplified from proxy context)
+                    let shadow_ctx = crate::upstream::RequestContext {
+                        client_ip: ctx.client_ip.parse().ok(),
+                        headers: std::collections::HashMap::new(), // Empty for now
+                        path: ctx.path.clone(),
+                        method: ctx.method.clone(),
+                    };
+
+                    // Determine if we should buffer the body
+                    let buffer_body = shadow_config.buffer_body
+                        && crate::shadow::should_buffer_method(&ctx.method);
+
+                    // TODO: Buffer request body if needed
+                    // For now, we don't buffer bodies (would require significant refactoring
+                    // of the request_body_filter to capture and clone body data)
+                    let body = None;
+
+                    // Fire off shadow request asynchronously (non-blocking)
+                    shadow_manager.shadow_request(shadow_headers, body, shadow_ctx);
+                }
+            }
+        }
+
         Ok(())
     }
 

@@ -69,6 +69,7 @@ pub mod scoped_circuit_breaker;
 pub mod scoped_rate_limit;
 pub mod routing;
 pub mod scoped_routing;
+pub mod shadow;
 pub mod static_files;
 pub mod tls;
 pub mod trace_id;
@@ -161,6 +162,9 @@ pub use scoped_rate_limit::{ScopedRateLimitManager, ScopedRateLimitResult};
 
 // Scoped circuit breakers
 pub use scoped_circuit_breaker::{ScopedBreakerStatus, ScopedCircuitBreakerManager};
+
+// Traffic mirroring / shadowing
+pub use shadow::{buffer_request_body, should_buffer_method, ShadowManager};
 
 // GeoIP filtering
 pub use geo_filter::{

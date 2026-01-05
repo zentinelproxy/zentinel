@@ -86,6 +86,11 @@ pub struct RouteConfig {
     /// Note: If `permessage-deflate` compression is negotiated, inspection is skipped.
     #[serde(default)]
     pub websocket_inspection: bool,
+
+    /// Traffic mirroring / shadowing configuration
+    /// Mirrors requests to a shadow upstream for safe canary testing
+    #[serde(default)]
+    pub shadow: Option<ShadowConfig>,
 }
 
 // ============================================================================
@@ -548,4 +553,52 @@ pub enum ErrorFormat {
     Text,
     /// XML error response
     Xml,
+}
+
+// ============================================================================
+// Shadow / Traffic Mirroring Configuration
+// ============================================================================
+
+/// Traffic mirroring (shadow) configuration
+///
+/// Enables fire-and-forget request duplication to a shadow upstream
+/// for safe canary deployments and testing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShadowConfig {
+    /// Shadow target upstream ID
+    pub upstream: String,
+
+    /// Sampling percentage (0.0-100.0)
+    /// Only this percentage of requests will be mirrored
+    #[serde(default = "default_shadow_percentage")]
+    pub percentage: f64,
+
+    /// Only shadow requests with this header match
+    /// Format: (header_name, header_value)
+    pub sample_header: Option<(String, String)>,
+
+    /// Shadow request timeout in milliseconds
+    #[serde(default = "default_shadow_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// Whether to buffer request bodies for mirroring
+    /// Required for POST/PUT/PATCH requests with bodies
+    #[serde(default)]
+    pub buffer_body: bool,
+
+    /// Maximum body size to mirror (bytes)
+    #[serde(default = "default_shadow_max_body_bytes")]
+    pub max_body_bytes: usize,
+}
+
+fn default_shadow_percentage() -> f64 {
+    100.0 // Mirror all requests by default
+}
+
+fn default_shadow_timeout_ms() -> u64 {
+    5000 // 5 seconds
+}
+
+fn default_shadow_max_body_bytes() -> usize {
+    1048576 // 1 MB
 }

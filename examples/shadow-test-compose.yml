@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # Production upstream (port 9001)
+  production:
+    image: nginx:alpine
+    container_name: shadow-production
+    ports:
+      - "9001:80"
+    volumes:
+      - ./nginx-production.conf:/etc/nginx/conf.d/default.conf
+    environment:
+      - UPSTREAM_NAME=production
+    networks:
+      - shadow-test
+
+  # Canary upstream (port 9002)
+  canary:
+    image: nginx:alpine
+    container_name: shadow-canary
+    ports:
+      - "9002:80"
+    volumes:
+      - ./nginx-canary.conf:/etc/nginx/conf.d/default.conf
+    environment:
+      - UPSTREAM_NAME=canary
+    networks:
+      - shadow-test
+
+  # Staging upstream (port 9003)
+  staging:
+    image: nginx:alpine
+    container_name: shadow-staging
+    ports:
+      - "9003:80"
+    volumes:
+      - ./nginx-staging.conf:/etc/nginx/conf.d/default.conf
+    environment:
+      - UPSTREAM_NAME=staging
+    networks:
+      - shadow-test
+
+networks:
+  shadow-test:
+    driver: bridge

@@ -198,6 +198,7 @@ pub fn create_default_config() -> Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                shadow: None,
             },
             RouteConfig {
                 id: "health".to_string(),
@@ -220,6 +221,7 @@ pub fn create_default_config() -> Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                shadow: None,
             },
             RouteConfig {
                 id: "metrics".to_string(),
@@ -238,6 +240,7 @@ pub fn create_default_config() -> Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                shadow: None,
             },
             RouteConfig {
                 id: "config".to_string(),
@@ -259,6 +262,7 @@ pub fn create_default_config() -> Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                shadow: None,
             },
             RouteConfig {
                 id: "upstreams".to_string(),
@@ -280,6 +284,7 @@ pub fn create_default_config() -> Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                shadow: None,
             },
             RouteConfig {
                 id: "cache-stats".to_string(),
@@ -301,6 +306,7 @@ pub fn create_default_config() -> Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                shadow: None,
             },
             RouteConfig {
                 id: "cache-purge".to_string(),
@@ -322,6 +328,7 @@ pub fn create_default_config() -> Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                shadow: None,
             },
         ],
         upstreams: HashMap::new(),

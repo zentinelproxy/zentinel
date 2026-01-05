@@ -1,0 +1,170 @@
+// Traffic Mirroring / Shadow Testing Configuration
+// This configuration demonstrates shadow/traffic mirroring for safe canary deployments
+
+schema-version "1.0"
+
+server {
+    worker-threads 2
+    max-connections 1000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+        keepalive-timeout-secs 75
+        default-route "api-full-shadow"
+    }
+}
+
+// Define production and canary upstreams
+upstreams {
+    upstream "production" {
+        target "127.0.0.1:9001" weight=100
+
+        health-check {
+            path "/health"
+            interval-secs 10
+            timeout-secs 2
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+
+    upstream "canary" {
+        target "127.0.0.1:9002" weight=100
+
+        health-check {
+            path "/health"
+            interval-secs 10
+            timeout-secs 2
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+
+    upstream "staging" {
+        target "127.0.0.1:9003" weight=100
+
+        health-check {
+            path "/health"
+            interval-secs 10
+            timeout-secs 2
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+}
+
+routes {
+    // Route 1: Mirror 100% of traffic to canary
+    route "api-full-shadow" {
+        priority "high"
+        matches {
+            path-prefix "/api/v1"
+        }
+        upstream "production"
+
+        shadow {
+            upstream "canary"
+            percentage 100.0
+            timeout-ms 5000
+            buffer-body #false
+            max-body-bytes 1048576
+        }
+    }
+
+    // Route 2: Mirror 10% of traffic for gradual rollout
+    route "api-partial-shadow" {
+        priority "high"
+        matches {
+            path-prefix "/api/v2"
+        }
+        upstream "production"
+
+        shadow {
+            upstream "canary"
+            percentage 10.0
+            timeout-ms 5000
+            buffer-body #false
+            max-body-bytes 1048576
+        }
+    }
+
+    // Route 3: Header-based shadowing (only requests with X-Debug-Shadow header)
+    route "api-debug-shadow" {
+        priority "high"
+        matches {
+            path-prefix "/api/v3"
+        }
+        upstream "production"
+
+        shadow {
+            upstream "canary"
+            percentage 100.0
+            sample-header "X-Debug-Shadow" "true"
+            timeout-ms 5000
+            buffer-body #false
+            max-body-bytes 1048576
+        }
+    }
+
+    // Route 4: Shadow to staging for internal testing
+    route "internal-api" {
+        priority "high"
+        matches {
+            path-prefix "/internal"
+        }
+        upstream "production"
+
+        shadow {
+            upstream "staging"
+            percentage 100.0
+            sample-header "X-Internal-Test" "enabled"
+            timeout-ms 3000
+            buffer-body #false
+            max-body-bytes 524288
+        }
+    }
+
+    // Health check endpoint (no shadowing)
+    route "health" {
+        priority "high"
+        matches {
+            path "/health"
+            path "/healthz"
+        }
+        service-type "builtin"
+        builtin-handler "health"
+    }
+
+    // Metrics endpoint (no shadowing)
+    route "metrics" {
+        priority "high"
+        matches {
+            path "/metrics"
+        }
+        service-type "builtin"
+        builtin-handler "metrics"
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
+}
+
+observability {
+    metrics {
+        enabled #true
+        port 9090
+    }
+
+    logging {
+        level "info"
+        format "json"
+    }
+}

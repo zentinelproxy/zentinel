@@ -58,6 +58,9 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 // Parse cache configuration
                 let cache_config = parse_cache_config_opt(child)?;
 
+                // Parse shadow (traffic mirroring) configuration
+                let shadow = parse_shadow_config_opt(child)?;
+
                 // Determine service type
                 let service_type = if static_files.is_some() {
                     ServiceType::Static
@@ -102,6 +105,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     websocket: get_bool_entry(child, "websocket").unwrap_or(false),
                     websocket_inspection: get_bool_entry(child, "websocket-inspection")
                         .unwrap_or(false),
+                    shadow,
                 });
             }
         }
@@ -447,5 +451,86 @@ fn parse_api_schema_config(node: &kdl::KdlNode) -> Result<ApiSchemaConfig> {
         validate_requests,
         validate_responses,
         strict_mode,
+    })
+}
+
+/// Parse optional shadow (traffic mirroring) configuration from a route
+fn parse_shadow_config_opt(node: &kdl::KdlNode) -> Result<Option<ShadowConfig>> {
+    if let Some(route_children) = node.children() {
+        if let Some(shadow_node) = route_children.get("shadow") {
+            return Ok(Some(parse_shadow_config(shadow_node)?));
+        }
+    }
+    Ok(None)
+}
+
+/// Parse shadow (traffic mirroring) configuration block
+///
+/// Example KDL:
+/// ```kdl
+/// shadow {
+///     upstream "canary"
+///     percentage 10.0
+///     sample-header "X-Debug-Shadow" "true"
+///     timeout-ms 5000
+///     buffer-body #true
+///     max-body-bytes 1048576
+/// }
+/// ```
+fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
+    // Upstream is required
+    let upstream = get_string_entry(node, "upstream").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Shadow configuration requires an 'upstream' field, e.g., upstream \"canary\""
+        )
+    })?;
+
+    let percentage = if let Some(pct_str) = get_string_entry(node, "percentage") {
+        pct_str.parse::<f64>().unwrap_or(100.0)
+    } else {
+        get_int_entry(node, "percentage").map(|v| v as f64).unwrap_or(100.0)
+    };
+
+    let timeout_ms = get_int_entry(node, "timeout-ms").unwrap_or(5000) as u64;
+    let buffer_body = get_bool_entry(node, "buffer-body").unwrap_or(false);
+    let max_body_bytes = get_int_entry(node, "max-body-bytes").unwrap_or(1048576) as usize;
+
+    // Parse sample-header if present (tuple of name, value)
+    let sample_header = if let Some(children) = node.children() {
+        if let Some(header_node) = children.get("sample-header") {
+            let entries: Vec<_> = header_node.entries().iter().collect();
+            if entries.len() >= 2 {
+                let name = entries[0].value().as_string()
+                    .ok_or_else(|| anyhow::anyhow!("sample-header name must be a string"))?;
+                let value = entries[1].value().as_string()
+                    .ok_or_else(|| anyhow::anyhow!("sample-header value must be a string"))?;
+                Some((name.to_string(), value.to_string()))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    trace!(
+        upstream = %upstream,
+        percentage = percentage,
+        timeout_ms = timeout_ms,
+        buffer_body = buffer_body,
+        max_body_bytes = max_body_bytes,
+        has_sample_header = sample_header.is_some(),
+        "Parsed shadow configuration"
+    );
+
+    Ok(ShadowConfig {
+        upstream,
+        percentage,
+        sample_header,
+        timeout_ms,
+        buffer_body,
+        max_body_bytes,
     })
 }
