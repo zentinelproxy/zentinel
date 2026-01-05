@@ -104,6 +104,10 @@ pub struct RequestMetrics {
     /// Body decompression metrics
     decompression_total: IntCounterVec,
     decompression_ratio: HistogramVec,
+    /// Shadow / traffic mirroring metrics
+    shadow_requests_total: IntCounterVec,
+    shadow_errors_total: IntCounterVec,
+    shadow_latency_seconds: HistogramVec,
 }
 
 impl RequestMetrics {
@@ -308,6 +312,34 @@ impl RequestMetrics {
         )
         .context("Failed to register decompression_ratio metric")?;
 
+        // Shadow / traffic mirroring metrics
+        let shadow_requests_total = register_int_counter_vec!(
+            "sentinel_shadow_requests_total",
+            "Total shadow requests sent to mirror upstream",
+            &["route", "upstream", "result"]
+        )
+        .context("Failed to register shadow_requests_total metric")?;
+
+        let shadow_errors_total = register_int_counter_vec!(
+            "sentinel_shadow_errors_total",
+            "Total shadow request errors",
+            &["route", "upstream", "error_type"]
+        )
+        .context("Failed to register shadow_errors_total metric")?;
+
+        // Shadow latency typically similar to regular request latency
+        let shadow_latency_buckets = vec![
+            0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+        ];
+
+        let shadow_latency_seconds = register_histogram_vec!(
+            "sentinel_shadow_latency_seconds",
+            "Shadow request latency in seconds",
+            &["route", "upstream"],
+            shadow_latency_buckets
+        )
+        .context("Failed to register shadow_latency_seconds metric")?;
+
         Ok(Self {
             request_duration,
             request_count,
@@ -333,6 +365,9 @@ impl RequestMetrics {
             websocket_frame_size,
             decompression_total,
             decompression_ratio,
+            shadow_requests_total,
+            shadow_errors_total,
+            shadow_latency_seconds,
         })
     }
 
@@ -537,6 +572,54 @@ impl RequestMetrics {
         self.decompression_total
             .with_label_values(&[encoding, reason])
             .inc();
+    }
+
+    /// Record a successful shadow request
+    ///
+    /// # Arguments
+    /// * `route` - Route ID
+    /// * `upstream` - Shadow upstream ID
+    /// * `duration` - Shadow request duration
+    pub fn record_shadow_success(&self, route: &str, upstream: &str, duration: Duration) {
+        self.shadow_requests_total
+            .with_label_values(&[route, upstream, "success"])
+            .inc();
+        self.shadow_latency_seconds
+            .with_label_values(&[route, upstream])
+            .observe(duration.as_secs_f64());
+    }
+
+    /// Record a failed shadow request
+    ///
+    /// # Arguments
+    /// * `route` - Route ID
+    /// * `upstream` - Shadow upstream ID
+    /// * `error_type` - Error type (upstream_not_found, timeout, connection_failed, request_failed)
+    pub fn record_shadow_error(&self, route: &str, upstream: &str, error_type: &str) {
+        self.shadow_requests_total
+            .with_label_values(&[route, upstream, "error"])
+            .inc();
+        self.shadow_errors_total
+            .with_label_values(&[route, upstream, error_type])
+            .inc();
+    }
+
+    /// Record a shadow request timeout
+    ///
+    /// # Arguments
+    /// * `route` - Route ID
+    /// * `upstream` - Shadow upstream ID
+    /// * `duration` - Time before timeout
+    pub fn record_shadow_timeout(&self, route: &str, upstream: &str, duration: Duration) {
+        self.shadow_requests_total
+            .with_label_values(&[route, upstream, "timeout"])
+            .inc();
+        self.shadow_errors_total
+            .with_label_values(&[route, upstream, "timeout"])
+            .inc();
+        self.shadow_latency_seconds
+            .with_label_values(&[route, upstream])
+            .observe(duration.as_secs_f64());
     }
 }
 
