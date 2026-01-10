@@ -173,6 +173,25 @@ let agent = DenylistAgent::new(
 let server = AgentServer::new("denylist", "/tmp/denylist.sock", Box::new(agent));
 ```
 
+## Language SDKs
+
+Official SDKs are available for building agents in your preferred language:
+
+| Language | Repository | Installation |
+|----------|------------|--------------|
+| **Python** | [sentinel-agent-python-sdk](https://github.com/raskell-io/sentinel-agent-python-sdk) | `pip install sentinel-agent-sdk` |
+| **TypeScript** | [sentinel-agent-typescript-sdk](https://github.com/raskell-io/sentinel-agent-typescript-sdk) | `npm install sentinel-agent-sdk` |
+| **Go** | [sentinel-agent-go-sdk](https://github.com/raskell-io/sentinel-agent-go-sdk) | `go get github.com/raskell-io/sentinel-agent-go-sdk` |
+| **Rust** | [sentinel-agent-rust-sdk](https://github.com/raskell-io/sentinel-agent-rust-sdk) | `sentinel-agent-sdk = "0.1"` |
+| **Elixir** | [sentinel-agent-elixir-sdk](https://github.com/raskell-io/sentinel-agent-elixir-sdk) | `{:sentinel_agent_sdk, github: "raskell-io/sentinel-agent-elixir-sdk"}` |
+
+All SDKs implement the same protocol and provide:
+- Simple agent interface with lifecycle hooks
+- Fluent decision builder API
+- Request/response wrappers with convenience methods
+- Typed configuration support
+- CLI argument parsing
+
 ## License
 
 See the main Sentinel repository for license information.

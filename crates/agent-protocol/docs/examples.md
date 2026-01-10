@@ -616,3 +616,25 @@ impl AgentHandler for ComposedAgent {
     }
 }
 ```
+
+## Language SDK Examples
+
+For language-specific examples with idiomatic APIs, see the official SDKs:
+
+| Language | Examples |
+|----------|----------|
+| **Python** | [examples/](https://github.com/raskell-io/sentinel-agent-python-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
+| **TypeScript** | [examples/](https://github.com/raskell-io/sentinel-agent-typescript-sdk/tree/main/examples) - Simple agent, configurable agent |
+| **Go** | [examples/](https://github.com/raskell-io/sentinel-agent-go-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
+| **Rust** | [examples/](https://github.com/raskell-io/sentinel-agent-rust-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
+| **Elixir** | [examples/](https://github.com/raskell-io/sentinel-agent-elixir-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
+
+Each SDK provides comprehensive documentation at `docs/examples.md` with patterns for:
+- IP-based access control
+- JWT authentication
+- Rate limiting
+- Header modification
+- Content-type validation
+- Request logging
+- Redirect handling
+- Security checks
