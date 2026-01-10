@@ -56,32 +56,7 @@ Additional agents are maintained as separate repositories:
 
 ## Creating Your Own Agent
 
-### Quick Start with cargo-generate
-
-The fastest way to create a new agent:
-
-```bash
-# Install cargo-generate if you haven't already
-cargo install cargo-generate
-
-# Generate a new agent from the template
-cargo generate --git https://github.com/raskell-io/sentinel --path agent-template
-
-# Follow the prompts:
-#   Project Name: my-awesome-agent
-#   Description: My custom Sentinel agent
-```
-
-This creates a fully functional agent with:
-- Proper project structure
-- CI/CD workflows
-- Registry manifest (`sentinel-agent.toml`)
-- Example implementation
-- Tests
-
-### Manual Setup
-
-If you prefer to set up manually, add these dependencies:
+Add these dependencies to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -417,7 +392,6 @@ curl -H "X-Test: true" http://localhost:8080/test
 
 ## Resources
 
-- [Agent Protocol Reference](./AGENT_PROTOCOL.md)
 - [Agent Development Guide](./AGENT_DEVELOPMENT.md)
-- [Example Agents](https://github.com/raskell-io?q=sentinel-agent)
-- [Sentinel Discord](https://discord.gg/sentinel)
+- [Agent Protocol Crate](../crates/agent-protocol/)
+- [Echo Agent Reference](../agents/echo/)

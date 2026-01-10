@@ -137,12 +137,11 @@ mise run run-release
 ```
 
 ### `mise run dev`
-Run complete development environment with proxy and all agents.
+Run development environment with proxy and echo agent.
 ```bash
 mise run dev
 # Starts:
 # - Echo agent on /tmp/sentinel-echo.sock
-# - Rate limit agent on /tmp/sentinel-ratelimit.sock
 # - Proxy with debug logging
 ```
 
@@ -161,14 +160,6 @@ Run the echo agent standalone.
 ```bash
 mise run agent-echo
 # Socket: /tmp/echo.sock
-```
-
-### `mise run agent-ratelimit`
-Run the rate limit agent standalone.
-```bash
-mise run agent-ratelimit
-# Socket: /tmp/ratelimit.sock
-# Default: 100 RPS
 ```
 
 ### `mise run agent-test`

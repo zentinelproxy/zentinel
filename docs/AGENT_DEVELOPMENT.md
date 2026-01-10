@@ -626,26 +626,17 @@ impl ResilientAgent {
 
 ## Reference Examples
 
-### Authentication Agent
-See: `agents/examples/auth/` for JWT validation example
-
-### Rate Limiting Agent
-See: `agents/ratelimit/` for token bucket implementation
-
-### WAF Agent
-See: `agents/waf/` for ModSecurity integration (Phase 3)
-
-### Transform Agent
-See: `agents/examples/transform/` for request/response modification
+### Echo Agent
+See: `agents/echo/` for a minimal reference implementation demonstrating the agent protocol.
 
 ---
 
 ## Resources
 
-- [Agent Protocol Specification](./AGENT_PROTOCOL.md)
-- [Sentinel Architecture](./ARCHITECTURE.md)
-- [Example Agents](../agents/)
+- [Agents Overview](./AGENTS.md)
+- [Example Agents](../agents/echo/)
 - [Integration Tests](../tests/test_agents.sh)
+- [Agent Protocol Crate](../crates/agent-protocol/)
 
 ---
 

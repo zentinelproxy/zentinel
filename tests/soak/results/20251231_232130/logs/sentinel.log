@@ -1,6 +1,0 @@
-[2m2025-12-31T22:21:32.426342Z[0m [32m INFO[0m [2msentinel[0m[2m:[0m Loading configuration from: ./soak-config.kdl
-[2m2025-12-31T22:21:32.427234Z[0m [32m INFO[0m [2msentinel_proxy::proxy[0m[2m:[0m Starting Sentinel Proxy
-Error: Failed to load configuration file
-
-Caused by:
-    Upstream 'backend' requires at least one target, e.g., target "127.0.0.1:8081"

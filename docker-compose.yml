@@ -170,5 +170,4 @@ networks:
 
 # NOTE: Additional agents (ratelimit, waf, denylist, etc.) are available as
 # separate repositories. See https://github.com/raskell-io for community agents
-# or create your own using the agent template:
-#   cargo generate --git https://github.com/raskell-io/sentinel --path agent-template
+# or create your own following the Agent Development Guide in docs/
