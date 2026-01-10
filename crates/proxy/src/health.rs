@@ -113,6 +113,42 @@ struct InferenceHealthCheck {
     timeout: Duration,
 }
 
+/// Inference probe health check - sends minimal completion request
+///
+/// Verifies model can actually process requests, not just that server is running.
+struct InferenceProbeCheck {
+    config: sentinel_common::InferenceProbeConfig,
+    timeout: Duration,
+}
+
+/// Model status endpoint health check
+///
+/// Queries provider-specific status endpoints to verify model readiness.
+struct ModelStatusCheck {
+    config: sentinel_common::ModelStatusConfig,
+    timeout: Duration,
+}
+
+/// Queue depth health check
+///
+/// Monitors queue depth from headers or response body to detect overload.
+struct QueueDepthCheck {
+    config: sentinel_common::QueueDepthConfig,
+    models_endpoint: String,
+    timeout: Duration,
+}
+
+/// Composite inference health check that runs multiple sub-checks
+///
+/// Runs base inference check plus any configured readiness checks.
+/// All enabled checks must pass for the target to be considered healthy.
+struct CompositeInferenceHealthCheck {
+    base_check: InferenceHealthCheck,
+    inference_probe: Option<InferenceProbeCheck>,
+    model_status: Option<ModelStatusCheck>,
+    queue_depth: Option<QueueDepthCheck>,
+}
+
 impl ActiveHealthChecker {
     /// Create new active health checker
     pub fn new(config: HealthCheckConfig) -> Self {
@@ -163,17 +199,56 @@ impl ActiveHealthChecker {
             HealthCheckType::Inference {
                 endpoint,
                 expected_models,
+                readiness,
             } => {
                 trace!(
                     endpoint = %endpoint,
                     expected_models = ?expected_models,
+                    has_readiness = readiness.is_some(),
                     "Configuring inference health check"
                 );
-                Arc::new(InferenceHealthCheck {
+
+                let base_timeout = Duration::from_secs(config.timeout_secs);
+                let base_check = InferenceHealthCheck {
                     endpoint: endpoint.clone(),
                     expected_models: expected_models.clone(),
-                    timeout: Duration::from_secs(config.timeout_secs),
-                })
+                    timeout: base_timeout,
+                };
+
+                if let Some(ref readiness_config) = readiness {
+                    // Create composite check with sub-checks
+                    let inference_probe = readiness_config.inference_probe.as_ref().map(|cfg| {
+                        InferenceProbeCheck {
+                            config: cfg.clone(),
+                            timeout: Duration::from_secs(cfg.timeout_secs),
+                        }
+                    });
+
+                    let model_status = readiness_config.model_status.as_ref().map(|cfg| {
+                        ModelStatusCheck {
+                            config: cfg.clone(),
+                            timeout: Duration::from_secs(cfg.timeout_secs),
+                        }
+                    });
+
+                    let queue_depth = readiness_config.queue_depth.as_ref().map(|cfg| {
+                        QueueDepthCheck {
+                            config: cfg.clone(),
+                            models_endpoint: endpoint.clone(),
+                            timeout: Duration::from_secs(cfg.timeout_secs),
+                        }
+                    });
+
+                    Arc::new(CompositeInferenceHealthCheck {
+                        base_check,
+                        inference_probe,
+                        model_status,
+                        queue_depth,
+                    })
+                } else {
+                    // Simple inference check without readiness sub-checks
+                    Arc::new(base_check)
+                }
             }
         };
 
@@ -675,6 +750,359 @@ impl HealthCheckImpl for InferenceHealthCheck {
     }
 }
 
+#[async_trait]
+impl HealthCheckImpl for InferenceProbeCheck {
+    async fn check(&self, target: &str) -> Result<Duration, String> {
+        let start = Instant::now();
+
+        // Parse target address
+        let addr: SocketAddr = target
+            .parse()
+            .map_err(|e| format!("Invalid address: {}", e))?;
+
+        // Connect with timeout
+        let stream = time::timeout(self.timeout, TcpStream::connect(addr))
+            .await
+            .map_err(|_| format!("Connection timeout after {:?}", self.timeout))?
+            .map_err(|e| format!("Connection failed: {}", e))?;
+
+        // Build completion request body
+        let body = format!(
+            r#"{{"model":"{}","prompt":"{}","max_tokens":{}}}"#,
+            self.config.model, self.config.prompt, self.config.max_tokens
+        );
+
+        // Build HTTP request
+        let request = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Sentinel-HealthCheck/1.0\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            self.config.endpoint,
+            target,
+            body.len(),
+            body
+        );
+
+        // Send request
+        let mut stream = stream;
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to send request: {}", e))?;
+
+        // Read response
+        let mut response = vec![0u8; 16384];
+        let n = stream
+            .read(&mut response)
+            .await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        if n == 0 {
+            return Err("Empty response".to_string());
+        }
+
+        let latency = start.elapsed();
+
+        // Parse status code
+        let response_str = String::from_utf8_lossy(&response[..n]);
+        let status_code = parse_http_status(&response_str)
+            .ok_or_else(|| "Failed to parse HTTP status".to_string())?;
+
+        if status_code != 200 {
+            return Err(format!(
+                "Inference probe failed: status {} (expected 200)",
+                status_code
+            ));
+        }
+
+        // Verify response contains choices array
+        if let Some(body_start) = response_str.find("\r\n\r\n") {
+            let body = &response_str[body_start + 4..];
+            if !body.contains("\"choices\"") {
+                return Err("Inference probe response missing 'choices' field".to_string());
+            }
+        }
+
+        // Check latency threshold if configured
+        if let Some(max_ms) = self.config.max_latency_ms {
+            if latency.as_millis() as u64 > max_ms {
+                return Err(format!(
+                    "Inference probe latency {}ms exceeds threshold {}ms",
+                    latency.as_millis(),
+                    max_ms
+                ));
+            }
+        }
+
+        trace!(
+            target = %target,
+            model = %self.config.model,
+            latency_ms = latency.as_millis(),
+            "Inference probe health check passed"
+        );
+
+        Ok(latency)
+    }
+
+    fn check_type(&self) -> &str {
+        "InferenceProbe"
+    }
+}
+
+#[async_trait]
+impl HealthCheckImpl for ModelStatusCheck {
+    async fn check(&self, target: &str) -> Result<Duration, String> {
+        let start = Instant::now();
+
+        // Parse target address
+        let addr: SocketAddr = target
+            .parse()
+            .map_err(|e| format!("Invalid address: {}", e))?;
+
+        // Check each model's status
+        for model in &self.config.models {
+            let endpoint = self.config.endpoint_pattern.replace("{model}", model);
+
+            // Connect with timeout
+            let stream = time::timeout(self.timeout, TcpStream::connect(addr))
+                .await
+                .map_err(|_| format!("Connection timeout after {:?}", self.timeout))?
+                .map_err(|e| format!("Connection failed: {}", e))?;
+
+            // Build HTTP request
+            let request = format!(
+                "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Sentinel-HealthCheck/1.0\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+                endpoint,
+                target
+            );
+
+            // Send request
+            let mut stream = stream;
+            stream
+                .write_all(request.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to send request: {}", e))?;
+
+            // Read response
+            let mut response = vec![0u8; 8192];
+            let n = stream
+                .read(&mut response)
+                .await
+                .map_err(|e| format!("Failed to read response: {}", e))?;
+
+            if n == 0 {
+                return Err(format!("Empty response for model '{}'", model));
+            }
+
+            let response_str = String::from_utf8_lossy(&response[..n]);
+            let status_code = parse_http_status(&response_str)
+                .ok_or_else(|| "Failed to parse HTTP status".to_string())?;
+
+            if status_code != 200 {
+                return Err(format!(
+                    "Model '{}' status check failed: HTTP {}",
+                    model, status_code
+                ));
+            }
+
+            // Extract status field from JSON body
+            if let Some(body_start) = response_str.find("\r\n\r\n") {
+                let body = &response_str[body_start + 4..];
+                let status = extract_json_field(body, &self.config.status_field);
+
+                match status {
+                    Some(s) if s == self.config.expected_status => {
+                        trace!(
+                            target = %target,
+                            model = %model,
+                            status = %s,
+                            "Model status check passed"
+                        );
+                    }
+                    Some(s) => {
+                        return Err(format!(
+                            "Model '{}' status '{}' != expected '{}'",
+                            model, s, self.config.expected_status
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "Model '{}' status field '{}' not found",
+                            model, self.config.status_field
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(start.elapsed())
+    }
+
+    fn check_type(&self) -> &str {
+        "ModelStatus"
+    }
+}
+
+#[async_trait]
+impl HealthCheckImpl for QueueDepthCheck {
+    async fn check(&self, target: &str) -> Result<Duration, String> {
+        let start = Instant::now();
+
+        // Parse target address
+        let addr: SocketAddr = target
+            .parse()
+            .map_err(|e| format!("Invalid address: {}", e))?;
+
+        let endpoint = self.config.endpoint.as_ref().unwrap_or(&self.models_endpoint);
+
+        // Connect with timeout
+        let stream = time::timeout(self.timeout, TcpStream::connect(addr))
+            .await
+            .map_err(|_| format!("Connection timeout after {:?}", self.timeout))?
+            .map_err(|e| format!("Connection failed: {}", e))?;
+
+        // Build HTTP request
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Sentinel-HealthCheck/1.0\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+            endpoint,
+            target
+        );
+
+        // Send request
+        let mut stream = stream;
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to send request: {}", e))?;
+
+        // Read response
+        let mut response = vec![0u8; 8192];
+        let n = stream
+            .read(&mut response)
+            .await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        if n == 0 {
+            return Err("Empty response".to_string());
+        }
+
+        let response_str = String::from_utf8_lossy(&response[..n]);
+
+        // Extract queue depth from header or body
+        let queue_depth = if let Some(ref header_name) = self.config.header {
+            extract_header_value(&response_str, header_name)
+                .and_then(|v| v.parse::<u64>().ok())
+        } else if let Some(ref field) = self.config.body_field {
+            if let Some(body_start) = response_str.find("\r\n\r\n") {
+                let body = &response_str[body_start + 4..];
+                extract_json_field(body, field).and_then(|v| v.parse::<u64>().ok())
+            } else {
+                None
+            }
+        } else {
+            return Err("No queue depth source configured (header or body_field)".to_string());
+        };
+
+        let depth = queue_depth.ok_or_else(|| "Could not extract queue depth".to_string())?;
+
+        // Check thresholds
+        if depth >= self.config.unhealthy_threshold {
+            return Err(format!(
+                "Queue depth {} exceeds unhealthy threshold {}",
+                depth, self.config.unhealthy_threshold
+            ));
+        }
+
+        if depth >= self.config.degraded_threshold {
+            warn!(
+                target = %target,
+                queue_depth = depth,
+                threshold = self.config.degraded_threshold,
+                "Queue depth exceeds degraded threshold"
+            );
+        }
+
+        trace!(
+            target = %target,
+            queue_depth = depth,
+            "Queue depth check passed"
+        );
+
+        Ok(start.elapsed())
+    }
+
+    fn check_type(&self) -> &str {
+        "QueueDepth"
+    }
+}
+
+#[async_trait]
+impl HealthCheckImpl for CompositeInferenceHealthCheck {
+    async fn check(&self, target: &str) -> Result<Duration, String> {
+        let start = Instant::now();
+
+        // Run base inference check first (always required)
+        self.base_check.check(target).await?;
+
+        // Run optional sub-checks (all must pass)
+        if let Some(ref probe) = self.inference_probe {
+            probe.check(target).await?;
+        }
+
+        if let Some(ref status) = self.model_status {
+            status.check(target).await?;
+        }
+
+        if let Some(ref queue) = self.queue_depth {
+            queue.check(target).await?;
+        }
+
+        trace!(
+            target = %target,
+            total_time_ms = start.elapsed().as_millis(),
+            "Composite inference health check passed"
+        );
+
+        Ok(start.elapsed())
+    }
+
+    fn check_type(&self) -> &str {
+        "CompositeInference"
+    }
+}
+
+/// Extract a header value from HTTP response
+fn extract_header_value(response: &str, header_name: &str) -> Option<String> {
+    let header_lower = header_name.to_lowercase();
+    for line in response.lines() {
+        if line.is_empty() || line == "\r" {
+            break; // End of headers
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().to_lowercase() == header_lower {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract a field from JSON body using dot notation (e.g., "status" or "state.loaded")
+fn extract_json_field(body: &str, field_path: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(body).ok()?;
+    let parts: Vec<&str> = field_path.split('.').collect();
+    let mut current = &json;
+
+    for part in parts {
+        current = current.get(part)?;
+    }
+
+    match current {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 /// Parse HTTP status code from response
 fn parse_http_status(response: &str) -> Option<u16> {
     response
@@ -807,6 +1235,204 @@ impl PassiveHealthChecker {
     }
 }
 
+// ============================================================================
+// Warmth Tracker (Passive Cold Model Detection)
+// ============================================================================
+
+use dashmap::DashMap;
+use sentinel_common::{ColdModelAction, WarmthDetectionConfig};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+/// Warmth tracker for detecting cold models after idle periods
+///
+/// This is a passive tracker that observes actual request latency rather than
+/// sending active probes. It tracks baseline latency per target and detects
+/// when first-request latency after an idle period indicates a cold model.
+pub struct WarmthTracker {
+    /// Configuration for warmth detection
+    config: WarmthDetectionConfig,
+    /// Per-target warmth state
+    targets: DashMap<String, TargetWarmthState>,
+}
+
+/// Per-target warmth tracking state
+struct TargetWarmthState {
+    /// Baseline latency in milliseconds (EWMA)
+    baseline_latency_ms: AtomicU64,
+    /// Number of samples collected for baseline
+    sample_count: AtomicU32,
+    /// Last request timestamp (millis since epoch)
+    last_request_ms: AtomicU64,
+    /// Currently considered cold
+    is_cold: AtomicBool,
+    /// Total cold starts detected (for metrics)
+    cold_start_count: AtomicU64,
+}
+
+impl TargetWarmthState {
+    fn new() -> Self {
+        Self {
+            baseline_latency_ms: AtomicU64::new(0),
+            sample_count: AtomicU32::new(0),
+            last_request_ms: AtomicU64::new(0),
+            is_cold: AtomicBool::new(false),
+            cold_start_count: AtomicU64::new(0),
+        }
+    }
+
+    fn update_baseline(&self, latency_ms: u64, sample_size: u32) {
+        let count = self.sample_count.fetch_add(1, Ordering::Relaxed);
+        let current = self.baseline_latency_ms.load(Ordering::Relaxed);
+
+        if count < sample_size {
+            // Building initial baseline - simple average
+            let new_baseline = if count == 0 {
+                latency_ms
+            } else {
+                (current * count as u64 + latency_ms) / (count as u64 + 1)
+            };
+            self.baseline_latency_ms.store(new_baseline, Ordering::Relaxed);
+        } else {
+            // EWMA update: new = alpha * sample + (1 - alpha) * old
+            // Using alpha = 0.1 for smooth updates
+            let alpha = 0.1_f64;
+            let new_baseline =
+                (alpha * latency_ms as f64 + (1.0 - alpha) * current as f64) as u64;
+            self.baseline_latency_ms.store(new_baseline, Ordering::Relaxed);
+        }
+    }
+}
+
+impl WarmthTracker {
+    /// Create a new warmth tracker with the given configuration
+    pub fn new(config: WarmthDetectionConfig) -> Self {
+        Self {
+            config,
+            targets: DashMap::new(),
+        }
+    }
+
+    /// Create a warmth tracker with default configuration
+    pub fn with_defaults() -> Self {
+        Self::new(WarmthDetectionConfig {
+            sample_size: 10,
+            cold_threshold_multiplier: 3.0,
+            idle_cold_timeout_secs: 300,
+            cold_action: ColdModelAction::LogOnly,
+        })
+    }
+
+    /// Record a completed request and detect cold starts
+    ///
+    /// Returns true if a cold start was detected
+    pub fn record_request(&self, target: &str, latency: Duration) -> bool {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let latency_ms = latency.as_millis() as u64;
+        let idle_threshold_ms = self.config.idle_cold_timeout_secs * 1000;
+
+        let state = self
+            .targets
+            .entry(target.to_string())
+            .or_insert_with(TargetWarmthState::new);
+
+        let last_request = state.last_request_ms.load(Ordering::Relaxed);
+        let idle_duration_ms = if last_request > 0 {
+            now_ms.saturating_sub(last_request)
+        } else {
+            0
+        };
+
+        // Update last request time
+        state.last_request_ms.store(now_ms, Ordering::Relaxed);
+
+        // Check if this might be a cold start (first request after idle period)
+        if idle_duration_ms >= idle_threshold_ms {
+            let baseline = state.baseline_latency_ms.load(Ordering::Relaxed);
+
+            // Only check if we have a baseline
+            if baseline > 0 {
+                let threshold = (baseline as f64 * self.config.cold_threshold_multiplier) as u64;
+
+                if latency_ms > threshold {
+                    // Cold start detected!
+                    state.is_cold.store(true, Ordering::Release);
+                    state.cold_start_count.fetch_add(1, Ordering::Relaxed);
+
+                    warn!(
+                        target = %target,
+                        latency_ms = latency_ms,
+                        baseline_ms = baseline,
+                        threshold_ms = threshold,
+                        idle_duration_secs = idle_duration_ms / 1000,
+                        cold_action = ?self.config.cold_action,
+                        "Cold model detected - latency spike after idle period"
+                    );
+
+                    return true;
+                }
+            }
+        }
+
+        // Normal request - update baseline and clear cold flag
+        state.is_cold.store(false, Ordering::Release);
+        state.update_baseline(latency_ms, self.config.sample_size);
+
+        trace!(
+            target = %target,
+            latency_ms = latency_ms,
+            baseline_ms = state.baseline_latency_ms.load(Ordering::Relaxed),
+            sample_count = state.sample_count.load(Ordering::Relaxed),
+            "Recorded request latency for warmth tracking"
+        );
+
+        false
+    }
+
+    /// Check if a target is currently considered cold
+    pub fn is_cold(&self, target: &str) -> bool {
+        self.targets
+            .get(target)
+            .map(|s| s.is_cold.load(Ordering::Acquire))
+            .unwrap_or(false)
+    }
+
+    /// Get the configured action for cold models
+    pub fn cold_action(&self) -> ColdModelAction {
+        self.config.cold_action
+    }
+
+    /// Get baseline latency for a target (in ms)
+    pub fn baseline_latency_ms(&self, target: &str) -> Option<u64> {
+        self.targets
+            .get(target)
+            .map(|s| s.baseline_latency_ms.load(Ordering::Relaxed))
+    }
+
+    /// Get cold start count for a target
+    pub fn cold_start_count(&self, target: &str) -> u64 {
+        self.targets
+            .get(target)
+            .map(|s| s.cold_start_count.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Check if warmth tracking should affect load balancing for this target
+    pub fn should_deprioritize(&self, target: &str) -> bool {
+        if !self.is_cold(target) {
+            return false;
+        }
+
+        match self.config.cold_action {
+            ColdModelAction::LogOnly => false,
+            ColdModelAction::MarkDegraded | ColdModelAction::MarkUnhealthy => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,5 +1471,93 @@ mod tests {
 
         let response = "Invalid response";
         assert_eq!(parse_http_status(response), None);
+    }
+
+    #[test]
+    fn test_warmth_tracker_baseline() {
+        let tracker = WarmthTracker::with_defaults();
+
+        // First few requests should build baseline
+        for i in 0..10 {
+            let cold = tracker.record_request("target1", Duration::from_millis(100));
+            assert!(!cold, "Should not detect cold on request {}", i);
+        }
+
+        // Check baseline was established
+        let baseline = tracker.baseline_latency_ms("target1");
+        assert!(baseline.is_some());
+        assert!(baseline.unwrap() > 0 && baseline.unwrap() <= 100);
+    }
+
+    #[test]
+    fn test_warmth_tracker_cold_detection() {
+        let config = WarmthDetectionConfig {
+            sample_size: 5,
+            cold_threshold_multiplier: 2.0,
+            idle_cold_timeout_secs: 0, // Immediate idle for testing
+            cold_action: ColdModelAction::MarkDegraded,
+        };
+        let tracker = WarmthTracker::new(config);
+
+        // Build baseline with 100ms latency
+        for _ in 0..5 {
+            tracker.record_request("target1", Duration::from_millis(100));
+        }
+
+        // Wait a tiny bit to simulate idle
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Next request with 3x latency (> 2x threshold) should detect cold
+        let cold = tracker.record_request("target1", Duration::from_millis(300));
+        assert!(cold, "Should detect cold start");
+        assert!(tracker.is_cold("target1"));
+        assert_eq!(tracker.cold_start_count("target1"), 1);
+    }
+
+    #[test]
+    fn test_warmth_tracker_no_cold_on_normal_latency() {
+        let config = WarmthDetectionConfig {
+            sample_size: 5,
+            cold_threshold_multiplier: 3.0,
+            idle_cold_timeout_secs: 0,
+            cold_action: ColdModelAction::LogOnly,
+        };
+        let tracker = WarmthTracker::new(config);
+
+        // Build baseline
+        for _ in 0..5 {
+            tracker.record_request("target1", Duration::from_millis(100));
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Request with only 1.5x latency (< 3x threshold) should not detect cold
+        let cold = tracker.record_request("target1", Duration::from_millis(150));
+        assert!(!cold, "Should not detect cold for normal variation");
+        assert!(!tracker.is_cold("target1"));
+    }
+
+    #[test]
+    fn test_warmth_tracker_deprioritize() {
+        let config = WarmthDetectionConfig {
+            sample_size: 2,
+            cold_threshold_multiplier: 2.0,
+            idle_cold_timeout_secs: 0,
+            cold_action: ColdModelAction::MarkDegraded,
+        };
+        let tracker = WarmthTracker::new(config);
+
+        // Build baseline and trigger cold
+        tracker.record_request("target1", Duration::from_millis(100));
+        tracker.record_request("target1", Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(10));
+        tracker.record_request("target1", Duration::from_millis(300));
+
+        // Should deprioritize when cold and action is MarkDegraded
+        assert!(tracker.should_deprioritize("target1"));
+
+        // New normal request clears cold flag
+        tracker.record_request("target1", Duration::from_millis(100));
+        assert!(!tracker.should_deprioritize("target1"));
     }
 }

@@ -2324,6 +2324,20 @@ impl ProxyHttp for SentinelProxy {
                     "Reported result to adaptive load balancer"
                 );
             }
+
+            // Track warmth for inference routes (cold model detection)
+            if ctx.inference_rate_limit_enabled && success {
+                let cold_detected = self.warmth_tracker.record_request(peer_addr, duration);
+                if cold_detected {
+                    debug!(
+                        correlation_id = %ctx.trace_id,
+                        upstream = %upstream_id,
+                        peer_address = %peer_addr,
+                        duration_ms = duration.as_millis(),
+                        "Cold model detected on inference upstream"
+                    );
+                }
+            }
         }
 
         // Record actual token usage for inference rate limiting

@@ -95,6 +95,8 @@ pub struct SentinelProxy {
     pub(super) geo_filter_manager: Arc<GeoFilterManager>,
     /// Inference rate limit manager (token-based rate limiting for LLM/AI routes)
     pub(super) inference_rate_limit_manager: Arc<InferenceRateLimitManager>,
+    /// Warmth tracker for cold model detection on inference routes
+    pub(super) warmth_tracker: Arc<crate::health::WarmthTracker>,
 }
 
 impl SentinelProxy {
@@ -274,6 +276,9 @@ impl SentinelProxy {
         let inference_rate_limit_manager =
             Arc::new(Self::initialize_inference_rate_limiters(&config));
 
+        // Initialize warmth tracker for cold model detection
+        let warmth_tracker = Arc::new(crate::health::WarmthTracker::with_defaults());
+
         // Initialize geo filter manager
         let geo_filter_manager = Arc::new(Self::initialize_geo_filters(&config));
 
@@ -315,6 +320,7 @@ impl SentinelProxy {
             cache_manager,
             geo_filter_manager,
             inference_rate_limit_manager,
+            warmth_tracker,
         })
     }
 

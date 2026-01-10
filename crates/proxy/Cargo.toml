@@ -107,6 +107,9 @@ tikv-jemallocator = { workspace = true }
 # Random number generation
 rand = "0.8"
 
+# Token counting for inference
+tiktoken-rs = { version = "0.6", optional = true }
+
 # Hex encoding
 hex = "0.4"
 
@@ -145,6 +148,7 @@ distributed-rate-limit-redis = ["redis"]
 distributed-rate-limit-memcached = ["async-memcached"]
 opentelemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:opentelemetry-semantic-conventions"]
 kubernetes = ["reqwest"]
+tiktoken = ["tiktoken-rs"]
 
 [dev-dependencies]
 criterion = { workspace = true }

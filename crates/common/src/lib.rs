@@ -16,6 +16,7 @@
 pub mod circuit_breaker;
 pub mod errors;
 pub mod ids;
+pub mod inference;
 pub mod limits;
 pub mod observability;
 pub mod registry;
@@ -44,6 +45,12 @@ pub use ids::{AgentId, CorrelationId, QualifiedId, RequestId, RouteId, Scope, Up
 
 // Re-export common types
 pub use types::{CircuitBreakerConfig, TraceIdFormat};
+
+// Re-export inference types
+pub use inference::{
+    ColdModelAction, InferenceProbeConfig, InferenceReadinessConfig, ModelStatusConfig,
+    QueueDepthConfig, WarmthDetectionConfig,
+};
 
 // Re-export circuit breaker
 pub use circuit_breaker::CircuitBreaker;

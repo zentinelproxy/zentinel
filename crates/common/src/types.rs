@@ -168,12 +168,16 @@ pub enum HealthCheckType {
     ///
     /// Probes the `/v1/models` endpoint (or custom endpoint) to verify
     /// the inference server is running and expected models are available.
+    /// Optionally includes enhanced readiness checks for model availability.
     Inference {
         /// Endpoint to probe (default: "/v1/models")
         endpoint: String,
         /// Expected models that must be available (optional)
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         expected_models: Vec<String>,
+        /// Enhanced readiness checks (optional)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        readiness: Option<crate::inference::InferenceReadinessConfig>,
     },
 }
 

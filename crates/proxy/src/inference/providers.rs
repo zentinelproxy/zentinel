@@ -10,6 +10,9 @@ use serde_json::Value;
 use sentinel_config::{InferenceProvider, TokenEstimation};
 use tracing::trace;
 
+#[cfg(feature = "tiktoken")]
+use tiktoken_rs::cl100k_base;
+
 /// Trait for provider-specific token extraction and estimation
 pub trait InferenceProviderAdapter: Send + Sync {
     /// Provider name for logging/metrics
@@ -266,13 +269,34 @@ fn estimate_tokens(body: &[u8], method: TokenEstimation) -> u64 {
             ((word_count as f64 * 1.3).ceil() as u64).max(1)
         }
         TokenEstimation::Tiktoken => {
-            // Tiktoken is accurate but requires the tiktoken crate
-            // For now, fall back to chars method
-            // TODO: Add optional tiktoken feature
-            let char_count = String::from_utf8_lossy(body).chars().count();
-            (char_count / 4).max(1) as u64
+            estimate_tokens_tiktoken(body)
         }
     }
+}
+
+/// Estimate tokens using tiktoken (cl100k_base encoding, used by GPT-4/GPT-3.5-turbo)
+#[cfg(feature = "tiktoken")]
+fn estimate_tokens_tiktoken(body: &[u8]) -> u64 {
+    let text = String::from_utf8_lossy(body);
+    match cl100k_base() {
+        Ok(bpe) => {
+            let tokens = bpe.encode_with_special_tokens(&text);
+            trace!(token_count = tokens.len(), "Tiktoken token count");
+            tokens.len() as u64
+        }
+        Err(e) => {
+            trace!(error = %e, "Failed to initialize tiktoken, falling back to char estimation");
+            (text.chars().count() / 4).max(1) as u64
+        }
+    }
+}
+
+/// Fallback when tiktoken feature is not enabled
+#[cfg(not(feature = "tiktoken"))]
+fn estimate_tokens_tiktoken(body: &[u8]) -> u64 {
+    // Fall back to character-based estimation
+    let char_count = String::from_utf8_lossy(body).chars().count();
+    (char_count / 4).max(1) as u64
 }
 
 #[cfg(test)]
@@ -307,5 +331,22 @@ mod tests {
         let provider = OpenAiProvider;
         let headers = HeaderMap::new();
         assert_eq!(provider.extract_model(&headers, body), Some("gpt-4".to_string()));
+    }
+
+    #[test]
+    fn test_token_estimation_tiktoken() {
+        let body = b"Hello world, this is a test message for token counting!";
+        let estimate = estimate_tokens(body, TokenEstimation::Tiktoken);
+        // Should return a reasonable token count regardless of feature flag
+        assert!(estimate > 0 && estimate < 100);
+    }
+
+    #[test]
+    #[cfg(feature = "tiktoken")]
+    fn test_tiktoken_accurate_count() {
+        // "Hello world" is typically 2 tokens with cl100k_base
+        let body = b"Hello world";
+        let estimate = estimate_tokens_tiktoken(body);
+        assert_eq!(estimate, 2);
     }
 }

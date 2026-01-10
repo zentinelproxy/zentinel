@@ -360,9 +360,16 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
                         })
                         .unwrap_or_default();
 
+                    // Parse optional readiness config
+                    let readiness = type_node
+                        .children()
+                        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "readiness"))
+                        .map(|n| parse_inference_readiness(n));
+
                     HealthCheckType::Inference {
                         endpoint,
                         expected_models,
+                        readiness,
                     }
                 }
                 _ => HealthCheckType::Tcp,
@@ -383,4 +390,152 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
         healthy_threshold,
         unhealthy_threshold,
     })
+}
+
+/// Parse inference readiness configuration
+fn parse_inference_readiness(node: &kdl::KdlNode) -> sentinel_common::InferenceReadinessConfig {
+    use sentinel_common::{
+        ColdModelAction, InferenceProbeConfig, InferenceReadinessConfig, ModelStatusConfig,
+        QueueDepthConfig, WarmthDetectionConfig,
+    };
+
+    let children = match node.children() {
+        Some(c) => c,
+        None => return InferenceReadinessConfig::default(),
+    };
+
+    // Parse inference-probe
+    let inference_probe = children
+        .nodes()
+        .iter()
+        .find(|n| n.name().value() == "inference-probe")
+        .and_then(|n| n.children())
+        .map(|c| {
+            let nodes = c.nodes();
+            InferenceProbeConfig {
+                endpoint: find_string_entry(&nodes, "endpoint")
+                    .unwrap_or_else(|| "/v1/completions".to_string()),
+                model: find_string_entry(&nodes, "model").unwrap_or_default(),
+                prompt: find_string_entry(&nodes, "prompt").unwrap_or_else(|| ".".to_string()),
+                max_tokens: find_int_entry(&nodes, "max-tokens").unwrap_or(1) as u32,
+                timeout_secs: find_int_entry(&nodes, "timeout-secs").unwrap_or(30) as u64,
+                max_latency_ms: find_int_entry(&nodes, "max-latency-ms").map(|v| v as u64),
+            }
+        });
+
+    // Parse model-status
+    let model_status = children
+        .nodes()
+        .iter()
+        .find(|n| n.name().value() == "model-status")
+        .and_then(|n| n.children())
+        .map(|c| {
+            let nodes = c.nodes();
+            let models = nodes
+                .iter()
+                .find(|n| n.name().value() == "models")
+                .map(|n| {
+                    n.entries()
+                        .iter()
+                        .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            ModelStatusConfig {
+                endpoint_pattern: find_string_entry(&nodes, "endpoint-pattern")
+                    .unwrap_or_else(|| "/v1/models/{model}/status".to_string()),
+                models,
+                expected_status: find_string_entry(&nodes, "expected-status")
+                    .unwrap_or_else(|| "ready".to_string()),
+                status_field: find_string_entry(&nodes, "status-field")
+                    .unwrap_or_else(|| "status".to_string()),
+                timeout_secs: find_int_entry(&nodes, "timeout-secs").unwrap_or(5) as u64,
+            }
+        });
+
+    // Parse queue-depth
+    let queue_depth = children
+        .nodes()
+        .iter()
+        .find(|n| n.name().value() == "queue-depth")
+        .and_then(|n| n.children())
+        .map(|c| {
+            let nodes = c.nodes();
+            QueueDepthConfig {
+                header: find_string_entry(&nodes, "header"),
+                body_field: find_string_entry(&nodes, "body-field"),
+                endpoint: find_string_entry(&nodes, "endpoint"),
+                degraded_threshold: find_int_entry(&nodes, "degraded-threshold").unwrap_or(50)
+                    as u64,
+                unhealthy_threshold: find_int_entry(&nodes, "unhealthy-threshold").unwrap_or(200)
+                    as u64,
+                timeout_secs: find_int_entry(&nodes, "timeout-secs").unwrap_or(5) as u64,
+            }
+        });
+
+    // Parse warmth-detection
+    let warmth_detection = children
+        .nodes()
+        .iter()
+        .find(|n| n.name().value() == "warmth-detection")
+        .and_then(|n| n.children())
+        .map(|c| {
+            let nodes = c.nodes();
+            let cold_action = find_string_entry(&nodes, "cold-action")
+                .map(|s| match s.as_str() {
+                    "log-only" | "log_only" => ColdModelAction::LogOnly,
+                    "mark-degraded" | "mark_degraded" => ColdModelAction::MarkDegraded,
+                    "mark-unhealthy" | "mark_unhealthy" => ColdModelAction::MarkUnhealthy,
+                    _ => ColdModelAction::LogOnly,
+                })
+                .unwrap_or_default();
+
+            WarmthDetectionConfig {
+                sample_size: find_int_entry(&nodes, "sample-size").unwrap_or(10) as u32,
+                cold_threshold_multiplier: find_float_entry(&nodes, "cold-threshold-multiplier")
+                    .unwrap_or(3.0),
+                idle_cold_timeout_secs: find_int_entry(&nodes, "idle-cold-timeout-secs")
+                    .unwrap_or(300) as u64,
+                cold_action,
+            }
+        });
+
+    InferenceReadinessConfig {
+        inference_probe,
+        model_status,
+        queue_depth,
+        warmth_detection,
+    }
+}
+
+/// Find a string entry in nodes by name
+fn find_string_entry(nodes: &[kdl::KdlNode], name: &str) -> Option<String> {
+    nodes
+        .iter()
+        .find(|n| n.name().value() == name)
+        .and_then(|n| n.entries().first())
+        .and_then(|e| e.value().as_string().map(|s| s.to_string()))
+}
+
+/// Find an integer entry in nodes by name
+fn find_int_entry(nodes: &[kdl::KdlNode], name: &str) -> Option<i64> {
+    nodes
+        .iter()
+        .find(|n| n.name().value() == name)
+        .and_then(|n| n.entries().first())
+        .and_then(|e| e.value().as_integer().map(|v| v as i64))
+}
+
+/// Find a float entry in nodes by name
+fn find_float_entry(nodes: &[kdl::KdlNode], name: &str) -> Option<f64> {
+    nodes
+        .iter()
+        .find(|n| n.name().value() == name)
+        .and_then(|n| n.entries().first())
+        .and_then(|e| {
+            e.value()
+                .as_float()
+                .or_else(|| e.value().as_integer().map(|i| i as f64))
+        })
 }

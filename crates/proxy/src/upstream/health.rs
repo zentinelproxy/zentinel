@@ -183,6 +183,7 @@ impl ActiveHealthChecker {
             HealthCheckType::Inference {
                 endpoint,
                 expected_models,
+                readiness,
             } => {
                 // Inference health check uses HTTP under the hood
                 // It probes the models endpoint (typically /v1/models)
@@ -201,15 +202,15 @@ impl ActiveHealthChecker {
                     upstream_id = %upstream_id,
                     endpoint = %endpoint,
                     expected_models = ?expected_models,
+                    has_readiness = readiness.is_some(),
                     consecutive_success = hc.consecutive_success,
                     consecutive_failure = hc.consecutive_failure,
                     "Created inference health check"
                 );
 
-                // Note: Full model availability checking would require custom implementation
-                // that parses the JSON response. For now, we verify HTTP 200 from the endpoint.
-                // The ActiveHealthChecker in crates/proxy/src/health.rs provides the full
-                // model verification logic.
+                // Note: Full model availability checking including readiness probes
+                // is implemented in the ActiveHealthChecker in crates/proxy/src/health.rs.
+                // This Pingora-based health check provides basic HTTP 200 verification.
 
                 Box::new(hc)
             }
