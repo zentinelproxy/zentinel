@@ -7,10 +7,15 @@ members = [
     "crates/stack",
     "agents/echo",
 ]
+exclude = [
+    # WASM crates are built separately with wasm-pack
+    "crates/sim",
+    "crates/playground-wasm",
+]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = ["Sentinel Contributors"]
 license = "MIT OR Apache-2.0"

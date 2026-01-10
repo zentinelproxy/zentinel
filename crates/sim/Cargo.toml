@@ -1,37 +1,37 @@
 [package]
 name = "sentinel-sim"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
-rust-version.workspace = true
+version = "0.2.4"
+edition = "2021"
+authors = ["Sentinel Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/raskell-io/sentinel"
+homepage = "https://github.com/raskell-io/sentinel"
+rust-version = "1.85"
 description = "Configuration simulation engine for Sentinel reverse proxy (WASM-compatible)"
 keywords = ["proxy", "reverse-proxy", "simulation", "wasm", "routing"]
 categories = ["simulation", "wasm", "network-programming"]
 
 [dependencies]
 # Local crates (WASM-compatible - disable runtime features)
-sentinel-config = { path = "../config", version = "0.2.3", default-features = false }
-sentinel-common = { path = "../common", version = "0.2.3", default-features = false }
+sentinel-config = { path = "../config", version = "0.2.4", default-features = false }
+sentinel-common = { path = "../common", version = "0.2.4", default-features = false }
 
 # Serialization
-serde = { workspace = true }
-serde_json = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 # Regex for path matching
 regex = "1.11"
 
 # Error handling
-thiserror = { workspace = true }
+thiserror = "2.0"
 
 # Hashing for consistent hash simulation
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
-insta = { workspace = true }
-proptest = { workspace = true }
+insta = "1.42"
+proptest = "1.6"
 
 [features]
 default = []

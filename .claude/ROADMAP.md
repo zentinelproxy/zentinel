@@ -1,7 +1,7 @@
 # Sentinel Roadmap
 
 **Last Updated:** 2026-01-10
-**Current Version:** 0.2.0
+**Current Version:** 0.2.4
 **Production Readiness:** 100% ✓
 
 ---
