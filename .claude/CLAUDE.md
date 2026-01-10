@@ -299,7 +299,7 @@ Exit criteria:
 
 ### Phase 5 — Competitive Features (Selective)
 Pick only what we need:
-- Advanced LB algorithms
+- ~~Advanced LB algorithms~~ → **DONE** (14 algorithms: Maglev, Peak EWMA, Locality-Aware, Weighted Least Conn, Deterministic Subset, etc.)
 - mTLS to upstreams
 - HTTP/3 (if justified)
 - Rate limiting/bot mitigation agent

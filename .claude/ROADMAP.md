@@ -1,6 +1,6 @@
 # Sentinel Roadmap
 
-**Last Updated:** 2026-01-01
+**Last Updated:** 2026-01-10
 **Current Version:** 0.2.0
 **Production Readiness:** 100% ✓
 
@@ -18,7 +18,7 @@ This document tracks completed features and future enhancements.
 
 ### Core Features
 - Core routing and upstream selection
-- Load balancing (P2C, Consistent Hash, Round Robin, Weighted)
+- Load balancing (14 algorithms: Round Robin, Weighted, Least Conn, P2C, Consistent Hash, Maglev, Peak EWMA, Locality-Aware, Weighted Least Conn, Deterministic Subset, Adaptive, Random, IP Hash, Least Tokens Queued)
 - Active/passive health checking
 - Rate limiting (local + Redis/Memcached distributed)
 - Hot configuration reload with validation
@@ -702,6 +702,66 @@ The following agents were analyzed and confirmed to be correctly positioned as e
 
 ---
 
+## Priority 7: Advanced Load Balancing
+
+### 7.1 Advanced Load Balancing Algorithms
+**Status:** DONE - 14 algorithms implemented
+**Impact:** HIGH - Enterprise-grade traffic distribution
+**Effort:** COMPLETE
+
+**Algorithms Implemented:**
+
+| Algorithm | Use Case | File |
+|-----------|----------|------|
+| Round Robin | Equal distribution | `round_robin.rs` |
+| Weighted Round Robin | Proportional by weight | `weighted.rs` |
+| Least Connections | Fewest active connections | `least_conn.rs` |
+| Weighted Least Conn | Connection/weight ratio | `weighted_least_conn.rs` |
+| Random | Simple random selection | `random.rs` |
+| IP Hash | Client affinity | `ip_hash.rs` |
+| Consistent Hash | Key-based affinity | `consistent_hash.rs` |
+| Maglev | Google's O(1) consistent hashing | `maglev.rs` |
+| Power of Two Choices | Best of two random picks | `p2c.rs` |
+| Peak EWMA | Latency-aware (Twitter Finagle) | `peak_ewma.rs` |
+| Locality-Aware | Zone-preference routing | `locality.rs` |
+| Deterministic Subset | Subset per proxy for large clusters | `subset.rs` |
+| Adaptive | Response-time weighted | `adaptive.rs` |
+| Least Tokens Queued | LLM inference optimization | `least_tokens.rs` |
+
+**Tasks:**
+- [x] Implement Maglev consistent hashing with O(1) lookup
+- [x] Implement Peak EWMA with latency tracking and load penalty
+- [x] Implement Locality-Aware routing with zone fallback strategies
+- [x] Implement Weighted Least Connections with tie-breaker strategies
+- [x] Implement Deterministic Subsetting for large clusters (1000+ backends)
+- [x] Fix Random algorithm (was stub)
+- [x] Add KDL configuration for all algorithms
+- [x] Add comprehensive test coverage (16+ tests for new algorithms)
+- [x] Document all algorithms in docs site
+
+**KDL Configuration:**
+```kdl
+upstreams {
+    upstream "api" {
+        target "backend-1:8080" weight=100
+        target "backend-2:8080" weight=100
+        load-balancing "peak_ewma"  // or maglev, locality_aware, etc.
+    }
+}
+```
+
+**Files:**
+- `crates/proxy/src/upstream/maglev.rs` - Maglev consistent hashing
+- `crates/proxy/src/upstream/peak_ewma.rs` - Peak EWMA latency-aware
+- `crates/proxy/src/upstream/locality.rs` - Locality-aware routing
+- `crates/proxy/src/upstream/weighted_least_conn.rs` - Weighted least connections
+- `crates/proxy/src/upstream/subset.rs` - Deterministic subsetting
+- `crates/proxy/src/upstream/mod.rs` - Factory and trait definitions
+- `crates/common/src/types.rs` - LoadBalancingAlgorithm enum
+- `crates/config/src/kdl/upstreams.rs` - KDL parsing
+
+---
+
 ## Milestone Status
 
 | Milestone | Status | Deliverables |
@@ -712,6 +772,7 @@ The following agents were analyzed and confirmed to be correctly positioned as e
 | **M4: Scalable** | ✓ Complete | Redis/Memcached rate limiting, DNS/Consul/K8s discovery |
 | **M5: Observable** | ✓ Complete | OpenTelemetry, JSON audit logging, Grafana dashboards |
 | **M6: Optimized** | ✓ Complete | Core rate limiting, geo filtering, schema versioning |
+| **M7: Traffic** | ✓ Complete | 14 LB algorithms (Maglev, Peak EWMA, Locality-Aware, etc.) |
 
 ---
 
