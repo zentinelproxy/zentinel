@@ -129,7 +129,7 @@ routes {
 
             // Token budget for cumulative tracking
             budget {
-                max-tokens 10000000  // 10M tokens per period
+                limit 10000000  // 10M tokens per period
                 period "monthly"
                 key "header:X-Org-Id"  // Budget per organization
             }

@@ -85,9 +85,7 @@ filters {
 agents {
     agent "waf-agent" {
         type "waf"
-        transport "unix_socket" {
-            path "/var/run/sentinel/waf.sock"
-        }
+        unix-socket path="/var/run/sentinel/waf.sock"
         events "request_headers" "request_body"
         timeout-ms 200
         failure-mode "closed"
@@ -97,8 +95,7 @@ agents {
 // =============================================================================
 // Namespace: Platform (shared platform services)
 // =============================================================================
-namespaces {
-    namespace "platform" {
+namespace "platform" {
         // Namespace-level limits
         limits {
             max-body-size-bytes 10485760  // 10MB
@@ -142,9 +139,7 @@ namespaces {
         agents {
             agent "auth-agent" {
                 type "auth"
-                transport "unix_socket" {
-                    path "/var/run/sentinel/platform-auth.sock"
-                }
+                unix-socket path="/var/run/sentinel/platform-auth.sock"
                 events "request_headers"
                 timeout-ms 100
                 failure-mode "closed"
@@ -198,63 +193,61 @@ namespaces {
             agents "auth-agent"
         }
 
-        // Services within the platform namespace
-        services {
-            // User management service
-            service "user-management" {
-                // Service-specific limits override namespace limits
-                limits {
-                    max-body-size-bytes 5242880  // 5MB
-                }
+        // Service within the platform namespace
+        // User management service
+        service "user-management" {
+            // Service-specific limits override namespace limits
+            limits {
+                max-body-size-bytes 5242880  // 5MB
+            }
 
-                routes {
-                    route "user-crud" {
-                        priority "high"
+            routes {
+                route "user-crud" {
+                    priority "high"
 
-                        matches {
-                            host "users.example.com"
-                            path-prefix "/api"
-                            method "GET" "POST" "PUT" "DELETE"
-                        }
-
-                        // Reference namespace upstream
-                        upstream "user-service"
-
-                        policies {
-                            timeout-secs 30
-                        }
+                    matches {
+                        host "users.example.com"
+                        path-prefix "/api"
+                        method "GET" "POST" "PUT" "DELETE"
                     }
 
-                    route "user-avatar" {
-                        priority "normal"
+                    // Reference namespace upstream
+                    upstream "user-service"
 
-                        matches {
-                            host "users.example.com"
-                            path-prefix "/avatars"
-                        }
+                    policies {
+                        timeout-secs 30
+                    }
+                }
 
-                        upstream "user-service"
+                route "user-avatar" {
+                    priority "normal"
 
-                        policies {
-                            timeout-secs 60
-                            max-body-size "10MB"  // Override for uploads
-                        }
+                    matches {
+                        host "users.example.com"
+                        path-prefix "/avatars"
+                    }
+
+                    upstream "user-service"
+
+                    policies {
+                        timeout-secs 60
+                        max-body-size "10MB"  // Override for uploads
                     }
                 }
             }
         }
+}
+
+// =============================================================================
+// Namespace: Storefront (e-commerce tenant)
+// =============================================================================
+namespace "storefront" {
+    limits {
+        max-body-size-bytes 52428800  // 50MB for product images
+        max-connections-per-client 100
     }
 
-    // ==========================================================================
-    // Namespace: Storefront (e-commerce tenant)
-    // ==========================================================================
-    namespace "storefront" {
-        limits {
-            max-body-size-bytes 52428800  // 50MB for product images
-            max-connections-per-client 100
-        }
-
-        upstreams {
+    upstreams {
             upstream "catalog-service" {
                 target "catalog.storefront.internal:8080" weight=1
                 target "catalog.storefront.internal:8081" weight=1
@@ -275,14 +268,6 @@ namespaces {
             }
         }
 
-        filters {
-            filter "storefront-cache" {
-                type "cache"
-                ttl-secs 300
-                vary-headers "Accept" "Accept-Encoding"
-            }
-        }
-
         routes {
             route "catalog" {
                 priority "high"
@@ -295,7 +280,7 @@ namespaces {
                 upstream "catalog-service"
 
                 // Use exported platform auth
-                filters "platform:platform-auth" "storefront-cache"
+                filters "platform:platform-auth"
 
                 policies {
                     timeout-secs 10
@@ -345,31 +330,29 @@ namespaces {
             }
         }
 
-        services {
-            service "product-api" {
-                routes {
-                    route "products" {
-                        matches {
-                            host "api.shop.example.com"
-                            path-prefix "/products"
-                        }
+        service "product-api" {
+            routes {
+                route "products" {
+                    matches {
+                        host "api.shop.example.com"
+                        path-prefix "/products"
+                    }
 
-                        upstream "catalog-service"
+                    upstream "catalog-service"
 
-                        policies {
-                            timeout-secs 10
-                        }
+                    policies {
+                        timeout-secs 10
                     }
                 }
             }
         }
-    }
+}
 
-    // ==========================================================================
-    // Namespace: Analytics (internal analytics platform)
-    // ==========================================================================
-    namespace "analytics" {
-        limits {
+// =============================================================================
+// Namespace: Analytics (internal analytics platform)
+// =============================================================================
+namespace "analytics" {
+    limits {
             max-body-size-bytes 104857600  // 100MB for data ingestion
         }
 
@@ -441,7 +424,6 @@ namespaces {
         exports {
             upstreams "ingestion"
         }
-    }
 }
 
 // =============================================================================

@@ -66,8 +66,11 @@ routes {
         }
     }
 
-    // Example 2: API route with inline OpenAPI specification
-    route "api-v2-inline-openapi" {
+    // Example 2: API route with OpenAPI file
+    // Note: For complex OpenAPI specs, use schema-file to reference external files.
+    // Inline specs via schema-content can be used for simple cases, but YAML/JSON
+    // content should be kept in separate files for maintainability.
+    route "api-v2-with-openapi-file" {
         priority "high"
 
         matches {
@@ -76,87 +79,14 @@ routes {
 
         upstream "api-backend"
 
-        // Inline OpenAPI spec (useful for small APIs or testing)
+        // Reference external OpenAPI spec file (YAML or JSON)
         api-schema {
+            // Path to OpenAPI 3.0 spec
+            // The schema file should contain the full API definition for /api/v2/*
+            schema-file "/etc/sentinel/schemas/api-v2-users-openapi.yaml"
+
             validate-requests #true
             validate-responses #false
-
-            // Embed OpenAPI 3.0 spec as a string
-            // Note: schema-file and schema-content are mutually exclusive
-            schema-content r#"
-openapi: 3.0.0
-info:
-  title: User API
-  version: 2.0.0
-  description: Simple user management API
-paths:
-  /api/v2/users:
-    post:
-      summary: Create a new user
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [email, password, username]
-              properties:
-                email:
-                  type: string
-                  format: email
-                  description: User email address
-                password:
-                  type: string
-                  minLength: 8
-                  description: User password (min 8 chars)
-                username:
-                  type: string
-                  minLength: 3
-                  maxLength: 32
-                  pattern: ^[a-zA-Z0-9_-]+$
-                  description: Username (alphanumeric, dash, underscore)
-      responses:
-        '201':
-          description: User created successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id: { type: string, format: uuid }
-                  email: { type: string }
-                  username: { type: string }
-    get:
-      summary: List users
-      parameters:
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 10
-        - name: offset
-          in: query
-          schema:
-            type: integer
-            minimum: 0
-            default: 0
-      responses:
-        '200':
-          description: List of users
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: { type: string, format: uuid }
-                    email: { type: string, format: email }
-                    username: { type: string }
-                    created_at: { type: string, format: date-time }
-            "#
         }
     }
 
@@ -395,11 +325,14 @@ paths:
 observability {
     tracing {
         enabled #true
-        backend "stdout"
+        backend "otlp" {
+            endpoint "http://localhost:4317"
+        }
     }
 
     metrics {
         enabled #true
-        endpoint "/metrics"
+        address "0.0.0.0:9090"
+        path "/metrics"
     }
 }
