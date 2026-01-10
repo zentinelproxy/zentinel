@@ -2,6 +2,8 @@
 
 Sentinel uses an external processing model where agents run as separate processes and communicate with the proxy via Unix domain sockets or gRPC. This architecture provides isolation, independent versioning, and allows the community to create and share agents.
 
+> **See Also:** [Agent Development Guide](AGENT_DEVELOPMENT.md) | [`sentinel-agent-protocol` crate](../crates/agent-protocol/)
+
 ## Transport Options
 
 Sentinel supports two transport mechanisms for agent communication:

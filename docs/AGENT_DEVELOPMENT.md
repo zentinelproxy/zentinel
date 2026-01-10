@@ -20,6 +20,8 @@
 
 Sentinel agents are external processes that extend the proxy's functionality without modifying the core dataplane. They communicate via a well-defined protocol inspired by HAProxy's SPOE (Stream Processing Offload Engine) and Envoy's ext_proc.
 
+> **See Also:** For protocol implementation details, see the [`sentinel-agent-protocol`](../crates/agent-protocol/) crate documentation.
+
 ### Why Write an Agent?
 
 - **Isolation**: Complex logic runs outside the proxy
