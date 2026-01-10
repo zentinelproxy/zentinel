@@ -1,0 +1,235 @@
+// Example: WebSocket Proxy Configuration
+//
+// WebSocket proxying with:
+// - Frame inspection for security
+// - Rate limiting (messages per second)
+// - Connection limits per IP
+// - Ping/pong keepalive
+// - Token authentication
+
+system {
+    worker-threads 0
+    max-connections 50000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+    }
+
+    listener "https" {
+        address "0.0.0.0:8443"
+        protocol "https"
+        tls {
+            cert-file "/etc/sentinel/certs/ws.crt"
+            key-file "/etc/sentinel/certs/ws.key"
+        }
+    }
+}
+
+// =============================================================================
+// Agents for WebSocket inspection
+// =============================================================================
+agents {
+    // WebSocket frame inspector for security
+    agent "ws-inspector" {
+        type "websocket"
+        unix-socket path="/var/run/sentinel/ws-inspector.sock"
+        events "request_headers" "request_body"
+        timeout-ms 50
+        failure-mode "open"
+    }
+
+    // Authentication agent
+    agent "auth" {
+        type "auth"
+        unix-socket path="/var/run/sentinel/auth.sock"
+        events "request_headers"
+        timeout-ms 100
+        failure-mode "closed"
+    }
+}
+
+// =============================================================================
+// Routes
+// =============================================================================
+routes {
+    // WebSocket endpoint with frame inspection
+    route "websocket" {
+        priority "high"
+
+        matches {
+            path-prefix "/ws"
+        }
+
+        upstream "ws-backend"
+        filters "auth" "ws-inspector"
+
+        websocket {
+            enabled #true
+            ping-interval-secs 30
+            ping-timeout-secs 10
+            max-message-size-bytes 65536
+            max-connections-per-ip 10
+        }
+
+        policies {
+            timeout-secs 3600  // Long timeout for persistent connections
+            failure-mode "closed"
+        }
+    }
+
+    // Socket.io endpoint (HTTP + WebSocket)
+    route "socketio" {
+        priority "high"
+
+        matches {
+            path-prefix "/socket.io"
+        }
+
+        upstream "socketio-backend"
+        filters "auth"
+
+        websocket {
+            enabled #true
+            ping-interval-secs 25
+            ping-timeout-secs 10
+            max-message-size-bytes 1048576  // 1MB for larger payloads
+        }
+
+        policies {
+            timeout-secs 3600
+        }
+    }
+
+    // Chat application endpoint
+    route "chat" {
+        priority "high"
+
+        matches {
+            path-prefix "/chat"
+        }
+
+        upstream "chat-backend"
+        filters "auth" "ws-inspector"
+
+        websocket {
+            enabled #true
+            ping-interval-secs 30
+            ping-timeout-secs 10
+            max-message-size-bytes 16384
+            max-connections-per-ip 5
+        }
+
+        policies {
+            timeout-secs 7200  // 2 hour sessions
+        }
+    }
+
+    // Health check
+    route "health" {
+        priority "critical"
+
+        matches {
+            path "/health"
+        }
+
+        builtin-handler "health"
+    }
+}
+
+// =============================================================================
+// Upstreams
+// =============================================================================
+upstreams {
+    upstream "ws-backend" {
+        target "127.0.0.1:3000" weight=1
+        target "127.0.0.1:3001" weight=1
+
+        load-balancing "ip-hash"  // Session affinity for WebSocket
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+
+        connection-pool {
+            max-connections 1000
+            max-idle 100
+        }
+    }
+
+    upstream "socketio-backend" {
+        target "127.0.0.1:3010" weight=1
+        target "127.0.0.1:3011" weight=1
+
+        load-balancing "ip-hash"
+
+        health-check {
+            type "http" {
+                path "/socket.io/health"
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+
+    upstream "chat-backend" {
+        target "127.0.0.1:3020" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+}
+
+// =============================================================================
+// Observability
+// =============================================================================
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
+        // WebSocket-specific metrics:
+        // - sentinel_websocket_connections_active
+        // - sentinel_websocket_messages_total
+        // - sentinel_websocket_frames_inspected_total
+        // - sentinel_websocket_frames_blocked_total
+    }
+
+    logging {
+        level "info"
+        format "json"
+
+        access-log {
+            enabled #true
+            file "/var/log/sentinel/websocket-access.log"
+        }
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 1048576
+}

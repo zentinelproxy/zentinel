@@ -1,0 +1,229 @@
+// Example: API Gateway Configuration
+//
+// Production-ready API gateway with:
+// - Versioned APIs (v1 deprecated, v2 current)
+// - JWT/API key authentication
+// - Rate limiting per client
+// - Security headers
+// - JSON error responses
+
+system {
+    worker-threads 0
+    max-connections 10000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "https" {
+        address "0.0.0.0:8443"
+        protocol "https"
+        tls {
+            cert-file "/etc/sentinel/certs/api.crt"
+            key-file "/etc/sentinel/certs/api.key"
+            min-version "TLS1.2"
+        }
+    }
+
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+    }
+}
+
+// =============================================================================
+// Agents for auth and rate limiting
+// =============================================================================
+agents {
+    agent "auth" {
+        type "auth"
+        unix-socket path="/var/run/sentinel/auth.sock"
+        events "request_headers"
+        timeout-ms 100
+        failure-mode "closed"
+
+        circuit-breaker {
+            failure-threshold 5
+            success-threshold 2
+            timeout-seconds 30
+        }
+    }
+
+    agent "ratelimit" {
+        type "rate-limit"
+        unix-socket path="/var/run/sentinel/ratelimit.sock"
+        events "request_headers"
+        timeout-ms 50
+        failure-mode "open"
+    }
+}
+
+// =============================================================================
+// Routes
+// =============================================================================
+routes {
+    // Health check - no auth required
+    route "health" {
+        priority "critical"
+
+        matches {
+            path "/health"
+        }
+
+        builtin-handler "health"
+    }
+
+    // Metrics endpoint
+    route "metrics" {
+        priority "critical"
+
+        matches {
+            path "/metrics"
+        }
+
+        builtin-handler "metrics"
+    }
+
+    // API v2 - current version
+    route "api-v2" {
+        priority "high"
+
+        matches {
+            path-prefix "/api/v2/"
+            method "GET" "POST" "PUT" "DELETE" "PATCH"
+        }
+
+        upstream "api-v2"
+        filters "auth" "ratelimit"
+
+        retry-policy {
+            max-attempts 3
+            timeout-ms 5000
+            backoff-base-ms 100
+            retryable-status-codes 502 503 504
+        }
+
+        policies {
+            timeout-secs 30
+            max-body-size "10MB"
+            failure-mode "closed"
+        }
+    }
+
+    // API v1 - legacy, deprecated
+    route "api-v1" {
+        priority "normal"
+
+        matches {
+            path-prefix "/api/v1/"
+        }
+
+        upstream "api-v1"
+        filters "auth"
+
+        policies {
+            timeout-secs 60
+            failure-mode "closed"
+        }
+    }
+
+    // OpenAPI documentation - public
+    route "docs" {
+        priority "low"
+
+        matches {
+            path-prefix "/docs/"
+        }
+
+        upstream "docs-server"
+
+        policies {
+            timeout-secs 10
+        }
+    }
+}
+
+// =============================================================================
+// Upstreams
+// =============================================================================
+upstreams {
+    upstream "api-v2" {
+        target "127.0.0.1:3000" weight=100
+        target "127.0.0.1:3001" weight=100
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 5
+            timeout-secs 3
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+
+        timeouts {
+            connect-secs 5
+            request-secs 30
+        }
+    }
+
+    upstream "api-v1" {
+        target "127.0.0.1:3010" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+
+    upstream "docs-server" {
+        target "127.0.0.1:3020" weight=1
+
+        load-balancing "round-robin"
+    }
+}
+
+// =============================================================================
+// Observability
+// =============================================================================
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
+    }
+
+    logging {
+        level "info"
+        format "json"
+
+        access-log {
+            enabled #true
+            file "/var/log/sentinel/api-gateway-access.log"
+            include-trace-id #true
+        }
+    }
+
+    tracing {
+        enabled #true
+        backend "otlp" {
+            endpoint "http://localhost:4317"
+        }
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
+}

@@ -1,0 +1,193 @@
+// Example: Distributed Tracing Configuration
+//
+// End-to-end request tracing with:
+// - OpenTelemetry (OTLP) export
+// - Jaeger integration
+// - Trace context propagation (W3C format)
+// - Sampling strategies
+// - Log-to-trace correlation
+
+system {
+    worker-threads 0
+    max-connections 10000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+    }
+}
+
+// =============================================================================
+// Agents with tracing spans
+// =============================================================================
+agents {
+    // Auth agent creates child spans
+    agent "auth" {
+        type "auth"
+        unix-socket path="/var/run/sentinel/auth.sock"
+        events "request_headers"
+        timeout-ms 100
+        failure-mode "closed"
+    }
+
+    // Rate limit agent creates child spans
+    agent "ratelimit" {
+        type "rate-limit"
+        unix-socket path="/var/run/sentinel/ratelimit.sock"
+        events "request_headers"
+        timeout-ms 50
+        failure-mode "open"
+    }
+}
+
+// =============================================================================
+// Routes
+// =============================================================================
+routes {
+    // Main API route
+    route "api" {
+        priority "high"
+
+        matches {
+            path-prefix "/api/"
+        }
+
+        upstream "api-backend"
+        filters "auth" "ratelimit"
+
+        policies {
+            timeout-secs 30
+        }
+    }
+
+    // Health check (excluded from tracing by default)
+    route "health" {
+        priority "critical"
+
+        matches {
+            path "/health"
+        }
+
+        builtin-handler "health"
+    }
+
+    // Metrics endpoint (excluded from tracing)
+    route "metrics" {
+        priority "critical"
+
+        matches {
+            path "/metrics"
+        }
+
+        builtin-handler "metrics"
+    }
+}
+
+// =============================================================================
+// Upstreams
+// =============================================================================
+upstreams {
+    upstream "api-backend" {
+        target "127.0.0.1:3000" weight=1
+        target "127.0.0.1:3001" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+}
+
+// =============================================================================
+// Observability with full tracing
+// =============================================================================
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
+    }
+
+    logging {
+        level "info"
+        format "json"
+
+        // Include trace ID in all logs for correlation
+        access-log {
+            enabled #true
+            file "/var/log/sentinel/access.log"
+            include-trace-id #true
+        }
+    }
+
+    // ==========================================================================
+    // Tracing Configuration - Jaeger (Development)
+    // ==========================================================================
+    // For local development with Jaeger all-in-one:
+    // docker run -d --name jaeger \
+    //   -p 4317:4317 \
+    //   -p 4318:4318 \
+    //   -p 16686:16686 \
+    //   jaegertracing/all-in-one:latest
+
+    tracing {
+        enabled #true
+
+        // OTLP exporter (works with Jaeger, Tempo, etc.)
+        backend "otlp" {
+            endpoint "http://localhost:4317"
+        }
+
+        // Sampling configuration
+        // In production, use lower sample rates to reduce overhead
+        // sampling {
+        //     rate 0.1  // Sample 10% of traces
+        // }
+    }
+
+    // ==========================================================================
+    // Alternative: Grafana Tempo (Production)
+    // ==========================================================================
+    // For production with Grafana Tempo:
+    //
+    // tracing {
+    //     enabled #true
+    //     backend "otlp" {
+    //         endpoint "http://tempo.monitoring:4317"
+    //     }
+    //     sampling {
+    //         rate 0.01  // Sample 1% in production
+    //     }
+    // }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
+}
+
+// =============================================================================
+// Trace Propagation
+// =============================================================================
+// Sentinel automatically propagates trace context using W3C Trace Context format.
+// Headers propagated:
+// - traceparent: Contains trace ID, span ID, and sampling decision
+// - tracestate: Vendor-specific trace data
+//
+// Example traceparent header:
+// traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
+//
+// Format: version-traceid-spanid-flags

@@ -1,0 +1,229 @@
+// Example: Static Site Serving Configuration
+//
+// Serve static websites with:
+// - Different cache policies per asset type
+// - Gzip/Brotli compression
+// - SPA fallback to index.html
+// - Security headers
+// - Optional API backend
+
+system {
+    worker-threads 0
+    max-connections 10000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 30
+    }
+
+    listener "https" {
+        address "0.0.0.0:8443"
+        protocol "https"
+        tls {
+            cert-file "/etc/sentinel/certs/site.crt"
+            key-file "/etc/sentinel/certs/site.key"
+            min-version "TLS1.2"
+        }
+    }
+}
+
+// =============================================================================
+// Routes - ordered by specificity
+// =============================================================================
+routes {
+    // Health check
+    route "health" {
+        priority "critical"
+
+        matches {
+            path "/health"
+        }
+
+        builtin-handler "health"
+    }
+
+    // API backend (if your SPA has an API)
+    route "api" {
+        priority "high"
+
+        matches {
+            path-prefix "/api/"
+        }
+
+        upstream "api-backend"
+
+        policies {
+            timeout-secs 30
+            max-body-size "10MB"
+        }
+    }
+
+    // Immutable assets (hashed filenames) - long cache
+    route "immutable-assets" {
+        priority "high"
+
+        matches {
+            // Files with content hashes in the name
+            path-regex "/assets/.*\\.[a-f0-9]{8,}\\.(js|css|woff2?|ttf|eot)$"
+        }
+
+        upstream "static-origin"
+
+        policies {
+            timeout-secs 10
+            cache {
+                enabled #true
+                ttl-secs 31536000  // 1 year
+            }
+        }
+    }
+
+    // Images - moderate cache
+    route "images" {
+        priority "normal"
+
+        matches {
+            path-regex "\\.(png|jpg|jpeg|gif|webp|svg|ico)$"
+        }
+
+        upstream "static-origin"
+
+        policies {
+            timeout-secs 10
+            cache {
+                enabled #true
+                ttl-secs 86400  // 1 day
+            }
+        }
+    }
+
+    // Regular static files - short cache
+    route "static" {
+        priority "normal"
+
+        matches {
+            path-regex "\\.(js|css|html|json|xml|txt)$"
+        }
+
+        upstream "static-origin"
+
+        policies {
+            timeout-secs 10
+            cache {
+                enabled #true
+                ttl-secs 3600  // 1 hour
+            }
+        }
+    }
+
+    // SPA fallback - serve index.html for client-side routing
+    route "spa-fallback" {
+        priority "low"
+
+        matches {
+            path-prefix "/"
+        }
+
+        upstream "static-origin"
+
+        // Rewrite all paths to index.html for SPA
+        policies {
+            timeout-secs 10
+            rewrite-path "/index.html"
+        }
+    }
+}
+
+// =============================================================================
+// Upstreams
+// =============================================================================
+upstreams {
+    // Static file server (nginx, caddy, or node static server)
+    upstream "static-origin" {
+        target "127.0.0.1:3000" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+
+        timeouts {
+            connect-secs 5
+            request-secs 10
+        }
+    }
+
+    // API backend for SPA
+    upstream "api-backend" {
+        target "127.0.0.1:4000" weight=1
+        target "127.0.0.1:4001" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/api/health"
+                expected-status 200
+            }
+            interval-secs 5
+            timeout-secs 3
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+
+        timeouts {
+            connect-secs 5
+            request-secs 30
+        }
+    }
+}
+
+// =============================================================================
+// Cache configuration
+// =============================================================================
+cache {
+    enabled #true
+
+    backend "memory" {
+        max-size-mb 512
+    }
+}
+
+// =============================================================================
+// Observability
+// =============================================================================
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
+    }
+
+    logging {
+        level "info"
+        format "json"
+
+        access-log {
+            enabled #true
+            file "/var/log/sentinel/static-site-access.log"
+        }
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
+}

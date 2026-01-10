@@ -1,0 +1,386 @@
+// Example: Microservices Gateway Configuration
+//
+// Route to multiple backend services with:
+// - Path-based routing to different services
+// - Per-service timeouts and retry policies
+// - Circuit breakers with different thresholds
+// - Service-specific health checks
+// - Shared authentication
+
+system {
+    worker-threads 0
+    max-connections 20000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 120
+    }
+
+    listener "https" {
+        address "0.0.0.0:8443"
+        protocol "https"
+        tls {
+            cert-file "/etc/sentinel/certs/gateway.crt"
+            key-file "/etc/sentinel/certs/gateway.key"
+        }
+    }
+}
+
+// =============================================================================
+// Shared Agents
+// =============================================================================
+agents {
+    agent "auth" {
+        type "auth"
+        unix-socket path="/var/run/sentinel/auth.sock"
+        events "request_headers"
+        timeout-ms 100
+        failure-mode "closed"
+
+        circuit-breaker {
+            failure-threshold 5
+            success-threshold 2
+            timeout-seconds 30
+        }
+    }
+
+    agent "ratelimit" {
+        type "rate-limit"
+        unix-socket path="/var/run/sentinel/ratelimit.sock"
+        events "request_headers"
+        timeout-ms 50
+        failure-mode "open"
+    }
+}
+
+// =============================================================================
+// Routes - Each service has different requirements
+// =============================================================================
+routes {
+    // Health check
+    route "health" {
+        priority "critical"
+
+        matches {
+            path "/health"
+        }
+
+        builtin-handler "health"
+    }
+
+    // Auth service - critical, fast responses expected
+    route "auth-service" {
+        priority "high"
+
+        matches {
+            path-prefix "/auth/"
+        }
+
+        upstream "auth-service"
+
+        // No auth filter for auth service itself
+        policies {
+            timeout-secs 10
+            max-body-size "1MB"
+            failure-mode "closed"
+        }
+
+        circuit-breaker {
+            failure-threshold 3
+            success-threshold 2
+            timeout-seconds 30
+        }
+    }
+
+    // User service - standard CRUD, moderate timeouts
+    route "user-service" {
+        priority "high"
+
+        matches {
+            path-prefix "/users/"
+        }
+
+        upstream "user-service"
+        filters "auth" "ratelimit"
+
+        retry-policy {
+            max-attempts 2
+            timeout-ms 5000
+            retryable-status-codes 502 503 504
+        }
+
+        policies {
+            timeout-secs 30
+            max-body-size "5MB"
+        }
+
+        circuit-breaker {
+            failure-threshold 5
+            success-threshold 2
+            timeout-seconds 60
+        }
+    }
+
+    // Order service - critical business logic, longer timeouts
+    route "order-service" {
+        priority "high"
+
+        matches {
+            path-prefix "/orders/"
+        }
+
+        upstream "order-service"
+        filters "auth" "ratelimit"
+
+        // No retries for order mutations to avoid duplicates
+        policies {
+            timeout-secs 60
+            max-body-size "10MB"
+            failure-mode "closed"
+        }
+
+        circuit-breaker {
+            failure-threshold 3
+            success-threshold 2
+            timeout-seconds 120
+        }
+    }
+
+    // Product service - read-heavy, can tolerate failures
+    route "product-service" {
+        priority "normal"
+
+        matches {
+            path-prefix "/products/"
+        }
+
+        upstream "product-service"
+        filters "auth"
+
+        retry-policy {
+            max-attempts 3
+            timeout-ms 10000
+            backoff-base-ms 100
+            retryable-status-codes 502 503 504 429
+        }
+
+        policies {
+            timeout-secs 15
+            max-body-size "1MB"
+            failure-mode "open"  // Fail open for reads
+            cache {
+                enabled #true
+                ttl-secs 60
+            }
+        }
+    }
+
+    // Search service - elastic search backend, variable latency
+    route "search-service" {
+        priority "normal"
+
+        matches {
+            path-prefix "/search/"
+        }
+
+        upstream "search-service"
+        filters "auth" "ratelimit"
+
+        policies {
+            timeout-secs 30
+            max-body-size "1MB"
+        }
+
+        circuit-breaker {
+            failure-threshold 10
+            success-threshold 3
+            timeout-seconds 60
+        }
+    }
+
+    // Webhook service - async processing, fire-and-forget
+    route "webhook-service" {
+        priority "low"
+
+        matches {
+            path-prefix "/webhooks/"
+        }
+
+        upstream "webhook-service"
+        filters "auth"
+
+        policies {
+            timeout-secs 5
+            max-body-size "1MB"
+            failure-mode "open"
+        }
+    }
+}
+
+// =============================================================================
+// Upstreams - Each service scaled independently
+// =============================================================================
+upstreams {
+    upstream "auth-service" {
+        target "auth-1.internal:3000" weight=1
+        target "auth-2.internal:3000" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 5
+            timeout-secs 2
+            healthy-threshold 2
+            unhealthy-threshold 2
+        }
+
+        timeouts {
+            connect-secs 2
+            request-secs 10
+        }
+    }
+
+    upstream "user-service" {
+        target "users-1.internal:3001" weight=1
+        target "users-2.internal:3001" weight=1
+        target "users-3.internal:3001" weight=1
+
+        load-balancing "least-connections"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+
+        connection-pool {
+            max-connections 50
+            max-idle 10
+        }
+    }
+
+    upstream "order-service" {
+        target "orders-1.internal:3002" weight=1
+        target "orders-2.internal:3002" weight=1
+        target "orders-3.internal:3002" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 5
+            timeout-secs 3
+            healthy-threshold 2
+            unhealthy-threshold 2
+        }
+
+        timeouts {
+            connect-secs 5
+            request-secs 60
+        }
+    }
+
+    upstream "product-service" {
+        target "products-1.internal:3003" weight=1
+        target "products-2.internal:3003" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+
+    upstream "search-service" {
+        target "search-1.internal:3004" weight=1
+        target "search-2.internal:3004" weight=1
+
+        load-balancing "least-connections"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 5
+        }
+
+        timeouts {
+            connect-secs 5
+            request-secs 30
+        }
+    }
+
+    upstream "webhook-service" {
+        target "webhooks-1.internal:3005" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 30
+            timeout-secs 5
+            healthy-threshold 1
+            unhealthy-threshold 3
+        }
+    }
+}
+
+// =============================================================================
+// Observability
+// =============================================================================
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
+    }
+
+    logging {
+        level "info"
+        format "json"
+
+        access-log {
+            enabled #true
+            file "/var/log/sentinel/gateway-access.log"
+            include-trace-id #true
+        }
+    }
+
+    tracing {
+        enabled #true
+        backend "otlp" {
+            endpoint "http://tempo.monitoring:4317"
+        }
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
+}

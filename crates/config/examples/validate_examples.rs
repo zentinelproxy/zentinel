@@ -6,14 +6,22 @@ use sentinel_config::Config;
 
 fn main() {
     let examples = [
+        // Core examples
         ("config/examples/basic.kdl", true),
+        ("config/examples/api-gateway.kdl", true),
+        ("config/examples/load-balancer.kdl", true),
+        ("config/examples/mixed-services.kdl", true),
+        // Feature-specific examples
         ("config/examples/api-schema-validation.kdl", true),
         ("config/examples/inference-routing.kdl", true),
         ("config/examples/ai-guardrails.kdl", true),
         ("config/examples/shadow-traffic.kdl", true),
-        ("config/examples/namespaces.kdl", true),
         ("config/examples/distributed-rate-limit.kdl", true),
         ("config/examples/http-caching.kdl", true),
+        ("config/examples/websocket.kdl", true),
+        ("config/examples/static-site.kdl", true),
+        ("config/examples/tracing.kdl", true),
+        ("config/examples/namespaces.kdl", true),
         // Multi-file routes are partial configs, expected to fail full parse
         ("config/example-multi-file/routes/api.kdl", false),
     ];

@@ -1,0 +1,217 @@
+// Example: Load Balancer Configuration
+//
+// Traffic distribution across multiple backends with:
+// - Multiple load balancing algorithms
+// - Weighted round-robin
+// - Health checks with ejection
+// - Circuit breakers
+// - Connection draining
+
+system {
+    worker-threads 0
+    max-connections 20000
+    graceful-shutdown-timeout-secs 60
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+    }
+}
+
+// =============================================================================
+// Routes
+// =============================================================================
+routes {
+    // Main application route
+    route "app" {
+        priority "normal"
+
+        matches {
+            path-prefix "/"
+        }
+
+        upstream "app-cluster"
+
+        circuit-breaker {
+            failure-threshold 5
+            success-threshold 2
+            timeout-seconds 60
+            half-open-max-requests 3
+        }
+
+        retry-policy {
+            max-attempts 3
+            timeout-ms 10000
+            backoff-base-ms 100
+            retryable-status-codes 502 503 504
+        }
+
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+
+    // Health check
+    route "health" {
+        priority "critical"
+
+        matches {
+            path "/health"
+        }
+
+        builtin-handler "health"
+    }
+
+    // Upstream status endpoint
+    route "upstream-status" {
+        priority "critical"
+
+        matches {
+            path "/upstream-status"
+        }
+
+        builtin-handler "upstream-health"
+    }
+}
+
+// =============================================================================
+// Upstreams with different load balancing strategies
+// =============================================================================
+upstreams {
+    // Primary cluster with weighted round-robin
+    upstream "app-cluster" {
+        // Weights determine traffic distribution
+        target "10.0.1.10:3000" weight=100
+        target "10.0.1.11:3000" weight=100
+        target "10.0.1.12:3000" weight=100
+        target "10.0.1.13:3000" weight=50   // Lower capacity node
+        target "10.0.1.14:3000" weight=50   // Lower capacity node
+
+        load-balancing "weighted-round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 5
+            timeout-secs 3
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+
+        connection-pool {
+            max-connections 100
+            max-idle 20
+            idle-timeout-secs 60
+        }
+
+        timeouts {
+            connect-secs 5
+            request-secs 30
+            read-secs 30
+        }
+    }
+
+    // Least connections - good for varying request durations
+    upstream "app-least-conn" {
+        target "10.0.2.10:3000" weight=1
+        target "10.0.2.11:3000" weight=1
+        target "10.0.2.12:3000" weight=1
+
+        load-balancing "least-connections"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 5
+            timeout-secs 3
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+
+    // IP hash - session affinity
+    upstream "app-sticky" {
+        target "10.0.3.10:3000" weight=1
+        target "10.0.3.11:3000" weight=1
+
+        load-balancing "ip-hash"
+
+        health-check {
+            type "http" {
+                path "/health"
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+}
+
+// =============================================================================
+// Blue-Green Deployment Example
+// =============================================================================
+// To switch traffic between blue and green:
+// 1. Update the route to point to the other upstream
+// 2. Hot-reload the configuration
+
+// Blue environment
+// upstream "app-blue" {
+//     target "10.0.10.10:3000" weight=1
+//     target "10.0.10.11:3000" weight=1
+//     load-balancing "round-robin"
+// }
+
+// Green environment
+// upstream "app-green" {
+//     target "10.0.20.10:3000" weight=1
+//     target "10.0.20.11:3000" weight=1
+//     load-balancing "round-robin"
+// }
+
+// =============================================================================
+// Canary Deployment Example
+// =============================================================================
+// upstream "app-canary" {
+//     // Stable (90% traffic)
+//     target "10.0.1.10:3000" weight=90
+//     target "10.0.1.11:3000" weight=90
+//     // Canary (10% traffic)
+//     target "10.0.2.10:3000" weight=10
+//
+//     load-balancing "weighted-round-robin"
+// }
+
+// =============================================================================
+// Observability
+// =============================================================================
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
+        // Key metrics:
+        // - sentinel_upstream_health (per target)
+        // - sentinel_upstream_requests_total
+        // - sentinel_upstream_latency_seconds
+        // - sentinel_circuit_breaker_state
+    }
+
+    logging {
+        level "info"
+        format "json"
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
+}
