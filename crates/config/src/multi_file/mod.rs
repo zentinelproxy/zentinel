@@ -306,4 +306,100 @@ mod tests {
         // Should succeed (circular includes are detected and skipped)
         assert!(config.is_ok(), "Config load failed: {:?}", config.err());
     }
+
+    #[test]
+    fn test_namespace_loading() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path();
+
+        // Create config with namespace
+        fs::write(
+            config_dir.join("main.kdl"),
+            r#"
+            server {
+                worker-threads 2
+                max-connections 1000
+            }
+
+            namespace "api" {
+                upstream "backend" {
+                    address "127.0.0.1:8080"
+                }
+
+                route "api-route" {
+                    path "/api/*"
+                    upstream "backend"
+                }
+
+                service "payments" {
+                    route "checkout" {
+                        path "/checkout/*"
+                    }
+                }
+
+                exports {
+                    upstreams "backend"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        // Load configuration
+        let mut loader = MultiFileLoader::new(config_dir);
+        let config = loader.load();
+
+        assert!(config.is_ok(), "Config load failed: {:?}", config.err());
+        let config = config.unwrap();
+
+        // Verify namespace was loaded
+        assert_eq!(config.namespaces.len(), 1);
+        assert_eq!(config.namespaces[0].id, "api");
+        assert_eq!(config.namespaces[0].upstreams.len(), 1);
+        assert_eq!(config.namespaces[0].routes.len(), 1);
+        assert_eq!(config.namespaces[0].services.len(), 1);
+        assert_eq!(config.namespaces[0].services[0].id, "payments");
+        assert_eq!(config.namespaces[0].exports.upstreams.len(), 1);
+    }
+
+    #[test]
+    fn test_duplicate_namespace_detection() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path();
+
+        // Create config with duplicate namespace IDs
+        fs::write(
+            config_dir.join("ns1.kdl"),
+            r#"
+            namespace "api" {
+                route "route1" {
+                    path "/v1/*"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        fs::write(
+            config_dir.join("ns2.kdl"),
+            r#"
+            namespace "api" {
+                route "route2" {
+                    path "/v2/*"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let mut loader = MultiFileLoader::new(config_dir);
+        let result = loader.load();
+
+        // Should fail due to duplicate namespace ID
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Duplicate namespace"));
+    }
 }

@@ -104,6 +104,12 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Install rustls crypto provider before any TLS operations
+    // This must be done before Pingora initializes its TLS contexts
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     let cli = Cli::parse();
 
     // Handle test flag or test subcommand

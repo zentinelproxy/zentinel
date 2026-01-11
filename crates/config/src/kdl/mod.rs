@@ -617,11 +617,266 @@ fn parse_circuit_breaker(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
 // ============================================================================
 
 /// Parse WAF configuration block
-pub fn parse_waf_config(_node: &kdl::KdlNode) -> Result<WafConfig> {
-    // TODO: Implement full WAF config parsing
-    Err(anyhow::anyhow!(
-        "WAF configuration parsing not yet implemented"
-    ))
+///
+/// KDL format:
+/// ```kdl
+/// waf {
+///     engine "coraza"           // "mod_security", "coraza", or custom("name")
+///     mode "prevention"         // "off", "detection", "prevention"
+///     audit-log true
+///
+///     ruleset {
+///         crs-version "3.3.4"
+///         custom-rules-dir "/etc/sentinel/waf/rules"
+///         paranoia-level 1          // 1-4
+///         anomaly-threshold 5
+///
+///         exclusion {
+///             rule-ids "920350" "920370"
+///             scope "global"        // "global", path="/api/*", host="example.com"
+///         }
+///     }
+///
+///     body-inspection {
+///         inspect-request-body true
+///         inspect-response-body false
+///         max-inspection-bytes 1048576
+///         content-types "application/json" "application/xml"
+///         decompress false
+///         max-decompression-ratio 100.0
+///     }
+/// }
+/// ```
+pub fn parse_waf_config(node: &kdl::KdlNode) -> Result<WafConfig> {
+    use crate::waf::{BodyInspectionPolicy, WafEngine, WafMode, WafRuleset};
+
+    // Parse engine type
+    let engine = if let Some(engine_str) = get_string_entry(node, "engine") {
+        match engine_str.to_lowercase().as_str() {
+            "mod_security" | "modsecurity" => WafEngine::ModSecurity,
+            "coraza" => WafEngine::Coraza,
+            custom => WafEngine::Custom(custom.to_string()),
+        }
+    } else {
+        // Default to Coraza if not specified
+        WafEngine::Coraza
+    };
+
+    // Parse mode
+    let mode = if let Some(mode_str) = get_string_entry(node, "mode") {
+        match mode_str.to_lowercase().as_str() {
+            "off" => WafMode::Off,
+            "detection" | "detect" => WafMode::Detection,
+            "prevention" | "prevent" | "block" => WafMode::Prevention,
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Invalid WAF mode '{}'. Valid options: off, detection, prevention",
+                    other
+                ));
+            }
+        }
+    } else {
+        WafMode::Prevention
+    };
+
+    // Parse audit logging
+    let audit_log = get_bool_entry(node, "audit-log").unwrap_or(true);
+
+    // Parse ruleset
+    let ruleset = if let Some(children) = node.children() {
+        if let Some(ruleset_node) = children.get("ruleset") {
+            parse_waf_ruleset(ruleset_node)?
+        } else {
+            // Default ruleset if none specified
+            WafRuleset {
+                crs_version: "3.3.4".to_string(),
+                custom_rules_dir: None,
+                paranoia_level: 1,
+                anomaly_threshold: 5,
+                exclusions: vec![],
+            }
+        }
+    } else {
+        // Default ruleset if no children
+        WafRuleset {
+            crs_version: "3.3.4".to_string(),
+            custom_rules_dir: None,
+            paranoia_level: 1,
+            anomaly_threshold: 5,
+            exclusions: vec![],
+        }
+    };
+
+    // Parse body inspection
+    let body_inspection = if let Some(children) = node.children() {
+        if let Some(body_node) = children.get("body-inspection") {
+            parse_body_inspection_policy(body_node)?
+        } else {
+            BodyInspectionPolicy::default()
+        }
+    } else {
+        BodyInspectionPolicy::default()
+    };
+
+    Ok(WafConfig {
+        engine,
+        ruleset,
+        mode,
+        audit_log,
+        body_inspection,
+    })
+}
+
+/// Parse WAF ruleset configuration
+fn parse_waf_ruleset(node: &kdl::KdlNode) -> Result<crate::waf::WafRuleset> {
+    use crate::waf::WafRuleset;
+    use std::path::PathBuf;
+
+    let crs_version = get_string_entry(node, "crs-version").unwrap_or_else(|| "3.3.4".to_string());
+
+    let custom_rules_dir = get_string_entry(node, "custom-rules-dir").map(PathBuf::from);
+
+    let paranoia_level = get_int_entry(node, "paranoia-level")
+        .map(|v| v as u8)
+        .unwrap_or(1);
+
+    // Validate paranoia level (1-4)
+    if !(1..=4).contains(&paranoia_level) {
+        return Err(anyhow::anyhow!(
+            "WAF paranoia level must be between 1 and 4, got {}",
+            paranoia_level
+        ));
+    }
+
+    let anomaly_threshold = get_int_entry(node, "anomaly-threshold")
+        .map(|v| v as u32)
+        .unwrap_or(5);
+
+    // Parse exclusions
+    let mut exclusions = Vec::new();
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() == "exclusion" {
+                exclusions.push(parse_rule_exclusion(child)?);
+            }
+        }
+    }
+
+    Ok(WafRuleset {
+        crs_version,
+        custom_rules_dir,
+        paranoia_level,
+        anomaly_threshold,
+        exclusions,
+    })
+}
+
+/// Parse a rule exclusion
+fn parse_rule_exclusion(node: &kdl::KdlNode) -> Result<crate::waf::RuleExclusion> {
+    use crate::waf::{ExclusionScope, RuleExclusion};
+
+    // Parse rule IDs - can be arguments or a child node
+    let mut rule_ids = Vec::new();
+
+    // Try getting from "rule-ids" child node first
+    if let Some(children) = node.children() {
+        if let Some(ids_node) = children.get("rule-ids") {
+            for entry in ids_node.entries() {
+                if let Some(id) = entry.value().as_string() {
+                    rule_ids.push(id.to_string());
+                }
+            }
+        }
+    }
+
+    // Also try getting from entries on the exclusion node itself
+    for entry in node.entries() {
+        if let Some(name) = entry.name() {
+            if name.value() == "rule-ids" {
+                // Skip, handled above
+                continue;
+            }
+        } else if let Some(id) = entry.value().as_string() {
+            // Positional argument - this is a rule ID
+            rule_ids.push(id.to_string());
+        }
+    }
+
+    // Parse scope
+    let scope = if let Some(scope_str) = get_string_entry(node, "scope") {
+        match scope_str.to_lowercase().as_str() {
+            "global" => ExclusionScope::Global,
+            path if path.starts_with("path=") => {
+                ExclusionScope::Path(path.trim_start_matches("path=").to_string())
+            }
+            host if host.starts_with("host=") => {
+                ExclusionScope::Host(host.trim_start_matches("host=").to_string())
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Invalid exclusion scope '{}'. Valid options: global, path=<pattern>, host=<hostname>",
+                    other
+                ));
+            }
+        }
+    } else {
+        ExclusionScope::Global
+    };
+
+    if rule_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "WAF rule exclusion requires at least one rule ID"
+        ));
+    }
+
+    Ok(RuleExclusion { rule_ids, scope })
+}
+
+/// Parse body inspection policy
+fn parse_body_inspection_policy(node: &kdl::KdlNode) -> Result<crate::waf::BodyInspectionPolicy> {
+    use crate::waf::BodyInspectionPolicy;
+
+    let inspect_request_body = get_bool_entry(node, "inspect-request-body").unwrap_or(true);
+    let inspect_response_body = get_bool_entry(node, "inspect-response-body").unwrap_or(false);
+    let max_inspection_bytes = get_int_entry(node, "max-inspection-bytes")
+        .map(|v| v as usize)
+        .unwrap_or(1024 * 1024); // 1MB default
+    let decompress = get_bool_entry(node, "decompress").unwrap_or(false);
+    let max_decompression_ratio = get_int_entry(node, "max-decompression-ratio")
+        .map(|v| v as f32)
+        .unwrap_or(100.0);
+
+    // Parse content types
+    let mut content_types = Vec::new();
+    if let Some(children) = node.children() {
+        if let Some(ct_node) = children.get("content-types") {
+            for entry in ct_node.entries() {
+                if let Some(ct) = entry.value().as_string() {
+                    content_types.push(ct.to_string());
+                }
+            }
+        }
+    }
+
+    // If no content types specified, use defaults
+    if content_types.is_empty() {
+        content_types = vec![
+            "application/x-www-form-urlencoded".to_string(),
+            "multipart/form-data".to_string(),
+            "application/json".to_string(),
+            "application/xml".to_string(),
+            "text/xml".to_string(),
+        ];
+    }
+
+    Ok(BodyInspectionPolicy {
+        inspect_request_body,
+        inspect_response_body,
+        max_inspection_bytes,
+        content_types,
+        decompress,
+        max_decompression_ratio,
+    })
 }
 
 // ============================================================================
@@ -2333,5 +2588,158 @@ mod tests {
         assert_eq!(mapping.model_pattern, "fast-model");
         assert_eq!(mapping.upstream, "fast-backend");
         assert!(mapping.provider.is_none()); // No provider override
+    }
+
+    #[test]
+    fn test_parse_waf_config_basic() {
+        let kdl = r#"
+        waf {
+            engine "coraza"
+            mode "prevention"
+            audit-log #true
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf_node = doc.get("waf").unwrap();
+        let waf = parse_waf_config(waf_node).unwrap();
+
+        assert!(matches!(waf.engine, crate::waf::WafEngine::Coraza));
+        assert!(matches!(waf.mode, crate::waf::WafMode::Prevention));
+        assert!(waf.audit_log);
+    }
+
+    #[test]
+    fn test_parse_waf_config_with_ruleset() {
+        let kdl = r#"
+        waf {
+            engine "mod_security"
+            mode "detection"
+
+            ruleset {
+                crs-version "3.3.4"
+                custom-rules-dir "/etc/sentinel/waf/rules"
+                paranoia-level 2
+                anomaly-threshold 10
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf_node = doc.get("waf").unwrap();
+        let waf = parse_waf_config(waf_node).unwrap();
+
+        assert!(matches!(waf.engine, crate::waf::WafEngine::ModSecurity));
+        assert!(matches!(waf.mode, crate::waf::WafMode::Detection));
+        assert_eq!(waf.ruleset.crs_version, "3.3.4");
+        assert_eq!(
+            waf.ruleset.custom_rules_dir,
+            Some(std::path::PathBuf::from("/etc/sentinel/waf/rules"))
+        );
+        assert_eq!(waf.ruleset.paranoia_level, 2);
+        assert_eq!(waf.ruleset.anomaly_threshold, 10);
+    }
+
+    #[test]
+    fn test_parse_waf_config_with_body_inspection() {
+        let kdl = r#"
+        waf {
+            engine "coraza"
+            mode "prevention"
+
+            body-inspection {
+                inspect-request-body #true
+                inspect-response-body #true
+                max-inspection-bytes 2097152
+                decompress #true
+                max-decompression-ratio 50
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf_node = doc.get("waf").unwrap();
+        let waf = parse_waf_config(waf_node).unwrap();
+
+        assert!(waf.body_inspection.inspect_request_body);
+        assert!(waf.body_inspection.inspect_response_body);
+        assert_eq!(waf.body_inspection.max_inspection_bytes, 2097152);
+        assert!(waf.body_inspection.decompress);
+        assert_eq!(waf.body_inspection.max_decompression_ratio, 50.0);
+    }
+
+    #[test]
+    fn test_parse_waf_config_invalid_paranoia_level() {
+        let kdl = r#"
+        waf {
+            engine "coraza"
+            ruleset {
+                paranoia-level 5
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf_node = doc.get("waf").unwrap();
+        let result = parse_waf_config(waf_node);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("paranoia level must be between 1 and 4"));
+    }
+
+    #[test]
+    fn test_parse_waf_config_invalid_mode() {
+        let kdl = r#"
+        waf {
+            engine "coraza"
+            mode "invalid"
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf_node = doc.get("waf").unwrap();
+        let result = parse_waf_config(waf_node);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid WAF mode"));
+    }
+
+    #[test]
+    fn test_parse_waf_config_custom_engine() {
+        let kdl = r#"
+        waf {
+            engine "my-custom-waf"
+            mode "prevention"
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf_node = doc.get("waf").unwrap();
+        let waf = parse_waf_config(waf_node).unwrap();
+
+        assert!(matches!(waf.engine, crate::waf::WafEngine::Custom(ref name) if name == "my-custom-waf"));
+    }
+
+    #[test]
+    fn test_parse_waf_config_defaults() {
+        // Minimal WAF config using all defaults
+        let kdl = r#"
+        waf {
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf_node = doc.get("waf").unwrap();
+        let waf = parse_waf_config(waf_node).unwrap();
+
+        // Check defaults
+        assert!(matches!(waf.engine, crate::waf::WafEngine::Coraza));
+        assert!(matches!(waf.mode, crate::waf::WafMode::Prevention));
+        assert!(waf.audit_log);
+        assert_eq!(waf.ruleset.paranoia_level, 1);
+        assert_eq!(waf.ruleset.anomaly_threshold, 5);
     }
 }

@@ -11,9 +11,10 @@ use std::path::PathBuf;
 use sentinel_common::TraceIdFormat;
 
 use crate::{
-    AgentConfig, Limits, ListenerConfig, ObservabilityConfig, RouteConfig, ServerConfig,
-    UpstreamConfig, WafConfig,
+    AgentConfig, Limits, ListenerConfig, NamespaceConfig, ObservabilityConfig, RouteConfig,
+    ServerConfig, ServiceConfig, UpstreamConfig, WafConfig,
 };
+use crate::namespace::ExportConfig;
 
 // =============================================================================
 // Helper functions for extracting values from KDL nodes
@@ -414,4 +415,179 @@ pub(super) fn parse_observability(node: &KdlNode) -> Result<ObservabilityConfig>
     }
 
     Ok(config)
+}
+
+/// Parse a namespace configuration from KDL.
+///
+/// Format:
+/// ```kdl
+/// namespace "api" {
+///     limits { ... }
+///     upstream "backend" { ... }
+///     route "api-route" { ... }
+///     agent "auth-agent" { ... }
+///     service "payments" { ... }
+///     exports {
+///         upstreams "backend"
+///     }
+/// }
+/// ```
+pub(super) fn parse_namespace(node: &KdlNode) -> Result<NamespaceConfig> {
+    let id = get_first_arg_string(node)
+        .ok_or_else(|| anyhow!("namespace requires an ID argument"))?;
+
+    // Validate namespace ID (no colons allowed)
+    if id.contains(':') {
+        return Err(anyhow!(
+            "Namespace ID '{}' cannot contain ':' character (reserved for qualified names)",
+            id
+        ));
+    }
+
+    let mut namespace = NamespaceConfig::new(id);
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            match child.name().value() {
+                "limits" => {
+                    namespace.limits = Some(parse_limits(child)?);
+                }
+                "upstream" => {
+                    let (name, upstream) = parse_upstream(child)?;
+                    namespace.upstreams.insert(name, upstream);
+                }
+                "route" => {
+                    namespace.routes.push(parse_route(child)?);
+                }
+                "agent" => {
+                    namespace.agents.push(parse_agent(child)?);
+                }
+                "listener" => {
+                    namespace.listeners.push(parse_listener(child)?);
+                }
+                "service" => {
+                    namespace.services.push(parse_service(child)?);
+                }
+                "exports" => {
+                    namespace.exports = parse_exports(child)?;
+                }
+                _ => {
+                    tracing::debug!(
+                        "Ignoring unknown node in namespace: {}",
+                        child.name().value()
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(namespace)
+}
+
+/// Parse a service configuration from KDL.
+///
+/// Format:
+/// ```kdl
+/// service "payments" {
+///     listener { ... }
+///     upstream "backend" { ... }
+///     route "checkout" { ... }
+///     agent "payment-auth" { ... }
+///     limits { ... }
+/// }
+/// ```
+pub(super) fn parse_service(node: &KdlNode) -> Result<ServiceConfig> {
+    let id = get_first_arg_string(node)
+        .ok_or_else(|| anyhow!("service requires an ID argument"))?;
+
+    // Validate service ID (no colons allowed)
+    if id.contains(':') {
+        return Err(anyhow!(
+            "Service ID '{}' cannot contain ':' character (reserved for qualified names)",
+            id
+        ));
+    }
+
+    let mut service = ServiceConfig::new(id);
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            match child.name().value() {
+                "limits" => {
+                    service.limits = Some(parse_limits(child)?);
+                }
+                "upstream" => {
+                    let (name, upstream) = parse_upstream(child)?;
+                    service.upstreams.insert(name, upstream);
+                }
+                "route" => {
+                    service.routes.push(parse_route(child)?);
+                }
+                "agent" => {
+                    service.agents.push(parse_agent(child)?);
+                }
+                "listener" => {
+                    service.listener = Some(parse_listener(child)?);
+                }
+                _ => {
+                    tracing::debug!(
+                        "Ignoring unknown node in service: {}",
+                        child.name().value()
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(service)
+}
+
+/// Parse exports configuration from KDL.
+///
+/// Format:
+/// ```kdl
+/// exports {
+///     upstreams "backend" "auth-service"
+///     agents "global-waf"
+///     filters "rate-limiter"
+/// }
+/// ```
+fn parse_exports(node: &KdlNode) -> Result<ExportConfig> {
+    let mut exports = ExportConfig::default();
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            match child.name().value() {
+                "upstreams" => {
+                    for entry in child.entries() {
+                        if let Some(name) = entry.value().as_string() {
+                            exports.upstreams.push(name.to_string());
+                        }
+                    }
+                }
+                "agents" => {
+                    for entry in child.entries() {
+                        if let Some(name) = entry.value().as_string() {
+                            exports.agents.push(name.to_string());
+                        }
+                    }
+                }
+                "filters" => {
+                    for entry in child.entries() {
+                        if let Some(name) = entry.value().as_string() {
+                            exports.filters.push(name.to_string());
+                        }
+                    }
+                }
+                _ => {
+                    tracing::debug!(
+                        "Ignoring unknown node in exports: {}",
+                        child.name().value()
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(exports)
 }

@@ -3101,7 +3101,7 @@ impl ProxyHttp for SentinelProxy {
                 upstream_addr: ctx.selected_upstream_address.clone(),
                 connection_reused: ctx.connection_reused,
                 rate_limit_hit: status == 429,
-                geo_country: None, // TODO: Add GeoIP support
+                geo_country: ctx.geo_country_code.clone(),
             };
             self.log_manager.log_access(&access_entry);
         }

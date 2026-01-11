@@ -10,13 +10,13 @@ use std::path::{Path, PathBuf};
 use tracing::debug;
 
 use crate::{
-    AgentConfig, Config, GlobalRateLimitConfig, Limits, ListenerConfig, ObservabilityConfig,
-    RouteConfig, ServerConfig, UpstreamConfig, WafConfig,
+    AgentConfig, Config, GlobalRateLimitConfig, Limits, ListenerConfig, NamespaceConfig,
+    ObservabilityConfig, RouteConfig, ServerConfig, UpstreamConfig, WafConfig,
 };
 
 use super::parsers::{
-    parse_agent, parse_limits, parse_listener, parse_observability, parse_route, parse_server,
-    parse_upstream, parse_waf,
+    parse_agent, parse_limits, parse_listener, parse_namespace, parse_observability, parse_route,
+    parse_server, parse_upstream, parse_waf,
 };
 
 /// Partial configuration from a single file.
@@ -34,6 +34,7 @@ pub(super) struct PartialConfig {
     pub waf: Option<WafConfig>,
     pub limits: Option<Limits>,
     pub observability: Option<ObservabilityConfig>,
+    pub namespaces: Vec<NamespaceConfig>,
     /// Include directives found in this file (relative paths to include)
     pub includes: Vec<PathBuf>,
 }
@@ -82,6 +83,9 @@ impl PartialConfig {
                 "observability" if config.observability.is_none() => {
                     config.observability = Some(parse_observability(node)?);
                 }
+                "namespace" => {
+                    config.namespaces.push(parse_namespace(node)?);
+                }
                 "metadata" => {
                     // Skip metadata for now - not part of the main config structure
                 }
@@ -112,6 +116,7 @@ pub(super) struct ConfigBuilder {
     waf: Option<WafConfig>,
     limits: Option<Limits>,
     observability: Option<ObservabilityConfig>,
+    namespaces: Vec<NamespaceConfig>,
 
     // Tracking for duplicates
     listener_ids: HashSet<String>,
@@ -119,6 +124,7 @@ pub(super) struct ConfigBuilder {
     #[allow(dead_code)]
     filter_ids: HashSet<String>,
     agent_ids: HashSet<String>,
+    namespace_ids: HashSet<String>,
 }
 
 impl ConfigBuilder {
@@ -133,10 +139,12 @@ impl ConfigBuilder {
             waf: None,
             limits: None,
             observability: None,
+            namespaces: Vec::new(),
             listener_ids: HashSet::new(),
             route_ids: HashSet::new(),
             filter_ids: HashSet::new(),
             agent_ids: HashSet::new(),
+            namespace_ids: HashSet::new(),
         }
     }
 
@@ -190,6 +198,18 @@ impl ConfigBuilder {
             self.agents.push(agent);
         }
 
+        // Merge namespaces
+        for namespace in partial.namespaces {
+            if !self.namespace_ids.insert(namespace.id.clone()) {
+                return Err(anyhow!(
+                    "Duplicate namespace '{}' in {:?}",
+                    namespace.id,
+                    partial.source_file
+                ));
+            }
+            self.namespaces.push(namespace);
+        }
+
         // Merge singleton configs (last wins with warnings)
         if partial.server.is_some() {
             if self.server.is_some() {
@@ -238,7 +258,7 @@ impl ConfigBuilder {
             filters: self.filters,
             agents: self.agents,
             waf: self.waf,
-            namespaces: vec![], // TODO: Support namespaces in multi-file loading
+            namespaces: self.namespaces,
             limits: self.limits.unwrap_or_default(),
             observability: self.observability.unwrap_or_default(),
             rate_limits: GlobalRateLimitConfig::default(),

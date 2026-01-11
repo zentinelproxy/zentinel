@@ -63,6 +63,11 @@ rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 webpki-roots = "0.26"
 
+# X.509 certificate parsing for OCSP
+x509-parser = "0.16"
+sha2 = "0.10"
+url = "2.5"
+
 # Utilities
 uuid = { workspace = true }
 chrono = { workspace = true }
