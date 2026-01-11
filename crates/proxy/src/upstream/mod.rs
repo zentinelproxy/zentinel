@@ -268,6 +268,30 @@ pub struct PoolStats {
     pub circuit_breaker_trips: AtomicU64,
 }
 
+/// Target information for shadow traffic
+#[derive(Debug, Clone)]
+pub struct ShadowTarget {
+    /// URL scheme (http or https)
+    pub scheme: String,
+    /// Target host
+    pub host: String,
+    /// Target port
+    pub port: u16,
+    /// SNI for TLS connections
+    pub sni: Option<String>,
+}
+
+impl ShadowTarget {
+    /// Build URL from target info and path
+    pub fn build_url(&self, path: &str) -> String {
+        let port_suffix = match (self.scheme.as_str(), self.port) {
+            ("http", 80) | ("https", 443) => String::new(),
+            _ => format!(":{}", self.port),
+        };
+        format!("{}://{}{}{}", self.scheme, self.host, port_suffix, path)
+    }
+}
+
 /// Snapshot of pool configuration for metrics/debugging
 #[derive(Debug, Clone)]
 pub struct PoolConfigSnapshot {
@@ -1335,6 +1359,56 @@ impl UpstreamPool {
     pub async fn has_healthy_targets(&self) -> bool {
         let healthy = self.load_balancer.healthy_targets().await;
         !healthy.is_empty()
+    }
+
+    /// Select a target for shadow traffic (returns URL components)
+    ///
+    /// This is a simplified selection method for shadow requests that don't need
+    /// full HttpPeer setup. Returns the target URL scheme, address, and port.
+    pub async fn select_shadow_target(
+        &self,
+        context: Option<&RequestContext>,
+    ) -> SentinelResult<ShadowTarget> {
+        // Use load balancer to select target
+        let selection = self.load_balancer.select(context).await?;
+
+        // Check circuit breaker
+        let breakers = self.circuit_breakers.read().await;
+        if let Some(breaker) = breakers.get(&selection.address) {
+            if !breaker.is_closed().await {
+                return Err(SentinelError::upstream(
+                    self.id.to_string(),
+                    "Circuit breaker is open for shadow target",
+                ));
+            }
+        }
+
+        // Parse address to get host and port
+        let (host, port) = if selection.address.contains(':') {
+            let parts: Vec<&str> = selection.address.rsplitn(2, ':').collect();
+            if parts.len() == 2 {
+                (
+                    parts[1].to_string(),
+                    parts[0].parse::<u16>().unwrap_or(if self.tls_enabled { 443 } else { 80 }),
+                )
+            } else {
+                (selection.address.clone(), if self.tls_enabled { 443 } else { 80 })
+            }
+        } else {
+            (selection.address.clone(), if self.tls_enabled { 443 } else { 80 })
+        };
+
+        Ok(ShadowTarget {
+            scheme: if self.tls_enabled { "https" } else { "http" }.to_string(),
+            host,
+            port,
+            sni: self.tls_sni.clone(),
+        })
+    }
+
+    /// Check if TLS is enabled for this upstream
+    pub fn is_tls_enabled(&self) -> bool {
+        self.tls_enabled
     }
 
     /// Shutdown the pool

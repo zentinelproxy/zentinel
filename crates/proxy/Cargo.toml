@@ -138,17 +138,28 @@ futures = "0.3"
 tonic = { workspace = true }
 tonic-health = "0.12"
 
-# Kubernetes service discovery (optional)
-reqwest = { version = "0.12", features = ["rustls-tls", "json"], optional = true }
+# HTTP client for shadow traffic and service discovery
+reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
 
 [features]
 default = []
+
+# Distributed rate limiting backends
 distributed-rate-limit = ["redis", "async-memcached"]
 distributed-rate-limit-redis = ["redis"]
 distributed-rate-limit-memcached = ["async-memcached"]
+
+# OpenTelemetry distributed tracing
 opentelemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:opentelemetry-semantic-conventions"]
-kubernetes = ["reqwest"]
+
+# Kubernetes service discovery
+kubernetes = []
+
+# Token counting for LLM inference routing
 tiktoken = ["tiktoken-rs"]
+
+# Future: Feature gating for geo, compression, schema-validation
+# Requires adding #[cfg(feature = "...")] throughout the codebase
 
 [dev-dependencies]
 criterion = { workspace = true }

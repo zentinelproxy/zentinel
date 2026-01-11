@@ -252,6 +252,25 @@ pub struct RequestContext {
     pub(crate) guardrail_detection_categories: Vec<String>,
     /// PII categories detected in response (for logging)
     pub(crate) pii_detection_categories: Vec<String>,
+
+    // === Shadow Traffic ===
+    /// Pending shadow request info (stored for deferred execution after body buffering)
+    pub(crate) shadow_pending: Option<ShadowPendingRequest>,
+    /// Whether shadow request was sent for this request
+    pub(crate) shadow_sent: bool,
+}
+
+/// Pending shadow request information stored in context for deferred execution
+#[derive(Clone)]
+pub struct ShadowPendingRequest {
+    /// Cloned request headers for shadow
+    pub headers: pingora::http::RequestHeader,
+    /// Shadow manager (wrapped in Arc for Clone)
+    pub manager: std::sync::Arc<crate::shadow::ShadowManager>,
+    /// Request context for shadow (client IP, path, method, etc.)
+    pub request_ctx: crate::upstream::RequestContext,
+    /// Whether body should be included
+    pub include_body: bool,
 }
 
 impl RequestContext {
@@ -333,6 +352,8 @@ impl RequestContext {
             guardrail_warning: false,
             guardrail_detection_categories: Vec::new(),
             pii_detection_categories: Vec::new(),
+            shadow_pending: None,
+            shadow_sent: false,
         }
     }
 

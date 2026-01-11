@@ -1940,13 +1940,32 @@ impl ProxyHttp for SentinelProxy {
                     let buffer_body = shadow_config.buffer_body
                         && crate::shadow::should_buffer_method(&ctx.method);
 
-                    // TODO: Buffer request body if needed
-                    // For now, we don't buffer bodies (would require significant refactoring
-                    // of the request_body_filter to capture and clone body data)
-                    let body = None;
-
-                    // Fire off shadow request asynchronously (non-blocking)
-                    shadow_manager.shadow_request(shadow_headers, body, shadow_ctx);
+                    if buffer_body {
+                        // Body buffering requested - defer shadow request until body is available
+                        // Store shadow info in context; will be fired in logging phase
+                        // or when request body filter completes
+                        trace!(
+                            correlation_id = %ctx.trace_id,
+                            "Deferring shadow request until body is buffered"
+                        );
+                        ctx.shadow_pending = Some(crate::proxy::context::ShadowPendingRequest {
+                            headers: shadow_headers,
+                            manager: std::sync::Arc::new(shadow_manager),
+                            request_ctx: shadow_ctx,
+                            include_body: true,
+                        });
+                        // Enable body inspection to capture the body for shadow
+                        // (only if not already enabled for other reasons)
+                        if !ctx.body_inspection_enabled {
+                            ctx.body_inspection_enabled = true;
+                            // Set a reasonable buffer limit from shadow config
+                            // (body_buffer will accumulate chunks)
+                        }
+                    } else {
+                        // No body buffering needed - fire shadow request immediately
+                        shadow_manager.shadow_request(shadow_headers, None, shadow_ctx);
+                        ctx.shadow_sent = true;
+                    }
                 }
             }
         }
@@ -2766,6 +2785,31 @@ impl ProxyHttp for SentinelProxy {
     async fn logging(&self, session: &mut Session, _error: Option<&Error>, ctx: &mut Self::CTX) {
         // Decrement active requests
         self.reload_coordinator.dec_requests();
+
+        // === Fire pending shadow request (if body buffering was enabled) ===
+        if !ctx.shadow_sent {
+            if let Some(shadow_pending) = ctx.shadow_pending.take() {
+                let body = if shadow_pending.include_body && !ctx.body_buffer.is_empty() {
+                    // Clone the buffered body for the shadow request
+                    Some(ctx.body_buffer.clone())
+                } else {
+                    None
+                };
+
+                trace!(
+                    correlation_id = %ctx.trace_id,
+                    body_size = body.as_ref().map(|b| b.len()).unwrap_or(0),
+                    "Firing deferred shadow request with buffered body"
+                );
+
+                shadow_pending.manager.shadow_request(
+                    shadow_pending.headers,
+                    body,
+                    shadow_pending.request_ctx,
+                );
+                ctx.shadow_sent = true;
+            }
+        }
 
         let duration = ctx.elapsed();
 

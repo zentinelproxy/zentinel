@@ -97,8 +97,8 @@ pub use scoped_routing::{ScopedRouteMatch, ScopedRouteMatcher};
 
 // Upstream management
 pub use upstream::{
-    LoadBalancer, PoolConfigSnapshot, PoolStats, RequestContext, TargetSelection, UpstreamPool,
-    UpstreamTarget,
+    LoadBalancer, PoolConfigSnapshot, PoolStats, RequestContext, ShadowTarget, TargetSelection,
+    UpstreamPool, UpstreamTarget,
 };
 
 // Health checking
@@ -165,7 +165,7 @@ pub use scoped_rate_limit::{ScopedRateLimitManager, ScopedRateLimitResult};
 pub use scoped_circuit_breaker::{ScopedBreakerStatus, ScopedCircuitBreakerManager};
 
 // Traffic mirroring / shadowing
-pub use shadow::{buffer_request_body, should_buffer_method, ShadowManager};
+pub use shadow::{buffer_request_body, clone_body_for_shadow, should_buffer_method, ShadowManager};
 
 // GeoIP filtering
 pub use geo_filter::{
