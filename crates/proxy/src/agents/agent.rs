@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sentinel_agent_protocol::{AgentClient, AgentResponse, ConfigureEvent, Decision, EventType, GrpcTlsConfig};
+use sentinel_agent_protocol::{AgentClient, AgentResponse, ConfigureEvent, Decision, EventType, GrpcTlsConfig, HttpTlsConfig};
 use sentinel_common::{errors::SentinelError, errors::SentinelResult, CircuitBreaker};
 use sentinel_config::{AgentConfig, AgentEvent, AgentTransport};
 use tokio::sync::RwLock;
@@ -267,12 +267,125 @@ impl Agent {
 
                 Ok(())
             }
-            AgentTransport::Http { url, tls: _ } => {
-                warn!(
+            AgentTransport::Http { url, tls } => {
+                trace!(
                     agent_id = %self.config.id,
                     url = %url,
-                    "HTTP transport not yet implemented, agent will not be available"
+                    tls_enabled = tls.is_some(),
+                    "Connecting to agent via HTTP"
                 );
+
+                let client = match tls {
+                    Some(tls_config) => {
+                        // Build TLS configuration
+                        let mut http_tls = HttpTlsConfig::new();
+
+                        // Load CA certificate if provided
+                        if let Some(ca_path) = &tls_config.ca_cert {
+                            http_tls = http_tls.with_ca_cert_file(ca_path).await.map_err(|e| {
+                                error!(
+                                    agent_id = %self.config.id,
+                                    ca_path = %ca_path.display(),
+                                    error = %e,
+                                    "Failed to load CA certificate for HTTP TLS"
+                                );
+                                SentinelError::Agent {
+                                    agent: self.config.id.clone(),
+                                    message: format!("Failed to load CA certificate: {}", e),
+                                    event: "initialize".to_string(),
+                                    source: None,
+                                }
+                            })?;
+                        }
+
+                        // Load client certificate and key for mTLS if provided
+                        if let (Some(cert_path), Some(key_path)) = (&tls_config.client_cert, &tls_config.client_key) {
+                            http_tls = http_tls.with_client_cert_files(cert_path, key_path).await.map_err(|e| {
+                                error!(
+                                    agent_id = %self.config.id,
+                                    cert_path = %cert_path.display(),
+                                    key_path = %key_path.display(),
+                                    error = %e,
+                                    "Failed to load client certificate for HTTP mTLS"
+                                );
+                                SentinelError::Agent {
+                                    agent: self.config.id.clone(),
+                                    message: format!("Failed to load client certificate: {}", e),
+                                    event: "initialize".to_string(),
+                                    source: None,
+                                }
+                            })?;
+                        }
+
+                        // Handle insecure skip verify
+                        if tls_config.insecure_skip_verify {
+                            warn!(
+                                agent_id = %self.config.id,
+                                url = %url,
+                                "SECURITY WARNING: TLS certificate verification disabled for HTTP agent"
+                            );
+                            http_tls = http_tls.with_insecure_skip_verify();
+                        }
+
+                        debug!(
+                            agent_id = %self.config.id,
+                            url = %url,
+                            has_ca_cert = tls_config.ca_cert.is_some(),
+                            has_client_cert = tls_config.client_cert.is_some(),
+                            "Connecting to agent via HTTP with TLS"
+                        );
+
+                        AgentClient::http_tls(&self.config.id, url, timeout, http_tls)
+                            .await
+                            .map_err(|e| {
+                                error!(
+                                    agent_id = %self.config.id,
+                                    url = %url,
+                                    error = %e,
+                                    "Failed to create HTTP TLS agent client"
+                                );
+                                SentinelError::Agent {
+                                    agent: self.config.id.clone(),
+                                    message: format!("Failed to create HTTP TLS client: {}", e),
+                                    event: "initialize".to_string(),
+                                    source: None,
+                                }
+                            })?
+                    }
+                    None => {
+                        // Plain HTTP without TLS
+                        AgentClient::http(&self.config.id, url, timeout)
+                            .await
+                            .map_err(|e| {
+                                error!(
+                                    agent_id = %self.config.id,
+                                    url = %url,
+                                    error = %e,
+                                    "Failed to create HTTP agent client"
+                                );
+                                SentinelError::Agent {
+                                    agent: self.config.id.clone(),
+                                    message: format!("Failed to create HTTP client: {}", e),
+                                    event: "initialize".to_string(),
+                                    source: None,
+                                }
+                            })?
+                    }
+                };
+
+                *self.client.write().await = Some(client);
+
+                info!(
+                    agent_id = %self.config.id,
+                    url = %url,
+                    tls_enabled = tls.is_some(),
+                    connect_time_ms = start.elapsed().as_millis(),
+                    "Agent connected via HTTP"
+                );
+
+                // Send Configure event if config is present
+                self.send_configure_event().await?;
+
                 Ok(())
             }
         }

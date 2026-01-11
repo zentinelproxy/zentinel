@@ -4198,6 +4198,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "prost",
+ "reqwest 0.12.28",
  "sentinel-common",
  "serde",
  "serde_json",

@@ -1,11 +1,13 @@
 //! Agent client for communicating with external agents.
 //!
-//! Supports two transport mechanisms:
+//! Supports three transport mechanisms:
 //! - Unix domain sockets (length-prefixed JSON)
 //! - gRPC (Protocol Buffers over HTTP/2, with optional TLS)
+//! - HTTP REST (JSON over HTTP/1.1 or HTTP/2, with optional TLS)
 
 use serde::Serialize;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -85,6 +87,70 @@ impl GrpcTlsConfig {
     }
 }
 
+/// TLS configuration for HTTP agent connections
+#[derive(Debug, Clone, Default)]
+pub struct HttpTlsConfig {
+    /// Skip certificate verification (DANGEROUS - only for testing)
+    pub insecure_skip_verify: bool,
+    /// CA certificate PEM data for verifying the server
+    pub ca_cert_pem: Option<Vec<u8>>,
+    /// Client certificate PEM data for mTLS
+    pub client_cert_pem: Option<Vec<u8>>,
+    /// Client key PEM data for mTLS
+    pub client_key_pem: Option<Vec<u8>>,
+}
+
+impl HttpTlsConfig {
+    /// Create a new TLS config builder
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Load CA certificate from a file
+    pub async fn with_ca_cert_file(mut self, path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
+        self.ca_cert_pem = Some(tokio::fs::read(path).await?);
+        Ok(self)
+    }
+
+    /// Set CA certificate from PEM data
+    pub fn with_ca_cert_pem(mut self, pem: impl Into<Vec<u8>>) -> Self {
+        self.ca_cert_pem = Some(pem.into());
+        self
+    }
+
+    /// Load client certificate and key from files (for mTLS)
+    pub async fn with_client_cert_files(
+        mut self,
+        cert_path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
+    ) -> Result<Self, std::io::Error> {
+        self.client_cert_pem = Some(tokio::fs::read(cert_path).await?);
+        self.client_key_pem = Some(tokio::fs::read(key_path).await?);
+        Ok(self)
+    }
+
+    /// Set client certificate and key from PEM data (for mTLS)
+    pub fn with_client_identity(mut self, cert_pem: impl Into<Vec<u8>>, key_pem: impl Into<Vec<u8>>) -> Self {
+        self.client_cert_pem = Some(cert_pem.into());
+        self.client_key_pem = Some(key_pem.into());
+        self
+    }
+
+    /// Skip certificate verification (DANGEROUS - only for testing)
+    pub fn with_insecure_skip_verify(mut self) -> Self {
+        self.insecure_skip_verify = true;
+        self
+    }
+}
+
+/// HTTP connection details
+struct HttpConnection {
+    /// HTTP client
+    client: reqwest::Client,
+    /// Base URL for the agent endpoint
+    url: String,
+}
+
 /// Agent client for communicating with external agents
 pub struct AgentClient {
     /// Agent ID
@@ -102,6 +168,7 @@ pub struct AgentClient {
 enum AgentConnection {
     UnixSocket(UnixStream),
     Grpc(AgentProcessorClient<Channel>),
+    Http(Arc<HttpConnection>),
 }
 
 impl AgentClient {
@@ -343,6 +410,157 @@ impl AgentClient {
         None
     }
 
+    /// Create a new HTTP agent client
+    ///
+    /// # Arguments
+    /// * `id` - Agent identifier
+    /// * `url` - HTTP endpoint URL (e.g., "http://localhost:8080/agent")
+    /// * `timeout` - Timeout for agent calls
+    pub async fn http(
+        id: impl Into<String>,
+        url: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self, AgentProtocolError> {
+        let id = id.into();
+        let url = url.into();
+
+        trace!(
+            agent_id = %id,
+            url = %url,
+            timeout_ms = timeout.as_millis() as u64,
+            "Creating HTTP agent client"
+        );
+
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| {
+                error!(
+                    agent_id = %id,
+                    url = %url,
+                    error = %e,
+                    "Failed to create HTTP client"
+                );
+                AgentProtocolError::ConnectionFailed(format!("HTTP client error: {}", e))
+            })?;
+
+        debug!(
+            agent_id = %id,
+            url = %url,
+            "HTTP agent client created"
+        );
+
+        Ok(Self {
+            id,
+            connection: AgentConnection::Http(Arc::new(HttpConnection { client, url })),
+            timeout,
+            max_retries: 3,
+        })
+    }
+
+    /// Create a new HTTP agent client with TLS
+    ///
+    /// # Arguments
+    /// * `id` - Agent identifier
+    /// * `url` - HTTPS endpoint URL (e.g., "https://agent.internal:8443/agent")
+    /// * `timeout` - Timeout for agent calls
+    /// * `tls_config` - TLS configuration
+    pub async fn http_tls(
+        id: impl Into<String>,
+        url: impl Into<String>,
+        timeout: Duration,
+        tls_config: HttpTlsConfig,
+    ) -> Result<Self, AgentProtocolError> {
+        let id = id.into();
+        let url = url.into();
+
+        trace!(
+            agent_id = %id,
+            url = %url,
+            timeout_ms = timeout.as_millis() as u64,
+            has_ca_cert = tls_config.ca_cert_pem.is_some(),
+            has_client_cert = tls_config.client_cert_pem.is_some(),
+            insecure = tls_config.insecure_skip_verify,
+            "Creating HTTP agent client with TLS"
+        );
+
+        let mut client_builder = reqwest::Client::builder()
+            .timeout(timeout)
+            .use_rustls_tls();
+
+        // Add CA certificate if provided
+        if let Some(ca_pem) = &tls_config.ca_cert_pem {
+            let ca_cert = reqwest::Certificate::from_pem(ca_pem).map_err(|e| {
+                error!(
+                    agent_id = %id,
+                    error = %e,
+                    "Failed to parse CA certificate"
+                );
+                AgentProtocolError::ConnectionFailed(format!("Invalid CA certificate: {}", e))
+            })?;
+            client_builder = client_builder.add_root_certificate(ca_cert);
+            debug!(
+                agent_id = %id,
+                "Using custom CA certificate for HTTP TLS"
+            );
+        }
+
+        // Add client identity for mTLS if provided
+        if let (Some(cert_pem), Some(key_pem)) = (&tls_config.client_cert_pem, &tls_config.client_key_pem) {
+            // Combine cert and key into identity PEM
+            let mut identity_pem = cert_pem.clone();
+            identity_pem.extend_from_slice(b"\n");
+            identity_pem.extend_from_slice(key_pem);
+
+            let identity = reqwest::Identity::from_pem(&identity_pem).map_err(|e| {
+                error!(
+                    agent_id = %id,
+                    error = %e,
+                    "Failed to parse client certificate/key"
+                );
+                AgentProtocolError::ConnectionFailed(format!("Invalid client certificate: {}", e))
+            })?;
+            client_builder = client_builder.identity(identity);
+            debug!(
+                agent_id = %id,
+                "Using client certificate for mTLS to HTTP agent"
+            );
+        }
+
+        // Handle insecure skip verify (dangerous - only for testing)
+        if tls_config.insecure_skip_verify {
+            warn!(
+                agent_id = %id,
+                url = %url,
+                "SECURITY WARNING: TLS certificate verification disabled for HTTP agent connection"
+            );
+            client_builder = client_builder.danger_accept_invalid_certs(true);
+        }
+
+        let client = client_builder.build().map_err(|e| {
+            error!(
+                agent_id = %id,
+                url = %url,
+                error = %e,
+                "Failed to create HTTP TLS client"
+            );
+            AgentProtocolError::ConnectionFailed(format!("HTTP TLS client error: {}", e))
+        })?;
+
+        debug!(
+            agent_id = %id,
+            url = %url,
+            "HTTP agent client created with TLS"
+        );
+
+        Ok(Self {
+            id,
+            connection: AgentConnection::Http(Arc::new(HttpConnection { client, url })),
+            timeout,
+            max_retries: 3,
+        })
+    }
+
     /// Get the agent ID
     #[allow(dead_code)]
     pub fn id(&self) -> &str {
@@ -355,11 +573,22 @@ impl AgentClient {
         event_type: EventType,
         payload: impl Serialize,
     ) -> Result<AgentResponse, AgentProtocolError> {
+        // Clone HTTP connection Arc before match to avoid borrow issues
+        let http_conn = if let AgentConnection::Http(conn) = &self.connection {
+            Some(Arc::clone(conn))
+        } else {
+            None
+        };
+
         match &mut self.connection {
             AgentConnection::UnixSocket(_) => {
                 self.send_event_unix_socket(event_type, payload).await
             }
             AgentConnection::Grpc(_) => self.send_event_grpc(event_type, payload).await,
+            AgentConnection::Http(_) => {
+                // Use the cloned Arc
+                self.send_event_http(http_conn.unwrap(), event_type, payload).await
+            }
         }
     }
 
@@ -436,6 +665,116 @@ impl AgentClient {
 
         // Convert gRPC response to internal format
         Self::convert_grpc_response(response.into_inner())
+    }
+
+    /// Send event via HTTP POST (JSON)
+    async fn send_event_http(
+        &self,
+        conn: Arc<HttpConnection>,
+        event_type: EventType,
+        payload: impl Serialize,
+    ) -> Result<AgentResponse, AgentProtocolError> {
+        let request = AgentRequest {
+            version: PROTOCOL_VERSION,
+            event_type,
+            payload: serde_json::to_value(payload)
+                .map_err(|e| AgentProtocolError::Serialization(e.to_string()))?,
+        };
+
+        // Serialize request
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| AgentProtocolError::Serialization(e.to_string()))?;
+
+        // Check message size
+        if request_json.len() > MAX_MESSAGE_SIZE {
+            return Err(AgentProtocolError::MessageTooLarge {
+                size: request_json.len(),
+                max: MAX_MESSAGE_SIZE,
+            });
+        }
+
+        trace!(
+            agent_id = %self.id,
+            url = %conn.url,
+            event_type = ?event_type,
+            request_size = request_json.len(),
+            "Sending HTTP request to agent"
+        );
+
+        // Send HTTP POST request
+        let response = conn
+            .client
+            .post(&conn.url)
+            .header("Content-Type", "application/json")
+            .header("X-Sentinel-Protocol-Version", PROTOCOL_VERSION.to_string())
+            .body(request_json)
+            .send()
+            .await
+            .map_err(|e| {
+                error!(
+                    agent_id = %self.id,
+                    url = %conn.url,
+                    error = %e,
+                    "HTTP request to agent failed"
+                );
+                if e.is_timeout() {
+                    AgentProtocolError::Timeout(self.timeout)
+                } else if e.is_connect() {
+                    AgentProtocolError::ConnectionFailed(format!("HTTP connect failed: {}", e))
+                } else {
+                    AgentProtocolError::ConnectionFailed(format!("HTTP request failed: {}", e))
+                }
+            })?;
+
+        // Check HTTP status
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            error!(
+                agent_id = %self.id,
+                url = %conn.url,
+                status = %status,
+                body = %body,
+                "Agent returned HTTP error"
+            );
+            return Err(AgentProtocolError::ConnectionFailed(format!(
+                "HTTP {} from agent: {}",
+                status,
+                body
+            )));
+        }
+
+        // Parse response
+        let response_bytes = response.bytes().await.map_err(|e| {
+            AgentProtocolError::ConnectionFailed(format!("Failed to read response body: {}", e))
+        })?;
+
+        // Check response size
+        if response_bytes.len() > MAX_MESSAGE_SIZE {
+            return Err(AgentProtocolError::MessageTooLarge {
+                size: response_bytes.len(),
+                max: MAX_MESSAGE_SIZE,
+            });
+        }
+
+        let agent_response: AgentResponse = serde_json::from_slice(&response_bytes)
+            .map_err(|e| AgentProtocolError::InvalidMessage(format!("Invalid JSON response: {}", e)))?;
+
+        // Verify protocol version
+        if agent_response.version != PROTOCOL_VERSION {
+            return Err(AgentProtocolError::VersionMismatch {
+                expected: PROTOCOL_VERSION,
+                actual: agent_response.version,
+            });
+        }
+
+        trace!(
+            agent_id = %self.id,
+            decision = ?agent_response.decision,
+            "Received HTTP response from agent"
+        );
+
+        Ok(agent_response)
     }
 
     /// Build a gRPC request from internal types
@@ -740,6 +1079,7 @@ impl AgentClient {
                 Ok(())
             }
             AgentConnection::Grpc(_) => Ok(()), // gRPC channels close automatically
+            AgentConnection::Http(_) => Ok(()),  // HTTP clients are stateless, no cleanup needed
         }
     }
 }
@@ -803,5 +1143,39 @@ mod tests {
 
         assert!(config.insecure_skip_verify);
         assert!(config.ca_cert_pem.is_none());
+    }
+
+    #[test]
+    fn test_http_tls_config_builder() {
+        let config = HttpTlsConfig::new()
+            .with_ca_cert_pem(b"test-ca-cert".to_vec())
+            .with_client_identity(b"test-cert".to_vec(), b"test-key".to_vec());
+
+        assert!(config.ca_cert_pem.is_some());
+        assert!(config.client_cert_pem.is_some());
+        assert!(config.client_key_pem.is_some());
+        assert!(!config.insecure_skip_verify);
+    }
+
+    #[test]
+    fn test_http_tls_config_insecure() {
+        let config = HttpTlsConfig::new().with_insecure_skip_verify();
+
+        assert!(config.insecure_skip_verify);
+        assert!(config.ca_cert_pem.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_http_client_creation() {
+        // Test that we can create an HTTP client (doesn't actually connect)
+        let result = AgentClient::http(
+            "test-agent",
+            "http://localhost:9999/agent",
+            Duration::from_secs(5),
+        )
+        .await;
+
+        // Client should be created successfully (connection happens on first request)
+        assert!(result.is_ok());
     }
 }

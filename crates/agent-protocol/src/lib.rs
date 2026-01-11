@@ -76,6 +76,27 @@
 //! let mut client = AgentClient::grpc_tls("my-agent", "https://agent.internal:50051", timeout, tls_config).await?;
 //! ```
 //!
+//! # Example: Client Usage (HTTP REST)
+//!
+//! ```ignore
+//! use sentinel_agent_protocol::{AgentClient, HttpTlsConfig, EventType, RequestHeadersEvent};
+//!
+//! // Plain HTTP
+//! let mut client = AgentClient::http("my-agent", "http://localhost:8080/agent", timeout).await?;
+//! let response = client.send_event(EventType::RequestHeaders, &event).await?;
+//!
+//! // HTTPS with TLS
+//! let tls_config = HttpTlsConfig::new()
+//!     .with_ca_cert_file("/etc/sentinel/certs/ca.crt").await?;
+//!
+//! let mut client = AgentClient::http_tls(
+//!     "my-agent",
+//!     "https://agent.internal:8443/agent",
+//!     timeout,
+//!     tls_config
+//! ).await?;
+//! ```
+//!
 //! # Example: Server Implementation
 //!
 //! ```ignore
@@ -121,7 +142,7 @@ pub use protocol::{
 };
 
 // Re-export client
-pub use client::{AgentClient, GrpcTlsConfig};
+pub use client::{AgentClient, GrpcTlsConfig, HttpTlsConfig};
 
 // Re-export server and handler
 pub use server::{
