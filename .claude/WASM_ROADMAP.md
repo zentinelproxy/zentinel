@@ -1,6 +1,6 @@
 # Sentinel WASM Roadmap
 
-> Last updated: 2026-01-11
+> Last updated: 2026-01-11 (Phase 2 complete)
 
 This document outlines the current state and future direction for Sentinel's WebAssembly compilation, enabling browser-based configuration validation, simulation, and interactive playgrounds.
 
@@ -36,6 +36,14 @@ get_normalized_config(kdl: string) → object
 
 // Create a sample request for testing
 create_sample_request(method: string, host: string, path: string) → SimulatedRequest
+
+// Simulate multiple requests with state tracking (Phase 2)
+simulate_stateful(config: string, requests: string) → {
+  results: RequestResult[],
+  state_transitions: StateTransition[],
+  final_state: FinalState,
+  summary: SimulationSummary
+}
 ```
 
 **Binary size:** ~800 KB uncompressed, ~250 KB gzipped
@@ -45,8 +53,8 @@ create_sample_request(method: string, host: string, path: string) → SimulatedR
 
 | Crate | WASM Status | Size | Notes |
 |-------|-------------|------|-------|
-| `playground-wasm` | ✅ Production | 196 lines | Full JS bindings |
-| `sim` | ✅ Production | 2,267 lines | Zero runtime deps |
+| `playground-wasm` | ✅ Production | ~280 lines | Full JS bindings |
+| `sim` | ✅ Production | ~3,300 lines | Zero runtime deps, stateful simulation |
 | `config` | ✅ Compatible | 2,500+ lines | Needs `--no-default-features` |
 | `common` | ✅ Compatible | ~1,000 lines | Needs `--no-default-features` |
 | `agent-protocol` | ⚠️ Partial | ~1,300 lines | Types OK, transport impossible |
@@ -179,30 +187,27 @@ tokio-tungstenite = "*"  # WebSocket (sockets)
 
 ### Phase 2: Stateful Policy Simulation
 
-**Status:** Planned
-**Effort:** 1-2 weeks
-**Value:** High
+**Status:** ✅ Complete
 
-Add simulation of policy state across multiple requests:
+Simulation of policy state across multiple requests:
 
 ```javascript
-// New export
-simulate_stateful(
-  config: string,
-  requests: SimulatedRequest[]
-) → {
-  results: SimulationResult[],
+simulate_stateful(config: string, requests: string) → {
+  results: RequestResult[],
   state_transitions: StateTransition[],
-  final_state: PolicyState
+  final_state: FinalState,
+  summary: SimulationSummary
 }
 ```
 
-**Features:**
-- Rate limit bucket state (token bucket, sliding window, fixed window)
-- Cache hit/miss tracking across request sequence
-- Connection pool state simulation
-- Load balancer position tracking (round-robin next target)
-- Circuit breaker state transitions
+**Implemented Features:**
+- Token bucket rate limiter with refill over time
+- Cache hit/miss/expiry tracking with TTL
+- Load balancer position tracking (round-robin)
+- Circuit breaker state machine (Closed/Open/HalfOpen)
+- Per-request results with decision traces
+- State transition logging
+- Summary statistics (hit rates, rate limited count, etc.)
 
 **Implementation:**
 
@@ -213,10 +218,11 @@ crates/sim/
 ├── upstream.rs
 ├── trace.rs
 ├── types.rs
-└── stateful.rs  ← NEW (~400-600 lines)
-    ├── RateLimitState
-    ├── CacheState
-    ├── CircuitBreakerState
+└── stateful.rs  ← ~1,050 lines
+    ├── TokenBucket / RateLimitState
+    ├── CacheState / CacheEntry
+    ├── CircuitBreaker / CircuitBreakerState
+    ├── LoadBalancerState
     └── simulate_sequence()
 ```
 
