@@ -20,7 +20,7 @@ sentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.3
 sentinel-common = { path = "../../crates/common", version = "0.3.0" }
 
 # Async runtime
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 async-trait = "0.1"
 
 # Serialization

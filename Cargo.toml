@@ -40,7 +40,7 @@ pingora-memory-cache = "0.6"
 
 # Async runtime
 # Minimal feature set for proxy workloads (trimmed from "full" for smaller binary)
-tokio = { version = "1.48", features = [
+tokio = { version = "1.49", features = [
     "rt-multi-thread",  # Multi-threaded runtime
     "net",              # TCP/UDP networking
     "io-util",          # AsyncRead/AsyncWrite utilities
@@ -79,7 +79,7 @@ validator = { version = "0.18", features = ["derive"] }
 # Testing
 proptest = "1.6"
 criterion = "0.6"
-insta = "1.41"
+insta = "1.46"
 
 # Security
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
