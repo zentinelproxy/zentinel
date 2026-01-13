@@ -34,12 +34,7 @@ routes {
 
 upstreams {
     upstream "backend" {
-        targets {
-            target {
-                address "127.0.0.1:8081"
-                weight 1
-            }
-        }
+        target "127.0.0.1:8081" weight=1
         load-balancing "round_robin"
         health-check {
             type "tcp"
@@ -59,7 +54,7 @@ limits {
 
 observability {
     metrics {
-        enabled true
+        enabled #true
         address "0.0.0.0:9090"
         path "/metrics"
     }

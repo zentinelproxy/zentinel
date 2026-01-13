@@ -215,4 +215,4 @@ ENV RUST_LOG=info,sentinel_echo_agent=debug \
 
 USER nonroot:nonroot
 
-CMD ["/sentinel-echo-agent"]
+ENTRYPOINT ["/sentinel-echo-agent"]
