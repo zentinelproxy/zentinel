@@ -14,8 +14,8 @@
 │                            │                                                │
 │                            ▼                                                │
 │                    ┌───────────────┐                                        │
-│                    │ Agent Client  │                                        │
-│                    │    Pool       │                                        │
+│                    │  AgentPool    │  ◄── v2: Connection pooling            │
+│                    │  (v1 or v2)   │      with load balancing               │
 │                    └───────┬───────┘                                        │
 │                            │                                                │
 └────────────────────────────┼────────────────────────────────────────────────┘
@@ -40,54 +40,207 @@
            └────────────────┴───────────────┘
                            │
                     Unix Domain Sockets
-                        or gRPC
+                    gRPC, or Reverse Connections
+
 ```
 
-## Transport Architecture
+---
 
-### Unix Domain Socket Transport
+## Protocol Version Comparison
+
+| Feature | v1 | v2 |
+|---------|----|----|
+| Transport | UDS (JSON), gRPC | UDS (binary), gRPC, Reverse |
+| Connection pooling | No | Yes (4 strategies) |
+| Bidirectional streaming | Limited | Full support |
+| Metrics export | No | Prometheus format |
+| Config push | No | Yes |
+| Health tracking | Basic | Comprehensive |
+| Flow control | No | Yes |
+| Cancellation | No | Yes |
+
+---
+
+## v2 Transport Architecture
+
+### Transport Options
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           V2Transport Enum                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐ │
+│   │   V2Transport::     │  │   V2Transport::     │  │   V2Transport::     │ │
+│   │   Grpc              │  │   Uds               │  │   Reverse           │ │
+│   │                     │  │                     │  │                     │ │
+│   │   AgentClientV2     │  │   AgentClientV2Uds  │  │ ReverseConnection   │ │
+│   │                     │  │                     │  │      Client         │ │
+│   │   - HTTP/2          │  │   - Unix socket     │  │                     │ │
+│   │   - TLS support     │  │   - Binary protocol │  │   - Agent-initiated │ │
+│   │   - Protobuf        │  │   - JSON payload    │  │   - NAT traversal   │ │
+│   └─────────────────────┘  └─────────────────────┘  └─────────────────────┘ │
+│             │                        │                        │             │
+│             └────────────────────────┼────────────────────────┘             │
+│                                      │                                      │
+│                                      ▼                                      │
+│                          ┌─────────────────────┐                            │
+│                          │   Unified Interface │                            │
+│                          │                     │                            │
+│                          │  send_request_*()   │                            │
+│                          │  send_response_*()  │                            │
+│                          │  cancel_request()   │                            │
+│                          │  capabilities()     │                            │
+│                          └─────────────────────┘                            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Unix Domain Socket (v2 Binary Protocol)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                     Message Frame                             │
-├──────────────┬───────────────────────────────────────────────┤
-│ Length (4B)  │              JSON Payload                      │
-│ Big-endian   │              (UTF-8)                           │
-│ uint32       │              Max 10MB                          │
-└──────────────┴───────────────────────────────────────────────┘
+│                     v2 UDS Message Frame                      │
+├──────────────┬────────────┬──────────────────────────────────┤
+│ Length (4B)  │ Type (1B)  │         JSON Payload             │
+│ Big-endian   │ MessageType│         (UTF-8)                  │
+│ uint32       │ enum       │         Max 16MB                 │
+└──────────────┴────────────┴──────────────────────────────────┘
 
-Example:
-┌────────────────┬─────────────────────────────────────────────┐
-│ 00 00 00 2F   │ {"event_type":"RequestHeaders","payload":..} │
-│ (47 bytes)    │                                              │
-└────────────────┴─────────────────────────────────────────────┘
+Message Types:
+┌────────────────────────────────────────────────────────────┐
+│ 0x01 HandshakeRequest    │ 0x02 HandshakeResponse          │
+│ 0x10 RequestHeaders      │ 0x11 RequestBodyChunk           │
+│ 0x12 ResponseHeaders     │ 0x13 ResponseBodyChunk          │
+│ 0x14 RequestComplete     │ 0x15 WebSocketFrame             │
+│ 0x16 GuardrailInspect    │ 0x17 Configure                  │
+│ 0x20 AgentResponse       │ 0x30 HealthStatus               │
+│ 0x31 MetricsReport       │ 0x32 ConfigUpdateRequest        │
+│ 0x33 FlowControl         │ 0x40 Cancel                     │
+│ 0x41 Ping                │ 0x42 Pong                       │
+└────────────────────────────────────────────────────────────┘
 ```
 
-### gRPC Transport
+### gRPC Transport (v2)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        HTTP/2 Connection                         │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│   Stream 1: ProcessEvent (Unary)                                │
+│   Bidirectional Streaming RPC:                                  │
 │   ┌─────────────────────────────────────────────────────────┐   │
-│   │ Request:  AgentRequest (protobuf)                        │   │
-│   │ Response: AgentResponse (protobuf)                       │   │
+│   │ ProcessEventStream                                       │   │
+│   │                                                          │   │
+│   │ Proxy ──► StreamMessage ──► StreamMessage ──► ...       │   │
+│   │       ◄── StreamMessage ◄── StreamMessage ◄── ...       │   │
+│   │                                                          │   │
+│   │ StreamMessage contains:                                  │   │
+│   │ - correlation_id (request tracking)                      │   │
+│   │ - message_type (event or response)                       │   │
+│   │ - payload (event data or response)                       │   │
+│   │ - timestamp_ms                                           │   │
 │   └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
-│   Stream 2: ProcessEventStream (Bidirectional)                  │
+│   Control Messages (Agent → Proxy):                             │
 │   ┌─────────────────────────────────────────────────────────┐   │
-│   │ Client ──► AgentRequest ──► AgentRequest ──► ...        │   │
-│   │ Server ◄── AgentResponse ◄── AgentResponse ◄── ...      │   │
+│   │ - HealthStatus (periodic health updates)                 │   │
+│   │ - MetricsReport (agent metrics for aggregation)          │   │
+│   │ - FlowControl (pause/resume/adjust)                      │   │
+│   │ - ConfigUpdateRequest (request config from proxy)        │   │
 │   └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Reverse Connections
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Reverse Connection Flow                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Agent                          Proxy                           │
+│     │                              │                             │
+│     │─── TCP/UDS Connect ─────────►│                             │
+│     │                              │                             │
+│     │─── RegistrationRequest ────►│                             │
+│     │    - protocol_version        │                             │
+│     │    - agent_id                │                             │
+│     │    - capabilities            │                             │
+│     │    - auth_token (optional)   │                             │
+│     │                              │                             │
+│     │◄── RegistrationResponse ────│                             │
+│     │    - success/error           │                             │
+│     │    - connection_id           │                             │
+│     │                              │                             │
+│     │                              │ (Connection added to pool)  │
+│     │                              │                             │
+│     │◄── RequestHeaders ──────────│                             │
+│     │─── AgentResponse ──────────►│                             │
+│     │          ...                 │                             │
+│     ▼                              ▼                             │
+│                                                                  │
+│   Benefits:                                                      │
+│   - Agents behind NAT/firewalls                                 │
+│   - Dynamic agent scaling                                        │
+│   - Simpler agent deployment (no exposed ports)                 │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Connection Pool Architecture (v2)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              AgentPool                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                         Agent Entries                                │   │
+│   │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │   │
+│   │  │  AgentEntry  │  │  AgentEntry  │  │  AgentEntry  │               │   │
+│   │  │  "waf"       │  │  "auth"      │  │  "rate"      │               │   │
+│   │  │              │  │              │  │              │               │   │
+│   │  │ Connections: │  │ Connections: │  │ Connections: │               │   │
+│   │  │ ┌──┐┌──┐┌──┐ │  │ ┌──┐┌──┐    │  │ ┌──┐         │               │   │
+│   │  │ │C1││C2││C3│ │  │ │C1││C2│    │  │ │C1│         │               │   │
+│   │  │ └──┘└──┘└──┘ │  │ └──┘└──┘    │  │ └──┘         │               │   │
+│   │  │              │  │              │  │              │               │   │
+│   │  │ Capabilities │  │ Capabilities │  │ Capabilities │               │   │
+│   │  │ RoundRobin   │  │ LeastConn    │  │ HealthBased │               │   │
+│   │  └──────────────┘  └──────────────┘  └──────────────┘               │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                       Load Balancing                                 │   │
+│   │                                                                      │   │
+│   │   RoundRobin ──► Even distribution across connections               │   │
+│   │   LeastConn  ──► Route to connection with fewest in-flight          │   │
+│   │   HealthBased──► Prefer connections with lower error rates          │   │
+│   │   Random     ──► Random selection                                   │   │
+│   │                                                                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                       Observability                                  │   │
+│   │                                                                      │   │
+│   │   MetricsCollector ──► Aggregates metrics from all agents           │   │
+│   │   ConfigPusher     ──► Distributes config updates to agents         │   │
+│   │   HealthTracker    ──► Monitors connection health                   │   │
+│   │                                                                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Request Lifecycle Flow
 
-### Complete HTTP Request Flow
+### Complete HTTP Request Flow (v2)
 
 ```
  Client                Proxy                    Agent                 Upstream
@@ -133,39 +286,25 @@ Example:
    ▼                     ▼                        ▼                      ▼
 ```
 
-### Decision Flow
+### v2 Cancellation Flow
 
 ```
-                    ┌─────────────────┐
-                    │ Receive Event   │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │ Agent Handler   │
-                    │ Processes Event │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │ Return Decision │
-                    └────────┬────────┘
-                             │
-            ┌────────────────┼────────────────┐
-            │                │                │
-            ▼                ▼                ▼
-     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-     │   ALLOW     │  │   BLOCK     │  │  REDIRECT   │
-     └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-            │                │                │
-            ▼                ▼                ▼
-     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-     │ Apply Header│  │Return Error │  │ Send 3xx    │
-     │ Mutations   │  │  Response   │  │ Response    │
-     │ Continue    │  │ status/body │  │ Location:   │
-     │ Processing  │  │             │  │ <url>       │
-     └─────────────┘  └─────────────┘  └─────────────┘
+  Proxy                                          Agent
+    │                                              │
+    │──────── RequestHeaders ─────────────────────►│
+    │                                              │
+    │         [Client disconnects]                 │
+    │                                              │
+    │──────── Cancel ─────────────────────────────►│
+    │         correlation_id: "req-123"            │
+    │         reason: ClientDisconnect             │
+    │                                              │
+    │                                    Agent stops│
+    │                                    processing │
+    │                                              │
 ```
+
+---
 
 ## Event Types & Lifecycle
 
@@ -226,43 +365,7 @@ Example:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Body Streaming Flow
-
-```
-                Proxy                              Agent
-                  │                                  │
-                  │   RequestBodyChunk               │
-                  │   chunk_index: 0                 │
-                  │   is_last: false                 │
-                  │   data: [first 64KB]             │
-                  │─────────────────────────────────►│
-                  │                                  │
-                  │   Response                       │
-                  │   needs_more: true               │  ◄── Agent buffering
-                  │◄─────────────────────────────────│
-                  │                                  │
-                  │   RequestBodyChunk               │
-                  │   chunk_index: 1                 │
-                  │   is_last: false                 │
-                  │   data: [next 64KB]              │
-                  │─────────────────────────────────►│
-                  │                                  │
-                  │   Response                       │
-                  │   needs_more: true               │
-                  │◄─────────────────────────────────│
-                  │                                  │
-                  │   RequestBodyChunk               │
-                  │   chunk_index: 2                 │
-                  │   is_last: true    ◄────────────────── Final chunk
-                  │   data: [last bytes]             │
-                  │─────────────────────────────────►│
-                  │                                  │
-                  │   Response                       │
-                  │   decision: Allow                │  ◄── Final decision
-                  │   body_mutation: [0,1,2]         │      after full inspection
-                  │◄─────────────────────────────────│
-                  │                                  │
-```
+---
 
 ## Failure Handling
 
@@ -302,62 +405,33 @@ Example:
                                         Back to OPEN
 ```
 
-### Timeout Handling
+### v2 Health Tracking
 
 ```
-  Proxy                                          Agent
-    │                                              │
-    │──────── Send Event ─────────────────────────►│
-    │                                              │
-    │         ┌─────────────────────┐              │
-    │         │  Start Timeout      │              │
-    │         │  Timer (e.g. 50ms)  │              │
-    │         └─────────────────────┘              │
-    │                                              │
-    │                    ...                       │  Processing
-    │                                              │
-    │         ┌─────────────────────┐              │
-    │         │  Timeout Fires!     │              │
-    │         └──────────┬──────────┘              │
-    │                    │                         │
-    │                    ▼                         │
-    │         ┌─────────────────────┐              │
-    │         │  Apply Fallback     │              │
-    │         │  Policy             │              │
-    │         └──────────┬──────────┘              │
-    │                    │                         │
-    │         ┌──────────┴──────────┐              │
-    │         │                     │              │
-    │         ▼                     ▼              │
-    │  ┌─────────────┐      ┌─────────────┐       │
-    │  │ Fail-Open   │      │ Fail-Closed │       │
-    │  │ Allow       │      │ Block 503   │       │
-    │  └─────────────┘      └─────────────┘       │
-    │                                              │
+┌─────────────────────────────────────────────────────────────────┐
+│                      Connection Health                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Health Score = f(error_rate, latency, consecutive_errors)     │
+│                                                                  │
+│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│   │  Healthy    │  │  Degraded   │  │  Unhealthy  │             │
+│   │  Score > 80 │  │  40 < S ≤80 │  │  Score ≤ 40 │             │
+│   │             │  │             │  │             │             │
+│   │  Full       │  │  Reduced    │  │  No new     │             │
+│   │  traffic    │  │  traffic    │  │  requests   │             │
+│   └─────────────┘  └─────────────┘  └─────────────┘             │
+│                                                                  │
+│   Agent Reports:                                                 │
+│   - HealthStatus messages (periodic)                            │
+│   - State: Healthy | Degraded | Unhealthy | Draining            │
+│   - Current load, memory usage                                   │
+│   - Version info                                                 │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## Multi-Agent Pipeline
-
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                              Request Pipeline                               │
-└────────────────────────────────────────────────────────────────────────────┘
-
-  Incoming        ┌─────────┐    ┌─────────┐    ┌─────────┐    To
-  Request    ────►│  Rate   │───►│  Auth   │───►│  WAF    │───► Upstream
-                  │  Limit  │    │  Agent  │    │  Agent  │
-                  └────┬────┘    └────┬────┘    └────┬────┘
-                       │              │              │
-                       ▼              ▼              ▼
-                  ┌─────────┐    ┌─────────┐    ┌─────────┐
-                  │ Allow?  │    │ Allow?  │    │ Allow?  │
-                  │ 429 Too │    │ 401/403 │    │ 403     │
-                  │ Many    │    │ Unauth  │    │ Blocked │
-                  └─────────┘    └─────────┘    └─────────┘
-
-  Short-circuit on any Block/Redirect decision
-  Headers accumulate through pipeline
-```
+---
 
 ## Component Interactions
 
@@ -367,43 +441,52 @@ Example:
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                            protocol.rs                               │   │
+│   │                            v1 (Legacy)                               │   │
 │   │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │   │
-│   │  │  EventType   │  │  Decision    │  │  HeaderOp    │               │   │
-│   │  │  (8 types)   │  │  (4 types)   │  │  (3 ops)     │               │   │
-│   │  └──────────────┘  └──────────────┘  └──────────────┘               │   │
-│   │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │   │
-│   │  │BodyMutation  │  │ WebSocket    │  │ Guardrail    │               │   │
-│   │  │ (3 actions)  │  │ Decision     │  │ Types        │               │   │
+│   │  │ AgentClient  │  │ AgentServer  │  │ AgentHandler │               │   │
+│   │  │ (UDS/gRPC)   │  │              │  │ (trait)      │               │   │
 │   │  └──────────────┘  └──────────────┘  └──────────────┘               │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
-│                    ┌───────────────┴───────────────┐                       │
-│                    │                               │                        │
-│                    ▼                               ▼                        │
-│   ┌─────────────────────────────┐   ┌─────────────────────────────┐        │
-│   │         client.rs           │   │         server.rs           │        │
-│   │  ┌───────────────────────┐  │   │  ┌───────────────────────┐  │        │
-│   │  │    AgentClient        │  │   │  │    AgentServer        │  │        │
-│   │  │  ├─ unix_socket()     │  │   │  │  ├─ new()             │  │        │
-│   │  │  ├─ grpc()            │  │   │  │  └─ run()             │  │        │
-│   │  │  ├─ send_event()      │  │   │  └───────────────────────┘  │        │
-│   │  │  └─ close()           │  │   │  ┌───────────────────────┐  │        │
-│   │  └───────────────────────┘  │   │  │    AgentHandler       │  │        │
-│   └─────────────────────────────┘   │  │  (trait, 8 methods)   │  │        │
-│                                     │  └───────────────────────┘  │        │
-│                                     │  ┌───────────────────────┐  │        │
-│                                     │  │  Reference Impls      │  │        │
-│                                     │  │  ├─ EchoAgent         │  │        │
-│                                     │  │  └─ DenylistAgent     │  │        │
-│                                     │  └───────────────────────┘  │        │
-│                                     └─────────────────────────────┘        │
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                            v2 (New)                                  │   │
+│   │                                                                      │   │
+│   │   Clients:                                                          │   │
+│   │   ┌────────────────┐  ┌────────────────┐  ┌────────────────┐        │   │
+│   │   │ AgentClientV2  │  │AgentClientV2Uds│  │ ReverseConn    │        │   │
+│   │   │ (gRPC)         │  │ (Binary UDS)   │  │ Client         │        │   │
+│   │   └────────────────┘  └────────────────┘  └────────────────┘        │   │
+│   │                                                                      │   │
+│   │   Pooling:                                                          │   │
+│   │   ┌────────────────┐  ┌────────────────┐  ┌────────────────┐        │   │
+│   │   │ AgentPool      │  │ V2Transport    │  │ LoadBalance    │        │   │
+│   │   │                │  │ (enum)         │  │ Strategy       │        │   │
+│   │   └────────────────┘  └────────────────┘  └────────────────┘        │   │
+│   │                                                                      │   │
+│   │   Observability:                                                    │   │
+│   │   ┌────────────────┐  ┌────────────────┐  ┌────────────────┐        │   │
+│   │   │MetricsCollector│  │ ConfigPusher   │  │ HealthTracker  │        │   │
+│   │   └────────────────┘  └────────────────┘  └────────────────┘        │   │
+│   │                                                                      │   │
+│   │   Server:                                                           │   │
+│   │   ┌────────────────┐  ┌────────────────┐                            │   │
+│   │   │GrpcAgentServer │  │AgentHandlerV2  │                            │   │
+│   │   │     V2         │  │ (trait)        │                            │   │
+│   │   └────────────────┘  └────────────────┘                            │   │
+│   │                                                                      │   │
+│   │   Reverse:                                                          │   │
+│   │   ┌────────────────┐  ┌────────────────┐                            │   │
+│   │   │ ReverseConn    │  │ Registration   │                            │   │
+│   │   │ Listener       │  │ Request/Resp   │                            │   │
+│   │   └────────────────┘  └────────────────┘                            │   │
+│   │                                                                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │                           errors.rs                                  │   │
-│   │  AgentProtocolError: Connection | Timeout | MessageTooLarge |       │   │
-│   │                       Serialization | Deserialization | Io |         │   │
-│   │                       VersionMismatch | Agent                        │   │
+│   │  AgentProtocolError: ConnectionFailed | ConnectionClosed |          │   │
+│   │                       Timeout | MessageTooLarge | InvalidMessage |   │   │
+│   │                       VersionMismatch | Serialization | Io          │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
