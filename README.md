@@ -54,11 +54,11 @@ sentinel --config sentinel.kdl
 | Feature | Description |
 |---------|-------------|
 | **KDL Configuration** | Human-readable config with hot reload |
-| **Agent System** | Extend via external processes (WAF, auth, rate limiting) |
+| **Agent Protocol v2** | External agents with connection pooling, gRPC, reverse connections |
 | **Service Types** | Optimized handling for APIs, static files, web apps |
 | **Observability** | Prometheus metrics, structured logging, distributed tracing |
 | **TLS** | Modern cipher suites, automatic certificate handling |
-| **Load Balancing** | Round-robin, least connections, consistent hashing |
+| **Load Balancing** | Round-robin, least connections, weighted strategies |
 
 ## Why Sentinel
 
@@ -84,23 +84,30 @@ See [`MANIFESTO.md`](MANIFESTO.md) for the full philosophy.
 
 ## Crates
 
+Each crate has its own `docs/` directory with detailed documentation.
+
 | Crate | Description |
 |-------|-------------|
 | [`sentinel-proxy`](crates/proxy/) | Core reverse proxy built on Pingora |
 | [`sentinel-config`](crates/config/) | KDL configuration parsing and validation |
+| [`sentinel-agent-protocol`](crates/agent-protocol/) | Agent protocol v1 (legacy) and v2 (current) |
 | [`sentinel-common`](crates/common/) | Shared types, errors, and utilities |
-| [`sentinel-agent-protocol`](crates/agent-protocol/) | External agent communication protocol |
-| [`sentinel-sim`](crates/sim/) | WASM-compatible configuration simulator |
-| [`sentinel-stack`](crates/stack/) | All-in-one process manager for proxy and agents |
-| [`sentinel-playground-wasm`](crates/playground-wasm/) | Browser bindings for the config playground |
+| [`wasm-runtime`](crates/wasm-runtime/) | WASM agent runtime using Wasmtime |
+| [`playground-wasm`](crates/playground-wasm/) | Browser bindings for the config playground |
+| [`sim`](crates/sim/) | WASM-compatible configuration simulator |
+| [`stack`](crates/stack/) | All-in-one process manager for proxy and agents |
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
+
+**Using Claude Code?** See [`.claude/CLAUDE.md`](.claude/CLAUDE.md) for project context, architecture, and coding rules.
 
 ## Community
 
+- 📖 [Documentation](https://sentinel.raskell.io/docs) — Guides, reference, and examples
 - 💬 [Discussions](https://github.com/raskell-io/sentinel/discussions) — Questions, ideas, show & tell
 - 🐛 [Issues](https://github.com/raskell-io/sentinel/issues) — Bug reports and feature requests
-- 📖 [Documentation](https://sentinel.raskell.io/docs) — Guides, reference, and examples
-
-Contributions welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
