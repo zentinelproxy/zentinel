@@ -155,7 +155,7 @@ jobs:
 
       - name: Upload artifacts
         if: inputs.upload-artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ inputs.artifact-prefix }}-${{ matrix.config.suffix }}
           path: artifacts/
