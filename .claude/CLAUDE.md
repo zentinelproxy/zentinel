@@ -50,18 +50,40 @@ Every contribution must align with the [Manifesto](../MANIFESTO.md):
 
 ---
 
-## Crate Structure
+## Crates
 
-| Crate | Purpose | Key Types |
-|-------|---------|-----------|
-| `sentinel-proxy` | Main binary, Pingora integration, HTTP handling | `SentinelProxy`, `ProxyApp` |
-| `sentinel-config` | KDL parsing, validation, schema | `Config`, `RouteConfig`, `UpstreamConfig` |
-| `sentinel-agent-protocol` | Agent communication (v1 & v2) | `AgentPool`, `AgentClientV2`, `Decision` |
-| `sentinel-common` | Shared types, utilities, error handling | `RequestId`, `Limits`, error types |
-| `playground-wasm` | WASM module for web playground | - |
-| `wasm-runtime` | WASM agent runtime (Wasmtime) | - |
-| `sim` | Simulation/testing utilities | - |
-| `stack` | Integration test harness | - |
+Each crate has its own `docs/` directory with detailed documentation. **When making changes to a crate, update its `docs/` accordingly.**
+
+### Core Crates
+
+#### `sentinel-proxy` (`crates/proxy/`)
+Main binary and Pingora integration. Implements HTTP handling, routing, filtering, and upstream communication.
+- **Key types:** `SentinelProxy`, `ProxyApp`
+- **Docs:** `crates/proxy/docs/` — architecture, agents, rate-limiting, inference routing, modules
+
+#### `sentinel-config` (`crates/config/`)
+KDL configuration parsing, validation, and schema. Handles all configuration file processing.
+- **Key types:** `Config`, `RouteConfig`, `UpstreamConfig`, `ListenerConfig`
+- **Docs:** `crates/config/docs/` — KDL format, schema reference, validation rules, examples
+
+#### `sentinel-agent-protocol` (`crates/agent-protocol/`)
+Agent communication protocols (v1 legacy and v2 current). Handles UDS, gRPC, and reverse connections.
+- **Key types:** `AgentPool`, `AgentClientV2`, `Decision`, `ReverseConnectionListener`
+- **Docs:** `crates/agent-protocol/docs/` — v1/ and v2/ protocol specs, API reference, transport options
+
+#### `sentinel-common` (`crates/common/`)
+Shared types, utilities, and error handling used across all crates.
+- **Key types:** `RequestId`, `Limits`, error types, identifiers
+- **Docs:** `crates/common/docs/` — errors, identifiers, limits, observability, patterns
+
+### Supporting Crates
+
+| Crate | Path | Purpose |
+|-------|------|---------|
+| `playground-wasm` | `crates/playground-wasm/` | WASM module for web playground (config validation) |
+| `wasm-runtime` | `crates/wasm-runtime/` | WASM agent runtime using Wasmtime |
+| `sim` | `crates/sim/` | Simulation and testing utilities |
+| `stack` | `crates/stack/` | Integration test harness |
 
 ### Crate Dependencies
 
@@ -78,6 +100,11 @@ sentinel-config
 sentinel-agent-protocol
 └── sentinel-common
 ```
+
+**Dependency rules:**
+- `proxy` may depend on all internal crates
+- `config` and `agent-protocol` depend only on `common`
+- `common` has no internal dependencies
 
 ---
 
@@ -156,9 +183,50 @@ cargo bench -p sentinel-proxy
 
 ### Documentation
 
+**When making meaningful changes, documentation must be updated in multiple places:**
+
+#### 1. Crate-level docs (this repo)
+Each crate has a `docs/` directory for technical reference:
+```
+crates/proxy/docs/           # Architecture, routing, filtering
+crates/config/docs/          # KDL format, schema, validation
+crates/agent-protocol/docs/  # Protocol v1/, v2/, transports
+crates/common/docs/          # Shared types, errors, patterns
+```
+
+**Update when:** Changing APIs, adding features, modifying behavior.
+
+#### 2. Documentation site (separate repo)
+**Repo:** `github.com/raskell-io/sentinel.raskell.io-docs`
+**Live:** https://sentinel.raskell.io/docs
+
+Contains user-facing documentation: getting started, configuration guides, examples, operations, deployment.
+
+**Update when:**
+- New user-visible features
+- Configuration option changes
+- New examples or use cases
+- Breaking changes
+
+**Structure:**
+```
+content/
+├── getting-started/    # Installation, quick start
+├── concepts/           # Architecture, routing, request lifecycle
+├── configuration/      # All config options
+├── agents/             # Agent protocol v1/, v2/
+├── examples/           # Production-ready configs
+├── operations/         # Security, monitoring, troubleshooting
+├── deployment/         # Docker, K8s, systemd
+└── reference/          # CLI, env vars, error codes
+```
+
+#### 3. Design documents (this repo)
+- [AGENT_PROTOCOL_2.0.md](AGENT_PROTOCOL_2.0.md) — Agent protocol design and roadmap
+
+#### External Links
 - **Marketing site:** https://sentinel.raskell.io
 - **Documentation:** https://sentinel.raskell.io/docs
-- **Agent Protocol 2.0 Design:** [AGENT_PROTOCOL_2.0.md](AGENT_PROTOCOL_2.0.md)
 
 ---
 
@@ -166,6 +234,7 @@ cargo bench -p sentinel-proxy
 
 Before submitting code:
 
+**Code Quality:**
 - [ ] Aligns with [Manifesto](../MANIFESTO.md) principles
 - [ ] Has bounded resources (no unbounded growth)
 - [ ] Fails loudly and safely
@@ -173,4 +242,9 @@ Before submitting code:
 - [ ] Has tests (unit + integration where applicable)
 - [ ] Passes `cargo clippy -- -D warnings`
 - [ ] Passes `cargo fmt --check`
-- [ ] Documentation updated if public API changed
+
+**Documentation:**
+- [ ] Crate `docs/` updated if API or behavior changed
+- [ ] Docs site (`sentinel.raskell.io-docs`) updated if user-visible changes
+- [ ] Code comments for non-obvious logic
+- [ ] Public API has doc comments with `# Errors` section

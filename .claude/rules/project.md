@@ -278,6 +278,39 @@ assert!(elapsed < Duration::from_millis(100)); // Flaky!
 
 ## Documentation Rules
 
+### Three Layers of Documentation
+
+Sentinel has documentation at three levels. **All must be kept in sync.**
+
+#### 1. Crate-level docs (`crates/*/docs/`)
+
+Technical reference for each crate:
+
+| Crate | Docs Path | Contents |
+|-------|-----------|----------|
+| `proxy` | `crates/proxy/docs/` | Architecture, routing, agents, rate-limiting |
+| `config` | `crates/config/docs/` | KDL format, schema, validation, examples |
+| `agent-protocol` | `crates/agent-protocol/docs/` | Protocol v1/, v2/, API, transports |
+| `common` | `crates/common/docs/` | Errors, identifiers, limits, patterns |
+
+**Update when:** API changes, new features, behavior modifications.
+
+#### 2. Documentation site (`sentinel.raskell.io-docs`)
+
+**Repo:** `github.com/raskell-io/sentinel.raskell.io-docs`
+
+User-facing documentation including getting started, configuration guides, examples, and operations.
+
+**Update when:**
+- New user-visible features
+- Configuration option changes
+- New examples or use cases
+- Breaking changes that affect users
+
+#### 3. Code documentation
+
+In-code doc comments for public APIs.
+
 ### Public API Documentation
 
 Every public item needs documentation:
@@ -296,11 +329,11 @@ pub async fn process_request(&self, req: Request) -> Result<Response, ProxyError
 
 ### Config Documentation
 
-New config options must be documented:
+New config options must be documented in **all three places**:
 
-1. In-code doc comments
+1. In-code doc comments on the config struct field
 2. In `crates/config/docs/schema.md`
-3. In docs site (`sentinel.raskell.io-docs`)
+3. In docs site `content/configuration/` section
 
 ---
 
