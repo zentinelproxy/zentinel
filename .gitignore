@@ -29,3 +29,6 @@ tests/chaos/results/
 
 # macOS
 .DS_Store
+
+# Claude roadmap files (internal planning, not for commit)
+.claude/*roadmap*.md
