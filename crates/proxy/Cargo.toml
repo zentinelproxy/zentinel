@@ -64,7 +64,7 @@ rustls-pemfile = { workspace = true }
 webpki-roots = "0.26"
 
 # X.509 certificate parsing for OCSP
-x509-parser = "0.16"
+x509-parser = "0.18"
 sha2 = "0.10"
 url = "2.5"
 
