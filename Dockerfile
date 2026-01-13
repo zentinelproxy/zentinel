@@ -127,7 +127,7 @@ CMD ["-c", "/etc/sentinel/config.kdl"]
 ################################################################################
 # Debug image: Alpine with shell for troubleshooting
 ################################################################################
-FROM alpine:3.21 AS proxy-debug
+FROM alpine:3.23 AS proxy-debug
 
 # Install minimal runtime dependencies
 RUN apk add --no-cache \
