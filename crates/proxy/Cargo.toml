@@ -141,7 +141,7 @@ futures = "0.3"
 
 # gRPC health checking
 tonic = { workspace = true }
-tonic-health = "0.12"
+tonic-health = "0.14"
 
 # HTTP client for shadow traffic and service discovery
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
