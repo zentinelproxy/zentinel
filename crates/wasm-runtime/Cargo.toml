@@ -16,7 +16,7 @@ categories = ["wasm", "network-programming"]
 sentinel-agent-protocol = { path = "../agent-protocol", version = "0.3.1" }
 
 # Wasmtime runtime with component model
-wasmtime = { version = "28", features = ["component-model", "async", "cranelift"] }
+wasmtime = { version = "40", features = ["component-model", "async", "cranelift"] }
 wasmtime-wasi = "40"
 
 # Async runtime
@@ -44,4 +44,4 @@ tempfile = "3"
 
 [build-dependencies]
 # For generating bindings from WIT files
-wasmtime = { version = "28", features = ["component-model"] }
+wasmtime = { version = "40", features = ["component-model"] }
