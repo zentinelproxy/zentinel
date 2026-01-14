@@ -252,6 +252,83 @@ let bufs = [
 socket.write_vectored(&bufs).await?;
 ```
 
+### Binary Encoding (MessagePack)
+
+UDS supports MessagePack encoding for improved performance over JSON. Encoding is negotiated during the handshake.
+
+**Enable MessagePack in Cargo.toml:**
+
+```toml
+sentinel-agent-protocol = { version = "0.3", features = ["binary-uds"] }
+```
+
+**Handshake with encoding negotiation:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  Encoding Negotiation                            │
+│                                                                  │
+│  Proxy                                              Agent        │
+│    │                                                  │          │
+│    │ ──── HandshakeRequest ─────────────────────────► │          │
+│    │      {                                           │          │
+│    │        supported_encodings: ["msgpack", "json"]  │          │
+│    │      }                                           │          │
+│    │                                                  │          │
+│    │ ◄──────────────────────── HandshakeResponse ─── │          │
+│    │      {                                           │          │
+│    │        encoding: "msgpack"                       │          │
+│    │      }                                           │          │
+│    │                                                  │          │
+│    │          (subsequent messages use msgpack)       │          │
+│    │                                                  │          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Available encodings:**
+
+| Encoding | Pros | Cons |
+|----------|------|------|
+| `json` | Human readable, always available | Larger payloads, slower serialization |
+| `msgpack` | Compact, fast serialization | Requires `binary-uds` feature |
+
+### Zero-Copy Body Streaming
+
+For large request/response bodies, use the binary body chunk methods to avoid base64 encoding overhead:
+
+```rust
+use sentinel_agent_protocol::{BinaryRequestBodyChunkEvent, Bytes};
+
+// Create binary body chunk (no base64)
+let chunk = BinaryRequestBodyChunkEvent::new(
+    "correlation-123",
+    Bytes::from_static(b"raw binary data"),
+    0,      // chunk_index
+    false,  // is_last
+);
+
+// Send via UDS client
+// - With MessagePack: raw bytes (most efficient)
+// - With JSON: falls back to base64
+client.send_request_body_chunk_binary(&chunk).await?;
+```
+
+**Performance comparison (1KB body chunk):**
+
+| Method | Encoding | Serialized Size | Relative |
+|--------|----------|-----------------|----------|
+| `send_request_body_chunk` | JSON + base64 | ~1,450 bytes | 1.00x |
+| `send_request_body_chunk_binary` | JSON + base64 | ~1,450 bytes | 1.00x |
+| `send_request_body_chunk_binary` | MessagePack | ~1,050 bytes | 0.72x |
+
+**Binary methods:**
+- `send_request_body_chunk_binary(&BinaryRequestBodyChunkEvent)`
+- `send_response_body_chunk_binary(&BinaryResponseBodyChunkEvent)`
+
+Both methods automatically use the negotiated encoding:
+- MessagePack: uses `serde_bytes` for efficient raw binary serialization
+- JSON: falls back to base64 encoding for compatibility
+
 ---
 
 ## Reverse Connections

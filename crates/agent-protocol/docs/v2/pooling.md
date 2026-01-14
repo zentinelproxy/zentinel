@@ -564,9 +564,114 @@ if consecutive_errors >= UNHEALTHY_THRESHOLD {
 
 **Total hot-path sync points per request:** 2 (down from 4 in earlier versions)
 
-### Further Optimizations
+---
 
-See [performance-roadmap.md](./performance-roadmap.md) for planned improvements including:
-- Binary serialization for UDS transport
-- Zero-copy body streaming
-- Buffer size alignment
+## Protocol Metrics
+
+The `AgentPool` includes built-in protocol-level metrics for monitoring performance and health.
+
+### Accessing Metrics
+
+```rust
+// Get metrics instance
+let metrics = pool.protocol_metrics();
+
+// Get point-in-time snapshot
+let snapshot = metrics.snapshot();
+
+// Export to Prometheus format
+let prometheus_text = metrics.to_prometheus("agent_protocol");
+```
+
+### Available Metrics
+
+| Type | Metric | Description |
+|------|--------|-------------|
+| Counter | `requests_total` | Total requests sent |
+| Counter | `responses_total` | Total responses received |
+| Counter | `timeouts_total` | Requests that timed out |
+| Counter | `connection_errors_total` | Connection failures |
+| Counter | `serialization_errors_total` | Serialization failures |
+| Counter | `flow_control_pauses_total` | Agent pause signals |
+| Counter | `flow_control_resumes_total` | Agent resume signals |
+| Counter | `flow_control_rejections_total` | Requests rejected due to flow control |
+| Gauge | `in_flight_requests` | Current in-flight requests |
+| Gauge | `buffer_utilization_percent` | Channel buffer utilization |
+| Gauge | `healthy_connections` | Number of healthy connections |
+| Gauge | `paused_connections` | Number of paused connections |
+| Histogram | `serialization_time_us` | Serialization latency (μs) |
+| Histogram | `request_duration_us` | End-to-end request latency (μs) |
+
+### Prometheus Export
+
+```rust
+let prometheus = pool.protocol_metrics().to_prometheus("agent_protocol");
+```
+
+Output:
+```prometheus
+# HELP agent_protocol_requests_total Total requests sent
+# TYPE agent_protocol_requests_total counter
+agent_protocol_requests_total 12345
+
+# HELP agent_protocol_request_duration_us Request duration histogram
+# TYPE agent_protocol_request_duration_us histogram
+agent_protocol_request_duration_us_bucket{le="100"} 5234
+agent_protocol_request_duration_us_bucket{le="500"} 10453
+agent_protocol_request_duration_us_bucket{le="1000"} 11876
+agent_protocol_request_duration_us_bucket{le="+Inf"} 12345
+agent_protocol_request_duration_us_sum 4567890
+agent_protocol_request_duration_us_count 12345
+```
+
+---
+
+## Connection Affinity
+
+For streaming requests, body chunks should be routed to the same connection as the initial headers. The pool tracks correlation_id to connection mappings.
+
+### Automatic Affinity
+
+When `send_request_headers` is called, the pool stores the selected connection for the correlation_id:
+
+```rust
+// Headers sent to connection A
+let response = pool.send_request_headers("waf", &headers).await?;
+
+// Body chunks automatically routed to connection A
+pool.send_request_body_chunk("waf", &chunk1).await?;
+pool.send_request_body_chunk("waf", &chunk2).await?;
+```
+
+### Manual Cleanup
+
+After a request completes, clear the affinity mapping:
+
+```rust
+// Clear affinity for a specific correlation_id
+pool.clear_correlation_affinity("correlation-123");
+
+// Check current affinity count
+let count = pool.correlation_affinity_count();
+```
+
+### Implementation Details
+
+- Uses `DashMap<String, Arc<PooledConnection>>` for lock-free concurrent access
+- `send_request_headers` stores affinity after selecting connection
+- `send_request_body_chunk` checks affinity before falling back to normal selection
+- No cleanup required for non-streaming requests (affinity expires naturally)
+
+---
+
+## Completed Optimizations
+
+The following optimizations from the performance roadmap are now complete:
+
+- **Binary serialization**: MessagePack encoding for UDS transport (`binary-uds` feature)
+- **Zero-copy body streaming**: `send_request_body_chunk_binary()` and `send_response_body_chunk_binary()` methods
+- **Buffer size alignment**: Unified `CHANNEL_BUFFER_SIZE = 64` across all transports
+- **Header allocation**: SmallVec-based `HeaderValues` for inline single-value storage
+- **Flow control enforcement**: All `send_*` methods check flow control state
+
+See [performance-roadmap.md](../performance-roadmap.md) for full details.
