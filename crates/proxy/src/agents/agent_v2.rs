@@ -395,8 +395,8 @@ impl AgentV2 {
     }
 
     /// Check if agent is healthy.
-    pub async fn is_healthy(&self) -> bool {
-        self.pool.is_agent_healthy(&self.config.id).await
+    pub fn is_healthy(&self) -> bool {
+        self.pool.is_agent_healthy(&self.config.id)
     }
 
     /// Record successful call (lock-free).

@@ -89,18 +89,27 @@ impl MaxMindDatabase {
 
 impl GeoDatabase for MaxMindDatabase {
     fn lookup(&self, ip: IpAddr) -> Result<Option<String>, GeoLookupError> {
-        match self.reader.lookup::<maxminddb::geoip2::Country>(ip) {
-            Ok(record) => {
-                let country_code = record
-                    .country
-                    .and_then(|c| c.iso_code)
-                    .map(|s| s.to_string());
-                trace!(ip = %ip, country = ?country_code, "MaxMind lookup");
-                Ok(country_code)
-            }
-            Err(maxminddb::MaxMindDBError::AddressNotFoundError(_)) => {
-                trace!(ip = %ip, "IP not found in MaxMind database");
-                Ok(None)
+        match self.reader.lookup(ip) {
+            Ok(result) => {
+                if !result.has_data() {
+                    trace!(ip = %ip, "IP not found in MaxMind database");
+                    return Ok(None);
+                }
+                match result.decode::<maxminddb::geoip2::Country>() {
+                    Ok(Some(record)) => {
+                        let country_code = record.country.iso_code.map(|s| s.to_string());
+                        trace!(ip = %ip, country = ?country_code, "MaxMind lookup");
+                        Ok(country_code)
+                    }
+                    Ok(None) => {
+                        trace!(ip = %ip, "No country data for IP in MaxMind database");
+                        Ok(None)
+                    }
+                    Err(e) => {
+                        warn!(ip = %ip, error = %e, "MaxMind decode error");
+                        Err(GeoLookupError::DatabaseError(e.to_string()))
+                    }
+                }
             }
             Err(e) => {
                 warn!(ip = %ip, error = %e, "MaxMind lookup error");
