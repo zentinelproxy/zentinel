@@ -4860,6 +4860,7 @@ dependencies = [
  "proptest",
  "prost",
  "reqwest 0.12.28",
+ "rmp-serde",
  "sentinel-common",
  "serde",
  "serde_json",

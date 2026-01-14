@@ -66,17 +66,34 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                     ));
                 }
 
-                // Parse load balancing algorithm
-                let load_balancing = child
-                    .children()
-                    .and_then(|c| {
-                        c.nodes()
-                            .iter()
-                            .find(|n| n.name().value() == "load-balancing")
-                    })
+                // Parse load balancing algorithm and sticky session config
+                let load_balancing_node = child.children().and_then(|c| {
+                    c.nodes()
+                        .iter()
+                        .find(|n| n.name().value() == "load-balancing")
+                });
+
+                let load_balancing = load_balancing_node
                     .and_then(get_first_arg_string)
                     .map(|s| parse_load_balancing(&s))
                     .unwrap_or(LoadBalancingAlgorithm::RoundRobin);
+
+                // Parse sticky session config (if load-balancing is "sticky" with children)
+                let sticky_session = if load_balancing == LoadBalancingAlgorithm::Sticky {
+                    load_balancing_node
+                        .and_then(|n| n.children())
+                        .map(parse_sticky_session_config)
+                } else {
+                    None
+                };
+
+                if sticky_session.is_some() {
+                    trace!(
+                        upstream_id = %id,
+                        cookie_name = ?sticky_session.as_ref().map(|s| &s.cookie_name),
+                        "Parsed sticky session configuration"
+                    );
+                }
 
                 // Parse health check configuration
                 let health_check = child
@@ -163,6 +180,7 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                         id,
                         targets,
                         load_balancing,
+                        sticky_session,
                         health_check,
                         connection_pool,
                         timeouts,
@@ -204,8 +222,93 @@ fn parse_load_balancing(s: &str) -> LoadBalancingAlgorithm {
         "weighted_least_connections" | "weighted_least_conn" | "wlc" => {
             LoadBalancingAlgorithm::WeightedLeastConnections
         }
+        "sticky" | "sticky_session" | "stickysession" => LoadBalancingAlgorithm::Sticky,
         _ => LoadBalancingAlgorithm::RoundRobin,
     }
+}
+
+/// Parse sticky session configuration
+///
+/// Example KDL:
+/// ```kdl
+/// load-balancing "sticky" {
+///     cookie-name "SERVERID"
+///     cookie-ttl 3600
+///     cookie-path "/"
+///     cookie-secure #true
+///     cookie-same-site "lax"
+///     fallback "round-robin"
+/// }
+/// ```
+fn parse_sticky_session_config(children: &kdl::KdlDocument) -> StickySessionConfig {
+    let nodes = children.nodes();
+
+    let cookie_name = find_string_entry(&nodes, "cookie-name")
+        .unwrap_or_else(|| "SERVERID".to_string());
+
+    // Parse cookie TTL - support both integer seconds and duration strings
+    let cookie_ttl_secs = find_int_entry(&nodes, "cookie-ttl")
+        .map(|v| v as u64)
+        .or_else(|| {
+            find_string_entry(&nodes, "cookie-ttl").and_then(|s| parse_duration_string(&s))
+        })
+        .unwrap_or(3600); // Default 1 hour
+
+    let cookie_path = find_string_entry(&nodes, "cookie-path").unwrap_or_else(|| "/".to_string());
+
+    let cookie_secure = nodes
+        .iter()
+        .find(|n| n.name().value() == "cookie-secure")
+        .and_then(|n| n.entries().first())
+        .and_then(|e| e.value().as_bool())
+        .unwrap_or(true); // Default to secure
+
+    let cookie_same_site = find_string_entry(&nodes, "cookie-same-site")
+        .map(|s| match s.to_lowercase().as_str() {
+            "strict" => SameSitePolicy::Strict,
+            "none" => SameSitePolicy::None,
+            _ => SameSitePolicy::Lax,
+        })
+        .unwrap_or_default();
+
+    let fallback = find_string_entry(&nodes, "fallback")
+        .map(|s| parse_load_balancing(&s))
+        .unwrap_or(LoadBalancingAlgorithm::RoundRobin);
+
+    StickySessionConfig {
+        cookie_name,
+        cookie_ttl_secs,
+        cookie_path,
+        cookie_secure,
+        cookie_same_site,
+        fallback,
+    }
+}
+
+/// Parse duration string like "1h", "30m", "1d" to seconds
+fn parse_duration_string(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Try to find where the number ends and the unit begins
+    let (num_part, unit_part) = s
+        .chars()
+        .position(|c| c.is_alphabetic())
+        .map(|i| s.split_at(i))?;
+
+    let value: f64 = num_part.trim().parse().ok()?;
+
+    let multiplier = match unit_part.to_lowercase().as_str() {
+        "s" | "sec" | "secs" | "second" | "seconds" => 1,
+        "m" | "min" | "mins" | "minute" | "minutes" => 60,
+        "h" | "hr" | "hrs" | "hour" | "hours" => 3600,
+        "d" | "day" | "days" => 86400,
+        _ => return None,
+    };
+
+    Some((value * multiplier as f64) as u64)
 }
 
 /// Parse HTTP version configuration

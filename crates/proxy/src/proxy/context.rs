@@ -258,6 +258,14 @@ pub struct RequestContext {
     pub(crate) shadow_pending: Option<ShadowPendingRequest>,
     /// Whether shadow request was sent for this request
     pub(crate) shadow_sent: bool,
+
+    // === Sticky Sessions ===
+    /// Whether a new sticky session assignment was made (needs Set-Cookie header)
+    pub(crate) sticky_session_new_assignment: bool,
+    /// Set-Cookie header value to include in response (full header value)
+    pub(crate) sticky_session_set_cookie: Option<String>,
+    /// Target index for sticky session (for logging)
+    pub(crate) sticky_target_index: Option<usize>,
 }
 
 /// Pending shadow request information stored in context for deferred execution
@@ -354,6 +362,9 @@ impl RequestContext {
             pii_detection_categories: Vec::new(),
             shadow_pending: None,
             shadow_sent: false,
+            sticky_session_new_assignment: false,
+            sticky_session_set_cookie: None,
+            sticky_target_index: None,
         }
     }
 

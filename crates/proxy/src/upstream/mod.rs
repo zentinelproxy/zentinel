@@ -92,6 +92,7 @@ pub mod locality;
 pub mod maglev;
 pub mod p2c;
 pub mod peak_ewma;
+pub mod sticky_session;
 pub mod subset;
 pub mod weighted_least_conn;
 
@@ -105,6 +106,7 @@ pub use locality::{LocalityAwareBalancer, LocalityAwareConfig};
 pub use maglev::{MaglevBalancer, MaglevConfig};
 pub use p2c::{P2cBalancer, P2cConfig};
 pub use peak_ewma::{PeakEwmaBalancer, PeakEwmaConfig};
+pub use sticky_session::{StickySessionBalancer, StickySessionRuntimeConfig};
 pub use subset::{SubsetBalancer, SubsetConfig};
 pub use weighted_least_conn::{WeightedLeastConnBalancer, WeightedLeastConnConfig};
 
@@ -811,7 +813,8 @@ impl UpstreamPool {
             algorithm = ?config.load_balancing,
             "Creating load balancer"
         );
-        let load_balancer = Self::create_load_balancer(&config.load_balancing, &targets)?;
+        let load_balancer =
+            Self::create_load_balancer(&config.load_balancing, &targets, &config)?;
 
         // Create connection pool configuration (Pingora handles actual pooling)
         debug!(
@@ -901,6 +904,7 @@ impl UpstreamPool {
     fn create_load_balancer(
         algorithm: &LoadBalancingAlgorithm,
         targets: &[UpstreamTarget],
+        config: &UpstreamConfig,
     ) -> SentinelResult<Arc<dyn LoadBalancer>> {
         let balancer: Arc<dyn LoadBalancer> = match algorithm {
             LoadBalancingAlgorithm::RoundRobin => {
@@ -962,19 +966,135 @@ impl UpstreamPool {
                     WeightedLeastConnConfig::default(),
                 ))
             }
+            LoadBalancingAlgorithm::Sticky => {
+                // Get sticky session config (required for Sticky algorithm)
+                let sticky_config = config.sticky_session.as_ref().ok_or_else(|| {
+                    SentinelError::Config {
+                        message: format!(
+                            "Upstream '{}' uses Sticky algorithm but no sticky_session config provided",
+                            config.id
+                        ),
+                        source: None,
+                    }
+                })?;
+
+                // Create runtime config with HMAC key
+                let runtime_config = StickySessionRuntimeConfig::from_config(sticky_config);
+
+                // Create fallback load balancer
+                let fallback = Self::create_load_balancer_inner(&sticky_config.fallback, targets)?;
+
+                info!(
+                    upstream_id = %config.id,
+                    cookie_name = %runtime_config.cookie_name,
+                    cookie_ttl_secs = runtime_config.cookie_ttl_secs,
+                    fallback_algorithm = ?sticky_config.fallback,
+                    "Creating sticky session balancer"
+                );
+
+                Arc::new(StickySessionBalancer::new(
+                    targets.to_vec(),
+                    runtime_config,
+                    fallback,
+                ))
+            }
         };
         Ok(balancer)
     }
 
-    /// Select next upstream peer
-    pub async fn select_peer(&self, context: Option<&RequestContext>) -> SentinelResult<HttpPeer> {
+    /// Create load balancer without sticky session support (for fallback balancers)
+    fn create_load_balancer_inner(
+        algorithm: &LoadBalancingAlgorithm,
+        targets: &[UpstreamTarget],
+    ) -> SentinelResult<Arc<dyn LoadBalancer>> {
+        let balancer: Arc<dyn LoadBalancer> = match algorithm {
+            LoadBalancingAlgorithm::RoundRobin => {
+                Arc::new(RoundRobinBalancer::new(targets.to_vec()))
+            }
+            LoadBalancingAlgorithm::LeastConnections => {
+                Arc::new(LeastConnectionsBalancer::new(targets.to_vec()))
+            }
+            LoadBalancingAlgorithm::Weighted => {
+                let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
+                Arc::new(WeightedBalancer {
+                    targets: targets.to_vec(),
+                    weights,
+                    current_index: AtomicUsize::new(0),
+                    health_status: Arc::new(RwLock::new(HashMap::new())),
+                })
+            }
+            LoadBalancingAlgorithm::IpHash => Arc::new(IpHashBalancer {
+                targets: targets.to_vec(),
+                health_status: Arc::new(RwLock::new(HashMap::new())),
+            }),
+            LoadBalancingAlgorithm::Random => {
+                Arc::new(RandomBalancer::new(targets.to_vec()))
+            }
+            LoadBalancingAlgorithm::ConsistentHash => Arc::new(ConsistentHashBalancer::new(
+                targets.to_vec(),
+                ConsistentHashConfig::default(),
+            )),
+            LoadBalancingAlgorithm::PowerOfTwoChoices => {
+                Arc::new(P2cBalancer::new(targets.to_vec(), P2cConfig::default()))
+            }
+            LoadBalancingAlgorithm::Adaptive => Arc::new(AdaptiveBalancer::new(
+                targets.to_vec(),
+                AdaptiveConfig::default(),
+            )),
+            LoadBalancingAlgorithm::LeastTokensQueued => Arc::new(LeastTokensQueuedBalancer::new(
+                targets.to_vec(),
+                LeastTokensQueuedConfig::default(),
+            )),
+            LoadBalancingAlgorithm::Maglev => Arc::new(MaglevBalancer::new(
+                targets.to_vec(),
+                MaglevConfig::default(),
+            )),
+            LoadBalancingAlgorithm::LocalityAware => Arc::new(LocalityAwareBalancer::new(
+                targets.to_vec(),
+                LocalityAwareConfig::default(),
+            )),
+            LoadBalancingAlgorithm::PeakEwma => Arc::new(PeakEwmaBalancer::new(
+                targets.to_vec(),
+                PeakEwmaConfig::default(),
+            )),
+            LoadBalancingAlgorithm::DeterministicSubset => Arc::new(SubsetBalancer::new(
+                targets.to_vec(),
+                SubsetConfig::default(),
+            )),
+            LoadBalancingAlgorithm::WeightedLeastConnections => {
+                Arc::new(WeightedLeastConnBalancer::new(
+                    targets.to_vec(),
+                    WeightedLeastConnConfig::default(),
+                ))
+            }
+            LoadBalancingAlgorithm::Sticky => {
+                // Sticky cannot be used as fallback (would cause infinite recursion)
+                return Err(SentinelError::Config {
+                    message: "Sticky algorithm cannot be used as fallback for sticky sessions"
+                        .to_string(),
+                    source: None,
+                });
+            }
+        };
+        Ok(balancer)
+    }
+
+    /// Select next upstream peer with selection metadata
+    ///
+    /// Returns the selected peer along with optional metadata from the load balancer.
+    /// The metadata can contain sticky session information that should be passed to
+    /// the response filter.
+    pub async fn select_peer_with_metadata(
+        &self,
+        context: Option<&RequestContext>,
+    ) -> SentinelResult<(HttpPeer, HashMap<String, String>)> {
         let request_num = self.stats.requests.fetch_add(1, Ordering::Relaxed) + 1;
 
         trace!(
             upstream_id = %self.id,
             request_num = request_num,
             target_count = self.targets.len(),
-            "Starting peer selection"
+            "Starting peer selection with metadata"
         );
 
         let mut attempts = 0;
@@ -1028,8 +1148,6 @@ impl UpstreamPool {
             }
 
             // Create peer with pooling options
-            // Note: Pingora handles actual connection pooling internally based on
-            // peer.options.idle_timeout and ServerConf.upstream_keepalive_pool_size
             trace!(
                 upstream_id = %self.id,
                 target = %selection.address,
@@ -1041,11 +1159,12 @@ impl UpstreamPool {
                 upstream_id = %self.id,
                 target = %selection.address,
                 attempt = attempts,
-                "Selected upstream peer"
+                metadata_keys = ?selection.metadata.keys().collect::<Vec<_>>(),
+                "Selected upstream peer with metadata"
             );
 
             self.stats.successes.fetch_add(1, Ordering::Relaxed);
-            return Ok(peer);
+            return Ok((peer, selection.metadata));
         }
 
         self.stats.failures.fetch_add(1, Ordering::Relaxed);
@@ -1059,6 +1178,14 @@ impl UpstreamPool {
             self.id.to_string(),
             "Failed to select upstream after max attempts",
         ))
+    }
+
+    /// Select next upstream peer
+    pub async fn select_peer(&self, context: Option<&RequestContext>) -> SentinelResult<HttpPeer> {
+        // Delegate to select_peer_with_metadata and discard metadata
+        self.select_peer_with_metadata(context)
+            .await
+            .map(|(peer, _)| peer)
     }
 
     /// Create new peer connection with connection pooling options

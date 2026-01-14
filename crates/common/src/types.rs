@@ -178,6 +178,13 @@ pub enum LoadBalancingAlgorithm {
     /// the lowest ratio of active connections to weight. Useful when backends
     /// have different capacities.
     WeightedLeastConnections,
+    /// Cookie-based sticky sessions
+    ///
+    /// Routes requests to the same backend based on an affinity cookie.
+    /// Falls back to a configurable algorithm when no cookie is present or
+    /// the target is unavailable. Useful for stateful applications that
+    /// require session affinity.
+    Sticky,
 }
 
 /// Health check type

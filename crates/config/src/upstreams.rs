@@ -11,6 +11,74 @@ use validator::Validate;
 use sentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 
 // ============================================================================
+// Sticky Session Configuration
+// ============================================================================
+
+/// Cookie SameSite policy for sticky session cookies
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SameSitePolicy {
+    /// Lax - Cookies sent with top-level navigations and GET from third-party sites
+    #[default]
+    Lax,
+    /// Strict - Cookies only sent in first-party context
+    Strict,
+    /// None - Cookies sent in all contexts (requires Secure)
+    None,
+}
+
+impl std::fmt::Display for SameSitePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SameSitePolicy::Lax => write!(f, "Lax"),
+            SameSitePolicy::Strict => write!(f, "Strict"),
+            SameSitePolicy::None => write!(f, "None"),
+        }
+    }
+}
+
+/// Configuration for cookie-based sticky sessions
+///
+/// When enabled, the load balancer will set an affinity cookie on responses
+/// and use it to route subsequent requests to the same backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StickySessionConfig {
+    /// Cookie name for session affinity (e.g., "SERVERID")
+    pub cookie_name: String,
+
+    /// Cookie TTL in seconds (e.g., 3600 for 1 hour)
+    pub cookie_ttl_secs: u64,
+
+    /// Cookie path (e.g., "/")
+    #[serde(default = "default_cookie_path")]
+    pub cookie_path: String,
+
+    /// Whether to set Secure and HttpOnly flags on the cookie
+    #[serde(default = "default_cookie_secure")]
+    pub cookie_secure: bool,
+
+    /// SameSite policy for the cookie
+    #[serde(default)]
+    pub cookie_same_site: SameSitePolicy,
+
+    /// Fallback load balancing algorithm when no cookie or target unavailable
+    #[serde(default = "default_sticky_fallback")]
+    pub fallback: LoadBalancingAlgorithm,
+}
+
+fn default_cookie_path() -> String {
+    "/".to_string()
+}
+
+fn default_cookie_secure() -> bool {
+    true
+}
+
+fn default_sticky_fallback() -> LoadBalancingAlgorithm {
+    LoadBalancingAlgorithm::RoundRobin
+}
+
+// ============================================================================
 // Upstream Configuration
 // ============================================================================
 
@@ -27,6 +95,9 @@ pub struct UpstreamConfig {
     /// Load balancing algorithm
     #[serde(default = "default_lb_algorithm")]
     pub load_balancing: LoadBalancingAlgorithm,
+
+    /// Sticky session configuration (for cookie-based session affinity)
+    pub sticky_session: Option<StickySessionConfig>,
 
     /// Health check configuration
     pub health_check: Option<HealthCheck>,

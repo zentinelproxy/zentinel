@@ -622,7 +622,7 @@ impl ProxyHttp for SentinelProxy {
                     ctx.selected_upstream_address = Some(peer_addr.clone());
 
                     // Copy sticky session metadata to context for response_filter
-                    if metadata.get("sticky_session_new").is_some() {
+                    if metadata.contains_key("sticky_session_new") {
                         ctx.sticky_session_new_assignment = true;
                         ctx.sticky_session_set_cookie =
                             metadata.get("sticky_set_cookie_header").cloned();
@@ -643,7 +643,7 @@ impl ProxyHttp for SentinelProxy {
                         peer_address = %peer_addr,
                         attempt = attempt,
                         selection_duration_us = selection_duration.as_micros(),
-                        sticky_session_hit = metadata.get("sticky_session_hit").is_some(),
+                        sticky_session_hit = metadata.contains_key("sticky_session_hit"),
                         sticky_session_new = ctx.sticky_session_new_assignment,
                         "Selected upstream peer"
                     );
