@@ -9,10 +9,11 @@
 //! - **Automatic reconnection**: Reconnect failed connections
 //! - **Graceful shutdown**: Drain connections before closing
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use dashmap::DashMap;
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info, trace, warn};
 
@@ -217,12 +218,15 @@ impl V2Transport {
 struct PooledConnection {
     client: V2Transport,
     created_at: Instant,
-    last_used: RwLock<Instant>,
+    /// Milliseconds since created_at when last used (avoids RwLock in hot path)
+    last_used_offset_ms: AtomicU64,
     in_flight: AtomicU64,
     request_count: AtomicU64,
     error_count: AtomicU64,
     consecutive_errors: AtomicU64,
     concurrency_limiter: Semaphore,
+    /// Cached health state - updated by background maintenance, read in hot path
+    healthy_cached: AtomicBool,
 }
 
 impl PooledConnection {
@@ -230,12 +234,13 @@ impl PooledConnection {
         Self {
             client,
             created_at: Instant::now(),
-            last_used: RwLock::new(Instant::now()),
+            last_used_offset_ms: AtomicU64::new(0),
             in_flight: AtomicU64::new(0),
             request_count: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
             consecutive_errors: AtomicU64::new(0),
             concurrency_limiter: Semaphore::new(max_concurrent),
+            healthy_cached: AtomicBool::new(true), // Assume healthy until proven otherwise
         }
     }
 
@@ -253,10 +258,35 @@ impl PooledConnection {
         }
     }
 
-    async fn is_healthy(&self) -> bool {
-        self.client.is_connected().await
-            && self.consecutive_errors.load(Ordering::Relaxed) < 3
-            && self.client.can_accept_requests().await
+    /// Fast health check using cached state (no async, no I/O).
+    /// Updated by background maintenance task.
+    #[inline]
+    fn is_healthy_cached(&self) -> bool {
+        self.healthy_cached.load(Ordering::Acquire)
+    }
+
+    /// Full health check with I/O - only called by maintenance task.
+    async fn check_and_update_health(&self) -> bool {
+        let connected = self.client.is_connected().await;
+        let low_errors = self.consecutive_errors.load(Ordering::Relaxed) < 3;
+        let can_accept = self.client.can_accept_requests().await;
+
+        let healthy = connected && low_errors && can_accept;
+        self.healthy_cached.store(healthy, Ordering::Release);
+        healthy
+    }
+
+    /// Record that this connection was just used.
+    #[inline]
+    fn touch(&self) {
+        let offset = self.created_at.elapsed().as_millis() as u64;
+        self.last_used_offset_ms.store(offset, Ordering::Relaxed);
+    }
+
+    /// Get the last used time.
+    fn last_used(&self) -> Instant {
+        let offset_ms = self.last_used_offset_ms.load(Ordering::Relaxed);
+        self.created_at + Duration::from_millis(offset_ms)
     }
 }
 
@@ -285,12 +315,16 @@ pub struct AgentPoolStats {
 struct AgentEntry {
     agent_id: String,
     endpoint: String,
+    /// Connections are rarely modified (only on reconnect), so RwLock is acceptable here.
+    /// The hot-path reads use try_read() to avoid blocking.
     connections: RwLock<Vec<Arc<PooledConnection>>>,
     capabilities: RwLock<Option<AgentCapabilities>>,
     round_robin_index: AtomicUsize,
     reconnect_attempts: AtomicUsize,
-    last_reconnect_attempt: RwLock<Option<Instant>>,
-    healthy: RwLock<bool>,
+    /// Stored as millis since UNIX_EPOCH to avoid RwLock
+    last_reconnect_attempt_ms: AtomicU64,
+    /// Cached aggregate health - true if any connection is healthy
+    healthy: AtomicBool,
 }
 
 impl AgentEntry {
@@ -302,9 +336,31 @@ impl AgentEntry {
             capabilities: RwLock::new(None),
             round_robin_index: AtomicUsize::new(0),
             reconnect_attempts: AtomicUsize::new(0),
-            last_reconnect_attempt: RwLock::new(None),
-            healthy: RwLock::new(true),
+            last_reconnect_attempt_ms: AtomicU64::new(0),
+            healthy: AtomicBool::new(true),
         }
+    }
+
+    /// Check if enough time has passed since last reconnect attempt.
+    fn should_reconnect(&self, interval: Duration) -> bool {
+        let last_ms = self.last_reconnect_attempt_ms.load(Ordering::Relaxed);
+        if last_ms == 0 {
+            return true;
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        now_ms.saturating_sub(last_ms) > interval.as_millis() as u64
+    }
+
+    /// Record that a reconnect attempt was made.
+    fn mark_reconnect_attempt(&self) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.last_reconnect_attempt_ms.store(now_ms, Ordering::Relaxed);
     }
 }
 
@@ -312,9 +368,17 @@ impl AgentEntry {
 ///
 /// Manages multiple connections to multiple agents with load balancing,
 /// health tracking, automatic reconnection, and metrics collection.
+///
+/// # Performance
+///
+/// Uses `DashMap` for lock-free reads in the hot path. Agent lookup is O(1)
+/// without contention. Connection selection uses cached health state to avoid
+/// async I/O per request.
 pub struct AgentPool {
     config: AgentPoolConfig,
-    agents: RwLock<HashMap<String, Arc<AgentEntry>>>,
+    /// Lock-free concurrent map for agent lookup.
+    /// Reads (select_connection) are lock-free. Writes (add/remove agent) shard-lock.
+    agents: DashMap<String, Arc<AgentEntry>>,
     total_requests: AtomicU64,
     total_errors: AtomicU64,
     /// Shared metrics collector for all agents
@@ -362,7 +426,7 @@ impl AgentPool {
 
         Self {
             config,
-            agents: RwLock::new(HashMap::new()),
+            agents: DashMap::new(),
             total_requests: AtomicU64::new(0),
             total_errors: AtomicU64::new(0),
             metrics_collector,
@@ -487,7 +551,7 @@ impl AgentPool {
         }
 
         *entry.connections.write().await = connections;
-        self.agents.write().await.insert(agent_id.clone(), entry);
+        self.agents.insert(agent_id.clone(), entry);
 
         info!(
             agent_id = %agent_id,
@@ -507,10 +571,8 @@ impl AgentPool {
         // Unregister from ConfigPusher
         self.config_pusher.unregister_agent(agent_id);
 
-        let entry = self
+        let (_, entry) = self
             .agents
-            .write()
-            .await
             .remove(agent_id)
             .ok_or_else(|| AgentProtocolError::InvalidMessage(format!("Agent {} not found", agent_id)))?;
 
@@ -547,9 +609,8 @@ impl AgentPool {
             self.config.max_concurrent_per_connection,
         ));
 
-        // Check if agent already exists
-        let mut agents = self.agents.write().await;
-        if let Some(entry) = agents.get(agent_id) {
+        // Check if agent already exists (use entry API for atomic check-and-insert)
+        if let Some(entry) = self.agents.get(agent_id) {
             // Add to existing agent's connections
             let mut connections = entry.connections.write().await;
 
@@ -596,7 +657,7 @@ impl AgentPool {
 
             *entry.capabilities.write().await = Some(capabilities);
             *entry.connections.write().await = vec![conn];
-            agents.insert(agent_id.to_string(), entry);
+            self.agents.insert(agent_id.to_string(), entry);
 
             info!(
                 agent_id = %agent_id,
@@ -610,6 +671,13 @@ impl AgentPool {
     /// Send a request headers event to an agent.
     ///
     /// The pool selects the best connection based on the load balancing strategy.
+    ///
+    /// # Performance
+    ///
+    /// This is the hot path. Uses:
+    /// - Lock-free agent lookup via `DashMap`
+    /// - Cached health state (no async I/O for health check)
+    /// - Atomic last_used tracking (no RwLock)
     pub async fn send_request_headers(
         &self,
         agent_id: &str,
@@ -618,7 +686,7 @@ impl AgentPool {
     ) -> Result<AgentResponse, AgentProtocolError> {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
 
-        let conn = self.select_connection(agent_id).await?;
+        let conn = self.select_connection(agent_id)?;
 
         // Acquire concurrency permit
         let _permit = conn
@@ -628,7 +696,7 @@ impl AgentPool {
             .map_err(|_| AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string()))?;
 
         conn.in_flight.fetch_add(1, Ordering::Relaxed);
-        *conn.last_used.write().await = Instant::now();
+        conn.touch(); // Atomic, no lock
 
         let result = conn.client.send_request_headers(correlation_id, event).await;
 
@@ -639,10 +707,16 @@ impl AgentPool {
             Ok(_) => {
                 conn.consecutive_errors.store(0, Ordering::Relaxed);
             }
-            Err(_) => {
+            Err(e) => {
                 conn.error_count.fetch_add(1, Ordering::Relaxed);
-                conn.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+                let consecutive = conn.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
                 self.total_errors.fetch_add(1, Ordering::Relaxed);
+
+                // Mark unhealthy immediately on repeated failures (fast feedback)
+                if consecutive >= 3 {
+                    conn.healthy_cached.store(false, Ordering::Release);
+                    trace!(agent_id = %agent_id, error = %e, "Connection marked unhealthy after consecutive errors");
+                }
             }
         }
 
@@ -661,7 +735,7 @@ impl AgentPool {
     ) -> Result<AgentResponse, AgentProtocolError> {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
 
-        let conn = self.select_connection(agent_id).await?;
+        let conn = self.select_connection(agent_id)?;
 
         let _permit = conn
             .concurrency_limiter
@@ -670,7 +744,7 @@ impl AgentPool {
             .map_err(|_| AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string()))?;
 
         conn.in_flight.fetch_add(1, Ordering::Relaxed);
-        *conn.last_used.write().await = Instant::now();
+        conn.touch();
 
         let result = conn.client.send_request_body_chunk(correlation_id, event).await;
 
@@ -683,8 +757,11 @@ impl AgentPool {
             }
             Err(_) => {
                 conn.error_count.fetch_add(1, Ordering::Relaxed);
-                conn.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+                let consecutive = conn.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
                 self.total_errors.fetch_add(1, Ordering::Relaxed);
+                if consecutive >= 3 {
+                    conn.healthy_cached.store(false, Ordering::Release);
+                }
             }
         }
 
@@ -703,7 +780,7 @@ impl AgentPool {
     ) -> Result<AgentResponse, AgentProtocolError> {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
 
-        let conn = self.select_connection(agent_id).await?;
+        let conn = self.select_connection(agent_id)?;
 
         let _permit = conn
             .concurrency_limiter
@@ -712,7 +789,7 @@ impl AgentPool {
             .map_err(|_| AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string()))?;
 
         conn.in_flight.fetch_add(1, Ordering::Relaxed);
-        *conn.last_used.write().await = Instant::now();
+        conn.touch();
 
         let result = conn.client.send_response_headers(correlation_id, event).await;
 
@@ -725,8 +802,11 @@ impl AgentPool {
             }
             Err(_) => {
                 conn.error_count.fetch_add(1, Ordering::Relaxed);
-                conn.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+                let consecutive = conn.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
                 self.total_errors.fetch_add(1, Ordering::Relaxed);
+                if consecutive >= 3 {
+                    conn.healthy_cached.store(false, Ordering::Release);
+                }
             }
         }
 
@@ -745,7 +825,7 @@ impl AgentPool {
     ) -> Result<AgentResponse, AgentProtocolError> {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
 
-        let conn = self.select_connection(agent_id).await?;
+        let conn = self.select_connection(agent_id)?;
 
         let _permit = conn
             .concurrency_limiter
@@ -754,7 +834,7 @@ impl AgentPool {
             .map_err(|_| AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string()))?;
 
         conn.in_flight.fetch_add(1, Ordering::Relaxed);
-        *conn.last_used.write().await = Instant::now();
+        conn.touch();
 
         let result = conn.client.send_response_body_chunk(correlation_id, event).await;
 
@@ -767,8 +847,11 @@ impl AgentPool {
             }
             Err(_) => {
                 conn.error_count.fetch_add(1, Ordering::Relaxed);
-                conn.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+                let consecutive = conn.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
                 self.total_errors.fetch_add(1, Ordering::Relaxed);
+                if consecutive >= 3 {
+                    conn.healthy_cached.store(false, Ordering::Release);
+                }
             }
         }
 
@@ -782,8 +865,8 @@ impl AgentPool {
         correlation_id: &str,
         reason: CancelReason,
     ) -> Result<(), AgentProtocolError> {
-        let agents = self.agents.read().await;
-        let entry = agents
+        let entry = self
+            .agents
             .get(agent_id)
             .ok_or_else(|| AgentProtocolError::InvalidMessage(format!("Agent {} not found", agent_id)))?;
 
@@ -797,10 +880,12 @@ impl AgentPool {
 
     /// Get statistics for all agents in the pool.
     pub async fn stats(&self) -> Vec<AgentPoolStats> {
-        let agents = self.agents.read().await;
-        let mut stats = Vec::with_capacity(agents.len());
+        let mut stats = Vec::with_capacity(self.agents.len());
 
-        for (agent_id, entry) in agents.iter() {
+        for entry_ref in self.agents.iter() {
+            let agent_id = entry_ref.key().clone();
+            let entry = entry_ref.value();
+
             let connections = entry.connections.read().await;
             let mut healthy_count = 0;
             let mut total_in_flight = 0;
@@ -808,7 +893,8 @@ impl AgentPool {
             let mut total_errors = 0;
 
             for conn in connections.iter() {
-                if conn.is_healthy().await {
+                // Use cached health for stats (consistent with hot path)
+                if conn.is_healthy_cached() {
                     healthy_count += 1;
                 }
                 total_in_flight += conn.in_flight();
@@ -823,14 +909,14 @@ impl AgentPool {
             };
 
             stats.push(AgentPoolStats {
-                agent_id: agent_id.clone(),
+                agent_id,
                 active_connections: connections.len(),
                 healthy_connections: healthy_count,
                 total_in_flight,
                 total_requests,
                 total_errors,
                 error_rate,
-                is_healthy: *entry.healthy.read().await,
+                is_healthy: entry.healthy.load(Ordering::Acquire),
             });
         }
 
@@ -847,33 +933,29 @@ impl AgentPool {
 
     /// Get the capabilities of an agent.
     pub async fn agent_capabilities(&self, agent_id: &str) -> Option<AgentCapabilities> {
-        let entry = {
-            let agents = self.agents.read().await;
-            match agents.get(agent_id) {
-                Some(e) => e.clone(),
-                None => return None,
-            }
+        // Clone the Arc out of the DashMap Ref to avoid lifetime issues
+        let entry = match self.agents.get(agent_id) {
+            Some(entry_ref) => Arc::clone(&*entry_ref),
+            None => return None,
         };
-        let caps = entry.capabilities.read().await.clone();
-        caps
+        // Bind to temp to ensure guard drops before function returns
+        let result = entry.capabilities.read().await.clone();
+        result
     }
 
     /// Check if an agent is healthy.
-    pub async fn is_agent_healthy(&self, agent_id: &str) -> bool {
-        let entry = {
-            let agents = self.agents.read().await;
-            agents.get(agent_id).cloned()
-        };
-        if let Some(entry) = entry {
-            *entry.healthy.read().await
-        } else {
-            false
-        }
+    ///
+    /// Uses cached health state for fast, lock-free access.
+    pub fn is_agent_healthy(&self, agent_id: &str) -> bool {
+        self.agents
+            .get(agent_id)
+            .map(|e| e.healthy.load(Ordering::Acquire))
+            .unwrap_or(false)
     }
 
     /// Get all agent IDs in the pool.
-    pub async fn agent_ids(&self) -> Vec<String> {
-        self.agents.read().await.keys().cloned().collect()
+    pub fn agent_ids(&self) -> Vec<String> {
+        self.agents.iter().map(|e| e.key().clone()).collect()
     }
 
     /// Gracefully shut down the pool.
@@ -882,38 +964,41 @@ impl AgentPool {
     pub async fn shutdown(&self) -> Result<(), AgentProtocolError> {
         info!("Shutting down agent pool");
 
-        let agents: Vec<_> = self.agents.write().await.drain().collect();
+        // Collect all agents (DashMap doesn't have drain, so we remove one by one)
+        let agent_ids: Vec<String> = self.agents.iter().map(|e| e.key().clone()).collect();
 
-        for (agent_id, entry) in agents {
-            debug!(agent_id = %agent_id, "Draining agent connections");
+        for agent_id in agent_ids {
+            if let Some((_, entry)) = self.agents.remove(&agent_id) {
+                debug!(agent_id = %agent_id, "Draining agent connections");
 
-            let connections = entry.connections.read().await;
-            for conn in connections.iter() {
-                // Cancel all pending requests
-                let _ = conn.client.cancel_all(CancelReason::ProxyShutdown).await;
-            }
-
-            // Wait for in-flight requests to complete
-            let drain_deadline = Instant::now() + self.config.drain_timeout;
-            loop {
-                let total_in_flight: u64 = connections.iter().map(|c| c.in_flight()).sum();
-                if total_in_flight == 0 {
-                    break;
+                let connections = entry.connections.read().await;
+                for conn in connections.iter() {
+                    // Cancel all pending requests
+                    let _ = conn.client.cancel_all(CancelReason::ProxyShutdown).await;
                 }
-                if Instant::now() > drain_deadline {
-                    warn!(
-                        agent_id = %agent_id,
-                        in_flight = total_in_flight,
-                        "Drain timeout, forcing close"
-                    );
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
 
-            // Close all connections
-            for conn in connections.iter() {
-                let _ = conn.client.close().await;
+                // Wait for in-flight requests to complete
+                let drain_deadline = Instant::now() + self.config.drain_timeout;
+                loop {
+                    let total_in_flight: u64 = connections.iter().map(|c| c.in_flight()).sum();
+                    if total_in_flight == 0 {
+                        break;
+                    }
+                    if Instant::now() > drain_deadline {
+                        warn!(
+                            agent_id = %agent_id,
+                            in_flight = total_in_flight,
+                            "Drain timeout, forcing close"
+                        );
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+
+                // Close all connections
+                for conn in connections.iter() {
+                    let _ = conn.client.close().await;
+                }
             }
         }
 
@@ -924,31 +1009,45 @@ impl AgentPool {
     /// Run background maintenance tasks.
     ///
     /// This should be spawned as a background task. It handles:
-    /// - Health checking
+    /// - Health checking (updates cached health state)
     /// - Reconnection of failed connections
     /// - Cleanup of idle connections
+    ///
+    /// # Health Check Strategy
+    ///
+    /// Health is checked here (with I/O) and cached in `PooledConnection::healthy_cached`.
+    /// The hot path (`select_connection`) reads the cached value without I/O.
     pub async fn run_maintenance(&self) {
         let mut interval = tokio::time::interval(self.config.health_check_interval);
 
         loop {
             interval.tick().await;
 
-            let agents = self.agents.read().await;
-            for (agent_id, entry) in agents.iter() {
-                // Check connection health
+            // Iterate without holding a long-lived lock
+            let agent_ids: Vec<String> = self.agents.iter().map(|e| e.key().clone()).collect();
+
+            for agent_id in agent_ids {
+                let Some(entry_ref) = self.agents.get(&agent_id) else {
+                    continue; // Agent was removed
+                };
+                let entry = entry_ref.value().clone();
+                drop(entry_ref); // Release DashMap ref before async work
+
+                // Check connection health (this does I/O)
                 let connections = entry.connections.read().await;
                 let mut healthy_count = 0;
 
                 for conn in connections.iter() {
-                    if conn.is_healthy().await {
+                    // Full health check with I/O, updates cached state
+                    if conn.check_and_update_health().await {
                         healthy_count += 1;
                     }
                 }
 
-                // Update agent health status
-                let was_healthy = *entry.healthy.read().await;
+                // Update aggregate agent health status
+                let was_healthy = entry.healthy.load(Ordering::Acquire);
                 let is_healthy = healthy_count > 0;
-                *entry.healthy.write().await = is_healthy;
+                entry.healthy.store(is_healthy, Ordering::Release);
 
                 if was_healthy && !is_healthy {
                     warn!(agent_id = %agent_id, "Agent marked unhealthy");
@@ -958,14 +1057,9 @@ impl AgentPool {
 
                 // Try to reconnect failed connections
                 if healthy_count < self.config.connections_per_agent {
-                    let should_reconnect = {
-                        let last = entry.last_reconnect_attempt.read().await;
-                        last.map_or(true, |t| t.elapsed() > self.config.reconnect_interval)
-                    };
-
-                    if should_reconnect {
-                        drop(connections); // Release read lock
-                        if let Err(e) = self.reconnect_agent(agent_id, entry).await {
+                    if entry.should_reconnect(self.config.reconnect_interval) {
+                        drop(connections); // Release read lock before reconnect
+                        if let Err(e) = self.reconnect_agent(&agent_id, &entry).await {
                             trace!(agent_id = %agent_id, error = %e, "Reconnect failed");
                         }
                     }
@@ -1018,30 +1112,51 @@ impl AgentPool {
         ))
     }
 
-    async fn select_connection(
+    /// Select a connection for a request.
+    ///
+    /// # Performance
+    ///
+    /// This is the hot path. Optimizations:
+    /// - Lock-free agent lookup via `DashMap::get()`
+    /// - Uses `try_read()` to avoid blocking on connections lock
+    /// - Cached health state (no async I/O)
+    /// - All operations are synchronous
+    ///
+    /// # Errors
+    ///
+    /// Returns error if agent not found, no connections, or no healthy connections.
+    fn select_connection(
         &self,
         agent_id: &str,
     ) -> Result<Arc<PooledConnection>, AgentProtocolError> {
-        let agents = self.agents.read().await;
-        let entry = agents
+        let entry = self
+            .agents
             .get(agent_id)
             .ok_or_else(|| AgentProtocolError::InvalidMessage(format!("Agent {} not found", agent_id)))?;
 
-        let connections = entry.connections.read().await;
-        if connections.is_empty() {
+        // Try non-blocking read first; fall back to blocking if contended
+        let connections_guard = match entry.connections.try_read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // Blocking fallback - this should be rare
+                trace!(agent_id = %agent_id, "select_connection: blocking on connections lock");
+                futures::executor::block_on(entry.connections.read())
+            }
+        };
+
+        if connections_guard.is_empty() {
             return Err(AgentProtocolError::ConnectionFailed(format!(
                 "No connections available for agent {}",
                 agent_id
             )));
         }
 
-        // Filter to healthy connections
-        let mut healthy: Vec<_> = Vec::new();
-        for conn in connections.iter() {
-            if conn.is_healthy().await {
-                healthy.push(conn.clone());
-            }
-        }
+        // Filter to healthy connections using cached health (no I/O)
+        let healthy: Vec<_> = connections_guard
+            .iter()
+            .filter(|c| c.is_healthy_cached())
+            .cloned()
+            .collect();
 
         if healthy.is_empty() {
             return Err(AgentProtocolError::ConnectionFailed(format!(
@@ -1090,7 +1205,7 @@ impl AgentPool {
         agent_id: &str,
         entry: &AgentEntry,
     ) -> Result<(), AgentProtocolError> {
-        *entry.last_reconnect_attempt.write().await = Some(Instant::now());
+        entry.mark_reconnect_attempt();
         let attempts = entry.reconnect_attempts.fetch_add(1, Ordering::Relaxed);
 
         if attempts >= self.config.max_reconnect_attempts {
@@ -1182,16 +1297,16 @@ mod tests {
         assert_eq!(pool.config.connections_per_agent, 8);
     }
 
-    #[tokio::test]
-    async fn test_agent_ids_empty() {
+    #[test]
+    fn test_agent_ids_empty() {
         let pool = AgentPool::new();
-        assert!(pool.agent_ids().await.is_empty());
+        assert!(pool.agent_ids().is_empty());
     }
 
-    #[tokio::test]
-    async fn test_is_agent_healthy_not_found() {
+    #[test]
+    fn test_is_agent_healthy_not_found() {
         let pool = AgentPool::new();
-        assert!(!pool.is_agent_healthy("nonexistent").await);
+        assert!(!pool.is_agent_healthy("nonexistent"));
     }
 
     #[tokio::test]

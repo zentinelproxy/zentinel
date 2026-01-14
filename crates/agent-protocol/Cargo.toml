@@ -39,6 +39,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
 base64 = { workspace = true }
+dashmap = { workspace = true }
 
 # Unix sockets
 tokio-util = { version = "0.7", features = ["codec"] }
@@ -49,7 +50,8 @@ futures = "0.3"
 tracing = { workspace = true }
 
 [build-dependencies]
-tonic-build = "0.14"
+# Use 0.12.3 to match tonic 0.12 workspace dependency
+tonic-build = "0.12.3"
 
 [dev-dependencies]
 tempfile = "3.12"
