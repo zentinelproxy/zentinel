@@ -65,3 +65,7 @@ tonic-build = "0.12.3"
 tempfile = "3.12"
 criterion = { workspace = true }
 proptest = { workspace = true }
+
+[[bench]]
+name = "hot_path"
+harness = false
