@@ -1,7 +1,7 @@
 # Funding links for Sentinel
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
 
+github: [raskell-io]
+open_collective: sentinel-proxy
+ko_fi: raskell
 custom: ["https://sentinel.raskell.io/support"]
-
-# Uncomment when enrolled in GitHub Sponsors:
-# github: [raskell-io]
