@@ -33,9 +33,9 @@ pingora-cache = { workspace = true }
 pingora-memory-cache = { workspace = true }
 
 # Local crates
-sentinel-config = { path = "../config", version = "0.3.1", features = ["validation"] }
-sentinel-common = { path = "../common", version = "0.3.1" }
-sentinel-agent-protocol = { path = "../agent-protocol", version = "0.3.1" }
+sentinel-config = { path = "../config", version = "0.3.2", features = ["validation"] }
+sentinel-common = { path = "../common", version = "0.3.2" }
+sentinel-agent-protocol = { path = "../agent-protocol", version = "0.3.2" }
 
 # Async runtime
 tokio = { workspace = true }

@@ -20,7 +20,7 @@ mmap-buffers = ["memmap2", "dep:tempfile"]
 
 [dependencies]
 # Local crates
-sentinel-common = { path = "../common", version = "0.3.1" }
+sentinel-common = { path = "../common", version = "0.3.2" }
 
 # Protocol and serialization
 prost = { workspace = true }
