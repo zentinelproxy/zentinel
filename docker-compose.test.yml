@@ -112,6 +112,18 @@ services:
       - redis-data:/data
     restart: "no"
 
+  # Memcached for rate limiting tests
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: sentinel-memcached
+    profiles: ["persistence"]
+    networks:
+      - sentinel
+    ports:
+      - "11211:11211"
+    command: memcached -m 64
+    restart: "no"
+
   # Mock malicious traffic generator for WAF testing
   attacker:
     image: alpine/curl:latest
