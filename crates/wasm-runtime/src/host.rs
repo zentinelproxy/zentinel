@@ -1,12 +1,21 @@
 //! WASM agent host bindings and instance management.
+//!
+//! This module provides the actual implementation of WASM agent execution using
+//! the Wasmtime Component Model. Agents implementing the `sentinel:agent` world
+//! can be loaded and called through this interface.
 
+use crate::component::{
+    agent_info_from_wit, agent_response_from_wit, headers_to_wit, request_metadata_to_wit, Agent,
+};
 use crate::config::WasmResourceLimits;
 use crate::error::WasmRuntimeError;
 use parking_lot::Mutex;
 use sentinel_agent_protocol::{AgentResponse, RequestMetadata};
 use std::collections::HashMap;
-use tracing::{debug, instrument};
-use wasmtime::*;
+use tracing::{debug, instrument, warn};
+use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::{Config, Engine, Store};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 /// Information about a loaded WASM agent.
 #[derive(Debug, Clone)]
@@ -25,120 +34,121 @@ pub struct WasmAgentInfo {
     pub supports_streaming: bool,
 }
 
+/// State stored in the Wasmtime store.
+pub struct AgentState {
+    /// Fuel consumed in current call
+    fuel_consumed: u64,
+    /// Agent configuration (JSON)
+    #[allow(dead_code)]
+    config: String,
+    /// Whether agent is configured
+    #[allow(dead_code)]
+    configured: bool,
+    /// WASI context for the component
+    wasi_ctx: WasiCtx,
+    /// Resource table for WASI
+    resource_table: ResourceTable,
+}
+
+impl WasiView for AgentState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.resource_table,
+        }
+    }
+}
+
 /// A loaded WASM agent instance.
 pub struct WasmAgentInstance {
     /// Agent information
     info: WasmAgentInfo,
     /// Wasmtime store with state
     store: Mutex<Store<AgentState>>,
-    /// Compiled instance
-    instance: Instance,
+    /// The instantiated agent component
+    agent: Agent,
     /// Resource limits
     limits: WasmResourceLimits,
 }
 
-/// State stored in the Wasmtime store.
-struct AgentState {
-    /// Fuel consumed in current call
-    fuel_consumed: u64,
-    /// Agent configuration (JSON)
-    config: String,
-    /// Whether agent is configured
-    configured: bool,
-}
-
 impl WasmAgentInstance {
-    /// Create a new WASM agent instance from compiled module.
+    /// Create a new WASM agent instance from a compiled component.
     pub(crate) fn new(
         engine: &Engine,
-        module: &Module,
+        component: &Component,
         limits: WasmResourceLimits,
         config_json: &str,
     ) -> Result<Self, WasmRuntimeError> {
+        // Build WASI context
+        let wasi_ctx = WasiCtxBuilder::new()
+            .inherit_stdout()
+            .inherit_stderr()
+            .build();
+
         // Create store with state
         let state = AgentState {
             fuel_consumed: 0,
             config: config_json.to_string(),
             configured: false,
+            wasi_ctx,
+            resource_table: ResourceTable::new(),
         };
         let mut store = Store::new(engine, state);
 
         // Configure fuel metering
         store.set_fuel(limits.max_fuel)?;
 
-        // Create linker and add imports
+        // Create linker and add WASI
         let mut linker = Linker::new(engine);
-        Self::add_host_functions(&mut linker)?;
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+            .map_err(|e| WasmRuntimeError::Internal(format!("failed to add WASI: {}", e)))?;
 
-        // Instantiate module
-        let instance = linker
-            .instantiate(&mut store, module)
+        // Instantiate the component
+        let agent = Agent::instantiate(&mut store, component, &linker)
             .map_err(|e| WasmRuntimeError::Instantiation(e.to_string()))?;
 
         // Get agent info
-        let info = Self::call_get_info(&mut store, &instance)?;
+        let info = Self::call_get_info(&mut store, &agent)?;
 
         // Configure agent
-        Self::call_configure(&mut store, &instance, config_json)?;
+        Self::call_configure(&mut store, &agent, config_json)?;
         store.data_mut().configured = true;
 
         Ok(Self {
             info,
             store: Mutex::new(store),
-            instance,
+            agent,
             limits,
         })
     }
 
-    /// Add host functions to the linker.
-    fn add_host_functions(linker: &mut Linker<AgentState>) -> Result<(), WasmRuntimeError> {
-        // Add logging function
-        linker
-            .func_wrap("env", "log", |_caller: Caller<'_, AgentState>, level: i32, ptr: i32, len: i32| {
-                // In a real implementation, we'd read the string from WASM memory
-                debug!(level = level, ptr = ptr, len = len, "WASM agent log");
-            })
-            .map_err(|e| WasmRuntimeError::Internal(format!("failed to add log function: {}", e)))?;
-
-        // Add timestamp function
-        linker
-            .func_wrap("env", "now_ms", |_caller: Caller<'_, AgentState>| -> i64 {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0)
-            })
-            .map_err(|e| WasmRuntimeError::Internal(format!("failed to add now_ms function: {}", e)))?;
-
-        Ok(())
-    }
-
     /// Call get_info to retrieve agent information.
     fn call_get_info(
-        _store: &mut Store<AgentState>,
-        _instance: &Instance,
+        store: &mut Store<AgentState>,
+        agent: &Agent,
     ) -> Result<WasmAgentInfo, WasmRuntimeError> {
-        // For now, return a default info since we don't have full component model bindings
-        // In production, this would call the actual WASM function
-        Ok(WasmAgentInfo {
-            agent_id: "wasm-agent".to_string(),
-            name: "WASM Agent".to_string(),
-            version: "1.0.0".to_string(),
-            supported_events: vec!["request_headers".to_string()],
-            max_body_size: 1024 * 1024, // 1MB
-            supports_streaming: false,
-        })
+        let handler = agent.sentinel_agent_handler();
+        let wit_info = handler
+            .call_get_info(store)
+            .map_err(|e| WasmRuntimeError::FunctionCall(format!("get_info failed: {}", e)))?;
+
+        Ok(agent_info_from_wit(wit_info))
     }
 
     /// Call configure to initialize the agent.
     fn call_configure(
-        _store: &mut Store<AgentState>,
-        _instance: &Instance,
+        store: &mut Store<AgentState>,
+        agent: &Agent,
         config_json: &str,
     ) -> Result<(), WasmRuntimeError> {
-        // For now, just store the config
-        // In production, this would call the actual WASM function
         debug!(config_len = config_json.len(), "configuring WASM agent");
+
+        let handler = agent.sentinel_agent_handler();
+        handler
+            .call_configure(store, config_json)
+            .map_err(|e| WasmRuntimeError::FunctionCall(format!("configure failed: {}", e)))?
+            .map_err(WasmRuntimeError::Configuration)?;
+
         Ok(())
     }
 
@@ -166,12 +176,6 @@ impl WasmAgentInstance {
         // Reset fuel for this call
         store.set_fuel(self.limits.max_fuel)?;
 
-        // In production, this would:
-        // 1. Serialize metadata, method, uri, headers to WASM memory
-        // 2. Call the on_request_headers export
-        // 3. Deserialize the response
-
-        // For now, return a default allow response
         debug!(
             method = method,
             uri = uri,
@@ -179,12 +183,25 @@ impl WasmAgentInstance {
             "processing request headers in WASM agent"
         );
 
-        // Check fuel consumed
+        // Convert types
+        let wit_metadata = request_metadata_to_wit(metadata);
+        let wit_headers = headers_to_wit(headers);
+
+        // Call the WASM function
+        let handler = self.agent.sentinel_agent_handler();
+        let wit_response = handler
+            .call_on_request_headers(&mut *store, &wit_metadata, method, uri, &wit_headers)
+            .map_err(|e| {
+                WasmRuntimeError::FunctionCall(format!("on_request_headers failed: {}", e))
+            })?;
+
+        // Track fuel consumption
         let remaining = store.get_fuel().unwrap_or(0);
         let consumed = self.limits.max_fuel.saturating_sub(remaining);
         store.data_mut().fuel_consumed = consumed;
 
-        Ok(AgentResponse::default_allow())
+        // Convert response
+        Ok(agent_response_from_wit(wit_response))
     }
 
     /// Process request body chunk.
@@ -207,12 +224,20 @@ impl WasmAgentInstance {
             "processing request body in WASM agent"
         );
 
-        // Default: allow with needs_more if not last chunk
-        let mut response = AgentResponse::default_allow();
-        if !is_last {
-            response = response.set_needs_more(true);
-        }
-        Ok(response)
+        // Call the WASM function
+        let handler = self.agent.sentinel_agent_handler();
+        let wit_response = handler
+            .call_on_request_body(&mut *store, correlation_id, data, chunk_index, is_last)
+            .map_err(|e| {
+                WasmRuntimeError::FunctionCall(format!("on_request_body failed: {}", e))
+            })?;
+
+        // Track fuel consumption
+        let remaining = store.get_fuel().unwrap_or(0);
+        let consumed = self.limits.max_fuel.saturating_sub(remaining);
+        store.data_mut().fuel_consumed = consumed;
+
+        Ok(agent_response_from_wit(wit_response))
     }
 
     /// Process response headers.
@@ -233,7 +258,23 @@ impl WasmAgentInstance {
             "processing response headers in WASM agent"
         );
 
-        Ok(AgentResponse::default_allow())
+        // Convert headers
+        let wit_headers = headers_to_wit(headers);
+
+        // Call the WASM function
+        let handler = self.agent.sentinel_agent_handler();
+        let wit_response = handler
+            .call_on_response_headers(&mut *store, correlation_id, status, &wit_headers)
+            .map_err(|e| {
+                WasmRuntimeError::FunctionCall(format!("on_response_headers failed: {}", e))
+            })?;
+
+        // Track fuel consumption
+        let remaining = store.get_fuel().unwrap_or(0);
+        let consumed = self.limits.max_fuel.saturating_sub(remaining);
+        store.data_mut().fuel_consumed = consumed;
+
+        Ok(agent_response_from_wit(wit_response))
     }
 
     /// Process response body chunk.
@@ -256,22 +297,48 @@ impl WasmAgentInstance {
             "processing response body in WASM agent"
         );
 
-        let mut response = AgentResponse::default_allow();
-        if !is_last {
-            response = response.set_needs_more(true);
-        }
-        Ok(response)
+        // Call the WASM function
+        let handler = self.agent.sentinel_agent_handler();
+        let wit_response = handler
+            .call_on_response_body(&mut *store, correlation_id, data, chunk_index, is_last)
+            .map_err(|e| {
+                WasmRuntimeError::FunctionCall(format!("on_response_body failed: {}", e))
+            })?;
+
+        // Track fuel consumption
+        let remaining = store.get_fuel().unwrap_or(0);
+        let consumed = self.limits.max_fuel.saturating_sub(remaining);
+        store.data_mut().fuel_consumed = consumed;
+
+        Ok(agent_response_from_wit(wit_response))
     }
 
     /// Health check.
     pub fn health_check(&self) -> Result<String, WasmRuntimeError> {
-        // For now, always healthy
-        Ok("healthy".to_string())
+        let mut store = self.store.lock();
+        store.set_fuel(self.limits.max_fuel)?;
+
+        let lifecycle = self.agent.sentinel_agent_lifecycle();
+        lifecycle
+            .call_health_check(&mut *store)
+            .map_err(|e| WasmRuntimeError::FunctionCall(format!("health_check failed: {}", e)))?
+            .map_err(WasmRuntimeError::AgentError)
     }
 
     /// Graceful shutdown.
     pub fn shutdown(&self) {
         debug!(agent_id = %self.info.agent_id, "shutting down WASM agent");
+
+        let mut store = self.store.lock();
+        if let Err(e) = store.set_fuel(self.limits.max_fuel) {
+            warn!(error = %e, "failed to set fuel for shutdown");
+            return;
+        }
+
+        let lifecycle = self.agent.sentinel_agent_lifecycle();
+        if let Err(e) = lifecycle.call_shutdown(&mut *store) {
+            warn!(error = %e, "WASM agent shutdown failed");
+        }
     }
 
     /// Get fuel consumed in last call.
@@ -309,14 +376,32 @@ impl WasmAgentBuilder {
         self
     }
 
-    /// Build the agent instance.
+    /// Build the agent instance from a Component.
     pub fn build(
         self,
         engine: &Engine,
-        module: &Module,
+        component: &Component,
     ) -> Result<WasmAgentInstance, WasmRuntimeError> {
-        WasmAgentInstance::new(engine, module, self.limits, &self.config_json)
+        WasmAgentInstance::new(engine, component, self.limits, &self.config_json)
     }
+}
+
+/// Create a component-model-enabled Wasmtime engine.
+pub fn create_component_engine(fuel_enabled: bool) -> Result<Engine, WasmRuntimeError> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+
+    if fuel_enabled {
+        config.consume_fuel(true);
+    }
+
+    // Sync execution for now
+    config.async_support(false);
+
+    // Cranelift optimizations
+    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+
+    Engine::new(&config).map_err(|e| WasmRuntimeError::EngineCreation(e.to_string()))
 }
 
 #[cfg(test)]
@@ -345,5 +430,16 @@ mod tests {
             .limits(WasmResourceLimits::strict());
 
         assert_eq!(builder.agent_id, "my-agent");
+    }
+
+    #[test]
+    fn test_create_component_engine() {
+        // Test that we can create an engine with fuel enabled
+        let engine = create_component_engine(true);
+        assert!(engine.is_ok());
+
+        // Test that we can create an engine without fuel
+        let engine = create_component_engine(false);
+        assert!(engine.is_ok());
     }
 }

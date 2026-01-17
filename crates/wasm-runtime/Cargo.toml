@@ -37,6 +37,7 @@ tracing = { workspace = true }
 # Utilities
 bytes = { workspace = true }
 parking_lot = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -35,6 +35,7 @@
 
 #![allow(dead_code)]
 
+pub mod component;
 mod config;
 mod error;
 mod host;
