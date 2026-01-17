@@ -1,6 +1,6 @@
 [package]
 name = "sentinel-playground-wasm"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 authors = ["Sentinel Contributors"]
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Local crates
-sentinel-sim = { path = "../sim", version = "0.3.3" }
+sentinel-sim = { path = "../sim", version = "0.3.4" }
 
 # WASM bindings
 wasm-bindgen = "0.2"

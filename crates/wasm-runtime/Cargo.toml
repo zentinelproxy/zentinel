@@ -13,7 +13,7 @@ categories = ["wasm", "network-programming"]
 
 [dependencies]
 # Local crates
-sentinel-agent-protocol = { path = "../agent-protocol", version = "0.3.3" }
+sentinel-agent-protocol = { path = "../agent-protocol", version = "0.3.4" }
 
 # Wasmtime runtime with component model
 wasmtime = { version = "40", features = ["component-model", "async", "cranelift"] }
