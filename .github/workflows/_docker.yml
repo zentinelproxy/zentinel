@@ -113,7 +113,7 @@ jobs:
       # Build and push AMD64 image
       - name: Build and push AMD64 image
         if: steps.check-artifacts.outputs.amd64 == 'true'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: artifacts/linux-amd64
           file: ./Dockerfile
@@ -127,7 +127,7 @@ jobs:
       # Build and push ARM64 image
       - name: Build and push ARM64 image
         if: steps.check-artifacts.outputs.arm64 == 'true'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: artifacts/linux-arm64
           file: ./Dockerfile
@@ -184,7 +184,7 @@ jobs:
       # Build and push Echo Agent AMD64 image
       - name: Build and push Echo Agent AMD64 image
         if: steps.check-echo-artifacts.outputs.echo-amd64 == 'true'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: artifacts/linux-amd64
           file: ./Dockerfile
@@ -197,7 +197,7 @@ jobs:
       # Build and push Echo Agent ARM64 image
       - name: Build and push Echo Agent ARM64 image
         if: steps.check-echo-artifacts.outputs.echo-arm64 == 'true'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: artifacts/linux-arm64
           file: ./Dockerfile
