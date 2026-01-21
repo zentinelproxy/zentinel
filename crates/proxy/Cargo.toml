@@ -98,7 +98,7 @@ html-escape = "0.2"
 
 # Compression
 flate2 = "1.1"
-brotli = "7.0"
+brotli = "8.0"
 
 # Archive extraction (for bundle command)
 tar = "0.4"
