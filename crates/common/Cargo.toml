@@ -37,7 +37,7 @@ chrono = { workspace = true }
 parking_lot = { workspace = true }
 
 # System metrics (not WASM-compatible)
-sysinfo = { version = "0.31", optional = true }
+sysinfo = { version = "0.37", optional = true }
 
 [features]
 default = ["runtime"]
