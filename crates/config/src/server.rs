@@ -174,6 +174,20 @@ pub struct TlsConfig {
 ///         staging false
 ///         storage "/var/lib/sentinel/acme"
 ///         renew-before-days 30
+///         challenge-type "http-01"  // or "dns-01" for wildcards
+///
+///         // Required for DNS-01 challenges
+///         dns-provider {
+///             type "hetzner"
+///             credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+///             api-timeout-secs 30
+///
+///             propagation {
+///                 initial-delay-secs 10
+///                 check-interval-secs 5
+///                 timeout-secs 120
+///             }
+///         }
 ///     }
 /// }
 /// ```
@@ -204,6 +218,111 @@ pub struct AcmeConfig {
     /// Default is 30 days before expiry
     #[serde(default = "default_renewal_days")]
     pub renew_before_days: u32,
+
+    /// Challenge type to use for domain validation
+    /// Defaults to HTTP-01, use DNS-01 for wildcard certificates
+    #[serde(default)]
+    pub challenge_type: AcmeChallengeType,
+
+    /// DNS provider configuration (required for DNS-01 challenges)
+    pub dns_provider: Option<DnsProviderConfig>,
+}
+
+/// ACME challenge type
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AcmeChallengeType {
+    /// HTTP-01 challenge (default)
+    /// Requires HTTP access on port 80
+    #[default]
+    Http01,
+
+    /// DNS-01 challenge
+    /// Required for wildcard certificates
+    /// Requires DNS provider configuration
+    Dns01,
+}
+
+impl AcmeChallengeType {
+    /// Check if this is DNS-01 challenge type
+    pub fn is_dns01(&self) -> bool {
+        matches!(self, Self::Dns01)
+    }
+
+    /// Check if this is HTTP-01 challenge type
+    pub fn is_http01(&self) -> bool {
+        matches!(self, Self::Http01)
+    }
+}
+
+/// DNS provider configuration for DNS-01 challenges
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsProviderConfig {
+    /// DNS provider type
+    pub provider: DnsProviderType,
+
+    /// Path to credentials file
+    /// File should contain JSON: {"token": "..."} or {"api_key": "...", "api_secret": "..."}
+    pub credentials_file: Option<PathBuf>,
+
+    /// Environment variable containing credentials
+    pub credentials_env: Option<String>,
+
+    /// API request timeout in seconds
+    #[serde(default = "default_dns_api_timeout")]
+    pub api_timeout_secs: u64,
+
+    /// Propagation check configuration
+    #[serde(default)]
+    pub propagation: PropagationCheckConfig,
+}
+
+/// DNS provider type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum DnsProviderType {
+    /// Hetzner DNS API
+    Hetzner,
+
+    /// Generic webhook provider
+    Webhook {
+        /// Webhook URL
+        url: String,
+        /// Optional custom auth header name
+        auth_header: Option<String>,
+    },
+}
+
+/// Configuration for DNS propagation checking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropagationCheckConfig {
+    /// Initial delay before first check (seconds)
+    #[serde(default = "default_propagation_initial_delay")]
+    pub initial_delay_secs: u64,
+
+    /// Interval between propagation checks (seconds)
+    #[serde(default = "default_propagation_check_interval")]
+    pub check_interval_secs: u64,
+
+    /// Maximum time to wait for propagation (seconds)
+    #[serde(default = "default_propagation_timeout")]
+    pub timeout_secs: u64,
+
+    /// Custom nameservers to query (optional)
+    /// Defaults to Google (8.8.8.8), Cloudflare (1.1.1.1), Quad9 (9.9.9.9)
+    #[serde(default)]
+    pub nameservers: Vec<String>,
+}
+
+impl Default for PropagationCheckConfig {
+    fn default() -> Self {
+        Self {
+            initial_delay_secs: default_propagation_initial_delay(),
+            check_interval_secs: default_propagation_check_interval(),
+            timeout_secs: default_propagation_timeout(),
+            nameservers: Vec::new(),
+        }
+    }
 }
 
 /// SNI certificate configuration
@@ -265,4 +384,20 @@ pub(crate) fn default_acme_storage() -> PathBuf {
 
 pub(crate) fn default_renewal_days() -> u32 {
     30
+}
+
+fn default_dns_api_timeout() -> u64 {
+    30
+}
+
+fn default_propagation_initial_delay() -> u64 {
+    10
+}
+
+fn default_propagation_check_interval() -> u64 {
+    5
+}
+
+fn default_propagation_timeout() -> u64 {
+    120
 }

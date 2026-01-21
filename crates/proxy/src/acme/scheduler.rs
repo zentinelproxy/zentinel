@@ -1,6 +1,7 @@
 //! Background certificate renewal scheduler
 //!
 //! Periodically checks certificates and triggers renewal when needed.
+//! Supports both HTTP-01 and DNS-01 challenge types.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,8 +9,11 @@ use std::time::Duration;
 use tokio::time::{interval, Instant};
 use tracing::{debug, error, info, warn};
 
+use sentinel_config::server::AcmeChallengeType;
+
 use super::challenge::ChallengeManager;
 use super::client::AcmeClient;
+use super::dns::Dns01ChallengeManager;
 use super::error::AcmeError;
 use crate::tls::HotReloadableSniResolver;
 
@@ -23,12 +27,15 @@ const MIN_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 ///
 /// Runs as a background task and periodically checks if any certificates
 /// need renewal. When renewal is needed, it orchestrates the ACME challenge
-/// flow and triggers TLS hot-reload after successful certificate issuance.
+/// flow (HTTP-01 or DNS-01) and triggers TLS hot-reload after successful
+/// certificate issuance.
 pub struct RenewalScheduler {
     /// ACME client for certificate operations
     client: Arc<AcmeClient>,
     /// Challenge manager for HTTP-01 handling
     challenge_manager: Arc<ChallengeManager>,
+    /// DNS-01 challenge manager (optional, for DNS-01 challenges)
+    dns_challenge_manager: Option<Arc<Dns01ChallengeManager>>,
     /// SNI resolver for hot-reload after renewal
     sni_resolver: Option<Arc<HotReloadableSniResolver>>,
     /// Check interval
@@ -51,9 +58,18 @@ impl RenewalScheduler {
         Self {
             client,
             challenge_manager,
+            dns_challenge_manager: None,
             sni_resolver,
             check_interval: DEFAULT_CHECK_INTERVAL,
         }
+    }
+
+    /// Set the DNS-01 challenge manager
+    ///
+    /// Required when using DNS-01 challenge type.
+    pub fn with_dns_manager(mut self, dns_manager: Arc<Dns01ChallengeManager>) -> Self {
+        self.dns_challenge_manager = Some(dns_manager);
+        self
     }
 
     /// Set the check interval
@@ -63,6 +79,11 @@ impl RenewalScheduler {
     pub fn with_interval(mut self, interval: Duration) -> Self {
         self.check_interval = interval.max(MIN_CHECK_INTERVAL);
         self
+    }
+
+    /// Get the configured challenge type
+    fn challenge_type(&self) -> AcmeChallengeType {
+        self.client.config().challenge_type
     }
 
     /// Run the renewal scheduler loop
@@ -154,8 +175,20 @@ impl RenewalScheduler {
     }
 
     /// Renew the certificate for all configured domains
+    ///
+    /// Automatically selects the appropriate challenge type based on configuration.
     async fn renew_certificate(&self) -> Result<(), AcmeError> {
+        match self.challenge_type() {
+            AcmeChallengeType::Http01 => self.renew_certificate_http01().await,
+            AcmeChallengeType::Dns01 => self.renew_certificate_dns01().await,
+        }
+    }
+
+    /// Renew certificate using HTTP-01 challenge
+    async fn renew_certificate_http01(&self) -> Result<(), AcmeError> {
         let start = Instant::now();
+
+        info!("Starting certificate renewal with HTTP-01 challenge");
 
         // Create order and get challenges
         let (mut order, challenges) = self.client.create_order().await?;
@@ -185,6 +218,95 @@ impl RenewalScheduler {
         let (cert_pem, key_pem, expires) = self.client.finalize_order(&mut order).await?;
 
         // Save certificate
+        self.save_certificate(&cert_pem, &key_pem, expires)?;
+
+        let elapsed = start.elapsed();
+        info!(
+            elapsed_secs = elapsed.as_secs(),
+            expires = %expires,
+            "Certificate renewal completed (HTTP-01)"
+        );
+
+        Ok(())
+    }
+
+    /// Renew certificate using DNS-01 challenge
+    async fn renew_certificate_dns01(&self) -> Result<(), AcmeError> {
+        let dns_manager = self
+            .dns_challenge_manager
+            .as_ref()
+            .ok_or(AcmeError::NoDnsProvider)?;
+
+        let start = Instant::now();
+
+        info!(
+            provider = %dns_manager.provider_name(),
+            "Starting certificate renewal with DNS-01 challenge"
+        );
+
+        // Create order and get DNS-01 challenges
+        let (mut order, mut challenges) = self.client.create_order_dns01().await?;
+
+        // Create DNS records and wait for propagation
+        // We need to do this sequentially to ensure all records are created before validation
+        for challenge in &mut challenges {
+            if let Err(e) = dns_manager.create_and_wait(challenge).await {
+                // Cleanup any records we created before failing
+                warn!(
+                    domain = %challenge.domain,
+                    error = %e,
+                    "Failed to create DNS record, cleaning up"
+                );
+                dns_manager.cleanup_all(&challenges).await;
+                return Err(e.into());
+            }
+        }
+
+        // Notify ACME server that challenges are ready
+        for challenge in &challenges {
+            if let Err(e) = self
+                .client
+                .validate_challenge(&mut order, &challenge.url)
+                .await
+            {
+                // Cleanup DNS records even on validation error
+                dns_manager.cleanup_all(&challenges).await;
+                return Err(e);
+            }
+        }
+
+        // Wait for validation
+        let validation_result = self.client.wait_for_order_ready(&mut order).await;
+
+        // Always cleanup DNS records, regardless of validation result
+        dns_manager.cleanup_all(&challenges).await;
+
+        // Now check validation result
+        validation_result?;
+
+        // Finalize and get certificate
+        let (cert_pem, key_pem, expires) = self.client.finalize_order(&mut order).await?;
+
+        // Save certificate
+        self.save_certificate(&cert_pem, &key_pem, expires)?;
+
+        let elapsed = start.elapsed();
+        info!(
+            elapsed_secs = elapsed.as_secs(),
+            expires = %expires,
+            "Certificate renewal completed (DNS-01)"
+        );
+
+        Ok(())
+    }
+
+    /// Save certificate to storage
+    fn save_certificate(
+        &self,
+        cert_pem: &str,
+        key_pem: &str,
+        expires: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), AcmeError> {
         let primary_domain = self
             .client
             .config()
@@ -194,18 +316,11 @@ impl RenewalScheduler {
 
         self.client.storage().save_certificate(
             primary_domain,
-            &cert_pem,
-            &key_pem,
+            cert_pem,
+            key_pem,
             expires,
             &self.client.config().domains,
         )?;
-
-        let elapsed = start.elapsed();
-        info!(
-            elapsed_secs = elapsed.as_secs(),
-            expires = %expires,
-            "Certificate renewal completed"
-        );
 
         Ok(())
     }

@@ -1,7 +1,10 @@
 //! ACME error types
 
 use std::io;
+use std::time::Duration;
 use thiserror::Error;
+
+use super::dns::DnsProviderError;
 
 /// Errors that can occur during ACME operations
 #[derive(Debug, Error)]
@@ -41,6 +44,26 @@ pub enum AcmeError {
     /// No HTTP-01 challenge available for domain
     #[error("No HTTP-01 challenge available for domain '{0}'")]
     NoHttp01Challenge(String),
+
+    /// No DNS-01 challenge available for domain
+    #[error("No DNS-01 challenge available for domain '{0}'")]
+    NoDns01Challenge(String),
+
+    /// DNS provider not configured
+    #[error("DNS-01 challenge requires a DNS provider configuration")]
+    NoDnsProvider,
+
+    /// DNS provider operation failed
+    #[error("DNS provider error: {0}")]
+    DnsProvider(#[from] DnsProviderError),
+
+    /// DNS propagation timeout
+    #[error("DNS propagation timeout for record '{record}' after {elapsed:?}")]
+    PropagationTimeout { record: String, elapsed: Duration },
+
+    /// Wildcard domain requires DNS-01 challenge
+    #[error("Wildcard domain '{domain}' requires DNS-01 challenge type")]
+    WildcardRequiresDns01 { domain: String },
 
     /// Certificate parsing error
     #[error("Failed to parse certificate: {0}")]

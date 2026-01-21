@@ -16,6 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-01-21
+
+### Added
+- **DNS-01 ACME challenge support** for wildcard certificate issuance
+  - Modular DNS provider system with `DnsProvider` trait
+  - Hetzner DNS provider implementation
+  - Generic webhook provider for custom DNS integrations
+  - DNS propagation checking with configurable nameservers
+  - Secure credential loading from files or environment variables
+- New configuration options for DNS-01 challenges:
+  - `challenge-type` option in ACME config (`http-01` or `dns-01`)
+  - `dns-provider` block with provider-specific settings
+  - `propagation` block for DNS propagation check tuning
+- Integration tests for DNS providers using wiremock
+
+### Changed
+- ACME scheduler now supports both HTTP-01 and DNS-01 renewal flows
+- ACME client extended with `create_order_dns01()` method
+
+---
+
 ## [0.3.1] - 2026-01-12
 
 ### Added
@@ -54,6 +75,7 @@ See [GitHub Releases](https://github.com/raskell-io/sentinel/releases) for histo
 
 ---
 
-[Unreleased]: https://github.com/raskell-io/sentinel/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/raskell-io/sentinel/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/raskell-io/sentinel/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/raskell-io/sentinel/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/raskell-io/sentinel/releases/tag/v0.3.0

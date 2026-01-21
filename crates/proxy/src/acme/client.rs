@@ -3,7 +3,7 @@
 //! Provides a high-level interface for ACME protocol operations including:
 //! - Account creation and management
 //! - Certificate ordering
-//! - Challenge handling
+//! - Challenge handling (HTTP-01 and DNS-01)
 //! - Certificate finalization
 
 use std::sync::Arc;
@@ -19,6 +19,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use sentinel_config::server::AcmeConfig;
 
+use super::dns::challenge::{create_challenge_info, Dns01ChallengeInfo};
 use super::error::AcmeError;
 use super::storage::{CertificateStorage, StoredAccountCredentials};
 
@@ -214,6 +215,82 @@ impl AcmeClient {
                 key_authorization: key_authorization.as_str().to_string(),
                 url: http01_challenge.url.clone(),
             });
+        }
+
+        Ok((order, challenges))
+    }
+
+    /// Order a certificate using DNS-01 challenges
+    ///
+    /// Creates a new certificate order and returns it along with the
+    /// DNS-01 challenge information for each domain.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (Order, Vec<Dns01ChallengeInfo>) containing the order and
+    /// DNS-01 challenge information for each domain.
+    pub async fn create_order_dns01(
+        &self,
+    ) -> Result<(Order, Vec<Dns01ChallengeInfo>), AcmeError> {
+        let account_guard = self.account.read().await;
+        let account = account_guard.as_ref().ok_or(AcmeError::NoAccount)?;
+
+        // Create identifiers for all domains
+        let identifiers: Vec<Identifier> = self
+            .config
+            .domains
+            .iter()
+            .map(|d: &String| Identifier::Dns(d.clone()))
+            .collect();
+
+        info!(domains = ?self.config.domains, "Creating certificate order with DNS-01 challenges");
+
+        // Create the order
+        let mut order = account
+            .new_order(&NewOrder {
+                identifiers: &identifiers,
+            })
+            .await
+            .map_err(|e| AcmeError::OrderCreation(e.to_string()))?;
+
+        // Get authorizations and extract DNS-01 challenges
+        let authorizations = order
+            .authorizations()
+            .await
+            .map_err(|e| AcmeError::OrderCreation(format!("Failed to get authorizations: {}", e)))?;
+
+        let mut challenges = Vec::new();
+
+        for auth in authorizations {
+            let domain = match &auth.identifier {
+                Identifier::Dns(domain) => domain.clone(),
+            };
+
+            debug!(domain = %domain, status = ?auth.status, "Processing DNS-01 authorization");
+
+            // Skip if already valid
+            if auth.status == AuthorizationStatus::Valid {
+                debug!(domain = %domain, "Authorization already valid");
+                continue;
+            }
+
+            // Find DNS-01 challenge
+            let dns01_challenge = auth
+                .challenges
+                .iter()
+                .find(|c| c.r#type == ChallengeType::Dns01)
+                .ok_or_else(|| AcmeError::NoDns01Challenge(domain.clone()))?;
+
+            let key_authorization = order.key_authorization(dns01_challenge);
+
+            // Create DNS-01 challenge info with computed value
+            let challenge_info = create_challenge_info(
+                &domain,
+                key_authorization.as_str(),
+                &dns01_challenge.url,
+            );
+
+            challenges.push(challenge_info);
         }
 
         Ok((order, challenges))

@@ -9,8 +9,9 @@ use sentinel_common::types::{TlsVersion, TraceIdFormat};
 use crate::server::{
     default_acme_storage, default_graceful_shutdown_timeout, default_keepalive_timeout,
     default_max_concurrent_streams, default_max_connections, default_renewal_days,
-    default_request_timeout, default_worker_threads, AcmeConfig, ListenerConfig,
-    ListenerProtocol, ServerConfig, SniCertificate, TlsConfig,
+    default_request_timeout, default_worker_threads, AcmeChallengeType, AcmeConfig,
+    DnsProviderConfig, DnsProviderType, ListenerConfig, ListenerProtocol,
+    PropagationCheckConfig, ServerConfig, SniCertificate, TlsConfig,
 };
 
 use super::helpers::{get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry};
@@ -271,6 +272,19 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
 ///     staging false
 ///     storage "/var/lib/sentinel/acme"
 ///     renew-before-days 30
+///     challenge-type "dns-01"  // or "http-01" (default)
+///
+///     dns-provider {
+///         type "hetzner"
+///         credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+///         api-timeout-secs 30
+///
+///         propagation {
+///             initial-delay-secs 10
+///             check-interval-secs 5
+///             timeout-secs 120
+///         }
+///     }
 /// }
 /// ```
 fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfig> {
@@ -316,6 +330,41 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
         .map(|v| v as u32)
         .unwrap_or_else(default_renewal_days);
 
+    // Parse challenge type
+    let challenge_type = get_string_entry(node, "challenge-type")
+        .map(|s| parse_challenge_type(&s))
+        .unwrap_or_default();
+
+    // Parse DNS provider configuration if present
+    let dns_provider = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "dns-provider")
+            .map(|dns_node| parse_dns_provider_config(dns_node, listener_id))
+            .transpose()?
+    } else {
+        None
+    };
+
+    // Validate: DNS-01 requires dns-provider
+    if challenge_type.is_dns01() && dns_provider.is_none() {
+        return Err(anyhow::anyhow!(
+            "ACME configuration for listener '{}' uses DNS-01 challenge but no 'dns-provider' is configured",
+            listener_id
+        ));
+    }
+
+    // Validate: Wildcard domains require DNS-01
+    let has_wildcard = domains.iter().any(|d| d.starts_with("*."));
+    if has_wildcard && !challenge_type.is_dns01() {
+        return Err(anyhow::anyhow!(
+            "ACME configuration for listener '{}' has wildcard domain(s) but uses HTTP-01 challenge. \
+             Wildcard domains require 'challenge-type \"dns-01\"'",
+            listener_id
+        ));
+    }
+
     debug!(
         listener_id = %listener_id,
         email = %email,
@@ -323,6 +372,8 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
         staging = staging,
         storage = %storage.display(),
         renew_before_days = renew_before_days,
+        challenge_type = ?challenge_type,
+        has_dns_provider = dns_provider.is_some(),
         "Parsed ACME configuration"
     );
 
@@ -332,7 +383,158 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
         staging,
         storage,
         renew_before_days,
+        challenge_type,
+        dns_provider,
     })
+}
+
+/// Parse challenge type string
+fn parse_challenge_type(s: &str) -> AcmeChallengeType {
+    match s.to_lowercase().as_str() {
+        "dns-01" | "dns01" | "dns" => AcmeChallengeType::Dns01,
+        _ => AcmeChallengeType::Http01, // Default to HTTP-01
+    }
+}
+
+/// Parse DNS provider configuration block
+///
+/// Example KDL:
+/// ```kdl
+/// dns-provider {
+///     type "hetzner"
+///     credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+///     credentials-env "HETZNER_DNS_TOKEN"
+///     api-timeout-secs 30
+///
+///     propagation {
+///         initial-delay-secs 10
+///         check-interval-secs 5
+///         timeout-secs 120
+///         nameservers "8.8.8.8" "1.1.1.1"
+///     }
+/// }
+/// ```
+fn parse_dns_provider_config(node: &kdl::KdlNode, listener_id: &str) -> Result<DnsProviderConfig> {
+    debug!(listener_id = %listener_id, "Parsing DNS provider configuration");
+
+    // Required: type
+    let provider_type = get_string_entry(node, "type").ok_or_else(|| {
+        anyhow::anyhow!(
+            "DNS provider configuration for listener '{}' requires 'type'",
+            listener_id
+        )
+    })?;
+
+    let provider = parse_dns_provider_type(&provider_type, node, listener_id)?;
+
+    // Credentials (at least one required)
+    let credentials_file = get_string_entry(node, "credentials-file").map(PathBuf::from);
+    let credentials_env = get_string_entry(node, "credentials-env");
+
+    if credentials_file.is_none() && credentials_env.is_none() {
+        return Err(anyhow::anyhow!(
+            "DNS provider configuration for listener '{}' requires either 'credentials-file' or 'credentials-env'",
+            listener_id
+        ));
+    }
+
+    // API timeout
+    let api_timeout_secs = get_int_entry(node, "api-timeout-secs")
+        .map(|v| v as u64)
+        .unwrap_or(30);
+
+    // Propagation configuration
+    let propagation = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "propagation")
+            .map(|prop_node| parse_propagation_config(prop_node))
+            .unwrap_or_default()
+    } else {
+        PropagationCheckConfig::default()
+    };
+
+    debug!(
+        listener_id = %listener_id,
+        provider_type = %provider_type,
+        has_credentials_file = credentials_file.is_some(),
+        has_credentials_env = credentials_env.is_some(),
+        api_timeout_secs = api_timeout_secs,
+        "Parsed DNS provider configuration"
+    );
+
+    Ok(DnsProviderConfig {
+        provider,
+        credentials_file,
+        credentials_env,
+        api_timeout_secs,
+        propagation,
+    })
+}
+
+/// Parse DNS provider type
+fn parse_dns_provider_type(
+    type_str: &str,
+    node: &kdl::KdlNode,
+    listener_id: &str,
+) -> Result<DnsProviderType> {
+    match type_str.to_lowercase().as_str() {
+        "hetzner" => Ok(DnsProviderType::Hetzner),
+        "webhook" => {
+            let url = get_string_entry(node, "url").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "DNS provider 'webhook' for listener '{}' requires 'url'",
+                    listener_id
+                )
+            })?;
+            let auth_header = get_string_entry(node, "auth-header");
+            Ok(DnsProviderType::Webhook { url, auth_header })
+        }
+        other => Err(anyhow::anyhow!(
+            "Unknown DNS provider type '{}' for listener '{}'. Valid types: hetzner, webhook",
+            other,
+            listener_id
+        )),
+    }
+}
+
+/// Parse propagation check configuration
+fn parse_propagation_config(node: &kdl::KdlNode) -> PropagationCheckConfig {
+    let initial_delay_secs = get_int_entry(node, "initial-delay-secs")
+        .map(|v| v as u64)
+        .unwrap_or(10);
+
+    let check_interval_secs = get_int_entry(node, "check-interval-secs")
+        .map(|v| v as u64)
+        .unwrap_or(5);
+
+    let timeout_secs = get_int_entry(node, "timeout-secs")
+        .map(|v| v as u64)
+        .unwrap_or(120);
+
+    // Parse nameservers
+    let nameservers: Vec<String> = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .filter(|n| n.name().value() == "nameservers")
+            .flat_map(|n| {
+                n.entries()
+                    .iter()
+                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    PropagationCheckConfig {
+        initial_delay_secs,
+        check_interval_secs,
+        timeout_secs,
+        nameservers,
+    }
 }
 
 /// Parse an SNI certificate configuration

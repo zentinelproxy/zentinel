@@ -33,9 +33,9 @@ pingora-cache = { workspace = true }
 pingora-memory-cache = { workspace = true }
 
 # Local crates
-sentinel-config = { path = "../config", version = "0.3.4", features = ["validation"] }
-sentinel-common = { path = "../common", version = "0.3.4" }
-sentinel-agent-protocol = { path = "../agent-protocol", version = "0.3.4" }
+sentinel-config = { path = "../config", version = "0.4.0", features = ["validation"] }
+sentinel-common = { path = "../common", version = "0.4.0" }
+sentinel-agent-protocol = { path = "../agent-protocol", version = "0.4.0" }
 
 # Async runtime
 tokio = { workspace = true }
@@ -164,6 +164,9 @@ instant-acme = "0.7"
 # Certificate generation for ACME
 rcgen = "0.14"
 
+# DNS resolution for DNS-01 challenge propagation checking
+hickory-resolver = "0.24"
+
 [features]
 default = []
 
@@ -194,3 +197,4 @@ tokio-tungstenite = "0.24"
 futures-util = "0.3"
 tokio-rustls = "0.26"
 rcgen = "0.14"
+wiremock = "0.6"

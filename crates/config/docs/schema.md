@@ -6,6 +6,8 @@ Complete reference for all Sentinel configuration options.
 
 - [Server](#server)
 - [Listeners](#listeners)
+  - [ACME](#acmeconfig)
+  - [DNS Provider](#dnsproviderconfig)
 - [Routes](#routes)
 - [Upstreams](#upstreams)
 - [Filters](#filters)
@@ -67,6 +69,40 @@ Port binding configuration.
 | `ocsp-stapling` | `bool` | `true` | Enable OCSP stapling |
 | `session-resumption` | `bool` | `true` | Enable session resumption |
 | `additional-certs` | `[SniCertificate]` | `[]` | Additional certs for SNI |
+| `acme` | `AcmeConfig` | - | ACME automatic certificate management |
+
+### AcmeConfig
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `email` | `string` | **required** | Contact email for Let's Encrypt account |
+| `domains` | `[string]` | **required** | Domains to include in certificate |
+| `staging` | `bool` | `false` | Use Let's Encrypt staging environment |
+| `storage` | `string` | `/var/lib/sentinel/acme` | Certificate storage directory |
+| `renew-before-days` | `u32` | `30` | Days before expiry to trigger renewal |
+| `challenge-type` | `string` | `"http-01"` | Challenge type: `http-01` or `dns-01` |
+| `dns-provider` | `DnsProviderConfig` | - | DNS provider (required for dns-01) |
+
+### DnsProviderConfig
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `type` | `string` | **required** | Provider: `hetzner`, `webhook` |
+| `credentials-file` | `string` | - | Path to credentials file |
+| `credentials-env` | `string` | - | Environment variable with credentials |
+| `api-timeout-secs` | `u64` | `30` | API request timeout |
+| `url` | `string` | - | Webhook URL (for webhook provider) |
+| `auth-header` | `string` | - | Auth header name (for webhook provider) |
+| `propagation` | `PropagationConfig` | `{}` | Propagation check settings |
+
+### PropagationConfig
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `initial-delay-secs` | `u64` | `10` | Wait before first propagation check |
+| `check-interval-secs` | `u64` | `5` | Interval between checks |
+| `timeout-secs` | `u64` | `120` | Max time to wait for propagation |
+| `nameservers` | `[string]` | `[]` | DNS servers to query (empty = public DNS) |
 
 ### ListenerProtocol
 
