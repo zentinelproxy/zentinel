@@ -42,7 +42,7 @@ glob = { version = "0.3", optional = true }
 notify = { version = "6.1", optional = true }
 
 # Path handling (not WASM-compatible)
-directories = { version = "5.0", optional = true }
+directories = { version = "6.0", optional = true }
 
 # Environment variables (not WASM-compatible)
 envy = { version = "0.4", optional = true }
