@@ -2599,9 +2599,9 @@ checksum = "06432fb54d3be7964ecd3649233cddf80db2832f47fec34c01f65b3d9d774983"
 
 [[package]]
 name = "ip2location"
-version = "0.5.4"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aef1e1d04f2b6a44944a521b3a9d16b596b21fcf1b678a61579dc0ed5689a223"
+checksum = "4f6b2559e346b2b086be8d845ee68a69e60479f368d3d25135d911d89c5dd8a1"
 dependencies = [
  "memmap2",
  "serde",
