@@ -114,7 +114,9 @@ download_binary() {
                 error "Checksum verification failed!"
             fi
         else
-            warn "No checksum tool available, skipping verification"
+            warn "No checksum tool available (sha256sum or shasum)"
+            warn "Skipping verification - binary integrity cannot be confirmed"
+            warn "Consider installing coreutils for checksum verification"
         fi
         cd - >/dev/null
     else
@@ -161,7 +163,10 @@ install_binary() {
         if [ "$install_dir" = "$INSTALL_DIR" ]; then
             # Try with sudo
             if command -v sudo >/dev/null 2>&1; then
-                info "Installing to ${install_dir}/${BINARY_NAME} (requires sudo)..."
+                echo ""
+                info "Installing to ${install_dir} requires administrator privileges."
+                info "You may be prompted for your password."
+                echo ""
                 sudo cp "$binary_path" "${install_dir}/${BINARY_NAME}"
                 sudo chmod +x "${install_dir}/${BINARY_NAME}"
             else
