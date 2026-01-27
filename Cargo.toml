@@ -125,3 +125,23 @@ debug = true
 [profile.bench]
 opt-level = 3
 debug = false
+
+# Patch pingora to use our fork with security fixes
+# Remove this once upstream pingora releases a version with these fixes
+[patch.crates-io]
+pingora = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-core = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-http = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-proxy = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-load-balancing = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-timeout = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-limits = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-cache = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-memory-cache = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-error = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-pool = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-lru = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-runtime = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-rustls = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-ketama = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }
+pingora-header-serde = { git = "https://github.com/raskell-io/pingora", branch = "0.6.0-security-fixes" }

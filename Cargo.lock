@@ -5,8 +5,7 @@ version = 4
 [[package]]
 name = "TinyUFO"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7507d942373e5064fd15618870e2c0c6cd2d6aa3918d93f8f104227859d5356a"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "ahash",
  "crossbeam-queue",
@@ -323,17 +322,6 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
-
-[[package]]
-name = "atty"
-version = "0.2.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9b39be18770d11421cdb1b9947a45dd3f37e93092cbf377614828a319d5fee8"
-dependencies = [
- "hermit-abi 0.1.19",
- "libc",
- "winapi",
-]
 
 [[package]]
 name = "autocfg"
@@ -798,29 +786,12 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ea181bf566f71cb9a5d17a59e1871af638180a18fb0035c92ae62b705207123"
-dependencies = [
- "atty",
- "bitflags 1.3.2",
- "clap_derive 3.2.25",
- "clap_lex 0.2.4",
- "indexmap 1.9.3",
- "once_cell",
- "strsim 0.10.0",
- "termcolor",
- "textwrap",
-]
-
-[[package]]
-name = "clap"
 version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6e6ff9dcd79cff5cd969a17a545d79e84ab086e444102a591e288a8aa3ce394"
 dependencies = [
  "clap_builder",
- "clap_derive 4.5.49",
+ "clap_derive",
 ]
 
 [[package]]
@@ -831,21 +802,8 @@ checksum = "fa42cf4d2b7a41bc8f663a7cab4031ebafa1bf3875705bfaf8466dc60ab52c00"
 dependencies = [
  "anstream",
  "anstyle",
- "clap_lex 0.7.7",
- "strsim 0.11.1",
-]
-
-[[package]]
-name = "clap_derive"
-version = "3.2.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae6371b8bdc8b7d3959e9cf7b22d4435ef3e79e138688421ec654acf8c81b008"
-dependencies = [
- "heck 0.4.1",
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
+ "clap_lex",
+ "strsim",
 ]
 
 [[package]]
@@ -858,15 +816,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
-]
-
-[[package]]
-name = "clap_lex"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2850f2f5a82cbf437dd5af4d49848fbdfc27c157c3d010345776f952765261c5"
-dependencies = [
- "os_str_bytes",
 ]
 
 [[package]]
@@ -1145,7 +1094,7 @@ dependencies = [
  "anes",
  "cast",
  "ciborium",
- "clap 4.5.54",
+ "clap",
  "criterion-plot",
  "itertools 0.13.0",
  "num-traits",
@@ -1283,7 +1232,7 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
- "strsim 0.11.1",
+ "strsim",
  "syn 2.0.114",
 ]
 
@@ -1297,7 +1246,7 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
- "strsim 0.11.1",
+ "strsim",
  "syn 2.0.114",
 ]
 
@@ -2014,8 +1963,6 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.1.5",
  "serde",
 ]
@@ -2042,15 +1989,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "hermit-abi"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "hermit-abi"
@@ -2725,7 +2663,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bytecount",
- "clap 4.5.54",
+ "clap",
  "fancy-regex",
  "fraction",
  "getrandom 0.2.17",
@@ -2879,11 +2817,11 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lru"
-version = "0.14.0"
+version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f8cc7106155f10bdf99a6f379688f543ad6596a415375b36a59a054ceda1198"
+checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
 dependencies = [
- "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -3302,7 +3240,7 @@ version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
 dependencies = [
- "hermit-abi 0.5.2",
+ "hermit-abi",
  "libc",
 ]
 
@@ -3515,12 +3453,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "os_str_bytes"
-version = "6.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2355d85b9a3786f481747ced0e0ff2ba35213a1f9bd406ed906554d7af805a1"
-
-[[package]]
 name = "ouroboros"
 version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3645,8 +3577,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 [[package]]
 name = "pingora"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a1f02a6347e81953ab831fdcf090a028db12d67ec3badf47831d1299dac6e20"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "pingora-cache",
  "pingora-core",
@@ -3659,8 +3590,7 @@ dependencies = [
 [[package]]
 name = "pingora-cache"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ef622051fbb2cb98a524df3a8112f02d0919ccda600a44d705ec550f1a28fe2"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "ahash",
  "async-trait",
@@ -3695,15 +3625,14 @@ dependencies = [
 [[package]]
 name = "pingora-core"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76f63d3f67d99c95a1f85623fc43242fd644dd12ccbaa18c38a54e1580c6846a"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "ahash",
  "async-trait",
  "brotli 3.5.0",
  "bytes",
  "chrono",
- "clap 3.2.25",
+ "clap",
  "daemonize",
  "derivative",
  "flate2",
@@ -3726,7 +3655,7 @@ dependencies = [
  "pingora-runtime",
  "pingora-rustls",
  "pingora-timeout",
- "prometheus 0.13.4",
+ "prometheus",
  "rand 0.8.5",
  "regex",
  "serde",
@@ -3746,14 +3675,12 @@ dependencies = [
 [[package]]
 name = "pingora-error"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52119570d3f4644e09654ad24df2b7d851bf12eaa8c4148b4674c7f90916598e"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 
 [[package]]
 name = "pingora-header-serde"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "252a16def05c7adbbdda776e87b2be36e9481c8a77249207a2f3b563e8933b35"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -3768,8 +3695,7 @@ dependencies = [
 [[package]]
 name = "pingora-http"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a3542fd0fd0a83212882c5066ae739ba51804f20d624ff7e12ec85113c5c89a"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -3779,8 +3705,7 @@ dependencies = [
 [[package]]
 name = "pingora-ketama"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f5dd8546b1874d5cfca594375c1cfb852c3dffd4f060428fa031a6e790dea18"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "crc32fast",
 ]
@@ -3788,8 +3713,7 @@ dependencies = [
 [[package]]
 name = "pingora-limits"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b93c897e8cc04ff0d077ee2a655142910618222aeefc83f7f99f5b9fc59ccb13"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "ahash",
 ]
@@ -3797,8 +3721,7 @@ dependencies = [
 [[package]]
 name = "pingora-load-balancing"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b5bb0314830a64b73b50b3782f3089f87947b61b4324c804d6f8d4ff9ce1c70"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3819,8 +3742,7 @@ dependencies = [
 [[package]]
 name = "pingora-lru"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba89e4400cb978f0d7be1c14bd7ab4168c8e2c00d97ff19f964fc0048780237c"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "arrayvec",
  "hashbrown 0.16.1",
@@ -3831,8 +3753,7 @@ dependencies = [
 [[package]]
 name = "pingora-memory-cache"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46b1db6a4ee58e9db7d7d372b21476cd1bed2ea2418b1389f0660fc87ddcaeac"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "TinyUFO",
  "ahash",
@@ -3847,8 +3768,7 @@ dependencies = [
 [[package]]
 name = "pingora-pool"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "996c574f30a6e1ad10b47ac1626a86e0e47d5075953dd049d60df16ba5f7076e"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "crossbeam-queue",
  "log",
@@ -3862,12 +3782,11 @@ dependencies = [
 [[package]]
 name = "pingora-proxy"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c4097fd2639905bf5b81f3618551cd826d5e03aac063e17fd7a4137f19c1a5b"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "async-trait",
  "bytes",
- "clap 3.2.25",
+ "clap",
  "futures",
  "h2 0.4.13",
  "http 1.4.0",
@@ -3885,8 +3804,7 @@ dependencies = [
 [[package]]
 name = "pingora-runtime"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ccc165021cf55a39b9e760121b22c4260b17a0b2c530d5b93092fc5bc765b94"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "once_cell",
  "rand 0.8.5",
@@ -3897,8 +3815,7 @@ dependencies = [
 [[package]]
 name = "pingora-rustls"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5d581533d775229a95cfd1833059d149bb613d620d16a06e468e5f197563714"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "log",
  "no_debug",
@@ -3914,8 +3831,7 @@ dependencies = [
 [[package]]
 name = "pingora-timeout"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "548cd21d41611c725827677937e68f2cd008bbfa09f3416d3fbad07e1e42f6d7"
+source = "git+https://github.com/raskell-io/pingora?branch=0.6.0-security-fixes#8c8452d886ec000356c6bb96264c8b194b45622c"
 dependencies = [
  "once_cell",
  "parking_lot",
@@ -4011,30 +3927,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-error"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
-dependencies = [
- "proc-macro-error-attr",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "version_check",
-]
-
-[[package]]
-name = "proc-macro-error-attr"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
-dependencies = [
- "proc-macro2",
- "quote",
- "version_check",
-]
-
-[[package]]
 name = "proc-macro-error-attr2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4080,21 +3972,6 @@ dependencies = [
 
 [[package]]
 name = "prometheus"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
-dependencies = [
- "cfg-if",
- "fnv",
- "lazy_static",
- "memchr",
- "parking_lot",
- "protobuf 2.28.0",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "prometheus"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
@@ -4104,7 +3981,7 @@ dependencies = [
  "lazy_static",
  "memchr",
  "parking_lot",
- "protobuf 3.7.2",
+ "protobuf",
  "thiserror 2.0.18",
 ]
 
@@ -4179,12 +4056,6 @@ checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
 dependencies = [
  "prost",
 ]
-
-[[package]]
-name = "protobuf"
-version = "2.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
 
 [[package]]
 name = "protobuf"
@@ -5018,7 +4889,7 @@ dependencies = [
  "http 1.4.0",
  "insta",
  "parking_lot",
- "prometheus 0.14.0",
+ "prometheus",
  "proptest",
  "serde",
  "serde_json",
@@ -5070,7 +4941,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
- "clap 4.5.54",
+ "clap",
  "dashmap",
  "quick-xml",
  "regex",
@@ -5096,7 +4967,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "clap 4.5.54",
+ "clap",
  "sentinel-agent-protocol",
  "sentinel-common",
  "serde",
@@ -5121,7 +4992,7 @@ dependencies = [
  "brotli 8.0.2",
  "bytes",
  "chrono",
- "clap 4.5.54",
+ "clap",
  "criterion",
  "dashmap",
  "flate2",
@@ -5160,7 +5031,7 @@ dependencies = [
  "pingora-memory-cache",
  "pingora-proxy",
  "pingora-timeout",
- "prometheus 0.14.0",
+ "prometheus",
  "proptest",
  "rand 0.9.2",
  "rcgen",
@@ -5206,7 +5077,7 @@ version = "0.4.2"
 dependencies = [
  "anyhow",
  "chrono",
- "clap 4.5.54",
+ "clap",
  "kdl",
  "libc",
  "serde",
@@ -5509,12 +5380,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "strsim"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 
 [[package]]
 name = "strsim"
