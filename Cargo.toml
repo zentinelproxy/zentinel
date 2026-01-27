@@ -74,7 +74,7 @@ bytes = "1.9"
 
 # Configuration and validation
 config = "0.14"
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 
 # Testing
 proptest = "1.6"
