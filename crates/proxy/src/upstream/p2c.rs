@@ -202,7 +202,7 @@ impl P2cBalancer {
             targets,
             health_status: Arc::new(RwLock::new(HashMap::new())),
             metrics,
-            rng: Arc::new(RwLock::new(StdRng::from_entropy())),
+            rng: Arc::new(RwLock::new(StdRng::from_rng(&mut rand::rng()))),
             cumulative_weights,
         }
     }
@@ -242,7 +242,7 @@ impl P2cBalancer {
             // Weighted random selection
             let total_weight = self.cumulative_weights.last().copied().unwrap_or(0);
             if total_weight > 0 {
-                let threshold = rng.gen_range(0..total_weight);
+                let threshold = rng.random_range(0..total_weight);
                 for &idx in &healthy_indices {
                     if self.cumulative_weights[idx] > threshold {
                         trace!(
@@ -257,7 +257,7 @@ impl P2cBalancer {
         }
 
         // Fallback to uniform random
-        let selected = healthy_indices[rng.gen_range(0..healthy_indices.len())];
+        let selected = healthy_indices[rng.random_range(0..healthy_indices.len())];
         trace!(
             target_index = selected,
             "Selected target via uniform random"

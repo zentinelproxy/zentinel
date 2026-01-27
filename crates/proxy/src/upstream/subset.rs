@@ -14,6 +14,7 @@
 //! Reference: https://sre.google/sre-book/load-balancing-datacenter/
 
 use async_trait::async_trait;
+use rand::seq::IndexedRandom;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -222,7 +223,7 @@ impl SubsetBalancer {
             }
             SubsetInnerAlgorithm::Random => {
                 use rand::seq::SliceRandom;
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
                 healthy.choose(&mut rng).copied()
             }
             SubsetInnerAlgorithm::LeastConnections => {

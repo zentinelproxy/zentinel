@@ -5,6 +5,7 @@
 //! multi-region deployments to minimize latency and cross-zone traffic costs.
 
 use async_trait::async_trait;
+use rand::seq::IndexedRandom;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -240,7 +241,7 @@ impl LocalityAwareBalancer {
             return None;
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         targets.choose(&mut rng).copied()
     }
 }

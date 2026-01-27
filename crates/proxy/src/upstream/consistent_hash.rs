@@ -497,8 +497,8 @@ impl LoadBalancer for ConsistentHashBalancer {
             .unwrap_or_else(|| {
                 // Generate random key for requests without proper hash key
                 use rand::Rng;
-                let mut rng = rand::thread_rng();
-                let key = format!("random-{}", rng.gen::<u64>());
+                let mut rng = rand::rng();
+                let key = format!("random-{}", rng.random::<u64>());
                 trace!(random_key = %key, "Generated random hash key (no context key)");
                 (key, true)
             });

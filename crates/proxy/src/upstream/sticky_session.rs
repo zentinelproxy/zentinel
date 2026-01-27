@@ -43,7 +43,7 @@ impl StickySessionRuntimeConfig {
 
         // Generate random HMAC key
         let mut hmac_key = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut hmac_key);
+        rand::rng().fill_bytes(&mut hmac_key);
 
         Self {
             cookie_name: config.cookie_name.clone(),

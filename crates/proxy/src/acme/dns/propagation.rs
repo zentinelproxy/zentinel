@@ -6,8 +6,10 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
+use hickory_resolver::name_server::TokioConnectionProvider;
+use hickory_resolver::proto::xfer::Protocol;
+use hickory_resolver::{Resolver, TokioResolver};
 use tokio::time::Instant;
 use tracing::{debug, trace, warn};
 
@@ -47,7 +49,7 @@ impl Default for PropagationConfig {
 #[derive(Debug)]
 pub struct PropagationChecker {
     config: PropagationConfig,
-    resolver: TokioAsyncResolver,
+    resolver: TokioResolver,
 }
 
 impl PropagationChecker {
@@ -64,19 +66,16 @@ impl PropagationChecker {
     }
 
     /// Create a DNS resolver with the configured nameservers
-    fn create_resolver(config: &PropagationConfig) -> Result<TokioAsyncResolver, DnsProviderError> {
+    fn create_resolver(config: &PropagationConfig) -> Result<TokioResolver, DnsProviderError> {
         let resolver_config = if config.nameservers.is_empty() {
             ResolverConfig::default()
         } else {
             let mut resolver_config = ResolverConfig::new();
             for ip in &config.nameservers {
-                resolver_config.add_name_server(NameServerConfig {
-                    socket_addr: SocketAddr::new(*ip, 53),
-                    protocol: Protocol::Udp,
-                    tls_dns_name: None,
-                    trust_negative_responses: true,
-                    bind_addr: None,
-                });
+                resolver_config.add_name_server(NameServerConfig::new(
+                    SocketAddr::new(*ip, 53),
+                    Protocol::Udp,
+                ));
             }
             resolver_config
         };
@@ -86,8 +85,11 @@ impl PropagationChecker {
         opts.attempts = 3;
         opts.cache_size = 0; // Disable caching for propagation checks
 
-        // hickory-resolver 0.24 returns the resolver directly
-        Ok(TokioAsyncResolver::tokio(resolver_config, opts))
+        // hickory-resolver 0.25 uses builder pattern
+        let resolver = Resolver::builder_with_config(resolver_config, TokioConnectionProvider::default())
+            .with_options(opts)
+            .build();
+        Ok(resolver)
     }
 
     /// Wait for a TXT record to propagate
@@ -175,25 +177,19 @@ impl PropagationChecker {
             }
             Err(e) => {
                 // NXDOMAIN, NOERROR with no records, or SERVFAIL is expected during propagation
-                // hickory-resolver wraps these in ResolveError, check the kind
-                use hickory_resolver::error::ResolveErrorKind;
-                match e.kind() {
-                    ResolveErrorKind::NoRecordsFound { .. } => Ok(false),
-                    _ => {
-                        // Check if the error message indicates a common transient condition
-                        let err_str = e.to_string().to_lowercase();
-                        if err_str.contains("no records found")
-                            || err_str.contains("nxdomain")
-                            || err_str.contains("no connections available")
-                        {
-                            Ok(false)
-                        } else {
-                            Err(DnsProviderError::ApiRequest(format!(
-                                "DNS lookup failed for '{}': {}",
-                                record_name, e
-                            )))
-                        }
-                    }
+                // Check if the error message indicates a common transient condition
+                let err_str = e.to_string().to_lowercase();
+                if err_str.contains("no records found")
+                    || err_str.contains("nxdomain")
+                    || err_str.contains("no connections available")
+                    || err_str.contains("record not found")
+                {
+                    Ok(false)
+                } else {
+                    Err(DnsProviderError::ApiRequest(format!(
+                        "DNS lookup failed for '{}': {}",
+                        record_name, e
+                    )))
                 }
             }
         }

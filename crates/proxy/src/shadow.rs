@@ -94,8 +94,8 @@ impl ShadowManager {
 
         // Sample based on percentage
         if self.config.percentage < 100.0 {
-            let mut rng = rand::thread_rng();
-            let roll: f64 = rng.gen_range(0.0..100.0);
+            let mut rng = rand::rng();
+            let roll: f64 = rng.random_range(0.0..100.0);
             if roll > self.config.percentage {
                 trace!(
                     roll = roll,

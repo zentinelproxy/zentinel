@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use pingora::upstreams::peer::HttpPeer;
+use rand::seq::IndexedRandom;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -448,7 +449,7 @@ impl LoadBalancer for RandomBalancer {
             return Err(SentinelError::NoHealthyUpstream);
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let target = healthy_targets
             .choose(&mut rng)
             .ok_or(SentinelError::NoHealthyUpstream)?;

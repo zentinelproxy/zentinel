@@ -447,9 +447,9 @@ impl AdaptiveBalancer {
         }
 
         // Weighted random selection
-        use rand::prelude::*;
-        let mut rng = thread_rng();
-        let threshold = rng.gen::<f64>() * total_score;
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let threshold = rng.random::<f64>() * total_score;
 
         trace!(
             total_score = total_score,

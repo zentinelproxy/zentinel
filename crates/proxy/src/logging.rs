@@ -633,8 +633,8 @@ impl LogManager {
                     // Sample based on sample_rate (0.0-1.0)
                     // Generate random number and check if it's less than sample_rate
                     use rand::Rng;
-                    let mut rng = rand::thread_rng();
-                    rng.gen::<f64>() < config.sample_rate
+                    let mut rng = rand::rng();
+                    rng.random::<f64>() < config.sample_rate
                 };
 
                 if !should_log {
