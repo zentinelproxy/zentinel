@@ -17,7 +17,7 @@ sentinel-agent-protocol = { path = "../agent-protocol", version = "0.4.2" }
 
 # Wasmtime runtime with component model
 wasmtime = { version = "41", features = ["component-model", "async", "cranelift"] }
-wasmtime-wasi = "40"
+wasmtime-wasi = "41"
 
 # Async runtime
 tokio = { workspace = true }
