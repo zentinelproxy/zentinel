@@ -123,6 +123,7 @@ jobs:
     permissions:
       contents: read
       packages: write  # Required by nested workflow even when not pushing
+      id-token: write  # Required by _docker.yml (cosign steps gated on push)
 
   # Sign release binaries with cosign (keyless / Sigstore OIDC)
   sign-binaries:
