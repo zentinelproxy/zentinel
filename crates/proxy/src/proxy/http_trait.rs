@@ -1936,18 +1936,19 @@ impl ProxyHttp for SentinelProxy {
             .ok();
 
         // Apply route-specific request header modifications
-        // Clone the modifications to avoid lifetime issues with the header API
+        // Note: Pingora's IntoCaseHeaderName requires owned String for header names,
+        // so we clone names but pass values by reference to avoid cloning both.
         if let Some(ref route_config) = ctx.route_config {
-            let mods = route_config.policies.request_headers.clone();
+            let mods = &route_config.policies.request_headers;
 
             // Set headers (overwrite existing)
-            for (name, value) in mods.set {
-                upstream_request.insert_header(name, value).ok();
+            for (name, value) in &mods.set {
+                upstream_request.insert_header(name.clone(), value.as_str()).ok();
             }
 
             // Add headers (append)
-            for (name, value) in mods.add {
-                upstream_request.append_header(name, value).ok();
+            for (name, value) in &mods.add {
+                upstream_request.append_header(name.clone(), value.as_str()).ok();
             }
 
             // Remove headers
