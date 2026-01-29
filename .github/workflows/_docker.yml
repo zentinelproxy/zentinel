@@ -42,6 +42,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write  # Required for cosign keyless signing
 
     steps:
       - name: Checkout
@@ -162,6 +163,37 @@ jobs:
             docker manifest create "$IMAGE:latest" $IMAGES
             docker manifest push "$IMAGE:latest"
           fi
+
+      # Sign container image and attach SBOM
+      - name: Install cosign
+        if: inputs.push
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        if: inputs.push
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Sign container image
+        if: inputs.push && steps.check-artifacts.outputs.amd64 == 'true'
+        run: |
+          VERSION="${{ inputs.version }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          cosign sign --yes "$IMAGE:$VERSION"
+
+          # Sign latest tag if applicable
+          if [ "${{ inputs.latest }}" = "true" ]; then
+            cosign sign --yes "$IMAGE:latest"
+          fi
+
+      - name: Generate and attach container SBOM
+        if: inputs.push && steps.check-artifacts.outputs.amd64 == 'true'
+        run: |
+          VERSION="${{ inputs.version }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          syft "$IMAGE:$VERSION" -o cyclonedx-json > container-sbom.cdx.json
+          cosign attest --yes --predicate container-sbom.cdx.json --type cyclonedx "$IMAGE:$VERSION"
 
       # Check for echo-agent binary
       - name: Check echo-agent artifacts

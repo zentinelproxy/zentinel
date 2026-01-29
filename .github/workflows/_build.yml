@@ -145,6 +145,13 @@ jobs:
           $STRIP $BUILD_DIR/release/sentinel || true
           $STRIP $BUILD_DIR/release/sentinel-echo-agent || true
 
+      - name: Generate SBOM
+        if: inputs.upload-artifacts && matrix.config.suffix == 'linux-amd64'
+        run: |
+          cargo install cargo-sbom --locked
+          cargo sbom --output-format cyclone_dx_json_1_5 > sentinel-sbom.cdx.json
+          cargo sbom --output-format spdx_json_2_3 > sentinel-sbom.spdx.json
+
       - name: Prepare artifacts
         if: inputs.upload-artifacts
         run: |
@@ -170,4 +177,14 @@ jobs:
         with:
           name: ${{ inputs.artifact-prefix }}-${{ matrix.config.suffix }}
           path: artifacts/
+          retention-days: 30
+
+      - name: Upload SBOM
+        if: inputs.upload-artifacts && matrix.config.suffix == 'linux-amd64'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.artifact-prefix }}-sbom
+          path: |
+            sentinel-sbom.cdx.json
+            sentinel-sbom.spdx.json
           retention-days: 30

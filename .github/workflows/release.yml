@@ -124,6 +124,57 @@ jobs:
       contents: read
       packages: write  # Required by nested workflow even when not pushing
 
+  # Sign release binaries with cosign (keyless / Sigstore OIDC)
+  sign-binaries:
+    name: Sign Binaries
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Required for keyless signing (Sigstore OIDC)
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Create and sign release archives
+        run: |
+          VERSION="${{ needs.validate.outputs.calver }}"
+          mkdir -p signed
+
+          for dir in artifacts/sentinel-${VERSION}-*/; do
+            if [ -d "$dir" ]; then
+              SUFFIX=$(basename "$dir" | sed "s/sentinel-${VERSION}-//")
+
+              # Skip non-platform artifacts (e.g., sbom)
+              case "$SUFFIX" in
+                linux-amd64|linux-arm64|darwin-amd64|darwin-arm64) ;;
+                *) echo "Skipping non-platform artifact: $SUFFIX"; continue ;;
+              esac
+
+              ARCHIVE_NAME="sentinel-${VERSION}-${SUFFIX}.tar.gz"
+
+              tar -czvf "signed/$ARCHIVE_NAME" -C "$dir" .
+
+              cosign sign-blob --yes "signed/$ARCHIVE_NAME" \
+                --bundle "signed/${ARCHIVE_NAME}.bundle"
+            fi
+          done
+
+          echo "Signed archives:"
+          ls -la signed/
+
+      - name: Upload signed archives
+        uses: actions/upload-artifact@v6
+        with:
+          name: signed-archives
+          path: signed/
+          retention-days: 30
+
   # ============================================================
   # PHASE 2: Publishing - Only runs after ALL builds succeed
   # ============================================================
@@ -228,46 +279,65 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write  # Required for cosign keyless signing
 
   # Create GitHub release with assets
   release:
     name: Create Release
-    needs: [validate, build, publish-crates]
+    needs: [validate, build, sign-binaries, publish-crates]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false)
     permissions:
       contents: write
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download all artifacts
+      - name: Download signed archives
         uses: actions/download-artifact@v7
         with:
-          path: artifacts
+          name: signed-archives
+          path: signed
 
-      - name: Create release archives
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: sentinel-${{ needs.validate.outputs.calver }}-sbom
+          path: sbom
+
+      - name: Prepare release assets
         run: |
           VERSION="${{ needs.validate.outputs.calver }}"
           mkdir -p release
 
-          for dir in artifacts/sentinel-${VERSION}-*/; do
-            if [ -d "$dir" ]; then
-              SUFFIX=$(basename "$dir" | sed "s/sentinel-${VERSION}-//")
-              ARCHIVE_NAME="sentinel-${VERSION}-${SUFFIX}.tar.gz"
+          # Copy signed archives and bundles
+          cp signed/*.tar.gz release/
+          cp signed/*.bundle release/
 
-              echo "Creating $ARCHIVE_NAME from $dir"
-              tar -czvf "release/$ARCHIVE_NAME" -C "$dir" .
-
-              # Generate checksum
-              cd release
-              sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
-              cd ..
-            fi
+          # Generate checksums
+          cd release
+          for archive in *.tar.gz; do
+            sha256sum "$archive" > "${archive}.sha256"
           done
+          cd ..
 
-          echo "Release archives:"
+          # Copy SBOM files
+          if [ -f "sbom/sentinel-sbom.cdx.json" ]; then
+            cp "sbom/sentinel-sbom.cdx.json" "release/sentinel-${VERSION}-sbom.cdx.json"
+            cp "sbom/sentinel-sbom.spdx.json" "release/sentinel-${VERSION}-sbom.spdx.json"
+          fi
+
+          echo "Release assets:"
           ls -la release/
+
+      - name: Generate base64-encoded hashes
+        id: hash
+        run: |
+          cd release
+          sha256sum *.tar.gz > checksums.txt
+          echo "hashes=$(base64 -w0 checksums.txt)" >> $GITHUB_OUTPUT
 
       - name: Generate release notes
         run: |
@@ -301,8 +371,30 @@ jobs:
           docker pull ghcr.io/${{ github.repository }}:$CALVER
           ```
 
+          ### Supply Chain Security
+
+          All release archives are signed with [Sigstore cosign](https://docs.sigstore.dev/) using keyless signing tied to GitHub Actions OIDC identity. SLSA v1.0 provenance is attached to this release.
+
+          #### Verify a binary
+          ```bash
+          cosign verify-blob --bundle sentinel-$CALVER-linux-amd64.tar.gz.bundle \
+            --certificate-identity-regexp "github.com/raskell-io/sentinel" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            sentinel-$CALVER-linux-amd64.tar.gz
+          ```
+
+          #### Verify the container image
+          ```bash
+          cosign verify ghcr.io/${{ github.repository }}:$CALVER \
+            --certificate-identity-regexp "github.com/raskell-io/sentinel" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          ```
+
           ### Checksums
           Verify downloads with the `.sha256` files.
+
+          ### Software Bill of Materials
+          CycloneDX 1.5 and SPDX 2.3 SBOMs are attached as release assets.
           HEREDOC
 
           # Replace variables
@@ -324,13 +416,28 @@ jobs:
           files: release/*
           fail_on_unmatched_files: true
 
+  # SLSA provenance for release artifacts
+  provenance:
+    name: SLSA Provenance
+    needs: [release]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false)
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.release.outputs.hashes }}"
+      upload-assets: true
+      upload-tag-name: ${{ github.ref_name }}
+
   # ============================================================
   # Summary
   # ============================================================
 
   summary:
     name: Summary
-    needs: [validate, build, docker-build, publish-crates, docker-push, release]
+    needs: [validate, build, docker-build, sign-binaries, publish-crates, docker-push, release, provenance]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -349,6 +456,7 @@ jobs:
           echo "| Validate | ${{ needs.validate.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker Build | ${{ needs.docker-build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Sign Binaries | ${{ needs.sign-binaries.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Phase 2: Publishing" >> $GITHUB_STEP_SUMMARY
           echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
@@ -356,6 +464,7 @@ jobs:
           echo "| Publish Crates | ${{ needs.publish-crates.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker Push | ${{ needs.docker-push.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Release | ${{ needs.release.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SLSA Provenance | ${{ needs.provenance.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Show failure message if validation phase failed
@@ -368,4 +477,10 @@ jobs:
             echo "- **crates.io**: [sentinel-proxy](https://crates.io/crates/sentinel-proxy)" >> $GITHUB_STEP_SUMMARY
             echo "- **Container**: \`ghcr.io/${{ github.repository }}:${{ needs.validate.outputs.calver }}\`" >> $GITHUB_STEP_SUMMARY
             echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/${{ needs.validate.outputs.calver }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Supply Chain" >> $GITHUB_STEP_SUMMARY
+            echo "- Binaries signed with Sigstore cosign (keyless)" >> $GITHUB_STEP_SUMMARY
+            echo "- Container images signed with cosign" >> $GITHUB_STEP_SUMMARY
+            echo "- SBOM attached (CycloneDX + SPDX)" >> $GITHUB_STEP_SUMMARY
+            echo "- SLSA v1.0 provenance attested" >> $GITHUB_STEP_SUMMARY
           fi
