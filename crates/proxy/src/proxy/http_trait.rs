@@ -11,7 +11,7 @@ use pingora::protocols::Digest;
 use pingora::proxy::{ProxyHttp, Session};
 use pingora::upstreams::peer::Peer;
 use pingora_cache::{
-    CacheKey, CacheMeta, ForcedInvalidationKind, HitHandler, NoCacheReason, RespCacheable,
+    CacheKey, CacheMeta, ForcedFreshness, HitHandler, NoCacheReason, RespCacheable,
 };
 use pingora_timeout::sleep;
 use std::os::unix::io::RawFd;
@@ -2340,8 +2340,8 @@ impl ProxyHttp for SentinelProxy {
     /// Called after a successful cache lookup.
     ///
     /// This filter allows inspecting the cached response before serving it.
-    /// Returns `None` to serve the cached response, or a `ForcedInvalidationKind`
-    /// to invalidate and refetch.
+    /// Returns `None` to serve the cached response, or a `ForcedFreshness`
+    /// to override the freshness decision.
     async fn cache_hit_filter(
         &self,
         session: &mut Session,
@@ -2349,7 +2349,7 @@ impl ProxyHttp for SentinelProxy {
         _hit_handler: &mut HitHandler,
         is_fresh: bool,
         ctx: &mut Self::CTX,
-    ) -> Result<Option<ForcedInvalidationKind>>
+    ) -> Result<Option<ForcedFreshness>>
     where
         Self::CTX: Send + Sync,
     {
@@ -2372,7 +2372,7 @@ impl ProxyHttp for SentinelProxy {
                 "Cache entry invalidated by purge request"
             );
             // Force expiration so the entry is refetched from upstream
-            return Ok(Some(ForcedInvalidationKind::ForceExpired));
+            return Ok(Some(ForcedFreshness::ForceExpired));
         }
 
         // Track cache hit statistics
@@ -2592,7 +2592,7 @@ impl ProxyHttp for SentinelProxy {
         }
 
         // Use Pingora's built-in range header parsing and handling
-        let range_type = pingora_proxy::range_header_filter(session.req_header(), response);
+        let range_type = pingora_proxy::range_header_filter(session.req_header(), response, None);
 
         match &range_type {
             pingora_proxy::RangeType::None => {
