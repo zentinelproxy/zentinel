@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
-use jsonschema::{Draft, JSONSchema, ValidationError};
+use jsonschema::Validator;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -22,9 +22,9 @@ pub struct SchemaValidator {
     /// Configuration for schema validation
     config: Arc<ApiSchemaConfig>,
     /// Compiled request schema
-    request_schema: Option<Arc<JSONSchema>>,
+    request_schema: Option<Arc<Validator>>,
     /// Compiled response schema
-    response_schema: Option<Arc<JSONSchema>>,
+    response_schema: Option<Arc<Validator>>,
     /// OpenAPI specification (if loaded)
     openapi_spec: Option<OpenApiSpec>,
 }
@@ -150,10 +150,8 @@ impl SchemaValidator {
     }
 
     /// Compile a JSON schema
-    fn compile_schema(schema: &Value) -> Result<JSONSchema> {
-        JSONSchema::options()
-            .with_draft(Draft::Draft7)
-            .compile(schema)
+    fn compile_schema(schema: &Value) -> Result<Validator> {
+        jsonschema::draft7::new(schema)
             .map_err(|e| anyhow::anyhow!("Failed to compile schema: {}", e))
     }
 
@@ -248,20 +246,17 @@ impl SchemaValidator {
     /// Validate JSON against a schema
     fn validate_against_schema(
         &self,
-        schema: &JSONSchema,
+        schema: &Validator,
         instance: &Value,
         request_id: &str,
     ) -> Result<()> {
-        let result = schema.validate(instance);
+        let validation_errors: Vec<ValidationErrorDetail> = schema
+            .iter_errors(instance)
+            .map(|error| self.format_validation_error(&error, instance))
+            .collect();
 
-        if let Err(errors) = result {
-            let validation_errors: Vec<ValidationErrorDetail> = errors
-                .map(|error| self.format_validation_error(error, instance))
-                .collect();
-
-            if !validation_errors.is_empty() {
-                return Err(self.create_validation_error(validation_errors, request_id));
-            }
+        if !validation_errors.is_empty() {
+            return Err(self.create_validation_error(validation_errors, request_id));
         }
 
         // Additional strict mode checks
@@ -275,10 +270,10 @@ impl SchemaValidator {
     /// Format a validation error
     fn format_validation_error(
         &self,
-        error: ValidationError,
+        error: &jsonschema::ValidationError,
         instance: &Value,
     ) -> ValidationErrorDetail {
-        let field = error.instance_path.to_string();
+        let field = error.instance_path().to_string();
         let field = if field.is_empty() {
             "$".to_string()
         } else {
@@ -286,13 +281,12 @@ impl SchemaValidator {
         };
 
         let value = error
-            .instance_path
+            .instance_path()
             .iter()
-            .fold(Some(instance), |acc, segment| {
+            .fold(Some(instance), |acc: Option<&Value>, segment| {
                 acc.and_then(|v| match segment {
-                    jsonschema::paths::PathChunk::Property(prop) => v.get(prop.as_ref()),
-                    jsonschema::paths::PathChunk::Index(idx) => v.get(idx),
-                    _ => None,
+                    jsonschema::paths::LocationSegment::Property(prop) => v.get(prop.as_ref()),
+                    jsonschema::paths::LocationSegment::Index(idx) => v.get(idx),
                 })
             })
             .cloned();
@@ -307,7 +301,7 @@ impl SchemaValidator {
     /// Perform strict mode checks
     fn strict_mode_checks(
         &self,
-        _schema: &JSONSchema,
+        _schema: &Validator,
         instance: &Value,
         _request_id: &str,
     ) -> Result<()> {
