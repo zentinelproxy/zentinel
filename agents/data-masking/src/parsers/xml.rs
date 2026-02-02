@@ -208,7 +208,7 @@ fn parse_children<R: std::io::BufRead>(
                 }));
             }
             Ok(Event::Text(e)) => {
-                let text = e.unescape().map_err(|e| MaskingError::InvalidXml(e.to_string()))?;
+                let text = e.decode().map_err(|e| MaskingError::InvalidXml(e.to_string()))?;
                 if !text.trim().is_empty() {
                     children.push(XmlNode::Text(text.to_string()));
                 }
