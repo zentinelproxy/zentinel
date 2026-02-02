@@ -267,9 +267,9 @@ dependencies = [
 
 [[package]]
 name = "async-memcached"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7473b8460f613b0c437db072eec2e9bc9653b45b7ef9c309f8d891388e90366b"
+checksum = "bac1e615c4d803d0308175a4766954af49fbfe0da22af1583abd3b65c9b738d0"
 dependencies = [
  "async-stream",
  "btoi",
@@ -277,7 +277,7 @@ dependencies = [
  "dsn",
  "futures",
  "fxhash",
- "nom 7.1.3",
+ "nom 8.0.0",
  "pin-project",
  "tokio",
  "toxiproxy_rust",
@@ -563,9 +563,9 @@ dependencies = [
 
 [[package]]
 name = "btoi"
-version = "0.4.3"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd6407f73a9b8b6162d8a2ef999fe6afd7cc15902ebf42c5cd296addf17e0ad"
+checksum = "3b5ab9db53bcda568284df0fd39f6eac24ad6f7ba7ff1168b9e76eba6576b976"
 dependencies = [
  "num-traits",
 ]
@@ -4845,7 +4845,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-agent-protocol"
-version = "0.4.4"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4881,7 +4881,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-common"
-version = "0.4.4"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4903,7 +4903,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-config"
-version = "0.4.4"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4982,7 +4982,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-proxy"
-version = "0.4.4"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5073,7 +5073,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-stack"
-version = "0.4.4"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5090,7 +5090,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-wasm-runtime"
-version = "0.4.4"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "async-trait",
