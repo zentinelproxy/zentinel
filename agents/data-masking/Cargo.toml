@@ -29,7 +29,7 @@ serde_json = "1.0"
 serde_urlencoded = "0.7"
 
 # Content type parsers
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.39", features = ["serialize"] }
 
 # Format-preserving encryption (FF1 - NIST approved)
 aes = "0.8"
