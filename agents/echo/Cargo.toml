@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 
 # Utilities
 uuid = { version = "1.20", features = ["v4", "serde"] }
