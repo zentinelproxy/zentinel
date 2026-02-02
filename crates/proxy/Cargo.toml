@@ -159,7 +159,7 @@ tonic-health = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # ACME automatic certificate management (Let's Encrypt)
-instant-acme = "0.7"
+instant-acme = "0.8"
 
 # Certificate generation for ACME
 rcgen = "0.14"
