@@ -125,7 +125,7 @@ tikv-jemallocator = { workspace = true }
 rand = "0.9"
 
 # Token counting for inference
-tiktoken-rs = { version = "0.6", optional = true }
+tiktoken-rs = { version = "0.9", optional = true }
 
 # Hex encoding
 hex = "0.4"
