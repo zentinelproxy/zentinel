@@ -12,7 +12,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use instant_acme::{
     Account, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
-    Order, OrderStatus,
+    Order, OrderStatus, RetryPolicy,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
@@ -100,7 +100,9 @@ impl AcmeClient {
                 })?;
 
             // Reconstruct account from stored credentials
-            let account = Account::from_credentials(credentials)
+            let account = Account::builder()
+                .map_err(|e| AcmeError::AccountCreation(e.to_string()))?
+                .from_credentials(credentials)
                 .await
                 .map_err(|e| AcmeError::AccountCreation(e.to_string()))?;
 
@@ -122,17 +124,19 @@ impl AcmeClient {
             LetsEncrypt::Production
         };
 
-        let (account, credentials) = Account::create(
-            &NewAccount {
-                contact: &[&format!("mailto:{}", self.config.email)],
-                terms_of_service_agreed: true,
-                only_return_existing: false,
-            },
-            directory.url(),
-            None,
-        )
-        .await
-        .map_err(|e| AcmeError::AccountCreation(e.to_string()))?;
+        let (account, credentials) = Account::builder()
+            .map_err(|e| AcmeError::AccountCreation(e.to_string()))?
+            .create(
+                &NewAccount {
+                    contact: &[&format!("mailto:{}", self.config.email)],
+                    terms_of_service_agreed: true,
+                    only_return_existing: false,
+                },
+                directory.url().to_owned(),
+                None,
+            )
+            .await
+            .map_err(|e| AcmeError::AccountCreation(e.to_string()))?;
 
         // Store credentials as JSON (AccountCredentials is serializable)
         let creds_json = serde_json::to_string_pretty(&credentials).map_err(|e| {
@@ -173,41 +177,38 @@ impl AcmeClient {
 
         // Create the order
         let mut order = account
-            .new_order(&NewOrder {
-                identifiers: &identifiers,
-            })
+            .new_order(&NewOrder::new(&identifiers))
             .await
             .map_err(|e| AcmeError::OrderCreation(e.to_string()))?;
 
         // Get authorizations and extract HTTP-01 challenges
-        let authorizations = order
-            .authorizations()
-            .await
-            .map_err(|e| AcmeError::OrderCreation(format!("Failed to get authorizations: {}", e)))?;
-
+        let mut authorizations = order.authorizations();
         let mut challenges = Vec::new();
 
-        for auth in authorizations {
-            let domain = match &auth.identifier {
+        while let Some(result) = authorizations.next().await {
+            let mut authz = result
+                .map_err(|e| AcmeError::OrderCreation(format!("Failed to get authorization: {}", e)))?;
+
+            let identifier = authz.identifier();
+            let domain = match &identifier.identifier {
                 Identifier::Dns(domain) => domain.clone(),
+                _ => continue,
             };
 
-            debug!(domain = %domain, status = ?auth.status, "Processing authorization");
+            debug!(domain = %domain, status = ?authz.status, "Processing authorization");
 
             // Skip if already valid
-            if auth.status == AuthorizationStatus::Valid {
+            if authz.status == AuthorizationStatus::Valid {
                 debug!(domain = %domain, "Authorization already valid");
                 continue;
             }
 
             // Find HTTP-01 challenge
-            let http01_challenge = auth
-                .challenges
-                .iter()
-                .find(|c| c.r#type == ChallengeType::Http01)
+            let http01_challenge = authz
+                .challenge(ChallengeType::Http01)
                 .ok_or_else(|| AcmeError::NoHttp01Challenge(domain.clone()))?;
 
-            let key_authorization = order.key_authorization(http01_challenge);
+            let key_authorization = http01_challenge.key_authorization();
 
             challenges.push(ChallengeInfo {
                 domain,
@@ -247,41 +248,38 @@ impl AcmeClient {
 
         // Create the order
         let mut order = account
-            .new_order(&NewOrder {
-                identifiers: &identifiers,
-            })
+            .new_order(&NewOrder::new(&identifiers))
             .await
             .map_err(|e| AcmeError::OrderCreation(e.to_string()))?;
 
         // Get authorizations and extract DNS-01 challenges
-        let authorizations = order
-            .authorizations()
-            .await
-            .map_err(|e| AcmeError::OrderCreation(format!("Failed to get authorizations: {}", e)))?;
-
+        let mut authorizations = order.authorizations();
         let mut challenges = Vec::new();
 
-        for auth in authorizations {
-            let domain = match &auth.identifier {
+        while let Some(result) = authorizations.next().await {
+            let mut authz = result
+                .map_err(|e| AcmeError::OrderCreation(format!("Failed to get authorization: {}", e)))?;
+
+            let identifier = authz.identifier();
+            let domain = match &identifier.identifier {
                 Identifier::Dns(domain) => domain.clone(),
+                _ => continue,
             };
 
-            debug!(domain = %domain, status = ?auth.status, "Processing DNS-01 authorization");
+            debug!(domain = %domain, status = ?authz.status, "Processing DNS-01 authorization");
 
             // Skip if already valid
-            if auth.status == AuthorizationStatus::Valid {
+            if authz.status == AuthorizationStatus::Valid {
                 debug!(domain = %domain, "Authorization already valid");
                 continue;
             }
 
             // Find DNS-01 challenge
-            let dns01_challenge = auth
-                .challenges
-                .iter()
-                .find(|c| c.r#type == ChallengeType::Dns01)
+            let dns01_challenge = authz
+                .challenge(ChallengeType::Dns01)
                 .ok_or_else(|| AcmeError::NoDns01Challenge(domain.clone()))?;
 
-            let key_authorization = order.key_authorization(dns01_challenge);
+            let key_authorization = dns01_challenge.key_authorization();
 
             // Create DNS-01 challenge info with computed value
             let challenge_info = create_challenge_info(
@@ -298,6 +296,9 @@ impl AcmeClient {
 
     /// Notify the ACME server that a challenge is ready for validation
     ///
+    /// Iterates through the order's authorizations to find the challenge
+    /// matching the given URL and marks it as ready.
+    ///
     /// # Arguments
     ///
     /// * `order` - The certificate order
@@ -309,15 +310,39 @@ impl AcmeClient {
     ) -> Result<(), AcmeError> {
         debug!(challenge_url = %challenge_url, "Setting challenge ready");
 
-        order
-            .set_challenge_ready(challenge_url)
-            .await
-            .map_err(|e| AcmeError::ChallengeValidation {
+        // Iterate authorizations to find the matching challenge by URL
+        let mut authorizations = order.authorizations();
+        while let Some(result) = authorizations.next().await {
+            let mut authz = result.map_err(|e| AcmeError::ChallengeValidation {
                 domain: "unknown".to_string(),
-                message: e.to_string(),
+                message: format!("Failed to get authorization: {}", e),
             })?;
 
-        Ok(())
+            // Determine which challenge type matches the URL
+            let matching_type = authz
+                .challenges
+                .iter()
+                .find(|c| c.url == challenge_url)
+                .map(|c| c.r#type.clone());
+
+            if let Some(challenge_type) = matching_type {
+                if let Some(mut challenge) = authz.challenge(challenge_type) {
+                    challenge
+                        .set_ready()
+                        .await
+                        .map_err(|e| AcmeError::ChallengeValidation {
+                            domain: "unknown".to_string(),
+                            message: e.to_string(),
+                        })?;
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(AcmeError::ChallengeValidation {
+            domain: "unknown".to_string(),
+            message: format!("Challenge not found for URL: {}", challenge_url),
+        })
     }
 
     /// Wait for the order to become ready (all challenges validated)
@@ -388,7 +413,7 @@ impl AcmeClient {
 
         // Submit CSR and finalize
         order
-            .finalize(&csr)
+            .finalize_csr(&csr)
             .await
             .map_err(|e| AcmeError::Finalization(format!("Failed to finalize order: {}", e)))?;
 
