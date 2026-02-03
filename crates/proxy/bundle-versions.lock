@@ -1,0 +1,89 @@
+# Sentinel Distribution Bundle - Version Lock File
+#
+# This file pins the agent versions included in the bundle distribution.
+# The lock file is embedded in the Sentinel binary at compile time.
+#
+# Update via PR when agents release new versions.
+# Format: CalVer for bundle, SemVer for agents
+
+[bundle]
+# Bundle version (CalVer: YY.MM_PATCH)
+version = "26.01_1"
+
+[agents]
+# Core agents (included in default bundle install)
+waf = "0.2.0"
+ratelimit = "0.2.0"
+denylist = "0.2.0"
+
+# Security agents
+sentinelsec = "0.1.0"
+modsec = "0.1.0"
+ip-reputation = "0.1.0"
+bot-management = "0.1.0"
+content-scanner = "0.1.0"
+
+# API security agents
+graphql-security = "0.1.0"
+grpc-inspector = "0.1.0"
+soap = "0.1.0"
+api-deprecation = "0.1.0"
+
+# Protocol agents
+websocket-inspector = "0.1.0"
+mqtt-gateway = "0.1.0"
+
+# Scripting agents
+lua = "0.1.0"
+js = "0.1.0"
+wasm = "0.1.0"
+
+# Utility agents
+transform = "0.1.0"
+audit-logger = "0.1.0"
+mock-server = "0.1.0"
+chaos = "0.1.0"
+
+# Identity agents
+spiffe = "0.1.0"
+
+[repositories]
+# Core agents
+waf = "raskell-io/sentinel-agent-waf"
+ratelimit = "raskell-io/sentinel-agent-ratelimit"
+denylist = "raskell-io/sentinel-agent-denylist"
+
+# Security agents
+sentinelsec = "raskell-io/sentinel-agent-sentinelsec"
+modsec = "raskell-io/sentinel-agent-modsec"
+ip-reputation = "raskell-io/sentinel-agent-ip-reputation"
+bot-management = "raskell-io/sentinel-agent-bot-management"
+content-scanner = "raskell-io/sentinel-agent-content-scanner"
+
+# API security agents
+graphql-security = "raskell-io/sentinel-agent-graphql-security"
+grpc-inspector = "raskell-io/sentinel-agent-grpc-inspector"
+soap = "raskell-io/sentinel-agent-soap"
+api-deprecation = "raskell-io/sentinel-agent-api-deprecation"
+
+# Protocol agents
+websocket-inspector = "raskell-io/sentinel-agent-websocket-inspector"
+mqtt-gateway = "raskell-io/sentinel-agent-mqtt-gateway"
+
+# Scripting agents
+lua = "raskell-io/sentinel-agent-lua"
+js = "raskell-io/sentinel-agent-js"
+wasm = "raskell-io/sentinel-agent-wasm"
+
+# Utility agents
+transform = "raskell-io/sentinel-agent-transform"
+audit-logger = "raskell-io/sentinel-agent-audit-logger"
+mock-server = "raskell-io/sentinel-agent-mock-server"
+chaos = "raskell-io/sentinel-agent-chaos"
+
+# Identity agents
+spiffe = "raskell-io/sentinel-agent-spiffe"
+
+[checksums]
+# SHA256 checksums for verification (optional, updated by release CI)
+# Format: agent-version-os-arch = "sha256:..."

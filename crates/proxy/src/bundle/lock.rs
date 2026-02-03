@@ -67,7 +67,7 @@ pub struct AgentInfo {
 impl BundleLock {
     /// Load the embedded lock file (compiled into the binary)
     pub fn embedded() -> Result<Self, LockError> {
-        let content = include_str!("../../../../bundle-versions.lock");
+        let content = include_str!(concat!(env!("OUT_DIR"), "/bundle-versions.lock"));
         Self::from_str(content)
     }
 
