@@ -25,8 +25,9 @@
 
 <p align="center">
   <a href="https://sentinel.raskell.io/docs">Documentation</a> •
+  <a href="https://sentinel.raskell.io/playground/">Playground</a> •
+  <a href="https://sentinel.raskell.io/benchmarks/">Benchmarks</a> •
   <a href="https://github.com/raskell-io/sentinel/discussions">Discussions</a> •
-  <a href="MANIFESTO.md">Manifesto</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -44,10 +45,40 @@ curl -fsSL https://getsentinel.raskell.io | sh
 
 # Or via Cargo
 cargo install sentinel-proxy
+```
 
+Save this as `sentinel.kdl` — it proxies `localhost:8080` to a backend on port `8081`:
+
+```kdl
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+    }
+}
+
+routes {
+    route "default" {
+        matches {
+            path-prefix "/"
+        }
+        upstream "backend"
+    }
+}
+
+upstreams {
+    upstream "backend" {
+        target "127.0.0.1:8081"
+    }
+}
+```
+
+```bash
 # Run
 sentinel --config sentinel.kdl
 ```
+
+More examples: [`config/examples/`](config/examples/) covers API gateways, load balancing, WebSocket, caching, inference routing, and more. Or use the [config builder](https://sentinel.raskell.io/customize/) to generate a config interactively.
 
 ## Features
 
@@ -110,6 +141,8 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
 ## Community
 
 - 📖 [Documentation](https://sentinel.raskell.io/docs) — Guides, reference, and examples
+- 🎮 [Playground](https://sentinel.raskell.io/playground/) — Try the routing engine in your browser (WASM)
+- 📊 [Benchmarks](https://sentinel.raskell.io/benchmarks/) — Performance, soak testing, and Envoy comparison
 - 💬 [Discussions](https://github.com/raskell-io/sentinel/discussions) — Questions, ideas, show & tell
 - 🐛 [Issues](https://github.com/raskell-io/sentinel/issues) — Bug reports and feature requests
 
