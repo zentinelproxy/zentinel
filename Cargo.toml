@@ -70,7 +70,7 @@ anyhow = "1.0"
 # IPC and protocol
 prost = "0.14"
 tonic = { version = "0.14", features = ["transport", "tls-ring", "tls-native-roots"] }
-bytes = "1.9"
+bytes = "1.11"
 
 # Configuration and validation
 config = "0.14"
