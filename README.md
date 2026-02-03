@@ -91,18 +91,27 @@ More examples: [`config/examples/`](config/examples/) covers API gateways, load 
 
 | Feature | Description |
 |---------|-------------|
-| **KDL Configuration** | Human-readable config with hot reload |
 | **Service Types** | Web, API, Static, Builtin, and Inference (LLM/AI) |
-| **Load Balancing** | 14+ algorithms: round-robin, consistent hashing, Maglev, P2C, adaptive, and more |
-| **ACME** | Automatic TLS certificates via Let's Encrypt with auto-renewal |
-| **Agent Protocol** | External agents for WAF, auth, and custom logic with connection pooling |
-| **Observability** | Prometheus metrics, structured logging, distributed tracing |
-
-### Inference Gateway
-
-First-class support for LLM/AI workloads: token-based rate limiting, usage budgets, model-based routing with glob patterns (`gpt-4*`, `claude-*`), and guardrails for prompt injection and PII detection. Supports OpenAI, Anthropic, and generic providers out of the box.
+| **Load Balancing** | 14 algorithms: round-robin, weighted, least connections, Maglev, Peak EWMA, and more |
+| **Security** | TLS/mTLS, rate limiting, GeoIP filtering, WAF, zip bomb protection |
+| **Agent Protocol** | External agents for WAF, auth, and custom logic — crash-isolated, any language |
+| **HTTP Caching** | Pingora-based response caching with stampede prevention and S3-FIFO + TinyLFU eviction |
+| **WebSocket Proxying** | RFC 6455 compliant with frame inspection and traffic mirroring |
+| **Observability** | Prometheus metrics, structured logging, OpenTelemetry tracing |
+| **Hot Reload** | Zero-downtime config updates via SIGHUP with validation and atomic swap |
 
 See the full feature breakdown at [sentinel.raskell.io/features](https://sentinel.raskell.io/features/).
+
+### Use Cases
+
+- **Reverse Proxy** — TLS termination, static file serving, compression, and security headers for web applications
+- **API Gateway** — Versioned routing, JWT/API key auth, per-client rate limiting, and JSON error responses
+- **Load Balancer** — Weighted traffic distribution, health checks, circuit breakers, and blue-green/canary deployments
+- **Inference Gateway** — Token-based rate limiting, model routing with glob patterns (`gpt-4*`, `claude-*`), prompt injection detection, and PII filtering for OpenAI, Anthropic, and generic LLM providers
+- **WebSocket Gateway** — Persistent connection proxying with frame inspection, message rate limiting, and session affinity
+- **Security Gateway** — WAF, GeoIP filtering, mTLS, and composable agent pipelines for custom security logic
+
+Example configs for each: [`config/examples/`](config/examples/)
 
 ## Why Sentinel
 
