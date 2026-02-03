@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://sentinel.raskell.io/docs">Documentation</a> •
+  <a href="https://sentinel.raskell.io/docs/">Documentation</a> •
   <a href="https://sentinel.raskell.io/playground/">Playground</a> •
   <a href="https://sentinel.raskell.io/benchmarks/">Benchmarks</a> •
   <a href="https://github.com/raskell-io/sentinel/discussions">Discussions</a> •
