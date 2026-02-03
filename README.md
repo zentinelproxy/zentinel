@@ -50,6 +50,10 @@ cargo install sentinel-proxy
 Save this as `sentinel.kdl` — it proxies `localhost:8080` to a backend on port `8081`:
 
 ```kdl
+system {
+    worker-threads 0  // auto-detect CPU cores
+}
+
 listeners {
     listener "http" {
         address "0.0.0.0:8080"
@@ -76,6 +80,9 @@ upstreams {
 ```bash
 # Run
 sentinel --config sentinel.kdl
+
+# Validate config without starting
+sentinel test --config sentinel.kdl
 ```
 
 More examples: [`config/examples/`](config/examples/) covers API gateways, load balancing, WebSocket, caching, inference routing, and more. Or use the [config builder](https://sentinel.raskell.io/customize/) to generate a config interactively.
@@ -116,6 +123,24 @@ The goal is infrastructure that is **correct, calm, and trustworthy**.
 - **Production correctness** — Features ship only when bounded, observed, and tested.
 
 See [`MANIFESTO.md`](MANIFESTO.md) for the full philosophy.
+
+## Agents
+
+Sentinel's security and extensibility lives in **agents** — external processes that hook into every request phase. Agents are crash-isolated from the proxy, independently deployable, and can be written in any language (SDKs for Rust, Go, Python, TypeScript, Elixir, Kotlin, and Haskell).
+
+| Agent | Description |
+|-------|-------------|
+| [WAF](https://github.com/raskell-io/sentinel-agent-waf) | Pure Rust WAF — 200+ detection rules, ML-powered anomaly scoring, zero C dependencies |
+| [AI Gateway](https://github.com/raskell-io/sentinel-agent-ai-gateway) | Prompt injection detection, jailbreak prevention, PII filtering for LLM APIs |
+| [Policy](https://github.com/raskell-io/sentinel-agent-policy) | Multi-engine policy evaluation (Rego/OPA and Cedar) — written in Haskell |
+| [Auth](https://github.com/raskell-io/sentinel-agent-auth) | JWT, OIDC, SAML, mTLS, API keys with Cedar-based fine-grained authorization |
+| [Chaos](https://github.com/raskell-io/sentinel-agent-chaos) | Latency injection, error simulation, connection resets with safety guardrails |
+| [Lua](https://github.com/raskell-io/sentinel-agent-lua) | Sandboxed Lua scripting with VM pooling, hot-reload, and resource limits |
+| [SentinelSec](https://github.com/raskell-io/sentinel-agent-sentinelsec) | Pure Rust ModSecurity — OWASP CRS-compatible SecLang parser, zero C dependencies |
+| [WebSocket Inspector](https://github.com/raskell-io/sentinel-agent-websocket-inspector) | Content filtering, JSON/MessagePack validation, and rate limiting for WebSocket frames |
+| [MQTT Gateway](https://github.com/raskell-io/sentinel-agent-mqtt-gateway) | IoT protocol security with topic ACLs, auth, and payload inspection |
+
+Browse all 25+ agents at [sentinel.raskell.io/agents](https://sentinel.raskell.io/agents/).
 
 ## Crates
 
