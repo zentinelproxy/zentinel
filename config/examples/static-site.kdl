@@ -67,6 +67,7 @@ routes {
         priority "high"
 
         matches {
+            path-prefix "/assets/"
             // Files with content hashes in the name
             path-regex "/assets/.*\\.[a-f0-9]{8,}\\.(js|css|woff2?|ttf|eot)$"
         }
@@ -87,6 +88,7 @@ routes {
         priority "normal"
 
         matches {
+            path-prefix "/"
             path-regex "\\.(png|jpg|jpeg|gif|webp|svg|ico)$"
         }
 
@@ -106,6 +108,7 @@ routes {
         priority "normal"
 
         matches {
+            path-prefix "/"
             path-regex "\\.(js|css|html|json|xml|txt)$"
         }
 

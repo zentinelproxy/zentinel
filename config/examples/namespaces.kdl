@@ -85,7 +85,7 @@ filters {
 agents {
     agent "waf-agent" {
         type "waf"
-        unix-socket path="/var/run/sentinel/waf.sock"
+        grpc address="http://localhost:50051"
         events "request_headers" "request_body"
         timeout-ms 200
         failure-mode "closed"
@@ -139,7 +139,7 @@ namespace "platform" {
         agents {
             agent "auth-agent" {
                 type "auth"
-                unix-socket path="/var/run/sentinel/platform-auth.sock"
+                grpc address="http://localhost:50052"
                 events "request_headers"
                 timeout-ms 100
                 failure-mode "closed"
@@ -245,6 +245,16 @@ namespace "storefront" {
     limits {
         max-body-size-bytes 52428800  // 50MB for product images
         max-connections-per-client 100
+    }
+
+    // Namespace-scoped filters
+    filters {
+        filter "waf-agent" {
+            type "agent"
+            agent "waf-agent"
+            timeout-ms 200
+            failure-mode "closed"
+        }
     }
 
     upstreams {

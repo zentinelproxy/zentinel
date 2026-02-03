@@ -28,7 +28,7 @@ agents {
     // Auth agent creates child spans
     agent "auth" {
         type "auth"
-        unix-socket path="/var/run/sentinel/auth.sock"
+        grpc address="http://localhost:50051"
         events "request_headers"
         timeout-ms 100
         failure-mode "closed"
@@ -37,8 +37,27 @@ agents {
     // Rate limit agent creates child spans
     agent "ratelimit" {
         type "rate-limit"
-        unix-socket path="/var/run/sentinel/ratelimit.sock"
+        grpc address="http://localhost:50052"
         events "request_headers"
+        timeout-ms 50
+        failure-mode "open"
+    }
+}
+
+// =============================================================================
+// Filters (agent-backed)
+// =============================================================================
+filters {
+    filter "auth" {
+        type "agent"
+        agent "auth"
+        timeout-ms 100
+        failure-mode "closed"
+    }
+
+    filter "ratelimit" {
+        type "agent"
+        agent "ratelimit"
         timeout-ms 50
         failure-mode "open"
     }

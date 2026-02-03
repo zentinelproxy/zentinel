@@ -225,24 +225,8 @@ routes {
 // Upstream pool configurations
 upstreams {
     upstream "api-backend" {
-        targets {
-            target {
-                address "10.1.1.10:8080"
-                weight 1
-                metadata {
-                    "zone" "us-east-1a"
-                    "version" "v2.1.0"
-                }
-            }
-            target {
-                address "10.1.1.11:8080"
-                weight 1
-                metadata {
-                    "zone" "us-east-1b"
-                    "version" "v2.1.0"
-                }
-            }
-        }
+        target "10.1.1.10:8080" weight=1
+        target "10.1.1.11:8080" weight=1
 
         load-balancing "least_connections"
 
@@ -274,12 +258,7 @@ upstreams {
     }
 
     upstream "cdn-backend" {
-        targets {
-            target {
-                address "cdn.example.com:443"
-                weight 1
-            }
-        }
+        target "cdn.example.com:443" weight=1
 
         load-balancing "round_robin"
 
@@ -298,16 +277,8 @@ upstreams {
     }
 
     upstream "websocket-backend" {
-        targets {
-            target {
-                address "10.1.2.10:8080"
-                weight 1
-            }
-            target {
-                address "10.1.2.11:8080"
-                weight 1
-            }
-        }
+        target "10.1.2.10:8080" weight=1
+        target "10.1.2.11:8080" weight=1
 
         load-balancing "ip_hash"  // Sticky sessions for WebSocket
 
@@ -321,23 +292,13 @@ upstreams {
     }
 
     upstream "default-backend" {
-        targets {
-            target {
-                address "127.0.0.1:8081"
-                weight 1
-            }
-        }
+        target "127.0.0.1:8081" weight=1
 
         load-balancing "round_robin"
     }
 
     upstream "health-backend" {
-        targets {
-            target {
-                address "127.0.0.1:9999"  // Local health endpoint
-                weight 1
-            }
-        }
+        target "127.0.0.1:9999" weight=1  // Local health endpoint
 
         load-balancing "round_robin"
     }
@@ -347,9 +308,7 @@ upstreams {
 agents {
     agent "auth-agent" {
         type "auth"
-        transport "unix_socket" {
-            path "/var/run/sentinel/auth.sock"
-        }
+        grpc address="http://localhost:50051"
         events "request_headers"
         timeout-ms 100
         failure-mode "closed"  // Fail-closed for auth
@@ -364,9 +323,7 @@ agents {
 
     agent "rate-limit-agent" {
         type "rate_limit"
-        transport "unix_socket" {
-            path "/var/run/sentinel/ratelimit.sock"
-        }
+        grpc address="http://localhost:50052"
         events "request_headers"
         timeout-ms 50
         failure-mode "open"  // Fail-open for rate limiting
@@ -374,9 +331,7 @@ agents {
 
     agent "waf-agent" {
         type "waf"
-        transport "unix_socket" {
-            path "/var/run/sentinel/waf.sock"
-        }
+        grpc address="http://localhost:50053"
         events "request_headers" "request_body"
         timeout-ms 200
         failure-mode "closed"

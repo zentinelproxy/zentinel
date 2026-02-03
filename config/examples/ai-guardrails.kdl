@@ -48,7 +48,7 @@ agents {
     // Prompt injection detection agent
     agent "prompt-guard" {
         type "guardrail"
-        unix-socket path="/var/run/sentinel/prompt-guard.sock"
+        grpc address="http://localhost:50051"
         events "request_body"
         timeout-ms 500
         failure-mode "open"  // Fail-open: allow on agent failure
@@ -64,7 +64,7 @@ agents {
     // PII detection agent
     agent "pii-detector" {
         type "guardrail"
-        unix-socket path="/var/run/sentinel/pii-detector.sock"
+        grpc address="http://localhost:50052"
         events "response_body"
         timeout-ms 300
         failure-mode "open"
@@ -79,10 +79,22 @@ agents {
     // Content moderation agent
     agent "content-moderator" {
         type "guardrail"
-        unix-socket path="/var/run/sentinel/content-mod.sock"
+        grpc address="http://localhost:50053"
         events "request_body" "response_body"
         timeout-ms 400
         failure-mode "closed"  // Fail-closed: block on agent failure
+    }
+}
+
+// =============================================================================
+// Filters (agent-backed)
+// =============================================================================
+filters {
+    filter "content-moderator" {
+        type "agent"
+        agent "content-moderator"
+        timeout-ms 400
+        failure-mode "closed"
     }
 }
 
