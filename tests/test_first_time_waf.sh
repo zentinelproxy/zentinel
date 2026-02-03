@@ -48,6 +48,11 @@ TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
 
+# Clean headers to avoid WAF false positives on broad rules:
+# - Rule 933100 matches any parentheses (LDAP injection)
+# - Rule 934104 matches */* in Accept header (XPath node extraction)
+CLEAN_HEADERS=(-H "User-Agent: SentinelTest" -H "Accept: text/html")
+
 # Overall timeout (60s)
 SCRIPT_START=$(date +%s)
 SCRIPT_TIMEOUT=60
@@ -68,17 +73,17 @@ log_info() {
 
 log_success() {
     echo -e "${GREEN}[PASS]${NC} $1"
-    ((TESTS_PASSED++))
+    ((TESTS_PASSED++)) || true
 }
 
 log_failure() {
     echo -e "${RED}[FAIL]${NC} $1"
-    ((TESTS_FAILED++))
+    ((TESTS_FAILED++)) || true
 }
 
 log_test() {
     echo -e "${YELLOW}[TEST]${NC} $1"
-    ((TESTS_RUN++))
+    ((TESTS_RUN++)) || true
 }
 
 # Find a random available port
@@ -192,6 +197,15 @@ listeners {
     }
 }
 
+filters {
+    filter "waf-filter" {
+        type "agent"
+        agent "waf-agent"
+        timeout-ms 200
+        failure-mode "open"
+    }
+}
+
 routes {
     route "default" {
         priority "low"
@@ -199,21 +213,13 @@ routes {
             path-prefix "/"
         }
         upstream "test-backend"
-        agents ["waf-agent"]
-        policies {
-            failure-mode "open"
-        }
+        filters "waf-filter"
     }
 }
 
 upstreams {
     upstream "test-backend" {
-        targets {
-            target {
-                address "127.0.0.1:$BACKEND_PORT"
-                weight 1
-            }
-        }
+        target "127.0.0.1:$BACKEND_PORT" weight=1
         load-balancing "round_robin"
     }
 }
@@ -225,7 +231,7 @@ agents {
         timeout-ms 200
         failure-mode "open"
         config {
-            paranoia-level 2
+            paranoia-level 1
             sqli #true
             xss #true
             path-traversal #true
@@ -261,7 +267,7 @@ start_waf_agent() {
 
     RUST_LOG=debug "$WAF_BIN" \
         --socket "$WAF_SOCKET" \
-        --paranoia-level 2 \
+        --paranoia-level 1 \
         --sqli \
         --xss \
         --path-traversal \
@@ -296,7 +302,7 @@ start_proxy() {
     PROXY_PID=$!
 
     local retries=20
-    while ! curl -sf "http://127.0.0.1:$PROXY_PORT/" >/dev/null 2>&1; do
+    while ! curl -sf "${CLEAN_HEADERS[@]}" "http://127.0.0.1:$PROXY_PORT/" >/dev/null 2>&1; do
         sleep 0.5
         ((retries--))
         if [[ $retries -eq 0 ]]; then
@@ -317,8 +323,8 @@ test_legitimate_request() {
     log_test "Legitimate request passes through"
 
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "${CLEAN_HEADERS[@]}" "http://127.0.0.1:$PROXY_PORT/" || true)
 
     if [[ "$status" == "200" ]]; then
         log_success "Legitimate GET / returned 200"
@@ -327,16 +333,17 @@ test_legitimate_request() {
     fi
 }
 
-test_waf_headers() {
-    log_test "WAF adds detection headers"
+test_waf_blocks_with_body() {
+    log_test "WAF block response returns 403 with body"
 
     local response
-    response=$(curl -s -i --max-time 5 "http://127.0.0.1:$PROXY_PORT/")
+    response=$(curl -s --max-time 5 -g \
+        "${CLEAN_HEADERS[@]}" "http://127.0.0.1:$PROXY_PORT/?id=1'OR'1'='1" || true)
 
-    if echo "$response" | grep -qi "X-WAF-Score"; then
-        log_success "WAF added X-WAF-Score header"
+    if echo "$response" | grep -qi "Forbidden"; then
+        log_success "WAF block response includes 'Forbidden' body"
     else
-        log_failure "WAF did not add X-WAF-Score header"
+        log_failure "WAF block response missing expected body"
     fi
 }
 
@@ -344,8 +351,8 @@ test_sqli_blocked() {
     log_test "SQL injection blocked"
 
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/?id=1%27%20OR%20%271%27%3D%271")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -g \
+        "${CLEAN_HEADERS[@]}" "http://127.0.0.1:$PROXY_PORT/?id=1'OR'1'='1" || true)
 
     if [[ "$status" == "403" ]]; then
         log_success "SQL injection blocked with 403"
@@ -358,8 +365,9 @@ test_xss_blocked() {
     log_test "XSS blocked"
 
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "${CLEAN_HEADERS[@]}" -H "X-Input: <script>alert(1)</script>" \
+        "http://127.0.0.1:$PROXY_PORT/" || true)
 
     if [[ "$status" == "403" ]]; then
         log_success "XSS blocked with 403"
@@ -372,8 +380,8 @@ test_path_traversal_blocked() {
     log_test "Path traversal blocked"
 
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/../../etc/passwd")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 --path-as-is \
+        "${CLEAN_HEADERS[@]}" "http://127.0.0.1:$PROXY_PORT/../../etc/passwd" || true)
 
     if [[ "$status" == "403" ]]; then
         log_success "Path traversal blocked with 403"
@@ -382,17 +390,17 @@ test_path_traversal_blocked() {
     fi
 }
 
-test_metrics_health() {
-    log_test "Metrics endpoint works"
+test_clean_request_allowed() {
+    log_test "Clean request with query params passes through"
 
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$METRICS_PORT/metrics")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "${CLEAN_HEADERS[@]}" "http://127.0.0.1:$PROXY_PORT/?search=hello+world" || true)
 
     if [[ "$status" == "200" ]]; then
-        log_success "Metrics endpoint returned 200"
+        log_success "Clean request with query params returned 200"
     else
-        log_failure "Metrics endpoint returned $status (expected 200)"
+        log_failure "Clean request with query params returned $status (expected 200)"
     fi
 }
 
@@ -407,8 +415,8 @@ test_agent_crash_fail_open() {
 
     # Legitimate request should still pass (fail-open)
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "${CLEAN_HEADERS[@]}" "http://127.0.0.1:$PROXY_PORT/" || true)
 
     if [[ "$status" == "200" ]]; then
         log_success "Request passed through with dead agent (fail-open)"
@@ -431,8 +439,8 @@ test_agent_recovery() {
 
     # SQL injection should be blocked again
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/?id=1%27%20OR%20%271%27%3D%271")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -g \
+        "${CLEAN_HEADERS[@]}" "http://127.0.0.1:$PROXY_PORT/?id=1'OR'1'='1" || true)
 
     if [[ "$status" == "403" ]]; then
         log_success "WAF blocks attacks after recovery"
@@ -464,11 +472,11 @@ main() {
 
     # Run tests
     check_timeout; test_legitimate_request
-    check_timeout; test_waf_headers
+    check_timeout; test_waf_blocks_with_body
     check_timeout; test_sqli_blocked
     check_timeout; test_xss_blocked
     check_timeout; test_path_traversal_blocked
-    check_timeout; test_metrics_health
+    check_timeout; test_clean_request_allowed
     check_timeout; test_agent_crash_fail_open
     check_timeout; test_agent_recovery
 

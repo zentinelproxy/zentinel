@@ -4,6 +4,7 @@
 #
 # Validates that a first-time user can build Sentinel + the Lua agent,
 # wire them together with a custom Lua script, and see the agent working.
+# Uses an echo backend to verify header injection via request headers.
 #
 # Prerequisites:
 # - Rust toolchain (cargo)
@@ -36,6 +37,7 @@ BACKEND_PID=""
 PROXY_PORT=""
 BACKEND_PORT=""
 METRICS_PORT=""
+LUA_GRPC_PORT=""
 
 # Paths (overridable via env)
 SENTINEL_BIN="${SENTINEL_BIN:-}"
@@ -68,17 +70,17 @@ log_info() {
 
 log_success() {
     echo -e "${GREEN}[PASS]${NC} $1"
-    ((TESTS_PASSED++))
+    ((TESTS_PASSED++)) || true
 }
 
 log_failure() {
     echo -e "${RED}[FAIL]${NC} $1"
-    ((TESTS_FAILED++))
+    ((TESTS_FAILED++)) || true
 }
 
 log_test() {
     echo -e "${YELLOW}[TEST]${NC} $1"
-    ((TESTS_RUN++))
+    ((TESTS_RUN++)) || true
 }
 
 # Find a random available port
@@ -144,15 +146,31 @@ build_binaries() {
     fi
 }
 
-# Start a minimal Python HTTP backend
+# Start a Python echo backend that reflects request headers in the response body
 start_backend() {
-    log_info "Starting Python HTTP backend..."
+    log_info "Starting Python echo backend..."
 
     BACKEND_PORT=$(find_free_port)
-    mkdir -p "$TEST_DIR/www"
-    echo "<html><body>Hello from backend</body></html>" > "$TEST_DIR/www/index.html"
 
-    python3 -m http.server "$BACKEND_PORT" --directory "$TEST_DIR/www" \
+    cat > "$TEST_DIR/echo_server.py" <<'PYEOF'
+import sys
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class EchoHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        lines = [f"{k}: {v}" for k, v in self.headers.items()]
+        self.wfile.write("\n".join(lines).encode())
+
+    def log_message(self, fmt, *args):
+        pass  # suppress log noise
+
+HTTPServer(("127.0.0.1", int(sys.argv[1])), EchoHandler).serve_forever()
+PYEOF
+
+    python3 "$TEST_DIR/echo_server.py" "$BACKEND_PORT" \
         > "$TEST_DIR/backend.log" 2>&1 &
     BACKEND_PID=$!
 
@@ -166,7 +184,7 @@ start_backend() {
         fi
     done
 
-    log_info "Backend started on port $BACKEND_PORT (PID: $BACKEND_PID)"
+    log_info "Echo backend started on port $BACKEND_PORT (PID: $BACKEND_PID)"
 }
 
 # Create Lua script
@@ -175,7 +193,7 @@ create_lua_script() {
 
     cat > "$LUA_SCRIPT" <<'LUAEOF'
 -- Sentinel Lua Agent: first-time user test script
--- Adds a custom header to every response, blocks requests with ?block=true
+-- Adds a custom request header to every allowed request, blocks requests with ?block=true
 
 function on_request_headers()
     -- Check if we should block
@@ -184,18 +202,14 @@ function on_request_headers()
         return {
             decision = "block",
             status = 403,
-            body = "Blocked by Lua agent",
-            add_response_headers = {
-                ["X-Processed-By"] = "lua-agent",
-                ["X-Blocked"] = "true"
-            }
+            body = "Blocked by Lua agent"
         }
     end
 
-    -- Allow with custom header
+    -- Allow with custom request header (injected into upstream request)
     return {
         decision = "allow",
-        add_response_headers = {
+        add_request_headers = {
             ["X-Processed-By"] = "lua-agent"
         }
     }
@@ -207,8 +221,9 @@ LUAEOF
 generate_config() {
     PROXY_PORT=$(find_free_port)
     METRICS_PORT=$(find_free_port)
+    LUA_GRPC_PORT=$(find_free_port)
 
-    log_info "Generating config (proxy=$PROXY_PORT, metrics=$METRICS_PORT, backend=$BACKEND_PORT)"
+    log_info "Generating config (proxy=$PROXY_PORT, metrics=$METRICS_PORT, backend=$BACKEND_PORT, lua-grpc=$LUA_GRPC_PORT)"
 
     cat > "$PROXY_CONFIG" <<EOF
 system {
@@ -225,6 +240,15 @@ listeners {
     }
 }
 
+filters {
+    filter "lua-filter" {
+        type "agent"
+        agent "lua-agent"
+        timeout-ms 200
+        failure-mode "open"
+    }
+}
+
 routes {
     route "default" {
         priority "low"
@@ -232,21 +256,13 @@ routes {
             path-prefix "/"
         }
         upstream "test-backend"
-        agents ["lua-agent"]
-        policies {
-            failure-mode "open"
-        }
+        filters "lua-filter"
     }
 }
 
 upstreams {
     upstream "test-backend" {
-        targets {
-            target {
-                address "127.0.0.1:$BACKEND_PORT"
-                weight 1
-            }
-        }
+        target "127.0.0.1:$BACKEND_PORT" weight=1
         load-balancing "round_robin"
     }
 }
@@ -254,10 +270,9 @@ upstreams {
 agents {
     agent "lua-agent" {
         type "custom"
-        transport "unix_socket" {
-            path "$LUA_SOCKET"
-        }
-        events ["request_headers"]
+        grpc "http://127.0.0.1:$LUA_GRPC_PORT"
+        protocol-version "v2"
+        events "request_headers"
         timeout-ms 200
         failure-mode "open"
     }
@@ -289,20 +304,25 @@ start_lua_agent() {
 
     RUST_LOG=debug "$LUA_BIN" \
         --socket "$LUA_SOCKET" \
+        --grpc-address "127.0.0.1:$LUA_GRPC_PORT" \
         --script "$LUA_SCRIPT" \
         --fail-open \
         --verbose \
         > "$TEST_DIR/lua-agent.log" 2>&1 &
     LUA_PID=$!
 
-    local retries=10
-    while [[ ! -S "$LUA_SOCKET" ]] && [[ $retries -gt 0 ]]; do
+    # Wait for gRPC port to be ready
+    local retries=20
+    while ! curl -sf "http://127.0.0.1:$LUA_GRPC_PORT/" >/dev/null 2>&1 && [[ $retries -gt 0 ]]; do
         sleep 0.5
         ((retries--))
     done
 
-    if [[ -S "$LUA_SOCKET" ]]; then
-        log_info "Lua agent started (PID: $LUA_PID)"
+    # Give a moment for gRPC server to fully initialize
+    sleep 1
+
+    if kill -0 "$LUA_PID" 2>/dev/null; then
+        log_info "Lua agent started (PID: $LUA_PID, gRPC: $LUA_GRPC_PORT)"
         return 0
     else
         echo -e "${RED}[ERROR]${NC} Lua agent failed to start"
@@ -342,8 +362,8 @@ test_request_passes() {
     log_test "Request passes through"
 
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "http://127.0.0.1:$PROXY_PORT/" || true)
 
     if [[ "$status" == "200" ]]; then
         log_success "GET / returned 200"
@@ -353,15 +373,17 @@ test_request_passes() {
 }
 
 test_lua_adds_header() {
-    log_test "Lua agent adds custom header"
+    log_test "Lua agent injects request header"
 
-    local response
-    response=$(curl -s -i --max-time 5 "http://127.0.0.1:$PROXY_PORT/")
+    # The echo backend reflects request headers in the response body,
+    # so we can verify the Lua agent injected X-Processed-By
+    local body
+    body=$(curl -s --max-time 5 "http://127.0.0.1:$PROXY_PORT/" || true)
 
-    if echo "$response" | grep -qi "X-Processed-By: lua-agent"; then
-        log_success "Lua agent added X-Processed-By header"
+    if echo "$body" | grep -qi "x-processed-by: lua-agent"; then
+        log_success "Lua agent injected X-Processed-By request header"
     else
-        log_failure "Lua agent did not add X-Processed-By header"
+        log_failure "Lua agent did not inject X-Processed-By header (body: $body)"
     fi
 }
 
@@ -369,8 +391,8 @@ test_lua_blocks_request() {
     log_test "Lua agent blocks request"
 
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/?block=true")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "http://127.0.0.1:$PROXY_PORT/?block=true" || true)
 
     if [[ "$status" == "403" ]]; then
         log_success "Lua agent blocked request with 403"
@@ -388,8 +410,8 @@ test_agent_crash_fail_open() {
     sleep 1
 
     local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
-        "http://127.0.0.1:$PROXY_PORT/")
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "http://127.0.0.1:$PROXY_PORT/" || true)
 
     if [[ "$status" == "200" ]]; then
         log_success "Request passed through with dead agent (fail-open)"
