@@ -172,6 +172,10 @@ Each crate has its own `docs/` directory with detailed documentation.
 
 </details>
 
+## Control Plane
+
+[**sentinel-control-plane**](https://github.com/raskell-io/sentinel-control-plane) — Fleet management for Sentinel proxies, built with Elixir/Phoenix. Centralized configuration, rolling deploys, and real-time observability across your Sentinel instances.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
