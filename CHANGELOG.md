@@ -12,7 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
-| [26.02_2](#26022---2026-02-03) | 0.4.9 | 2026-02-03 | First-time user smoke tests, protocol-version config, docs refresh |
+| [26.02_3](#26022---2026-02-03) | 0.4.9 | 2026-02-03 | First-time user smoke tests, protocol-version config, docs refresh |
 | [26.02_1](#26021---2026-02-02) | 0.4.7 | 2026-02-02 | Pingora 0.7 upgrade, drop fork, major dependency sweep |
 | [26.02_0](#26020---2026-01-29) | 0.4.5 | 2026-01-29 | Supply chain security: SBOM, cosign signing, SLSA provenance |
 | [26.01_11](#260111---2026-01-29) | 0.4.5 | 2026-01-29 | Per-request allocation reduction in hot path |
@@ -30,7 +30,7 @@ for details.
 
 ---
 
-## [26.02_2] - 2026-02-03
+## [26.02_3] - 2026-02-03
 
 **Crate version:** 0.4.9
 
