@@ -131,7 +131,7 @@ Sentinel's security and extensibility lives in **agents** — external processes
 | Agent | Description |
 |-------|-------------|
 | [WAF](https://github.com/raskell-io/sentinel-agent-waf) | Pure Rust WAF — 200+ detection rules, ML-powered anomaly scoring, zero C dependencies |
-| AI Gateway | Prompt injection detection, jailbreak prevention, PII filtering for LLM APIs |
+| [AI Gateway](https://github.com/raskell-io/sentinel-agent-ai-gateway) | Prompt injection detection, jailbreak prevention, PII filtering for LLM APIs |
 | [Policy](https://github.com/raskell-io/sentinel-agent-policy) | Multi-engine policy evaluation (Rego/OPA and Cedar) — written in Haskell |
 | [Auth](https://github.com/raskell-io/sentinel-agent-auth) | JWT, OIDC, SAML, mTLS, API keys with Cedar-based fine-grained authorization |
 | [Chaos](https://github.com/raskell-io/sentinel-agent-chaos) | Latency injection, error simulation, connection resets with safety guardrails |
