@@ -5034,7 +5034,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-agent-protocol"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5070,7 +5070,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-common"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5092,7 +5092,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-config"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5171,7 +5171,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-proxy"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5262,7 +5262,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-stack"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5279,7 +5279,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-wasm-runtime"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "async-trait",
