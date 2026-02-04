@@ -3,21 +3,14 @@
 
 [advisories]
 ignore = [
-    # protobuf 2.28.0 — uncontrolled recursion (RUSTSEC-2024-0437)
-    # Transitive: prometheus 0.13 → pingora-core 0.7
-    # Blocked on: https://github.com/cloudflare/pingora/issues/560
-    # Risk: Low — protobuf is only used for Prometheus metric encoding,
-    # not for parsing untrusted input.
-    "RUSTSEC-2024-0437",
-
     # daemonize 0.5.0 — unmaintained (RUSTSEC-2025-0069)
-    # Transitive: pingora-core 0.7
-    # Blocked on: Pingora upstream
+    # Transitive: pingora-core 0.7 (via our fork)
+    # Blocked on: Pingora upstream — deeply integrated into daemon module
     "RUSTSEC-2025-0069",
 
     # derivative 2.2.0 — unmaintained (RUSTSEC-2024-0388)
-    # Transitive: pingora-core 0.7, pingora-load-balancing 0.7
-    # Blocked on: Pingora upstream
+    # Transitive: pingora-core 0.7, pingora-load-balancing 0.7 (via our fork)
+    # Blocked on: Pingora upstream — educe can't handle Ord(ignore) pattern
     "RUSTSEC-2024-0388",
 
     # fxhash 0.2.1 — unmaintained (RUSTSEC-2025-0057)

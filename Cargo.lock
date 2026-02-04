@@ -5,10 +5,9 @@ version = 4
 [[package]]
 name = "TinyUFO"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a73f7a0f44548459b7602be581c5d6da2892f4ffa7ee4808b5b2afea213ada74"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
- "ahash",
+ "ahash 0.8.12",
  "crossbeam-queue",
  "crossbeam-skiplist",
  "flurry",
@@ -38,6 +37,17 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures",
+]
+
+[[package]]
+name = "ahash"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "891477e0c6a8957309ee5c45a6368af3ae14bb510732d2684ffa19af310920f9"
+dependencies = [
+ "getrandom 0.2.17",
+ "once_cell",
+ "version_check",
 ]
 
 [[package]]
@@ -1696,7 +1706,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf5efcf77a4da27927d3ab0509dec5b0954bb3bc59da5a1de9e52642ebd4cdf9"
 dependencies = [
- "ahash",
+ "ahash 0.8.12",
  "num_cpus",
  "parking_lot",
  "seize",
@@ -2012,6 +2022,9 @@ name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
+dependencies = [
+ "ahash 0.7.8",
+]
 
 [[package]]
 name = "hashbrown"
@@ -2728,7 +2741,7 @@ version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9320368abda84a3aad44953d61e70515681fe43ae94529dff5567e0215b88438"
 dependencies = [
- "ahash",
+ "ahash 0.8.12",
  "bytecount",
  "data-encoding",
  "email_address",
@@ -3656,8 +3669,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 [[package]]
 name = "pingora"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01e8f7e45ee3a0c90e154ba7f2ec12ea33c398913d45d23b01429e90e1b394c7"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "pingora-cache",
  "pingora-core",
@@ -3670,10 +3682,9 @@ dependencies = [
 [[package]]
 name = "pingora-cache"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcea698ba4fef0863caf2feaf0f699ee29d82c19f9c54bc55c8f29e8609c773c"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
- "ahash",
+ "ahash 0.8.12",
  "async-trait",
  "blake2",
  "bstr",
@@ -3707,10 +3718,9 @@ dependencies = [
 [[package]]
 name = "pingora-core"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aced35d346b7c6559234b5ec493d638471d3234b0152f18c59390bbdafac2a7"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
- "ahash",
+ "ahash 0.8.12",
  "async-trait",
  "brotli 3.5.0",
  "bstr",
@@ -3745,7 +3755,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "sfv",
- "socket2 0.6.2",
+ "socket2 0.5.10",
  "strum",
  "strum_macros",
  "tokio",
@@ -3760,14 +3770,12 @@ dependencies = [
 [[package]]
 name = "pingora-error"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b761e30ae329162ddddbbb41d2bf8a3e48d52c70a0d5ff51ccb964acf0bd505"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 
 [[package]]
 name = "pingora-header-serde"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "640aa945c00ad51c7d06a434c41dbad560bf51dbf6f00e5d614102e7794aae67"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -3782,8 +3790,7 @@ dependencies = [
 [[package]]
 name = "pingora-http"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbf2ce52fefeb2ed795a3d5fa4b556cfa33a7592691677e8837c6a58d0358215"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -3793,8 +3800,7 @@ dependencies = [
 [[package]]
 name = "pingora-ketama"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5566ee2f3ca3ba478792d765d6b28aaf1ebae4a7f302c7eb814c83f4d793c1f1"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "crc32fast",
 ]
@@ -3802,17 +3808,15 @@ dependencies = [
 [[package]]
 name = "pingora-limits"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c952fa1c197d5cecae4a6df55a198a41118a8f68fe6ee45edbbe365b65e70a29"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
- "ahash",
+ "ahash 0.8.12",
 ]
 
 [[package]]
 name = "pingora-load-balancing"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e7ff0d87ab5924c1af03fc1b766aef398e75cfe0273019f68b7c2978002ca97"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3833,11 +3837,10 @@ dependencies = [
 [[package]]
 name = "pingora-lru"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aa964c4e12e6328388b7059c93aac37b052be7962bbb70dd239b515532be4bf"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "arrayvec",
- "hashbrown 0.16.1",
+ "hashbrown 0.12.3",
  "parking_lot",
  "rand 0.8.5",
 ]
@@ -3845,11 +3848,10 @@ dependencies = [
 [[package]]
 name = "pingora-memory-cache"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbf63c7dafc3cc508ac24751b7a54ead8d006241c3f52f1f47de5c773e9eb29f"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "TinyUFO",
- "ahash",
+ "ahash 0.8.12",
  "async-trait",
  "log",
  "parking_lot",
@@ -3861,8 +3863,7 @@ dependencies = [
 [[package]]
 name = "pingora-pool"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1a89f8d8d48caadb7f711227e0754bac6495dd2d4ee03137cc2c6d46c3b0a9d"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "crossbeam-queue",
  "log",
@@ -3876,8 +3877,7 @@ dependencies = [
 [[package]]
 name = "pingora-proxy"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0884d6158a828f53f4069861493a4225ed2a26c8d739a875350fa0c97109edf"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3899,8 +3899,7 @@ dependencies = [
 [[package]]
 name = "pingora-runtime"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c107d6eaf57c98285b91c487a1972bcb08405f39f9e73a5c28525620f7010956"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "once_cell",
  "rand 0.8.5",
@@ -3911,8 +3910,7 @@ dependencies = [
 [[package]]
 name = "pingora-rustls"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46dd230b3c4545f02be082e6409169a57982a1f3d97468e70f1fb21c6dd170c0"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "log",
  "no_debug",
@@ -3928,8 +3926,7 @@ dependencies = [
 [[package]]
 name = "pingora-timeout"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64451dc4613770411814209b8c1659945682f0258305bae51c1e44cb9b887d30"
+source = "git+https://github.com/raskell-io/pingora.git?rev=5847d5e#5847d5e3b8f28d0ef248c36d375abdadddf8c7a1"
 dependencies = [
  "once_cell",
  "parking_lot",
@@ -4079,7 +4076,6 @@ dependencies = [
  "lazy_static",
  "memchr",
  "parking_lot",
- "protobuf 2.28.0",
  "thiserror 1.0.69",
 ]
 
@@ -4094,7 +4090,7 @@ dependencies = [
  "lazy_static",
  "memchr",
  "parking_lot",
- "protobuf 3.7.2",
+ "protobuf",
  "thiserror 2.0.18",
 ]
 
@@ -4169,12 +4165,6 @@ checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
 dependencies = [
  "prost",
 ]
-
-[[package]]
-name = "protobuf"
-version = "2.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
 
 [[package]]
 name = "protobuf"
@@ -4531,7 +4521,7 @@ version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5773259506800a8c6ef38df3674b061c62c5941162507891ff8b580e93d954e"
 dependencies = [
- "ahash",
+ "ahash 0.8.12",
  "fluent-uri",
  "getrandom 0.3.4",
  "hashbrown 0.16.1",

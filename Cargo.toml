@@ -27,16 +27,16 @@ homepage = "https://github.com/raskell-io/sentinel"
 rust-version = "1.85"
 
 [workspace.dependencies]
-# Core dependencies
-pingora = { version = "0.7", features = ["proxy", "lb", "rustls"] }
-pingora-core = { version = "0.7", features = ["rustls"] }
-pingora-http = "0.7"
-pingora-proxy = "0.7"
-pingora-load-balancing = "0.7"
-pingora-timeout = "0.7"
-pingora-limits = "0.7"
-pingora-cache = "0.7"
-pingora-memory-cache = "0.7"
+# Core dependencies (using our fork with security fixes)
+pingora = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e", features = ["proxy", "lb", "rustls"] }
+pingora-core = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e", features = ["rustls"] }
+pingora-http = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e" }
+pingora-proxy = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e" }
+pingora-load-balancing = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e" }
+pingora-timeout = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e" }
+pingora-limits = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e" }
+pingora-cache = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e" }
+pingora-memory-cache = { git = "https://github.com/raskell-io/pingora.git", rev = "5847d5e" }
 
 # Async runtime
 # Minimal feature set for proxy workloads (trimmed from "full" for smaller binary)
