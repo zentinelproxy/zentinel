@@ -1,0 +1,106 @@
+# Weekly dependency audit for security vulnerabilities
+# Opens a GitHub issue if any vulnerabilities are found
+
+name: Security Audit
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch: # Allow manual triggers
+
+permissions:
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        id: audit
+        run: |
+          set +e
+          cargo audit 2>&1 | tee audit-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "has_vulnerabilities=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_vulnerabilities=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for existing issue
+        if: steps.audit.outputs.has_vulnerabilities == 'true'
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ISSUE=$(gh issue list --label "security-audit" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$ISSUE" ]; then
+            echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update issue
+        if: steps.audit.outputs.has_vulnerabilities == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Security Audit: vulnerabilities found in dependencies"
+
+          # Build issue body from file
+          {
+            echo "## Cargo Audit Report"
+            echo ""
+            echo "\`cargo audit\` found vulnerabilities in the dependency tree."
+            echo ""
+            echo "<details>"
+            echo "<summary>Full output</summary>"
+            echo ""
+            echo '```'
+            cat audit-output.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "### Next Steps"
+            echo ""
+            echo "1. Check if the vulnerable dependency can be updated directly"
+            echo "2. If it's a transitive dependency, check if the parent crate has a newer version"
+            echo "3. If no fix is available upstream, evaluate the risk and consider workarounds"
+            echo ""
+            echo "---"
+            echo "*This issue was automatically created by the [Security Audit]($RUN_URL) workflow.*"
+          } > issue-body.md
+
+          if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
+            gh issue comment "${{ steps.existing.outputs.issue_number }}" --body-file issue-body.md
+          else
+            gh issue create --title "$TITLE" --body-file issue-body.md --label "security-audit"
+          fi
+
+      - name: Close resolved issue
+        if: steps.audit.outputs.has_vulnerabilities == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ISSUE=$(gh issue list --label "security-audit" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$ISSUE" ]; then
+            gh issue close "$ISSUE" --comment "All vulnerabilities have been resolved. Closing automatically."
+          fi
