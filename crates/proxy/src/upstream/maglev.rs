@@ -4,7 +4,7 @@
 //! disruption when backends are added or removed. Uses a permutation-based
 //! lookup table for O(1) selection.
 //!
-//! Reference: https://research.google/pubs/pub44824/
+//! Reference: <https://research.google/pubs/pub44824/>
 
 use async_trait::async_trait;
 use std::collections::HashMap;

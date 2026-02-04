@@ -1,6 +1,6 @@
 //! Scope-aware metrics for namespaced configurations.
 //!
-//! This module provides [`ScopedMetrics`] which extends the base [`RequestMetrics`]
+//! This module provides [`ScopedMetrics`] which extends the base [`crate::observability::RequestMetrics`]
 //! with namespace and service labels for multi-tenant observability.
 //!
 //! # Metric Labels

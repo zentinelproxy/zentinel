@@ -9,7 +9,7 @@
 //! - Current EWMA latency
 //! - Most recent observed latency (to quickly react to latency spikes)
 //!
-//! Reference: https://twitter.github.io/finagle/guide/Clients.html#power-of-two-choices-p2c-least-loaded
+//! Reference: <https://twitter.github.io/finagle/guide/Clients.html#power-of-two-choices-p2c-least-loaded>
 
 use async_trait::async_trait;
 use std::collections::HashMap;

@@ -13,8 +13,8 @@
 //! - [`observability`]: Metrics, logging, and tracing configuration
 //! - [`filters`]: Filter types for request/response processing
 //! - [`validation`]: Configuration validation functions
-//! - [`kdl`]: KDL format parsing
-//! - [`defaults`]: Default embedded configuration
+//! - `kdl`: KDL format parsing
+//! - `defaults`: Default embedded configuration
 //! - [`multi_file`]: Multi-file configuration loading
 
 use anyhow::{Context, Result};

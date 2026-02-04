@@ -5,9 +5,9 @@
 //!
 //! ## Submodules
 //!
-//! - [`coordinator`]: Graceful reload coordination and request draining
-//! - [`signals`]: OS signal handling (SIGHUP, SIGTERM)
-//! - [`validators`]: Runtime configuration validators
+//! - `coordinator`: Graceful reload coordination and request draining
+//! - `signals`: OS signal handling (SIGHUP, SIGTERM)
+//! - `validators`: Runtime configuration validators
 
 mod coordinator;
 mod signals;

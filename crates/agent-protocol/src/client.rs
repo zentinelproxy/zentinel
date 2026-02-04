@@ -481,7 +481,7 @@ impl AgentClient {
     ///
     /// # Arguments
     /// * `id` - Agent identifier
-    /// * `url` - HTTPS endpoint URL (e.g., "https://agent.internal:8443/agent")
+    /// * `url` - HTTPS endpoint URL (e.g., `https://agent.internal:8443/agent`)
     /// * `timeout` - Timeout for agent calls
     /// * `tls_config` - TLS configuration
     pub async fn http_tls(

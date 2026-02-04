@@ -157,7 +157,7 @@ impl AcmeClient {
     ///
     /// # Returns
     ///
-    /// A tuple of (Order, Vec<ChallengeInfo>) containing the order and
+    /// A tuple of (Order, Vec<`ChallengeInfo`>) containing the order and
     /// HTTP-01 challenge information for each domain.
     pub async fn create_order(&self) -> Result<(Order, Vec<ChallengeInfo>), AcmeError> {
         let account_guard = self.account.read().await;
@@ -227,7 +227,7 @@ impl AcmeClient {
     ///
     /// # Returns
     ///
-    /// A tuple of (Order, Vec<Dns01ChallengeInfo>) containing the order and
+    /// A tuple of (Order, Vec<`Dns01ChallengeInfo`>) containing the order and
     /// DNS-01 challenge information for each domain.
     pub async fn create_order_dns01(&self) -> Result<(Order, Vec<Dns01ChallengeInfo>), AcmeError> {
         let account_guard = self.account.read().await;

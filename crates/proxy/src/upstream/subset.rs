@@ -11,7 +11,7 @@
 //! The algorithm uses consistent hashing to assign backends to subsets,
 //! ensuring minimal disruption when backends are added or removed.
 //!
-//! Reference: https://sre.google/sre-book/load-balancing-datacenter/
+//! Reference: <https://sre.google/sre-book/load-balancing-datacenter/>
 
 use async_trait::async_trait;
 use rand::seq::IndexedRandom;

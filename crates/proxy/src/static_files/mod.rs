@@ -9,9 +9,9 @@
 //!
 //! # Module Structure
 //!
-//! - [`cache`]: File caching with pre-computed compression
-//! - [`compression`]: Content encoding and compression utilities
-//! - [`range`]: HTTP Range request handling
+//! - `cache`: File caching with pre-computed compression
+//! - `compression`: Content encoding and compression utilities
+//! - `range`: HTTP Range request handling
 
 mod cache;
 mod compression;

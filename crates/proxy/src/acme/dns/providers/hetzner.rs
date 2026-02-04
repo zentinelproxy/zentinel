@@ -1,7 +1,7 @@
 //! Hetzner DNS provider implementation
 //!
 //! Uses the Hetzner DNS API to manage TXT records for DNS-01 challenges.
-//! API documentation: https://dns.hetzner.com/api-docs
+//! API documentation: <https://dns.hetzner.com/api-docs>
 
 use std::collections::HashMap;
 use std::sync::Arc;
