@@ -1,0 +1,33 @@
+# cargo-audit configuration
+# https://rustsec.org/
+
+[advisories]
+ignore = [
+    # protobuf 2.28.0 — uncontrolled recursion (RUSTSEC-2024-0437)
+    # Transitive: prometheus 0.13 → pingora-core 0.7
+    # Blocked on: https://github.com/cloudflare/pingora/issues/560
+    # Risk: Low — protobuf is only used for Prometheus metric encoding,
+    # not for parsing untrusted input.
+    "RUSTSEC-2024-0437",
+
+    # daemonize 0.5.0 — unmaintained (RUSTSEC-2025-0069)
+    # Transitive: pingora-core 0.7
+    # Blocked on: Pingora upstream
+    "RUSTSEC-2025-0069",
+
+    # derivative 2.2.0 — unmaintained (RUSTSEC-2024-0388)
+    # Transitive: pingora-core 0.7, pingora-load-balancing 0.7
+    # Blocked on: Pingora upstream
+    "RUSTSEC-2024-0388",
+
+    # fxhash 0.2.1 — unmaintained (RUSTSEC-2025-0057)
+    # Transitive: async-memcached 0.6 (only with distributed-rate-limit-memcached feature)
+    # Blocked on: async-memcached upstream
+    "RUSTSEC-2025-0057",
+
+    # rustls-pemfile — unmaintained (RUSTSEC-2025-0134)
+    # Direct dep (v2.2) + transitive via pingora-rustls 0.7 and
+    # async-memcached → toxiproxy_rust → reqwest 0.11 (v1.0).
+    # Functionally complete crate; not a security vulnerability.
+    "RUSTSEC-2025-0134",
+]
