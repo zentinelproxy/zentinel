@@ -73,11 +73,36 @@ check_dependencies() {
     done
 }
 
-# Get the latest release version
+# Get the latest release version that has downloadable binaries.
+# Uses /releases (not /releases/latest) because the "latest" release may lack
+# binary assets if it was tagged manually without going through CI.
 get_latest_version() {
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
-        grep '"tag_name"' |
-        sed -E 's/.*"([^"]+)".*/\1/'
+    local tmp_releases="${tmp_dir:-.}/.releases.json"
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=10" \
+        -o "$tmp_releases"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '
+            [.[] | select(.draft == false and .prerelease == false and
+                (.assets | map(.name) | any(test("^sentinel-.*\\.tar\\.gz$"))))]
+            | .[0].tag_name // empty
+        ' "$tmp_releases"
+    else
+        # Fallback: line-oriented parsing of GitHub's JSON response.
+        # Releases are returned newest-first; find the first with binary assets.
+        awk '
+            /"tag_name":/ {
+                gsub(/.*"tag_name": *"/, "")
+                gsub(/".*/, "")
+                tag = $0
+            }
+            /"prerelease": *true/ { tag = "" }
+            /"name":.*sentinel-.*tar\.gz"/ {
+                if (tag) { print tag; exit }
+            }
+        ' "$tmp_releases"
+    fi
+    rm -f "$tmp_releases"
 }
 
 # Download and verify the binary
