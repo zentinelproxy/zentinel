@@ -77,7 +77,7 @@ config = "0.14"
 validator = { version = "0.20", features = ["derive"] }
 
 # Testing
-proptest = "1.6"
+proptest = "1.10"
 criterion = "0.8"
 insta = "1.46"
 
