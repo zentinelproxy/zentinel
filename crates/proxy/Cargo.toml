@@ -122,7 +122,7 @@ num_cpus = "1.16"
 tikv-jemallocator = { workspace = true }
 
 # Random number generation
-rand = "0.9"
+rand = "0.10"
 
 # Token counting for inference
 tiktoken-rs = { version = "0.9", optional = true }
