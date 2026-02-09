@@ -631,7 +631,7 @@ impl LogManager {
             if config.sample_errors_always && status >= 400 {
                 return true;
             }
-            use rand::Rng;
+            use rand::RngExt;
             let mut rng = rand::rng();
             return rng.random::<f64>() < config.sample_rate;
         }

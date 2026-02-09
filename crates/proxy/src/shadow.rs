@@ -14,7 +14,7 @@
 use bytes::Bytes;
 use pingora::http::RequestHeader;
 use pingora::proxy::Session;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use sentinel_common::errors::{SentinelError, SentinelResult};
 use sentinel_common::observability::RequestMetrics;

@@ -39,7 +39,7 @@ pub struct StickySessionRuntimeConfig {
 impl StickySessionRuntimeConfig {
     /// Create runtime config from parsed config, generating HMAC key
     pub fn from_config(config: &StickySessionConfig) -> Self {
-        use rand::RngCore;
+        use rand::Rng;
 
         // Generate random HMAC key
         let mut hmac_key = [0u8; 32];
