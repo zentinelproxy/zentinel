@@ -76,7 +76,7 @@ routes {
         policies {
             response-headers {
                 set {
-                    "Location" "https://${host}${uri}"
+                    "Location" "https://example.com/"
                 }
             }
         }

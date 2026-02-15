@@ -204,7 +204,9 @@ fn parse_load_balancing(s: &str) -> LoadBalancingAlgorithm {
     match s.to_lowercase().as_str() {
         "round_robin" | "roundrobin" => LoadBalancingAlgorithm::RoundRobin,
         "least_connections" | "leastconnections" => LoadBalancingAlgorithm::LeastConnections,
-        "weighted" => LoadBalancingAlgorithm::Weighted,
+        "weighted" | "weighted_round_robin" | "weighted-round-robin" => {
+            LoadBalancingAlgorithm::Weighted
+        }
         "ip_hash" | "iphash" => LoadBalancingAlgorithm::IpHash,
         "random" => LoadBalancingAlgorithm::Random,
         "consistent_hash" | "consistenthash" => LoadBalancingAlgorithm::ConsistentHash,
