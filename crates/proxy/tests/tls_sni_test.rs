@@ -375,6 +375,186 @@ mod sni_resolver {
 }
 
 // ============================================================================
+// ACME Resolver Tests
+// ============================================================================
+
+mod acme_resolver {
+    use super::*;
+    use sentinel_config::server::{AcmeChallengeType, AcmeConfig};
+    use std::path::PathBuf;
+
+    /// Build an AcmeConfig pointing at the given storage directory
+    fn acme_config(storage: PathBuf) -> AcmeConfig {
+        AcmeConfig {
+            email: "test@example.com".to_string(),
+            domains: vec!["example.com".to_string()],
+            staging: true,
+            storage,
+            renew_before_days: 30,
+            challenge_type: AcmeChallengeType::Http01,
+            dns_provider: None,
+        }
+    }
+
+    /// Build a TlsConfig with ACME config and no manual cert/key paths
+    fn acme_tls_config(storage: PathBuf) -> TlsConfig {
+        TlsConfig {
+            cert_file: None,
+            key_file: None,
+            additional_certs: vec![],
+            ca_file: None,
+            min_version: sentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: Some(acme_config(storage)),
+        }
+    }
+
+    #[test]
+    fn test_from_config_with_acme_cert_paths() {
+        // Pre-populate ACME storage with real cert/key from fixtures
+        let temp_dir = tempfile::tempdir().unwrap();
+        let domain_dir = temp_dir.path().join("domains").join("example.com");
+        std::fs::create_dir_all(&domain_dir).unwrap();
+
+        let fixtures = fixtures_path();
+        std::fs::copy(
+            fixtures.join("server-default.crt"),
+            domain_dir.join("cert.pem"),
+        )
+        .unwrap();
+        std::fs::copy(
+            fixtures.join("server-default.key"),
+            domain_dir.join("key.pem"),
+        )
+        .unwrap();
+
+        let config = acme_tls_config(temp_dir.path().to_path_buf());
+        let resolver = SniResolver::from_config(&config);
+        assert!(
+            resolver.is_ok(),
+            "SniResolver should load ACME-managed certs: {:?}",
+            resolver.err()
+        );
+
+        // Should resolve the default cert
+        let cert = resolver.unwrap().resolve(None);
+        assert!(Arc::strong_count(&cert) > 0);
+    }
+
+    #[test]
+    fn test_from_config_acme_no_domains_errors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut config = acme_tls_config(temp_dir.path().to_path_buf());
+        // Clear domains
+        config.acme.as_mut().unwrap().domains.clear();
+
+        let result = SniResolver::from_config(&config);
+        assert!(result.is_err(), "Empty domains should fail");
+        match result.unwrap_err() {
+            TlsError::ConfigBuild(msg) => {
+                assert!(
+                    msg.contains("no domains"),
+                    "Error should mention no domains, got: {}",
+                    msg
+                );
+            }
+            e => panic!("Expected ConfigBuild error, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_from_config_no_cert_no_acme_errors() {
+        let config = TlsConfig {
+            cert_file: None,
+            key_file: None,
+            additional_certs: vec![],
+            ca_file: None,
+            min_version: sentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let result = SniResolver::from_config(&config);
+        assert!(result.is_err(), "No cert and no ACME should fail");
+        match result.unwrap_err() {
+            TlsError::ConfigBuild(msg) => {
+                assert!(
+                    msg.contains("cert_file") && msg.contains("ACME"),
+                    "Error should mention cert_file and ACME, got: {}",
+                    msg
+                );
+            }
+            e => panic!("Expected ConfigBuild error, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_from_config_acme_missing_cert_files_errors() {
+        // ACME config pointing at storage dir that has no cert files
+        let temp_dir = tempfile::tempdir().unwrap();
+        // Create the domains directory structure but don't put any cert files
+        let domain_dir = temp_dir.path().join("domains").join("example.com");
+        std::fs::create_dir_all(&domain_dir).unwrap();
+
+        let config = acme_tls_config(temp_dir.path().to_path_buf());
+        let result = SniResolver::from_config(&config);
+        assert!(
+            result.is_err(),
+            "Missing ACME cert files should fail"
+        );
+        match result.unwrap_err() {
+            TlsError::CertificateLoad(_) => {}
+            e => panic!("Expected CertificateLoad error, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_hot_reload_with_acme_config() {
+        // Pre-populate ACME storage with initial cert
+        let temp_dir = tempfile::tempdir().unwrap();
+        let domain_dir = temp_dir.path().join("domains").join("example.com");
+        std::fs::create_dir_all(&domain_dir).unwrap();
+
+        let fixtures = fixtures_path();
+        let cert_path = domain_dir.join("cert.pem");
+        let key_path = domain_dir.join("key.pem");
+
+        std::fs::copy(fixtures.join("server-default.crt"), &cert_path).unwrap();
+        std::fs::copy(fixtures.join("server-default.key"), &key_path).unwrap();
+
+        let config = acme_tls_config(temp_dir.path().to_path_buf());
+        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+
+        let cert_before = resolver.resolve(None);
+
+        // Swap to different cert files (simulating ACME renewal)
+        std::fs::copy(fixtures.join("server-api.crt"), &cert_path).unwrap();
+        std::fs::copy(fixtures.join("server-api.key"), &key_path).unwrap();
+
+        let reload_result = resolver.reload();
+        assert!(
+            reload_result.is_ok(),
+            "Reload should succeed: {:?}",
+            reload_result.err()
+        );
+
+        let cert_after = resolver.resolve(None);
+        assert!(
+            !Arc::ptr_eq(&cert_before, &cert_after),
+            "Certificate should change after reload with new ACME cert files"
+        );
+    }
+}
+
+// ============================================================================
 // Hot-Reloadable Resolver Tests
 // ============================================================================
 
