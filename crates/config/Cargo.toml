@@ -19,7 +19,7 @@ sentinel-common = { path = "../common", version = "0.4.3", default-features = fa
 kdl = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = "0.9"
+toml = "1.0"
 
 # Validation
 validator = { workspace = true }

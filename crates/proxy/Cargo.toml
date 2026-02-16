@@ -104,7 +104,7 @@ brotli = "8.0"
 tar = "0.4"
 
 # TOML parsing (for bundle-versions.lock)
-toml = "0.9"
+toml = "1.0"
 
 # Temporary files (for bundle downloads)
 tempfile = "3.12"
