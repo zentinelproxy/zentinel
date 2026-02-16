@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.02_7](#26027---2026-02-16) | 0.5.0 | 2026-02-16 | Wire 18 config features into runtime, filter & config coverage tests |
 | [26.02_4](#26024---2026-02-04) | 0.4.10 | 2026-02-04 | Maintenance: CI, dependency audit, Pingora fork security fix |
 | [26.02_3](#26023---2026-02-03) | 0.4.9 | 2026-02-03 | First-time user smoke tests, protocol-version config, docs refresh |
 | [26.02_1](#26021---2026-02-02) | 0.4.7 | 2026-02-02 | Pingora 0.7 upgrade, drop fork, major dependency sweep |
@@ -28,6 +29,36 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.02_7] - 2026-02-16
+
+**Crate version:** 0.5.0
+
+### Added
+- **Runtime wiring for 18 config features** — Closed an entire class of silent-failure bugs where config options were parsed but not applied at runtime:
+  - **5 filter types:** Headers (set/add/remove per phase), CORS (preflight 204 + response headers + origin validation), Compress (via Pingora's built-in module), Timeout (per-filter connect/upstream overrides), Log (request/response with configurable level)
+  - **Route policies:** `response_headers` set/add/remove, per-route `timeout_secs` on upstream peers, per-route `cache` config (default TTL, enabled flag)
+  - **Server/listener config:** `graceful_shutdown_timeout_secs`, `pid_file`, `user`, `group`, `working_directory`, per-listener `request_timeout` and `keepalive_timeout`
+  - **Agent protocol:** guardrail agent calls (V1 + V2), V2 config delivery, V2 health reporting, gRPC `insecure_skip_verify` with custom rustls verifier
+  - **OpenTelemetry:** span status, error recording, upstream attributes, span lifecycle
+  - **TLS hardening:** `resolve_protocol_versions()`, `resolve_cipher_suites()`, full `ServerConfig` build (staged as warnings pending Pingora fork support)
+  - **Observability:** `MetricsConfig.enabled`/`path`, `AccessLogFields` filtering, `LoggingConfig` level/format/file with `RUST_LOG` precedence
+- **Config validation safety net** (`validate_implementation_status()`) — Hard errors for security-critical stubs (WAF mode enabled without engine), warnings for convenience features not yet fully wired.
+- **20 filter wiring unit tests** — Verify each filter type actually modifies requests/responses: headers set/add/remove, CORS origin validation and response headers, compress content-type/size/encoding checks, timeout overrides, log emission smoke tests.
+- **Config field coverage test** (`config_field_coverage_exhaustive_construction`) — Constructs all config structs with explicit field initialization; fails to compile when new fields are added without wiring.
+- **Validation warnings snapshot test** — Locks down the exact set of unwired feature warnings; fails when warnings are added or removed without updating the expected list.
+
+### Changed
+- **Dependency updates:**
+  - jsonschema 0.41.0 → 0.42.0
+  - toml 0.9.11 → 1.0.1
+  - 18 minor dependency updates across the workspace
+
+### Fixed
+- **CI release publish** — Made publish job idempotent to handle partial failures.
+- **Config validation** — Added `weighted-round-robin` alias, fixed invalid variable substitution in docs.
 
 ---
 

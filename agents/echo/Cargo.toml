@@ -1,6 +1,6 @@
 [package]
 name = "sentinel-echo-agent"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 authors = ["Sentinel Contributors"]
 license = "MIT OR Apache-2.0"
@@ -16,8 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Local dependencies
-sentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.4.1" }
-sentinel-common = { path = "../../crates/common", version = "0.4.1" }
+sentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.5.0" }
+sentinel-common = { path = "../../crates/common", version = "0.5.0" }
 
 # Async runtime
 tokio = { version = "1.49", features = ["full"] }
