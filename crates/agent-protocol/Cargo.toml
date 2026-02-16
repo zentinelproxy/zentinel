@@ -32,7 +32,7 @@ serde_json = { workspace = true }
 serde_bytes = "0.11"
 rmp-serde = { version = "1.3", optional = true }
 memmap2 = { version = "0.9", optional = true }
-tempfile = { version = "3.12", optional = true }
+tempfile = { version = "3.25", optional = true }
 
 # Async runtime
 tokio = { workspace = true }
@@ -66,7 +66,7 @@ tracing = { workspace = true }
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
-tempfile = "3.12"
+tempfile = "3.25"
 criterion = { workspace = true }
 proptest = { workspace = true }
 

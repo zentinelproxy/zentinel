@@ -66,6 +66,6 @@ runtime = ["glob", "notify", "directories", "envy", "jsonschema"]
 validation = ["runtime", "tokio", "pem", "x509-parser"]
 
 [dev-dependencies]
-tempfile = "3.12"
+tempfile = "3.25"
 insta = { workspace = true }
 proptest = { workspace = true }
