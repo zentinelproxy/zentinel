@@ -2757,9 +2757,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.41.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9320368abda84a3aad44953d61e70515681fe43ae94529dff5567e0215b88438"
+checksum = "c56489aa781cefb9c10edebf4469cf29cddfd6695408b6158acfec49cda73480"
 dependencies = [
  "ahash",
  "bytecount",
@@ -4554,9 +4554,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.41.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5773259506800a8c6ef38df3674b061c62c5941162507891ff8b580e93d954e"
+checksum = "1871aca1d163bb628f2282b79c169e9ad3b4aeda58ecea174ec4d6bddfdfa375"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -5071,7 +5071,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-agent-protocol"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5107,7 +5107,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-common"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5129,7 +5129,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-config"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5208,7 +5208,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-proxy"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5299,7 +5299,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-stack"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5316,7 +5316,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-wasm-runtime"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "anyhow",
  "async-trait",
