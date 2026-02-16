@@ -144,11 +144,7 @@ fn apply_headers_to_request(
     );
 }
 
-fn apply_headers_to_response(
-    resp: &mut ResponseHeader,
-    filter: &HeadersFilter,
-    trace_id: &str,
-) {
+fn apply_headers_to_response(resp: &mut ResponseHeader, filter: &HeadersFilter, trace_id: &str) {
     for (name, value) in &filter.set {
         resp.insert_header(name.clone(), value.as_str()).ok();
     }
@@ -243,22 +239,21 @@ async fn apply_cors_preflight(
     header.insert_header("Access-Control-Max-Age", cors.max_age_secs.to_string())?;
     header.insert_header("Content-Length", "0")?;
 
-    session.write_response_header(Box::new(header), true).await?;
+    session
+        .write_response_header(Box::new(header), true)
+        .await?;
     Ok(true) // Preflight handled, short-circuit
 }
 
 /// Add CORS headers to a normal (non-preflight) response.
-fn apply_cors_response_headers(
-    resp: &mut ResponseHeader,
-    ctx: &RequestContext,
-    cors: &CorsFilter,
-) {
+fn apply_cors_response_headers(resp: &mut ResponseHeader, ctx: &RequestContext, cors: &CorsFilter) {
     let origin = match &ctx.cors_origin {
         Some(o) => o.clone(),
         None => return, // No CORS origin matched
     };
 
-    resp.insert_header("Access-Control-Allow-Origin", &origin).ok();
+    resp.insert_header("Access-Control-Allow-Origin", &origin)
+        .ok();
 
     if cors.allow_credentials {
         resp.insert_header("Access-Control-Allow-Credentials", "true")
@@ -462,10 +457,9 @@ mod tests {
         filter: Filter,
     ) -> (Arc<Config>, Arc<sentinel_config::RouteConfig>) {
         let mut config = Config::default_for_testing();
-        config.filters.insert(
-            filter_id.to_string(),
-            FilterConfig::new(filter_id, filter),
-        );
+        config
+            .filters
+            .insert(filter_id.to_string(), FilterConfig::new(filter_id, filter));
         config.routes[0].filters = vec![filter_id.to_string()];
         let route = Arc::new(config.routes[0].clone());
         (Arc::new(config), route)
@@ -727,7 +721,10 @@ mod tests {
 
         apply_response_filters(&mut resp, &mut ctx, &config);
 
-        assert!(ctx.compress_enabled, "Should enable compression for text/html > 1024 bytes");
+        assert!(
+            ctx.compress_enabled,
+            "Should enable compression for text/html > 1024 bytes"
+        );
     }
 
     #[test]

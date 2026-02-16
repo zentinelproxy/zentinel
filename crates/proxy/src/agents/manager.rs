@@ -233,11 +233,7 @@ impl UnifiedAgent {
         event: &GuardrailInspectEvent,
     ) -> SentinelResult<AgentResponse> {
         match self {
-            UnifiedAgent::V1(agent) => {
-                agent
-                    .call_event(EventType::GuardrailInspect, event)
-                    .await
-            }
+            UnifiedAgent::V1(agent) => agent.call_event(EventType::GuardrailInspect, event).await,
             UnifiedAgent::V2(agent) => agent.call_guardrail_inspect(event).await,
         }
     }
@@ -1394,12 +1390,16 @@ impl AgentManager {
         drop(semaphores);
 
         let _permit = if let Some(sem) = semaphore {
-            Some(sem.acquire_owned().await.map_err(|_| SentinelError::Agent {
-                agent: agent_name.to_string(),
-                message: "Failed to acquire agent call permit".to_string(),
-                event: "guardrail_inspect".to_string(),
-                source: None,
-            })?)
+            Some(
+                sem.acquire_owned()
+                    .await
+                    .map_err(|_| SentinelError::Agent {
+                        agent: agent_name.to_string(),
+                        message: "Failed to acquire agent call permit".to_string(),
+                        event: "guardrail_inspect".to_string(),
+                        source: None,
+                    })?,
+            )
         } else {
             None
         };

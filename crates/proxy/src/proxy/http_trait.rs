@@ -644,19 +644,16 @@ impl ProxyHttp for SentinelProxy {
                     // Apply per-route policy timeout (lowest priority)
                     if let Some(ref rc) = ctx.route_config {
                         if let Some(timeout_secs) = rc.policies.timeout_secs {
-                            peer.options.read_timeout =
-                                Some(Duration::from_secs(timeout_secs));
+                            peer.options.read_timeout = Some(Duration::from_secs(timeout_secs));
                         }
                     }
 
                     // Apply filter timeout overrides (higher priority, overwrites policy)
                     if let Some(connect_secs) = ctx.filter_connect_timeout_secs {
-                        peer.options.connection_timeout =
-                            Some(Duration::from_secs(connect_secs));
+                        peer.options.connection_timeout = Some(Duration::from_secs(connect_secs));
                     }
                     if let Some(upstream_secs) = ctx.filter_upstream_timeout_secs {
-                        peer.options.read_timeout =
-                            Some(Duration::from_secs(upstream_secs));
+                        peer.options.read_timeout = Some(Duration::from_secs(upstream_secs));
                     }
 
                     return Ok(Box::new(peer));
@@ -733,8 +730,7 @@ impl ProxyHttp for SentinelProxy {
                         std::time::Duration::from_secs(listener.request_timeout_secs),
                     ));
                     // Store keepalive for response phase
-                    ctx.listener_keepalive_timeout_secs =
-                        Some(listener.keepalive_timeout_secs);
+                    ctx.listener_keepalive_timeout_secs = Some(listener.keepalive_timeout_secs);
                     break;
                 }
             }

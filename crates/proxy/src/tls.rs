@@ -1171,9 +1171,7 @@ pub fn load_client_ca(ca_path: &Path) -> Result<RootCertStore, TlsError> {
 }
 
 /// Resolve TLS protocol versions from config into rustls version references.
-fn resolve_protocol_versions(
-    config: &TlsConfig,
-) -> Vec<&'static rustls::SupportedProtocolVersion> {
+fn resolve_protocol_versions(config: &TlsConfig) -> Vec<&'static rustls::SupportedProtocolVersion> {
     use sentinel_common::types::TlsVersion;
 
     let min = &config.min_version;
@@ -1204,9 +1202,7 @@ fn resolve_protocol_versions(
 /// Resolve cipher suite names from config to rustls `SupportedCipherSuite` values.
 ///
 /// Uses the aws-lc-rs crypto provider's available cipher suites.
-fn resolve_cipher_suites(
-    names: &[String],
-) -> Result<Vec<rustls::SupportedCipherSuite>, TlsError> {
+fn resolve_cipher_suites(names: &[String]) -> Result<Vec<rustls::SupportedCipherSuite>, TlsError> {
     use rustls::crypto::aws_lc_rs::cipher_suite;
 
     // Map of canonical IANA names to rustls cipher suite values
@@ -1347,8 +1343,7 @@ pub fn build_server_config(config: &TlsConfig) -> Result<ServerConfig, TlsError>
 
     // Disable session resumption if configured
     if !config.session_resumption {
-        server_config.session_storage =
-            Arc::new(rustls::server::NoServerSessionStorage {});
+        server_config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
         info!("TLS session resumption disabled");
     }
 

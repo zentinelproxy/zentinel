@@ -320,9 +320,7 @@ impl V2Transport {
             V2Transport::Grpc(_client) => Err(AgentProtocolError::InvalidMessage(
                 "GuardrailInspect events are not yet supported via gRPC".to_string(),
             )),
-            V2Transport::Uds(client) => {
-                client.send_guardrail_inspect(correlation_id, event).await
-            }
+            V2Transport::Uds(client) => client.send_guardrail_inspect(correlation_id, event).await,
             V2Transport::Reverse(_client) => Err(AgentProtocolError::InvalidMessage(
                 "GuardrailInspect events are not yet supported via reverse connections".to_string(),
             )),

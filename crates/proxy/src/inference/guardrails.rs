@@ -11,8 +11,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use pingora_timeout::timeout;
 use sentinel_agent_protocol::{
-    Decision, GuardrailDetection, GuardrailInspectEvent, GuardrailInspectionType,
-    GuardrailResponse,
+    Decision, GuardrailDetection, GuardrailInspectEvent, GuardrailInspectionType, GuardrailResponse,
 };
 use sentinel_config::{
     GuardrailAction, GuardrailFailureMode, PiiDetectionConfig, PromptInjectionConfig,

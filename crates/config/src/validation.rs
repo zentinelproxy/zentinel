@@ -1258,7 +1258,10 @@ mod tests {
         let mut warnings = Vec::new();
         validate_implementation_status(&config, &mut errors, &mut warnings);
 
-        assert!(!errors.is_empty(), "WAF prevention mode should produce a hard error");
+        assert!(
+            !errors.is_empty(),
+            "WAF prevention mode should produce a hard error"
+        );
         assert!(
             errors[0].contains("WAF mode is set to 'prevention'"),
             "Error should mention prevention mode, got: {}",
@@ -1287,7 +1290,10 @@ mod tests {
         let mut warnings = Vec::new();
         validate_implementation_status(&config, &mut errors, &mut warnings);
 
-        assert!(!errors.is_empty(), "WAF detection mode should produce a hard error");
+        assert!(
+            !errors.is_empty(),
+            "WAF detection mode should produce a hard error"
+        );
         assert!(errors[0].contains("detection"));
     }
 
@@ -1336,8 +1342,14 @@ mod tests {
         let mut warnings = Vec::new();
         validate_implementation_status(&config, &mut errors, &mut warnings);
 
-        assert!(errors.is_empty(), "TLS cipher_suites should not produce errors");
-        assert!(!warnings.is_empty(), "TLS cipher_suites should produce a warning");
+        assert!(
+            errors.is_empty(),
+            "TLS cipher_suites should not produce errors"
+        );
+        assert!(
+            !warnings.is_empty(),
+            "TLS cipher_suites should produce a warning"
+        );
         assert!(warnings.iter().any(|w| w.contains("cipher_suites")));
     }
 
@@ -1362,8 +1374,14 @@ mod tests {
         let mut warnings = Vec::new();
         validate_implementation_status(&config, &mut errors, &mut warnings);
 
-        assert!(errors.is_empty(), "TLS max_version should not produce errors");
-        assert!(!warnings.is_empty(), "TLS max_version should produce a warning");
+        assert!(
+            errors.is_empty(),
+            "TLS max_version should not produce errors"
+        );
+        assert!(
+            !warnings.is_empty(),
+            "TLS max_version should produce a warning"
+        );
         assert!(warnings.iter().any(|w| w.contains("max_version")));
     }
 
@@ -1382,7 +1400,10 @@ mod tests {
         let mut warnings = Vec::new();
         validate_implementation_status(&config, &mut errors, &mut warnings);
 
-        assert!(errors.is_empty(), "Compress filter should not produce errors");
+        assert!(
+            errors.is_empty(),
+            "Compress filter should not produce errors"
+        );
         assert!(
             !warnings.iter().any(|w| w.contains("compress")),
             "Compress filter is wired and should not produce warnings"
@@ -1510,9 +1531,7 @@ mod tests {
 
         assert!(errors.is_empty());
         assert!(
-            !warnings
-                .iter()
-                .any(|w| w.contains("request_timeout_secs")),
+            !warnings.iter().any(|w| w.contains("request_timeout_secs")),
             "request_timeout_secs is now wired and should not produce warnings"
         );
     }
@@ -1534,15 +1553,12 @@ mod tests {
     #[test]
     fn config_field_coverage_exhaustive_construction() {
         use crate::filters::{
-            CompressFilter, CompressionAlgorithm, CorsFilter, FilterPhase,
-            GlobalRateLimitConfig, HeadersFilter, LogFilter, RateLimitKey, TimeoutFilter,
+            CompressFilter, CompressionAlgorithm, CorsFilter, FilterPhase, GlobalRateLimitConfig,
+            HeadersFilter, LogFilter, RateLimitKey, TimeoutFilter,
         };
-        use crate::observability::{
-            LoggingConfig, MetricsConfig, ObservabilityConfig,
-        };
+        use crate::observability::{LoggingConfig, MetricsConfig, ObservabilityConfig};
         use crate::routes::{
-            CacheBackend, CacheStorageConfig, FailureMode, HeaderModifications,
-            RouteCacheConfig,
+            CacheBackend, CacheStorageConfig, FailureMode, HeaderModifications, RouteCacheConfig,
         };
         use crate::server::{ListenerConfig, ListenerProtocol, ServerConfig, TlsConfig};
         use crate::waf::{BodyInspectionPolicy, WafConfig, WafEngine, WafRuleset};
@@ -1813,11 +1829,7 @@ mod tests {
         validate_implementation_status(&config, &mut errors, &mut warnings);
 
         // No errors expected (WAF is not enabled)
-        assert!(
-            errors.is_empty(),
-            "Expected no errors, got: {:?}",
-            errors
-        );
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
 
         // Exact expected warnings — update when features are wired or new warnings added.
         //

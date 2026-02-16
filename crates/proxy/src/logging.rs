@@ -146,10 +146,7 @@ impl AccessLogEntry {
             }
         }
         if fields.status {
-            map.insert(
-                "status".to_string(),
-                serde_json::json!(self.status),
-            );
+            map.insert("status".to_string(), serde_json::json!(self.status));
         }
         if fields.latency_ms {
             map.insert(
@@ -767,10 +764,7 @@ impl LogManager {
     /// to avoid building the entry when it would be discarded by sampling.
     pub fn log_access(&self, entry: &AccessLogEntry) {
         if let Some(ref writer) = self.access_log {
-            let fields = self
-                .access_log_config
-                .as_ref()
-                .map(|c| &c.fields);
+            let fields = self.access_log_config.as_ref().map(|c| &c.fields);
             let formatted = entry.format(self.access_log_format, fields);
             let mut guard = writer.lock();
             if let Err(e) = guard.write_line(&formatted) {

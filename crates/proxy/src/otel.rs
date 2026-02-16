@@ -244,10 +244,8 @@ mod otel_impl {
             self.span
                 .set_attribute(KeyValue::new("http.status_code", status_code as i64));
             if status_code >= 500 {
-                self.span.set_status(Status::error(format!(
-                    "HTTP {}",
-                    status_code
-                )));
+                self.span
+                    .set_status(Status::error(format!("HTTP {}", status_code)));
             }
         }
 

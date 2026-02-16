@@ -358,9 +358,7 @@ impl AgentClient {
 
             let connector = Self::build_insecure_connector()?;
             Channel::from_shared(address.clone())
-                .map_err(|e| {
-                    AgentProtocolError::ConnectionFailed(format!("Invalid URI: {}", e))
-                })?
+                .map_err(|e| AgentProtocolError::ConnectionFailed(format!("Invalid URI: {}", e)))?
                 .timeout(timeout)
                 .connect_with_connector(connector)
                 .await
@@ -378,9 +376,7 @@ impl AgentClient {
                 })?
         } else {
             Channel::from_shared(address.clone())
-                .map_err(|e| {
-                    AgentProtocolError::ConnectionFailed(format!("Invalid URI: {}", e))
-                })?
+                .map_err(|e| AgentProtocolError::ConnectionFailed(format!("Invalid URI: {}", e)))?
                 .tls_config(client_tls_config)
                 .map_err(|e| {
                     error!(
@@ -444,12 +440,13 @@ impl AgentClient {
     /// Build an HTTPS connector that skips certificate verification.
     ///
     /// **DANGEROUS:** Only use this for testing with self-signed certificates.
-    fn build_insecure_connector(
-    ) -> Result<
+    fn build_insecure_connector() -> Result<
         hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
         AgentProtocolError,
     > {
-        use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+        use rustls::client::danger::{
+            HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+        };
         use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
         use rustls::DigitallySignedStruct;
 

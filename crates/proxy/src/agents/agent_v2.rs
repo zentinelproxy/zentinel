@@ -198,10 +198,10 @@ impl AgentV2 {
     async fn send_configure(&self, _config: serde_json::Value) -> SentinelResult<()> {
         use sentinel_agent_protocol::v2::ConfigUpdateType;
 
-        if let Some(push_id) = self.pool.push_config_to_agent(
-            &self.config.id,
-            ConfigUpdateType::RequestReload,
-        ) {
+        if let Some(push_id) = self
+            .pool
+            .push_config_to_agent(&self.config.id, ConfigUpdateType::RequestReload)
+        {
             info!(
                 agent_id = %self.config.id,
                 push_id = %push_id,
