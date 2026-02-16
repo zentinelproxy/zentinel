@@ -91,11 +91,11 @@ hyper = "1.5"
 tower = "0.5"
 
 # Utilities
-uuid = { version = "1.20", features = ["v4", "serde"] }
+uuid = { version = "1.21", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6.1"
 parking_lot = "0.12"
-arc-swap = "1.7"
+arc-swap = "1.8"
 base64 = "0.22"
 
 # Memory allocator (better performance for allocation-heavy workloads)

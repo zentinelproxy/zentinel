@@ -42,7 +42,7 @@ sha2 = "0.10"
 
 # Token storage
 dashmap = "6.1"
-uuid = { version = "1.20", features = ["v4", "serde"] }
+uuid = { version = "1.21", features = ["v4", "serde"] }
 
 # Base64 encoding for body chunks
 base64 = "0.22"
@@ -62,5 +62,5 @@ clap = { version = "4.5", features = ["derive", "env"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-tempfile = "3.12"
+tempfile = "3.25"
 tokio-test = "0.4"
