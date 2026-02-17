@@ -5,11 +5,11 @@
 //!
 //! # Architecture
 //!
-//! After a WebSocket upgrade (101 response), Sentinel can optionally intercept
+//! After a WebSocket upgrade (101 response), Zentinel can optionally intercept
 //! the bidirectional byte stream and parse it into frames for inspection:
 //!
 //! ```text
-//! Client <-> [Frame Parser] <-> Sentinel <-> [Frame Parser] <-> Upstream
+//! Client <-> [Frame Parser] <-> Zentinel <-> [Frame Parser] <-> Upstream
 //!                 |                                |
 //!                 v                                v
 //!          WebSocketFrame                   WebSocketFrame

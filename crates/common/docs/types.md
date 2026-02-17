@@ -1,6 +1,6 @@
 # Types Reference
 
-Common type definitions used across Sentinel components.
+Common type definitions used across Zentinel components.
 
 ## HTTP Types
 
@@ -9,7 +9,7 @@ Common type definitions used across Sentinel components.
 HTTP request methods with custom method support.
 
 ```rust
-use sentinel_common::HttpMethod;
+use zentinel_common::HttpMethod;
 
 let method = HttpMethod::GET;
 let custom = HttpMethod::Custom("PURGE".to_string());
@@ -32,7 +32,7 @@ assert_eq!(method.to_string(), "POST");
 Supported TLS protocol versions.
 
 ```rust
-use sentinel_common::TlsVersion;
+use zentinel_common::TlsVersion;
 
 let version = TlsVersion::Tls13;
 
@@ -51,7 +51,7 @@ let json = serde_json::to_string(&version)?;
 Format for generated trace IDs.
 
 ```rust
-use sentinel_common::TraceIdFormat;
+use zentinel_common::TraceIdFormat;
 
 let format = TraceIdFormat::TinyFlake; // Default
 
@@ -70,7 +70,7 @@ let format = TraceIdFormat::from_str_loose("UUID")?;
 Load balancing strategies for upstream pools.
 
 ```rust
-use sentinel_common::LoadBalancingAlgorithm;
+use zentinel_common::LoadBalancingAlgorithm;
 
 let algorithm = LoadBalancingAlgorithm::PowerOfTwoChoices;
 ```
@@ -96,7 +96,7 @@ let algorithm = LoadBalancingAlgorithm::PowerOfTwoChoices;
 Health check probe configurations.
 
 ```rust
-use sentinel_common::HealthCheckType;
+use zentinel_common::HealthCheckType;
 
 // HTTP health check
 let check = HealthCheckType::Http {
@@ -137,7 +137,7 @@ let check = HealthCheckType::Inference {
 Retry configuration for failed requests.
 
 ```rust
-use sentinel_common::RetryPolicy;
+use zentinel_common::RetryPolicy;
 
 let policy = RetryPolicy {
     max_attempts: 3,
@@ -168,7 +168,7 @@ let policy = RetryPolicy::default();
 Circuit breaker threshold configuration.
 
 ```rust
-use sentinel_common::CircuitBreakerConfig;
+use zentinel_common::CircuitBreakerConfig;
 
 let config = CircuitBreakerConfig {
     failure_threshold: 5,
@@ -192,7 +192,7 @@ let config = CircuitBreakerConfig {
 Current state of a circuit breaker.
 
 ```rust
-use sentinel_common::CircuitBreakerState;
+use zentinel_common::CircuitBreakerState;
 
 match breaker.state() {
     CircuitBreakerState::Closed => { /* Normal operation */ }
@@ -208,7 +208,7 @@ match breaker.state() {
 Request priority levels for scheduling.
 
 ```rust
-use sentinel_common::Priority;
+use zentinel_common::Priority;
 
 let priority = Priority::High;
 
@@ -237,7 +237,7 @@ assert_eq!(Priority::Critical.as_u8(), 3);
 Human-readable byte sizes with parsing and display.
 
 ```rust
-use sentinel_common::ByteSize;
+use zentinel_common::ByteSize;
 
 // Create from units
 let size = ByteSize::from_mb(10);  // 10MB
@@ -269,7 +269,7 @@ println!("{}", ByteSize::from_mb(100));     // "100.00MB"
 Client IP address with forwarded chain.
 
 ```rust
-use sentinel_common::ClientIp;
+use zentinel_common::ClientIp;
 use std::net::IpAddr;
 
 let client = ClientIp {
@@ -298,7 +298,7 @@ let real_ip = client.forwarded_for
 Time window for rate limiting and metrics.
 
 ```rust
-use sentinel_common::TimeWindow;
+use zentinel_common::TimeWindow;
 use std::time::Duration;
 
 let window = TimeWindow {

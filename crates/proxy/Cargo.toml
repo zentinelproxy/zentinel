@@ -1,5 +1,5 @@
 [package]
-name = "sentinel-proxy"
+name = "zentinel-proxy"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -13,11 +13,11 @@ categories = ["network-programming", "web-programming::http-server"]
 readme = "../../README.md"
 
 [lib]
-name = "sentinel_proxy"
+name = "zentinel_proxy"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sentinel"
+name = "zentinel"
 path = "src/main.rs"
 
 [dependencies]
@@ -33,9 +33,9 @@ pingora-cache = { workspace = true }
 pingora-memory-cache = { workspace = true }
 
 # Local crates
-sentinel-config = { path = "../config", version = "0.5.0", features = ["validation"] }
-sentinel-common = { path = "../common", version = "0.5.0" }
-sentinel-agent-protocol = { path = "../agent-protocol", version = "0.5.0" }
+zentinel-config = { path = "../config", version = "0.5.0", features = ["validation"] }
+zentinel-common = { path = "../common", version = "0.5.0" }
+zentinel-agent-protocol = { path = "../agent-protocol", version = "0.5.0" }
 
 # Async runtime
 tokio = { workspace = true }

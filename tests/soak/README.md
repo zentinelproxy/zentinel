@@ -1,4 +1,4 @@
-# Sentinel Soak Testing
+# Zentinel Soak Testing
 
 Extended-duration load tests (24-72 hours) to detect memory leaks and stability issues before production deployment.
 
@@ -20,7 +20,7 @@ brew install oha jq  # or: cargo install oha
 
 ## What It Tests
 
-The soak test exercises Sentinel under sustained load to detect:
+The soak test exercises Zentinel under sustained load to detect:
 
 1. **Memory leaks** - Gradual memory growth that would eventually cause OOM
 2. **Resource exhaustion** - File descriptor leaks, connection pool issues
@@ -31,7 +31,7 @@ The soak test exercises Sentinel under sustained load to detect:
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Load Gen   │────▶│  Sentinel   │────▶│  Backend    │
+│  Load Gen   │────▶│  Zentinel   │────▶│  Backend    │
 │   (oha)     │     │   Proxy     │     │  (httpbin)  │
 └─────────────┘     └─────────────┘     └─────────────┘
                            │
@@ -43,7 +43,7 @@ The soak test exercises Sentinel under sustained load to detect:
 ```
 
 1. **Backend** - Simple HTTP server returns test responses
-2. **Sentinel** - Runs with production-like config
+2. **Zentinel** - Runs with production-like config
 3. **Load Generator** - Sends sustained traffic (default: 100 RPS)
 4. **Memory Monitor** - Samples RSS every 60 seconds
 5. **Analyzer** - Detects leak patterns using linear regression
@@ -58,7 +58,7 @@ The soak test exercises Sentinel under sustained load to detect:
 | `--rps` | 100 | Requests per second |
 | `--connections` | 10 | Concurrent connections |
 | `--output` | ./results | Output directory |
-| `--config` | soak-config.kdl | Sentinel config file |
+| `--config` | soak-config.kdl | Zentinel config file |
 | `--skip-build` | false | Skip cargo build |
 | `--docker` | false | Run in Docker |
 
@@ -99,7 +99,7 @@ results/20241231_120000/
 │   ├── metrics_*.txt     # Prometheus metrics snapshots
 ├── logs/
 │   ├── build.log         # Cargo build output
-│   ├── sentinel.log      # Proxy logs
+│   ├── zentinel.log      # Proxy logs
 │   ├── backend.log       # Backend logs
 │   └── load.log          # Load generator logs
 ```
@@ -226,15 +226,15 @@ lsof -i :8081
 lsof -i :9090
 
 # Kill any existing processes
-pkill -f sentinel
+pkill -f zentinel
 pkill -f "python3 -m http.server"
 ```
 
 ### Memory Data Missing
 
 ```bash
-# Check if Sentinel is running
-ps aux | grep sentinel
+# Check if Zentinel is running
+ps aux | grep zentinel
 
 # Check memory monitoring
 tail -f results/*/memory/memory.csv
@@ -264,7 +264,7 @@ cat results/*/logs/load.log
 If a leak is detected:
 
 1. **Enable debug logging** - Set `logging { level "debug" }` in config
-2. **Run with profiling** - `MALLOC_CONF=prof:true ./sentinel`
+2. **Run with profiling** - `MALLOC_CONF=prof:true ./zentinel`
 3. **Check rate limiter cleanup** - Idle entries should be cleaned up
 4. **Check connection pools** - Connections should be recycled
 5. **Check cache eviction** - Caches should respect size limits

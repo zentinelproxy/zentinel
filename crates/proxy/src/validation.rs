@@ -1,4 +1,4 @@
-//! API schema validation module for Sentinel proxy
+//! API schema validation module for Zentinel proxy
 //!
 //! This module provides JSON Schema validation for API routes,
 //! supporting both request and response validation with OpenAPI integration.
@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-use sentinel_config::ApiSchemaConfig;
+use zentinel_config::ApiSchemaConfig;
 
 /// API schema validator
 pub struct SchemaValidator {

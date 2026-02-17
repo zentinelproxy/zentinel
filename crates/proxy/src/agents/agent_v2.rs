@@ -7,25 +7,25 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sentinel_agent_protocol::v2::{
+use zentinel_agent_protocol::v2::{
     AgentCapabilities, AgentPool, AgentPoolConfig as ProtocolPoolConfig, AgentPoolStats,
     CancelReason, ConfigPusher, ConfigUpdateType, LoadBalanceStrategy as ProtocolLBStrategy,
     MetricsCollector,
 };
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentResponse, EventType, GuardrailInspectEvent, RequestBodyChunkEvent, RequestHeadersEvent,
     ResponseBodyChunkEvent, ResponseHeadersEvent,
 };
-use sentinel_common::{
-    errors::{SentinelError, SentinelResult},
+use zentinel_common::{
+    errors::{ZentinelError, ZentinelResult},
     CircuitBreaker,
 };
-use sentinel_config::{AgentConfig, AgentEvent, FailureMode, LoadBalanceStrategy};
+use zentinel_config::{AgentConfig, AgentEvent, FailureMode, LoadBalanceStrategy};
 use tracing::{debug, error, info, trace, warn};
 
 use super::metrics::AgentMetrics;
 
-/// Sentinel value indicating no timestamp recorded
+/// Zentinel value indicating no timestamp recorded
 const NO_TIMESTAMP: u64 = 0;
 
 /// Protocol v2 agent with connection pooling and bidirectional streaming.
@@ -128,7 +128,7 @@ impl AgentV2 {
     }
 
     /// Initialize agent connection(s).
-    pub async fn initialize(&self) -> SentinelResult<()> {
+    pub async fn initialize(&self) -> ZentinelResult<()> {
         let endpoint = self.get_endpoint()?;
 
         debug!(
@@ -150,7 +150,7 @@ impl AgentV2 {
                     error = %e,
                     "Failed to add agent to v2 pool"
                 );
-                SentinelError::Agent {
+                ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: format!("Failed to initialize v2 agent: {}", e),
                     event: "initialize".to_string(),
@@ -174,8 +174,8 @@ impl AgentV2 {
     }
 
     /// Get endpoint from transport config.
-    fn get_endpoint(&self) -> SentinelResult<String> {
-        use sentinel_config::AgentTransport;
+    fn get_endpoint(&self) -> ZentinelResult<String> {
+        use zentinel_config::AgentTransport;
         match &self.config.transport {
             AgentTransport::Grpc { address, .. } => Ok(address.clone()),
             AgentTransport::UnixSocket { path } => {
@@ -184,7 +184,7 @@ impl AgentV2 {
             }
             AgentTransport::Http { url, .. } => {
                 // V2 doesn't support HTTP transport
-                Err(SentinelError::Agent {
+                Err(ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: "HTTP transport not supported for v2 protocol".to_string(),
                     event: "initialize".to_string(),
@@ -195,8 +195,8 @@ impl AgentV2 {
     }
 
     /// Send configuration to the agent via the pool's config push mechanism.
-    async fn send_configure(&self, _config: serde_json::Value) -> SentinelResult<()> {
-        use sentinel_agent_protocol::v2::ConfigUpdateType;
+    async fn send_configure(&self, _config: serde_json::Value) -> ZentinelResult<()> {
+        use zentinel_agent_protocol::v2::ConfigUpdateType;
 
         if let Some(push_id) = self
             .pool
@@ -221,7 +221,7 @@ impl AgentV2 {
     pub async fn call_request_headers(
         &self,
         event: &RequestHeadersEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         let call_num = self.metrics.calls_total.fetch_add(1, Ordering::Relaxed) + 1;
 
         // Get correlation_id from event metadata
@@ -244,7 +244,7 @@ impl AgentV2 {
                     error = %e,
                     "V2 agent request headers call failed"
                 );
-                SentinelError::Agent {
+                ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: e.to_string(),
                     event: "request_headers".to_string(),
@@ -260,7 +260,7 @@ impl AgentV2 {
     pub async fn call_request_body_chunk(
         &self,
         event: &RequestBodyChunkEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         let correlation_id = &event.correlation_id;
 
         trace!(
@@ -281,7 +281,7 @@ impl AgentV2 {
                     error = %e,
                     "V2 agent request body chunk call failed"
                 );
-                SentinelError::Agent {
+                ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: e.to_string(),
                     event: "request_body_chunk".to_string(),
@@ -297,7 +297,7 @@ impl AgentV2 {
     pub async fn call_response_headers(
         &self,
         event: &ResponseHeadersEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         let correlation_id = &event.correlation_id;
 
         trace!(
@@ -317,7 +317,7 @@ impl AgentV2 {
                     error = %e,
                     "V2 agent response headers call failed"
                 );
-                SentinelError::Agent {
+                ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: e.to_string(),
                     event: "response_headers".to_string(),
@@ -333,7 +333,7 @@ impl AgentV2 {
     pub async fn call_response_body_chunk(
         &self,
         event: &ResponseBodyChunkEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         let correlation_id = &event.correlation_id;
 
         trace!(
@@ -354,7 +354,7 @@ impl AgentV2 {
                     error = %e,
                     "V2 agent response body chunk call failed"
                 );
-                SentinelError::Agent {
+                ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: e.to_string(),
                     event: "response_body_chunk".to_string(),
@@ -367,7 +367,7 @@ impl AgentV2 {
     pub async fn call_guardrail_inspect(
         &self,
         event: &GuardrailInspectEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         let call_num = self.metrics.calls_total.fetch_add(1, Ordering::Relaxed) + 1;
 
         let correlation_id = &event.correlation_id;
@@ -390,7 +390,7 @@ impl AgentV2 {
                     error = %e,
                     "V2 agent guardrail inspect call failed"
                 );
-                SentinelError::Agent {
+                ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: e.to_string(),
                     event: "guardrail_inspect".to_string(),
@@ -404,7 +404,7 @@ impl AgentV2 {
         &self,
         correlation_id: &str,
         reason: CancelReason,
-    ) -> SentinelResult<()> {
+    ) -> ZentinelResult<()> {
         trace!(
             agent_id = %self.config.id,
             correlation_id = %correlation_id,
@@ -422,7 +422,7 @@ impl AgentV2 {
                     error = %e,
                     "Failed to cancel request on v2 agent"
                 );
-                SentinelError::Agent {
+                ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: format!("Cancel failed: {}", e),
                     event: "cancel".to_string(),
@@ -551,7 +551,7 @@ impl AgentV2 {
     /// Send a configuration update to this agent via the control stream.
     ///
     /// This is a direct config push using the `ConfigureEvent` message.
-    pub async fn send_configuration(&self, config: serde_json::Value) -> SentinelResult<()> {
+    pub async fn send_configuration(&self, config: serde_json::Value) -> ZentinelResult<()> {
         // Get a connection and send the configure event
         // For now, we rely on the pool's config push mechanism
         // which tracks acknowledgments and retries
@@ -567,7 +567,7 @@ impl AgentV2 {
                 agent_id = %self.config.id,
                 "Agent does not support config push"
             );
-            Err(SentinelError::Agent {
+            Err(ZentinelError::Agent {
                 agent: self.config.id.clone(),
                 message: "Agent does not support config push".to_string(),
                 event: "send_configuration".to_string(),

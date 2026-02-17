@@ -8,16 +8,16 @@
 //! - Streaming protocol types
 
 use bytes::{BufMut, Bytes};
-use sentinel_agent_protocol::binary::{
+use zentinel_agent_protocol::binary::{
     BinaryAgentResponse, BinaryBodyChunk, BinaryFrame, BinaryRequestHeaders, MessageType,
 };
-use sentinel_agent_protocol::buffer_pool::{acquire, acquire_default, clear_pool, pool_stats};
-use sentinel_agent_protocol::headers::{HeaderIterator, HeadersCow, HeadersRef};
-use sentinel_agent_protocol::v2::{
+use zentinel_agent_protocol::buffer_pool::{acquire, acquire_default, clear_pool, pool_stats};
+use zentinel_agent_protocol::headers::{HeaderIterator, HeadersCow, HeadersRef};
+use zentinel_agent_protocol::v2::{
     AgentCapabilities, AgentFeatures, AgentLimits, HealthConfig, HealthState, HealthStatus,
     LoadMetrics, ResourceMetrics, PROTOCOL_VERSION_2,
 };
-use sentinel_agent_protocol::{Decision, EventType, HeaderOp};
+use zentinel_agent_protocol::{Decision, EventType, HeaderOp};
 use std::collections::HashMap;
 
 // =============================================================================
@@ -102,7 +102,7 @@ fn test_binary_response_with_mutations() {
             },
         ],
         response_headers: vec![HeaderOp::Add {
-            name: "x-sentinel-version".to_string(),
+            name: "x-zentinel-version".to_string(),
             value: "2.0".to_string(),
         }],
         needs_more: false,

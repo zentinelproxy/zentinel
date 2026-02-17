@@ -60,7 +60,7 @@ use rustls::sign::CertifiedKey;
 use rustls::{RootCertStore, ServerConfig};
 use tracing::{debug, error, info, trace, warn};
 
-use sentinel_config::{TlsConfig, UpstreamTlsConfig};
+use zentinel_config::{TlsConfig, UpstreamTlsConfig};
 
 /// Error type for TLS operations
 #[derive(Debug)]
@@ -956,7 +956,7 @@ pub fn load_client_cert_key(
 
 /// Build a TLS client configuration for upstream connections with mTLS
 ///
-/// This creates a rustls ClientConfig that can be used when Sentinel
+/// This creates a rustls ClientConfig that can be used when Zentinel
 /// connects to backends that require client certificate authentication.
 pub fn build_upstream_tls_config(config: &UpstreamTlsConfig) -> Result<ClientConfig, TlsError> {
     let mut root_store = RootCertStore::empty();
@@ -1172,7 +1172,7 @@ pub fn load_client_ca(ca_path: &Path) -> Result<RootCertStore, TlsError> {
 
 /// Resolve TLS protocol versions from config into rustls version references.
 fn resolve_protocol_versions(config: &TlsConfig) -> Vec<&'static rustls::SupportedProtocolVersion> {
-    use sentinel_common::types::TlsVersion;
+    use zentinel_common::types::TlsVersion;
 
     let min = &config.min_version;
     let max = config.max_version.as_ref().unwrap_or(&TlsVersion::Tls13);
@@ -1269,7 +1269,7 @@ fn resolve_cipher_suites(names: &[String]) -> Result<Vec<rustls::SupportedCipher
 /// Build a TLS ServerConfig from our configuration.
 ///
 /// Applies protocol versions, cipher suites, session resumption, mTLS,
-/// and SNI certificate resolution from the Sentinel TLS config.
+/// and SNI certificate resolution from the Zentinel TLS config.
 ///
 /// # Note
 ///

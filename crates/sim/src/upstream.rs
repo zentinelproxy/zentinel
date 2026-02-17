@@ -3,8 +3,8 @@
 //! Simulates load balancer behavior to show which upstream target
 //! would be selected for a given request.
 
-use sentinel_common::types::LoadBalancingAlgorithm;
-use sentinel_config::{Config, UpstreamConfig};
+use zentinel_common::types::LoadBalancingAlgorithm;
+use zentinel_config::{Config, UpstreamConfig};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::types::{SimulatedRequest, UpstreamSelection};
@@ -387,7 +387,7 @@ fn truncate_for_display(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_config::UpstreamTarget;
+    use zentinel_config::UpstreamTarget;
 
     fn create_upstream(targets: Vec<&str>, algorithm: LoadBalancingAlgorithm) -> UpstreamConfig {
         UpstreamConfig {

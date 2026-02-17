@@ -64,7 +64,7 @@ pub use streaming::{
 pub use tiktoken::{tiktoken_manager, TiktokenEncoding, TiktokenManager};
 pub use tokens::{TokenCounter, TokenEstimate, TokenSource};
 
-use sentinel_config::{InferenceConfig, InferenceProvider};
+use zentinel_config::{InferenceConfig, InferenceProvider};
 
 /// Create a provider adapter based on the configured provider type
 pub fn create_inference_provider(config: &InferenceConfig) -> Box<dyn InferenceProviderAdapter> {

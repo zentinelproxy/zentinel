@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_proxy::kubeconfig::Kubeconfig;
+//! use zentinel_proxy::kubeconfig::Kubeconfig;
 //!
 //! let config = Kubeconfig::from_file("~/.kube/config")?;
 //! let context = config.current_context()?;

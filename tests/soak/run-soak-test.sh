@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Sentinel Soak Test Runner
+# Zentinel Soak Test Runner
 #
 # Runs extended load tests (24-72 hours) to detect memory leaks and
 # stability issues in production-like conditions.
@@ -13,8 +13,8 @@
 #   --rps RPS           Requests per second (default: 100)
 #   --connections N     Concurrent connections (default: 10)
 #   --output DIR        Output directory for results (default: ./results)
-#   --config FILE       Sentinel config file (default: ./soak-config.kdl)
-#   --skip-build        Skip building Sentinel
+#   --config FILE       Zentinel config file (default: ./soak-config.kdl)
+#   --skip-build        Skip building Zentinel
 #   --docker            Run in Docker instead of native
 #   --help              Show this help message
 #
@@ -30,7 +30,7 @@ OUTPUT_DIR="./results"
 CONFIG_FILE="./soak-config.kdl"
 SKIP_BUILD=false
 USE_DOCKER=false
-SENTINEL_PORT=8080
+ZENTINEL_PORT=8080
 METRICS_PORT=9090
 BACKEND_PORT=8081
 
@@ -174,16 +174,16 @@ setup_output() {
     log_info "Results will be saved to: $OUTPUT_DIR"
 }
 
-# Build Sentinel
-build_sentinel() {
+# Build Zentinel
+build_zentinel() {
     if [[ "$SKIP_BUILD" == "true" ]]; then
         log_info "Skipping build (--skip-build)"
         return
     fi
 
-    log_info "Building Sentinel (release mode)..."
+    log_info "Building Zentinel (release mode)..."
     cd "$PROJECT_ROOT"
-    cargo build --release --bin sentinel 2>&1 | tee "$OUTPUT_DIR/logs/build.log"
+    cargo build --release --bin zentinel 2>&1 | tee "$OUTPUT_DIR/logs/build.log"
     log_success "Build complete"
 }
 
@@ -217,9 +217,9 @@ start_backend() {
     log_success "Backend started (PID: $BACKEND_PID)"
 }
 
-# Start Sentinel proxy
-start_sentinel() {
-    log_info "Starting Sentinel proxy..."
+# Start Zentinel proxy
+start_zentinel() {
+    log_info "Starting Zentinel proxy..."
 
     local config_path
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -233,54 +233,54 @@ start_sentinel() {
 
     if [[ "$USE_DOCKER" == "true" ]]; then
         # Docker mode
-        docker run -d --name sentinel-soak \
-            -p "$SENTINEL_PORT:8080" \
+        docker run -d --name zentinel-soak \
+            -p "$ZENTINEL_PORT:8080" \
             -p "$METRICS_PORT:9090" \
-            -v "$config_path:/etc/sentinel/config.kdl:ro" \
-            sentinel:latest \
-            --config /etc/sentinel/config.kdl \
-            > "$OUTPUT_DIR/logs/sentinel.log" 2>&1
-        SENTINEL_PID="docker"
+            -v "$config_path:/etc/zentinel/config.kdl:ro" \
+            zentinel:latest \
+            --config /etc/zentinel/config.kdl \
+            > "$OUTPUT_DIR/logs/zentinel.log" 2>&1
+        ZENTINEL_PID="docker"
     else
         # Native mode
-        "$PROJECT_ROOT/target/release/sentinel" \
+        "$PROJECT_ROOT/target/release/zentinel" \
             --config "$config_path" \
-            > "$OUTPUT_DIR/logs/sentinel.log" 2>&1 &
-        SENTINEL_PID=$!
+            > "$OUTPUT_DIR/logs/zentinel.log" 2>&1 &
+        ZENTINEL_PID=$!
     fi
 
     # Wait for startup
-    log_info "Waiting for Sentinel to start..."
+    log_info "Waiting for Zentinel to start..."
     local retries=30
     while [[ $retries -gt 0 ]]; do
         # Try metrics endpoint first, then main proxy port
         if curl -sf "http://localhost:$METRICS_PORT/metrics" >/dev/null 2>&1; then
-            log_success "Sentinel started (PID: $SENTINEL_PID)"
+            log_success "Zentinel started (PID: $ZENTINEL_PID)"
             return 0
         fi
-        if curl -sf "http://localhost:$SENTINEL_PORT/" -o /dev/null 2>&1; then
-            log_success "Sentinel started (PID: $SENTINEL_PID)"
+        if curl -sf "http://localhost:$ZENTINEL_PORT/" -o /dev/null 2>&1; then
+            log_success "Zentinel started (PID: $ZENTINEL_PID)"
             return 0
         fi
         sleep 1
         retries=$((retries - 1))
     done
 
-    log_error "Sentinel failed to start within 30 seconds"
-    cat "$OUTPUT_DIR/logs/sentinel.log"
+    log_error "Zentinel failed to start within 30 seconds"
+    cat "$OUTPUT_DIR/logs/zentinel.log"
     exit 1
 }
 
-# Get memory usage of Sentinel process
+# Get memory usage of Zentinel process
 get_memory_usage() {
     if [[ "$USE_DOCKER" == "true" ]]; then
-        docker stats sentinel-soak --no-stream --format '{{.MemUsage}}' 2>/dev/null | awk '{print $1}'
+        docker stats zentinel-soak --no-stream --format '{{.MemUsage}}' 2>/dev/null | awk '{print $1}'
     else
         # macOS uses different ps format than Linux
         if [[ "$(uname)" == "Darwin" ]]; then
-            ps -o rss= -p "$SENTINEL_PID" 2>/dev/null | awk '{print $1 * 1024}'
+            ps -o rss= -p "$ZENTINEL_PID" 2>/dev/null | awk '{print $1 * 1024}'
         else
-            ps -o rss= -p "$SENTINEL_PID" 2>/dev/null | awk '{print $1 * 1024}'
+            ps -o rss= -p "$ZENTINEL_PID" 2>/dev/null | awk '{print $1 * 1024}'
         fi
     fi
 }
@@ -320,7 +320,7 @@ run_load_test() {
     log_info "  Target RPS: $RPS"
     log_info "  Connections: $CONNECTIONS"
 
-    local url="http://localhost:$SENTINEL_PORT/api"
+    local url="http://localhost:$ZENTINEL_PORT/api"
     local load_log="$OUTPUT_DIR/logs/load.log"
 
     case "$LOAD_TOOL" in
@@ -408,12 +408,12 @@ cleanup() {
         wait "$LOAD_PID" 2>/dev/null || true
     fi
 
-    # Stop Sentinel
-    if [[ "${SENTINEL_PID:-}" == "docker" ]]; then
-        docker stop sentinel-soak 2>/dev/null || true
-        docker rm sentinel-soak 2>/dev/null || true
-    elif [[ -n "${SENTINEL_PID:-}" ]]; then
-        kill "$SENTINEL_PID" 2>/dev/null || true
+    # Stop Zentinel
+    if [[ "${ZENTINEL_PID:-}" == "docker" ]]; then
+        docker stop zentinel-soak 2>/dev/null || true
+        docker rm zentinel-soak 2>/dev/null || true
+    elif [[ -n "${ZENTINEL_PID:-}" ]]; then
+        kill "$ZENTINEL_PID" 2>/dev/null || true
     fi
 
     # Stop backend
@@ -454,7 +454,7 @@ analyze_results() {
 
     # Write summary
     cat > "$OUTPUT_DIR/summary.txt" << EOF
-Sentinel Soak Test Summary
+Zentinel Soak Test Summary
 ==========================
 Date: $(date)
 Duration: ${DURATION_HOURS} hours
@@ -506,7 +506,7 @@ EOF
 main() {
     echo ""
     echo "==========================================="
-    echo "     Sentinel Soak Test"
+    echo "     Zentinel Soak Test"
     echo "==========================================="
     echo ""
 
@@ -514,9 +514,9 @@ main() {
 
     check_dependencies
     setup_output
-    build_sentinel
+    build_zentinel
     start_backend
-    start_sentinel
+    start_zentinel
 
     # Start memory monitoring in background
     monitor_memory &

@@ -2,10 +2,10 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "sentinel.fullname" . }}-proxy
+  name: {{ include "zentinel.fullname" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "sentinel.labels" . | nindent 4 }}
+    {{- include "zentinel.labels" . | nindent 4 }}
     app.kubernetes.io/component: proxy
   {{- with .Values.proxy.service.annotations }}
   annotations:
@@ -50,6 +50,6 @@ spec:
       targetPort: {{ .Values.proxy.service.metricsPort }}
       protocol: TCP
   selector:
-    {{- include "sentinel.selectorLabels" . | nindent 4 }}
+    {{- include "zentinel.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: proxy
 {{- end }}

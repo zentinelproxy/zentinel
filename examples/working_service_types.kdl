@@ -1,4 +1,4 @@
-// Working Sentinel Configuration with Service Types
+// Working Zentinel Configuration with Service Types
 // This configuration demonstrates the actual working functionality
 
 system {
@@ -177,7 +177,7 @@ routes {
         // HTML error pages for web routes
         error_pages {
             default_format "html"
-            template_dir "/etc/sentinel/error-templates"
+            template_dir "/etc/zentinel/error-templates"
 
             pages {
                 404 {
@@ -394,7 +394,7 @@ observability {
 
         access_log {
             enabled true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             format "json"
             buffer_size 8192
         }

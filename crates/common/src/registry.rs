@@ -1,12 +1,12 @@
 //! Generic registry for thread-safe storage of named components.
 //!
 //! This module provides a `Registry<T>` type that wraps the common
-//! `Arc<RwLock<HashMap<String, Arc<T>>>>` pattern used throughout Sentinel.
+//! `Arc<RwLock<HashMap<String, Arc<T>>>>` pattern used throughout Zentinel.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_common::Registry;
+//! use zentinel_common::Registry;
 //!
 //! let registry: Registry<MyService> = Registry::new();
 //!

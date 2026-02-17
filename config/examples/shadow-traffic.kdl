@@ -328,10 +328,10 @@ observability {
         address "0.0.0.0:9090"
         path "/metrics"
         // Shadow metrics exported:
-        // - sentinel_shadow_requests_total (by upstream, status)
-        // - sentinel_shadow_latency_seconds
-        // - sentinel_shadow_errors_total
-        // - sentinel_shadow_timeouts_total
+        // - zentinel_shadow_requests_total (by upstream, status)
+        // - zentinel_shadow_latency_seconds
+        // - zentinel_shadow_errors_total
+        // - zentinel_shadow_timeouts_total
     }
 
     logging {
@@ -340,7 +340,7 @@ observability {
 
         access-log {
             enabled #true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             include-trace-id #true
             // Shadow requests are logged with shadow=true field
         }

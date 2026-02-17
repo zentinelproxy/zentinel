@@ -57,10 +57,10 @@ pub struct AgentInfo {
     /// Version string (e.g., "0.2.0")
     pub version: String,
 
-    /// GitHub repository (e.g., "raskell-io/sentinel-agent-waf")
+    /// GitHub repository (e.g., "zentinelproxy/zentinel-agent-waf")
     pub repository: String,
 
-    /// Binary name (e.g., "sentinel-waf-agent")
+    /// Binary name (e.g., "zentinel-waf-agent")
     pub binary_name: String,
 }
 
@@ -89,12 +89,12 @@ impl BundleLock {
 
     /// Fetch the latest lock file from the repository
     pub async fn fetch_latest() -> Result<Self, LockError> {
-        let url = "https://raw.githubusercontent.com/raskell-io/sentinel/main/bundle-versions.lock";
+        let url = "https://raw.githubusercontent.com/zentinelproxy/zentinel/main/bundle-versions.lock";
 
         let client = reqwest::Client::new();
         let response = client
             .get(url)
-            .header("User-Agent", "sentinel-bundle")
+            .header("User-Agent", "zentinel-bundle")
             .send()
             .await
             .map_err(|e| LockError::Fetch(e.to_string()))?;
@@ -125,7 +125,7 @@ impl BundleLock {
                     name: name.clone(),
                     version: version.clone(),
                     repository: repository.clone(),
-                    binary_name: format!("sentinel-{}-agent", name),
+                    binary_name: format!("zentinel-{}-agent", name),
                 })
             })
             .collect()
@@ -139,7 +139,7 @@ impl BundleLock {
             name: name.to_string(),
             version: version.clone(),
             repository: repository.clone(),
-            binary_name: format!("sentinel-{}-agent", name),
+            binary_name: format!("zentinel-{}-agent", name),
         })
     }
 
@@ -190,8 +190,8 @@ waf = "0.2.0"
 ratelimit = "0.2.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
-ratelimit = "raskell-io/sentinel-agent-ratelimit"
+waf = "zentinelproxy/zentinel-agent-waf"
+ratelimit = "zentinelproxy/zentinel-agent-ratelimit"
 "#;
 
         let lock = BundleLock::from_str(content).unwrap();
@@ -210,7 +210,7 @@ version = "26.01_2"
 waf = "0.3.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
+waf = "zentinelproxy/zentinel-agent-waf"
 
 [checksums]
 waf = "abc123def456"
@@ -230,7 +230,7 @@ version = "26.01_1"
 waf = "0.2.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
+waf = "zentinelproxy/zentinel-agent-waf"
 "#;
 
         let lock = BundleLock::from_str(content).unwrap();
@@ -251,7 +251,7 @@ waf = "raskell-io/sentinel-agent-waf"
 waf = "0.2.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
+waf = "zentinelproxy/zentinel-agent-waf"
 "#;
         let result = BundleLock::from_str(content);
         assert!(result.is_err());
@@ -267,7 +267,7 @@ version = "26.01_1"
 waf = "0.2.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
+waf = "zentinelproxy/zentinel-agent-waf"
 "#;
 
         let lock = BundleLock::from_str(content).unwrap();
@@ -275,10 +275,10 @@ waf = "raskell-io/sentinel-agent-waf"
 
         assert_eq!(agent.name, "waf");
         assert_eq!(agent.version, "0.2.0");
-        assert_eq!(agent.binary_name, "sentinel-waf-agent");
+        assert_eq!(agent.binary_name, "zentinel-waf-agent");
 
         let url = agent.download_url("linux", "amd64");
-        assert!(url.contains("sentinel-waf-agent"));
+        assert!(url.contains("zentinel-waf-agent"));
         assert!(url.contains("v0.2.0"));
         assert!(url.contains("x86_64"));
     }
@@ -293,7 +293,7 @@ version = "26.01_1"
 waf = "0.2.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
+waf = "zentinelproxy/zentinel-agent-waf"
 "#;
 
         let lock = BundleLock::from_str(content).unwrap();
@@ -311,7 +311,7 @@ waf = "0.2.0"
 orphan = "1.0.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
+waf = "zentinelproxy/zentinel-agent-waf"
 "#;
 
         let lock = BundleLock::from_str(content).unwrap();
@@ -335,9 +335,9 @@ ratelimit = "0.2.0"
 denylist = "0.2.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
-ratelimit = "raskell-io/sentinel-agent-ratelimit"
-denylist = "raskell-io/sentinel-agent-denylist"
+waf = "zentinelproxy/zentinel-agent-waf"
+ratelimit = "zentinelproxy/zentinel-agent-ratelimit"
+denylist = "zentinelproxy/zentinel-agent-denylist"
 "#;
 
         let lock = BundleLock::from_str(content).unwrap();
@@ -353,14 +353,14 @@ denylist = "raskell-io/sentinel-agent-denylist"
         let agent = AgentInfo {
             name: "waf".to_string(),
             version: "0.2.0".to_string(),
-            repository: "raskell-io/sentinel-agent-waf".to_string(),
-            binary_name: "sentinel-waf-agent".to_string(),
+            repository: "zentinelproxy/zentinel-agent-waf".to_string(),
+            binary_name: "zentinel-waf-agent".to_string(),
         };
 
         let url = agent.download_url("linux", "amd64");
         assert_eq!(
             url,
-            "https://github.com/raskell-io/sentinel-agent-waf/releases/download/v0.2.0/sentinel-waf-agent-0.2.0-linux-x86_64.tar.gz"
+            "https://github.com/zentinelproxy/zentinel-agent-waf/releases/download/v0.2.0/zentinel-waf-agent-0.2.0-linux-x86_64.tar.gz"
         );
     }
 
@@ -369,14 +369,14 @@ denylist = "raskell-io/sentinel-agent-denylist"
         let agent = AgentInfo {
             name: "ratelimit".to_string(),
             version: "1.0.0".to_string(),
-            repository: "raskell-io/sentinel-agent-ratelimit".to_string(),
-            binary_name: "sentinel-ratelimit-agent".to_string(),
+            repository: "zentinelproxy/zentinel-agent-ratelimit".to_string(),
+            binary_name: "zentinel-ratelimit-agent".to_string(),
         };
 
         let url = agent.download_url("linux", "arm64");
         assert_eq!(
             url,
-            "https://github.com/raskell-io/sentinel-agent-ratelimit/releases/download/v1.0.0/sentinel-ratelimit-agent-1.0.0-linux-aarch64.tar.gz"
+            "https://github.com/zentinelproxy/zentinel-agent-ratelimit/releases/download/v1.0.0/zentinel-ratelimit-agent-1.0.0-linux-aarch64.tar.gz"
         );
     }
 
@@ -385,8 +385,8 @@ denylist = "raskell-io/sentinel-agent-denylist"
         let agent = AgentInfo {
             name: "denylist".to_string(),
             version: "0.5.0".to_string(),
-            repository: "raskell-io/sentinel-agent-denylist".to_string(),
-            binary_name: "sentinel-denylist-agent".to_string(),
+            repository: "zentinelproxy/zentinel-agent-denylist".to_string(),
+            binary_name: "zentinel-denylist-agent".to_string(),
         };
 
         let url = agent.download_url("darwin", "arm64");
@@ -399,13 +399,13 @@ denylist = "raskell-io/sentinel-agent-denylist"
         let agent = AgentInfo {
             name: "waf".to_string(),
             version: "0.2.0".to_string(),
-            repository: "raskell-io/sentinel-agent-waf".to_string(),
-            binary_name: "sentinel-waf-agent".to_string(),
+            repository: "zentinelproxy/zentinel-agent-waf".to_string(),
+            binary_name: "zentinel-waf-agent".to_string(),
         };
 
         let url = agent.checksum_url("linux", "amd64");
         assert!(url.ends_with(".sha256"));
-        assert!(url.contains("sentinel-waf-agent"));
+        assert!(url.contains("zentinel-waf-agent"));
     }
 
     #[test]
@@ -433,8 +433,8 @@ denylist = "raskell-io/sentinel-agent-denylist"
 
         // Security agents
         assert!(
-            lock.agent("sentinelsec").is_some(),
-            "sentinelsec agent should be in bundle"
+            lock.agent("zentinelsec").is_some(),
+            "zentinelsec agent should be in bundle"
         );
         assert!(
             lock.agent("ip-reputation").is_some(),

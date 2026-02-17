@@ -24,7 +24,7 @@ use tracing::{debug, error, trace, warn};
 #[cfg(feature = "distributed-rate-limit")]
 use redis::aio::ConnectionManager;
 
-use sentinel_config::RedisBackendConfig;
+use zentinel_config::RedisBackendConfig;
 
 use crate::rate_limit::{RateLimitConfig, RateLimitOutcome};
 

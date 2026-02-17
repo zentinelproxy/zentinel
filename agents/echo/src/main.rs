@@ -1,7 +1,7 @@
 // Allow field reassignment pattern for building AuditMetadata with HashMap
 #![allow(clippy::field_reassign_with_default)]
 
-//! Echo Agent - Reference implementation for Sentinel external agents
+//! Echo Agent - Reference implementation for Zentinel external agents
 //!
 //! This agent demonstrates the agent protocol by echoing request information
 //! back as headers and providing detailed audit metadata.
@@ -12,7 +12,7 @@ use clap::Parser;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, AgentServer, AuditMetadata, GrpcAgentServer, HeaderOp,
     RequestBodyChunkEvent, RequestCompleteEvent, RequestHeadersEvent, ResponseBodyChunkEvent,
     ResponseHeadersEvent,

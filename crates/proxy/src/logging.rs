@@ -1,4 +1,4 @@
-//! Logging infrastructure for Sentinel proxy
+//! Logging infrastructure for Zentinel proxy
 //!
 //! This module provides structured logging to files for:
 //! - Access logs (request/response data with trace_id)
@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{error, warn};
 
-use sentinel_config::{AuditLogConfig, LoggingConfig};
+use zentinel_config::{AuditLogConfig, LoggingConfig};
 
 /// Access log format
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +99,7 @@ impl AccessLogEntry {
     pub fn format(
         &self,
         format: AccessLogFormat,
-        fields: Option<&sentinel_config::AccessLogFields>,
+        fields: Option<&zentinel_config::AccessLogFields>,
     ) -> String {
         match format {
             AccessLogFormat::Json => self.format_json(fields),
@@ -108,7 +108,7 @@ impl AccessLogEntry {
     }
 
     /// Format as JSON, optionally filtering fields based on config
-    fn format_json(&self, fields: Option<&sentinel_config::AccessLogFields>) -> String {
+    fn format_json(&self, fields: Option<&zentinel_config::AccessLogFields>) -> String {
         let fields = match fields {
             Some(f) => f,
             None => return serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string()),
@@ -662,7 +662,7 @@ impl LogFileWriter {
 pub struct LogManager {
     access_log: Option<Mutex<LogFileWriter>>,
     access_log_format: AccessLogFormat,
-    access_log_config: Option<sentinel_config::AccessLogConfig>,
+    access_log_config: Option<zentinel_config::AccessLogConfig>,
     error_log: Option<Mutex<LogFileWriter>>,
     audit_log: Option<Mutex<LogFileWriter>>,
     audit_config: Option<AuditLogConfig>,
@@ -862,7 +862,7 @@ pub type SharedLogManager = Arc<LogManager>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_config::{AccessLogConfig, ErrorLogConfig};
+    use zentinel_config::{AccessLogConfig, ErrorLogConfig};
     use tempfile::tempdir;
 
     #[test]
@@ -953,7 +953,7 @@ mod tests {
                 include_trace_id: true,
                 sample_rate: 1.0,
                 sample_errors_always: true,
-                fields: sentinel_config::AccessLogFields::default(),
+                fields: zentinel_config::AccessLogFields::default(),
             }),
             error_log: Some(ErrorLogConfig {
                 enabled: true,

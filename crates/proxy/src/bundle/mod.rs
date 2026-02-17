@@ -5,18 +5,18 @@
 //!
 //! # Overview
 //!
-//! The bundle command allows users to install a curated set of Sentinel agents
+//! The bundle command allows users to install a curated set of Zentinel agents
 //! that are tested to work together. Versions are coordinated via a lock file
 //! that pins compatible versions.
 //!
 //! # Usage
 //!
 //! ```bash
-//! sentinel bundle install          # Download and install all bundled agents
-//! sentinel bundle install --dry-run    # Preview what would be installed
-//! sentinel bundle status           # Show installed vs expected versions
-//! sentinel bundle list             # List available agents in the bundle
-//! sentinel bundle uninstall        # Remove installed agents
+//! zentinel bundle install          # Download and install all bundled agents
+//! zentinel bundle install --dry-run    # Preview what would be installed
+//! zentinel bundle status           # Show installed vs expected versions
+//! zentinel bundle list             # List available agents in the bundle
+//! zentinel bundle uninstall        # Remove installed agents
 //! ```
 //!
 //! # Lock File
@@ -33,9 +33,9 @@
 //! denylist = "0.2.0"
 //!
 //! [repositories]
-//! waf = "raskell-io/sentinel-agent-waf"
-//! ratelimit = "raskell-io/sentinel-agent-ratelimit"
-//! denylist = "raskell-io/sentinel-agent-denylist"
+//! waf = "zentinelproxy/zentinel-agent-waf"
+//! ratelimit = "zentinelproxy/zentinel-agent-ratelimit"
+//! denylist = "zentinelproxy/zentinel-agent-denylist"
 //! ```
 
 mod commands;

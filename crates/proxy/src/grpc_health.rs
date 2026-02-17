@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_proxy::grpc_health::GrpcHealthCheck;
+//! use zentinel_proxy::grpc_health::GrpcHealthCheck;
 //! use std::time::Duration;
 //!
 //! let hc = GrpcHealthCheck::new("my.service.Name".to_string(), Duration::from_secs(5));

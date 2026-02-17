@@ -10,7 +10,7 @@ Agents are external processes that can inspect and mutate requests/responses at 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Sentinel Proxy                                │
+│                        Zentinel Proxy                                │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐ │
 │  │                     AgentManager                                │ │
@@ -390,24 +390,24 @@ Agent metrics are exported for monitoring:
 
 ```
 # Call latency
-sentinel_agent_latency_ms{agent="waf-agent", event="request-headers", quantile="0.99"} 12.5
+zentinel_agent_latency_ms{agent="waf-agent", event="request-headers", quantile="0.99"} 12.5
 
 # Call counts
-sentinel_agent_calls_total{agent="waf-agent", event="request-headers", result="success"} 10000
-sentinel_agent_calls_total{agent="waf-agent", event="request-headers", result="timeout"} 5
-sentinel_agent_calls_total{agent="waf-agent", event="request-headers", result="error"} 2
+zentinel_agent_calls_total{agent="waf-agent", event="request-headers", result="success"} 10000
+zentinel_agent_calls_total{agent="waf-agent", event="request-headers", result="timeout"} 5
+zentinel_agent_calls_total{agent="waf-agent", event="request-headers", result="error"} 2
 
 # Circuit breaker state
-sentinel_agent_circuit_breaker_state{agent="waf-agent"} 0  # 0=closed, 1=open, 2=half-open
-sentinel_agent_circuit_breaker_opens_total{agent="waf-agent"} 3
+zentinel_agent_circuit_breaker_state{agent="waf-agent"} 0  # 0=closed, 1=open, 2=half-open
+zentinel_agent_circuit_breaker_opens_total{agent="waf-agent"} 3
 
 # Queue depth
-sentinel_agent_queue_depth{agent="waf-agent"} 5
-sentinel_agent_queue_rejections_total{agent="waf-agent"} 0
+zentinel_agent_queue_depth{agent="waf-agent"} 5
+zentinel_agent_queue_rejections_total{agent="waf-agent"} 0
 
 # Decision counts
-sentinel_agent_decisions_total{agent="waf-agent", decision="allow"} 9990
-sentinel_agent_decisions_total{agent="waf-agent", decision="block"} 10
+zentinel_agent_decisions_total{agent="waf-agent", decision="allow"} 9990
+zentinel_agent_decisions_total{agent="waf-agent", decision="block"} 10
 ```
 
 ## Multi-Agent Pipeline

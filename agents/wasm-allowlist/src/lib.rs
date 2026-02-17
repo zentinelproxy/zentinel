@@ -1,7 +1,7 @@
 //! WASM Allowlist Agent
 //!
 //! A simple WASM agent that checks request paths against an allowlist or denylist.
-//! This demonstrates how to build WASM agents for Sentinel.
+//! This demonstrates how to build WASM agents for Zentinel.
 //!
 //! # Configuration
 //!

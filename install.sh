@@ -1,13 +1,13 @@
 #!/bin/sh
-# Sentinel Install Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/raskell-io/sentinel/main/install.sh | sh
+# Zentinel Install Script
+# Usage: curl -fsSL https://raw.githubusercontent.com/zentinelproxy/zentinel/main/install.sh | sh
 #
 # This script detects your OS and architecture, downloads the appropriate
 # pre-built binary, and installs it to /usr/local/bin (or ~/.local/bin if
 # /usr/local/bin is not writable).
 #
-# After installation, use `sentinel bundle install` to install bundled agents
-# (WAF, rate limiter, denylist). See https://sentinel.raskell.io/docs/deployment/bundle/
+# After installation, use `zentinel bundle install` to install bundled agents
+# (WAF, rate limiter, denylist). See https://zentinelproxy.io/docs/deployment/bundle/
 #
 # Options:
 #   --help      Show help message
@@ -15,8 +15,8 @@
 set -e
 
 # Configuration
-REPO="raskell-io/sentinel"
-BINARY_NAME="sentinel"
+REPO="zentinelproxy/zentinel"
+BINARY_NAME="zentinel"
 INSTALL_DIR="/usr/local/bin"
 FALLBACK_DIR="$HOME/.local/bin"
 
@@ -84,7 +84,7 @@ get_latest_version() {
     if command -v jq >/dev/null 2>&1; then
         jq -r '
             [.[] | select(.draft == false and .prerelease == false and
-                (.assets | map(.name) | any(test("^sentinel-.*\\.tar\\.gz$"))))]
+                (.assets | map(.name) | any(test("^zentinel-.*\\.tar\\.gz$"))))]
             | .[0].tag_name // empty
         ' "$tmp_releases"
     else
@@ -97,7 +97,7 @@ get_latest_version() {
                 tag = $0
             }
             /"prerelease": *true/ { tag = "" }
-            /"name":.*sentinel-.*tar\.gz"/ {
+            /"name":.*zentinel-.*tar\.gz"/ {
                 if (tag) { print tag; exit }
             }
         ' "$tmp_releases"
@@ -113,7 +113,7 @@ download_binary() {
     local tmp_dir="$4"
 
     # Build artifact name
-    local artifact="sentinel-${version}-${os}-${arch}.tar.gz"
+    local artifact="zentinel-${version}-${os}-${arch}.tar.gz"
     local url="https://github.com/${REPO}/releases/download/${version}/${artifact}"
     local checksum_url="${url}.sha256"
 
@@ -232,16 +232,16 @@ check_path() {
 # Show help message
 show_help() {
     cat << EOF
-Sentinel Install Script
+Zentinel Install Script
 
-Usage: curl -fsSL https://raw.githubusercontent.com/raskell-io/sentinel/main/install.sh | sh
+Usage: curl -fsSL https://raw.githubusercontent.com/zentinelproxy/zentinel/main/install.sh | sh
 
 Options:
     --help      Show this help message
 
-After installing Sentinel, you can install bundled agents using:
+After installing Zentinel, you can install bundled agents using:
 
-    sudo sentinel bundle install
+    sudo zentinel bundle install
 
 This downloads and installs:
     - WAF agent (ModSecurity-based firewall)
@@ -249,9 +249,9 @@ This downloads and installs:
     - Denylist agent (IP/path blocking)
 
 See the bundle command documentation:
-    https://sentinel.raskell.io/docs/deployment/bundle/
+    https://zentinelproxy.io/docs/deployment/bundle/
 
-For more information: https://sentinel.raskell.io/docs
+For more information: https://zentinelproxy.io/docs
 EOF
 }
 
@@ -277,7 +277,7 @@ main() {
     echo ""
 
     printf "${BLUE}┌─────────────────────────────────────┐${NC}\n"
-    printf "${BLUE}│${NC}     ${GREEN}Sentinel${NC} Installer              ${BLUE}│${NC}\n"
+    printf "${BLUE}│${NC}     ${GREEN}Zentinel${NC} Installer              ${BLUE}│${NC}\n"
     printf "${BLUE}│${NC}     Security-first reverse proxy    ${BLUE}│${NC}\n"
     printf "${BLUE}└─────────────────────────────────────┘${NC}\n"
     echo ""
@@ -314,7 +314,7 @@ main() {
 
     # Success!
     echo ""
-    success "Sentinel ${version} installed successfully!"
+    success "Zentinel ${version} installed successfully!"
     echo ""
 
     # Check if in PATH
@@ -334,21 +334,21 @@ main() {
     fi
 
     # Verify installation
-    if command -v sentinel >/dev/null 2>&1; then
+    if command -v zentinel >/dev/null 2>&1; then
         info "Verifying installation..."
-        sentinel --version 2>/dev/null || true
+        zentinel --version 2>/dev/null || true
     else
-        echo "Run 'sentinel --help' to get started"
+        echo "Run 'zentinel --help' to get started"
     fi
 
     echo ""
-    printf "Documentation: ${BLUE}https://sentinel.raskell.io${NC}\n"
+    printf "Documentation: ${BLUE}https://zentinelproxy.io${NC}\n"
     printf "GitHub: ${BLUE}https://github.com/${REPO}${NC}\n"
     echo ""
 
     # Hint about bundled agents
     printf "${YELLOW}Tip:${NC} To install bundled agents (WAF, rate limiter, denylist):\n"
-    printf "     ${GREEN}sudo sentinel bundle install${NC}\n"
+    printf "     ${GREEN}sudo zentinel bundle install${NC}\n"
     echo ""
 }
 

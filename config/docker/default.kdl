@@ -1,6 +1,6 @@
-// Sentinel Default Docker Configuration
+// Zentinel Default Docker Configuration
 // Minimal config that starts the proxy without requiring a backend
-// Override by mounting your config to /etc/sentinel/config.kdl
+// Override by mounting your config to /etc/zentinel/config.kdl
 
 system {
     worker-threads 0  // auto-detect CPU cores

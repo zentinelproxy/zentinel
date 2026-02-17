@@ -1,6 +1,6 @@
-# Multi-File Configuration for Sentinel
+# Multi-File Configuration for Zentinel
 
-Sentinel supports loading configuration from multiple KDL files, allowing you to organize your configuration in a maintainable, modular way. This is especially important for production deployments where configuration can become complex.
+Zentinel supports loading configuration from multiple KDL files, allowing you to organize your configuration in a maintainable, modular way. This is especially important for production deployments where configuration can become complex.
 
 ## Features
 
@@ -17,7 +17,7 @@ Sentinel supports loading configuration from multiple KDL files, allowing you to
 
 ```
 config/
-├── sentinel.kdl              # Main configuration file
+├── zentinel.kdl              # Main configuration file
 ├── listeners/                # Listener definitions
 │   ├── http.kdl
 │   └── https.kdl
@@ -53,7 +53,7 @@ config/
 Load all `.kdl` files from a directory:
 
 ```bash
-sentinel --config-dir /etc/sentinel
+zentinel --config-dir /etc/zentinel
 ```
 
 ### With Environment Override
@@ -61,7 +61,7 @@ sentinel --config-dir /etc/sentinel
 Load base configuration plus environment-specific settings:
 
 ```bash
-sentinel --config-dir /etc/sentinel --environment production
+zentinel --config-dir /etc/zentinel --environment production
 ```
 
 ### Explicit File List
@@ -69,20 +69,20 @@ sentinel --config-dir /etc/sentinel --environment production
 Load specific files in order:
 
 ```bash
-sentinel --config-files \
-  /etc/sentinel/base.kdl \
-  /etc/sentinel/routes/*.kdl \
-  /etc/sentinel/prod-override.kdl
+zentinel --config-files \
+  /etc/zentinel/base.kdl \
+  /etc/zentinel/routes/*.kdl \
+  /etc/zentinel/prod-override.kdl
 ```
 
 ## File Organization Examples
 
-### Main Configuration (sentinel.kdl)
+### Main Configuration (zentinel.kdl)
 
 The main file contains global settings and defaults:
 
 ```kdl
-// sentinel.kdl - Core server configuration
+// zentinel.kdl - Core server configuration
 server {
     worker-threads 4
     graceful-shutdown-timeout "30s"
@@ -112,8 +112,8 @@ listener "https" {
     protocol "https"
     
     tls {
-        cert "/etc/sentinel/certs/server.crt"
-        key "/etc/sentinel/certs/server.key"
+        cert "/etc/zentinel/certs/server.crt"
+        key "/etc/zentinel/certs/server.key"
         min-version "TLS1.2"
     }
     
@@ -229,12 +229,12 @@ include "custom/extra-routes.kdl"
 include "policies/*.kdl"
 
 // Include from absolute path
-include "/opt/sentinel/shared-config.kdl"
+include "/opt/zentinel/shared-config.kdl"
 ```
 
 ## Merging Rules
 
-When loading multiple files, Sentinel follows these merging rules:
+When loading multiple files, Zentinel follows these merging rules:
 
 ### Collections (Arrays)
 - **Listeners**: Merged by ID, duplicates cause error
@@ -318,10 +318,10 @@ Keep each logical unit in separate files for better Git diffs:
 Always validate configuration before deploying:
 ```bash
 # Dry-run to validate without starting
-sentinel --config-dir /etc/sentinel --dry-run
+zentinel --config-dir /etc/zentinel --dry-run
 
 # Test specific environment
-sentinel --config-dir /etc/sentinel --environment staging --validate
+zentinel --config-dir /etc/zentinel --environment staging --validate
 ```
 
 ## Advanced Features
@@ -363,13 +363,13 @@ upstream "api" extends="upstream-base" {
 Load configuration fragments from external sources:
 ```kdl
 // Load from URL
-include "https://config.internal/sentinel/shared.kdl"
+include "https://config.internal/zentinel/shared.kdl"
 
 // Load from S3
-include "s3://config-bucket/sentinel/routes.kdl"
+include "s3://config-bucket/zentinel/routes.kdl"
 
 // Load from Kubernetes ConfigMap
-include "k8s://configmap/sentinel-config/data/routes.kdl"
+include "k8s://configmap/zentinel-config/data/routes.kdl"
 ```
 
 ## Migration Guide
@@ -378,30 +378,30 @@ include "k8s://configmap/sentinel-config/data/routes.kdl"
 
 1. **Start with your existing configuration**:
 ```bash
-cp /etc/sentinel/config.kdl /etc/sentinel/sentinel.kdl
+cp /etc/zentinel/config.kdl /etc/zentinel/zentinel.kdl
 ```
 
 2. **Extract listeners**:
 ```bash
-mkdir /etc/sentinel/listeners
+mkdir /etc/zentinel/listeners
 # Move listener blocks to separate files
 ```
 
 3. **Extract routes**:
 ```bash
-mkdir /etc/sentinel/routes
+mkdir /etc/zentinel/routes
 # Move route blocks to separate files
 ```
 
 4. **Extract upstreams**:
 ```bash
-mkdir /etc/sentinel/upstreams
+mkdir /etc/zentinel/upstreams
 # Move upstream blocks to separate files
 ```
 
 5. **Test the new structure**:
 ```bash
-sentinel --config-dir /etc/sentinel --dry-run
+zentinel --config-dir /etc/zentinel --dry-run
 ```
 
 ## Troubleshooting
@@ -411,8 +411,8 @@ sentinel --config-dir /etc/sentinel --dry-run
 #### Duplicate ID Errors
 ```
 Error: Duplicate route ID 'api-v1' found in:
-  - /etc/sentinel/routes/api.kdl:10
-  - /etc/sentinel/routes/legacy.kdl:5
+  - /etc/zentinel/routes/api.kdl:10
+  - /etc/zentinel/routes/legacy.kdl:5
 ```
 
 **Solution**: Ensure all IDs are unique across files.
@@ -436,13 +436,13 @@ Error: Circular include detected:
 
 Enable debug logging to see file loading order:
 ```bash
-RUST_LOG=sentinel::config=debug sentinel --config-dir /etc/sentinel
+RUST_LOG=zentinel::config=debug zentinel --config-dir /etc/zentinel
 ```
 
 ### Loading Order
 
 Files are loaded in this order:
-1. `sentinel.kdl` (if exists)
+1. `zentinel.kdl` (if exists)
 2. Subdirectories (alphabetically): `agents/`, `listeners/`, `routes/`, `upstreams/`
 3. Environment-specific overrides
 4. Explicit includes
@@ -462,7 +462,7 @@ Files are loaded in this order:
 
 This directory contains a complete example of multi-file configuration:
 
-- `sentinel.kdl` - Main configuration with global settings
+- `zentinel.kdl` - Main configuration with global settings
 - `listeners/` - HTTP and HTTPS listener configurations
 - `routes/` - API and static route definitions
 - `upstreams/` - Backend server pool configurations
@@ -471,7 +471,7 @@ This directory contains a complete example of multi-file configuration:
 To test this configuration:
 ```bash
 cd /path/to/config/example-multi-file
-sentinel --config-dir . --dry-run
+zentinel --config-dir . --dry-run
 ```
 
 ## API Reference
@@ -490,16 +490,16 @@ sentinel --config-dir . --dry-run
 ### Configuration API
 
 ```rust
-use sentinel_config::{Config, MultiFileLoader};
+use zentinel_config::{Config, MultiFileLoader};
 
 // Load from directory
-let config = Config::from_directory("/etc/sentinel")?;
+let config = Config::from_directory("/etc/zentinel")?;
 
 // Load with environment
-let config = Config::from_directory_with_env("/etc/sentinel", "production")?;
+let config = Config::from_directory_with_env("/etc/zentinel", "production")?;
 
 // Custom loader
-let mut loader = MultiFileLoader::new("/etc/sentinel")
+let mut loader = MultiFileLoader::new("/etc/zentinel")
     .with_include("*.kdl")
     .with_exclude("*.example.kdl")
     .recursive(true)

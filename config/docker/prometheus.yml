@@ -1,4 +1,4 @@
-# Prometheus Configuration for Sentinel Monitoring
+# Prometheus Configuration for Zentinel Monitoring
 
 global:
   scrape_interval: 15s
@@ -10,8 +10,8 @@ alerting:
 rule_files: []
 
 scrape_configs:
-  # Sentinel Proxy metrics
-  - job_name: 'sentinel-proxy'
+  # Zentinel Proxy metrics
+  - job_name: 'zentinel-proxy'
     static_configs:
       - targets: ['proxy:9090']
     metrics_path: /metrics
@@ -19,10 +19,10 @@ scrape_configs:
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
-        replacement: 'sentinel-proxy'
+        replacement: 'zentinel-proxy'
 
   # Rate Limit Agent metrics
-  - job_name: 'sentinel-ratelimit'
+  - job_name: 'zentinel-ratelimit'
     static_configs:
       - targets: ['ratelimit:9092']
     metrics_path: /metrics
@@ -33,7 +33,7 @@ scrape_configs:
         replacement: 'ratelimit-agent'
 
   # WAF Agent metrics
-  - job_name: 'sentinel-waf'
+  - job_name: 'zentinel-waf'
     static_configs:
       - targets: ['waf:9094']
     metrics_path: /metrics

@@ -2,10 +2,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "sentinel.fullname" . }}-proxy
+  name: {{ include "zentinel.fullname" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "sentinel.labels" . | nindent 4 }}
+    {{- include "zentinel.labels" . | nindent 4 }}
     app.kubernetes.io/component: proxy
     {{- with .Values.proxy.labels }}
     {{- toYaml . | nindent 4 }}
@@ -21,7 +21,7 @@ spec:
   revisionHistoryLimit: {{ .Values.proxy.revisionHistoryLimit | default 10 }}
   selector:
     matchLabels:
-      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      {{- include "zentinel.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: proxy
   {{- with .Values.proxy.updateStrategy }}
   strategy:
@@ -40,7 +40,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        {{- include "zentinel.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: proxy
         {{- with .Values.proxy.podLabels }}
         {{- toYaml . | nindent 8 }}
@@ -50,7 +50,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
+      serviceAccountName: {{ include "zentinel.serviceAccountName" . }}
       {{- with .Values.proxy.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -67,7 +67,7 @@ spec:
       {{- end }}
       containers:
       - name: proxy
-        image: {{ include "sentinel.proxyImage" . }}
+        image: {{ include "zentinel.proxyImage" . }}
         imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
         {{- with .Values.proxy.securityContext }}
         securityContext:
@@ -85,26 +85,26 @@ spec:
           protocol: TCP
         env:
         - name: RUST_LOG
-          value: {{ .Values.proxy.logLevel | default "info,sentinel_proxy=info" }}
-        - name: SENTINEL_CONFIG
-          value: /etc/sentinel/config.kdl
-        - name: SENTINEL_DATA_DIR
-          value: /var/lib/sentinel
-        - name: SENTINEL_LOG_DIR
-          value: /var/log/sentinel
-        - name: SENTINEL_NODE_NAME
+          value: {{ .Values.proxy.logLevel | default "info,zentinel_proxy=info" }}
+        - name: ZENTINEL_CONFIG
+          value: /etc/zentinel/config.kdl
+        - name: ZENTINEL_DATA_DIR
+          value: /var/lib/zentinel
+        - name: ZENTINEL_LOG_DIR
+          value: /var/log/zentinel
+        - name: ZENTINEL_NODE_NAME
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        - name: SENTINEL_POD_NAME
+        - name: ZENTINEL_POD_NAME
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        - name: SENTINEL_POD_NAMESPACE
+        - name: ZENTINEL_POD_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        - name: SENTINEL_POD_IP
+        - name: ZENTINEL_POD_IP
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
@@ -137,7 +137,7 @@ spec:
         {{- end }}
         volumeMounts:
         - name: config
-          mountPath: /etc/sentinel
+          mountPath: /etc/zentinel
           readOnly: true
         {{- if .Values.agents.unixSocket.enabled }}
         - name: agent-sockets
@@ -145,25 +145,25 @@ spec:
         {{- end }}
         {{- if .Values.proxy.persistence.enabled }}
         - name: data
-          mountPath: /var/lib/sentinel
+          mountPath: /var/lib/zentinel
         {{- end }}
         - name: logs
-          mountPath: /var/log/sentinel
+          mountPath: /var/log/zentinel
         - name: tmp
           mountPath: /tmp
         {{- if .Values.security.tls.enabled }}
         - name: tls
-          mountPath: /etc/sentinel/tls
+          mountPath: /etc/zentinel/tls
           readOnly: true
         {{- end }}
         {{- with .Values.proxy.extraVolumeMounts }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
         command:
-        - /usr/local/bin/sentinel-proxy
+        - /usr/local/bin/zentinel-proxy
         args:
         - -c
-        - /etc/sentinel/config.kdl
+        - /etc/zentinel/config.kdl
         {{- with .Values.proxy.extraArgs }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -173,7 +173,7 @@ spec:
       volumes:
       - name: config
         configMap:
-          name: {{ include "sentinel.fullname" . }}-proxy-config
+          name: {{ include "zentinel.fullname" . }}-proxy-config
           defaultMode: 0644
       {{- if .Values.agents.unixSocket.enabled }}
       - name: agent-sockets
@@ -201,7 +201,7 @@ spec:
           {{- if .Values.security.tls.existingSecret }}
           secretName: {{ .Values.security.tls.existingSecret }}
           {{- else }}
-          secretName: {{ include "sentinel.fullname" . }}-tls
+          secretName: {{ include "zentinel.fullname" . }}-tls
           {{- end }}
           defaultMode: 0400
       {{- end }}

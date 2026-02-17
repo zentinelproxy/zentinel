@@ -1,4 +1,4 @@
-//! Type-safe identifier newtypes for Sentinel proxy.
+//! Type-safe identifier newtypes for Zentinel proxy.
 //!
 //! These types provide compile-time safety for identifiers, preventing
 //! accidental mixing of different ID types (e.g., passing a RouteId
@@ -6,12 +6,12 @@
 //!
 //! # Scoped Identifiers
 //!
-//! Sentinel supports hierarchical configuration through namespaces and services.
+//! Zentinel supports hierarchical configuration through namespaces and services.
 //! The [`Scope`] enum represents where a resource is defined, and [`QualifiedId`]
 //! combines a local name with its scope for unambiguous identification.
 //!
 //! ```
-//! use sentinel_common::ids::{Scope, QualifiedId};
+//! use zentinel_common::ids::{Scope, QualifiedId};
 //!
 //! // Global resource
 //! let global = QualifiedId::global("shared-auth");
@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 /// Represents where a resource is defined in the configuration hierarchy.
 ///
-/// Sentinel supports three levels of scoping:
+/// Zentinel supports three levels of scoping:
 /// - **Global**: Resources defined at the root level, visible everywhere
 /// - **Namespace**: Resources scoped to a namespace, visible within that namespace
 /// - **Service**: Resources scoped to a service within a namespace

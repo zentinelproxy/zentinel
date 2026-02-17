@@ -18,8 +18,8 @@ listeners {
         address "0.0.0.0:8443"
         protocol "https"
         tls {
-            cert-file "/etc/sentinel/certs/api.crt"
-            key-file "/etc/sentinel/certs/api.key"
+            cert-file "/etc/zentinel/certs/api.crt"
+            key-file "/etc/zentinel/certs/api.key"
             min-version "TLS1.2"
         }
     }
@@ -228,7 +228,7 @@ observability {
 
         access-log {
             enabled #true
-            file "/var/log/sentinel/api-gateway-access.log"
+            file "/var/log/zentinel/api-gateway-access.log"
             include-trace-id #true
         }
     }

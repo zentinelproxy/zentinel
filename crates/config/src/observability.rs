@@ -351,11 +351,11 @@ fn default_buffer_size() -> usize {
 }
 
 fn default_access_log_file() -> PathBuf {
-    PathBuf::from("/var/log/sentinel/access.log")
+    PathBuf::from("/var/log/zentinel/access.log")
 }
 
 fn default_error_log_file() -> PathBuf {
-    PathBuf::from("/var/log/sentinel/error.log")
+    PathBuf::from("/var/log/zentinel/error.log")
 }
 
 fn default_error_log_level() -> String {
@@ -363,7 +363,7 @@ fn default_error_log_level() -> String {
 }
 
 fn default_audit_log_file() -> PathBuf {
-    PathBuf::from("/var/log/sentinel/audit.log")
+    PathBuf::from("/var/log/zentinel/audit.log")
 }
 
 fn default_sampling_rate() -> f64 {
@@ -375,5 +375,5 @@ fn default_sample_rate() -> f64 {
 }
 
 fn default_service_name() -> String {
-    "sentinel".to_string()
+    "zentinel".to_string()
 }

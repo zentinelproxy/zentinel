@@ -10,7 +10,7 @@
 #![allow(clippy::manual_try_fold)]
 #![allow(private_interfaces)]
 
-//! Sentinel Proxy Library
+//! Zentinel Proxy Library
 //!
 //! A security-first reverse proxy built on Pingora with sleepable ops at the edge.
 //!
@@ -27,8 +27,8 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_proxy::{StaticFileServer, ErrorHandler, SchemaValidator};
-//! use sentinel_config::{StaticFileConfig, ServiceType};
+//! use zentinel_proxy::{StaticFileServer, ErrorHandler, SchemaValidator};
+//! use zentinel_config::{StaticFileConfig, ServiceType};
 //!
 //! // Create a static file server
 //! let config = StaticFileConfig::default();
@@ -119,7 +119,7 @@ pub use reload::{ConfigManager, ReloadEvent, ReloadTrigger, SignalManager, Signa
 pub use app::AppState;
 
 // Proxy core
-pub use proxy::SentinelProxy;
+pub use proxy::ZentinelProxy;
 
 // Built-in handlers
 pub use builtin_handlers::{
@@ -219,4 +219,4 @@ pub use discovery::{
 pub use kubeconfig::{KubeAuth, Kubeconfig, KubeconfigError, ResolvedKubeConfig};
 
 // Re-export common error types for convenience
-pub use sentinel_common::errors::{LimitType, SentinelError, SentinelResult};
+pub use zentinel_common::errors::{LimitType, ZentinelError, ZentinelResult};

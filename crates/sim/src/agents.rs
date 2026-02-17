@@ -1,4 +1,4 @@
-//! Agent decision simulation for Sentinel configurations
+//! Agent decision simulation for Zentinel configurations
 //!
 //! This module enables simulation of agent responses in the request pipeline,
 //! allowing users to provide mock agent decisions and see how they affect
@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use crate::types::{MatchedRoute, Warning};
 use crate::{simulate, RouteDecision, SimulatedRequest};
-use sentinel_config::Config;
+use zentinel_config::Config;
 
 // ============================================================================
 // Input Types
@@ -340,7 +340,7 @@ struct AgentHookInfo {
 ///
 /// # Arguments
 ///
-/// * `config` - The parsed Sentinel configuration
+/// * `config` - The parsed Zentinel configuration
 /// * `request` - The simulated HTTP request
 /// * `mock_responses` - Mock responses for each agent
 ///
@@ -731,7 +731,7 @@ mod tests {
             upstreams { upstream "backend" { target "127.0.0.1:8080" } }
         "#;
 
-        let config = sentinel_config::Config::from_kdl(config_kdl).unwrap();
+        let config = zentinel_config::Config::from_kdl(config_kdl).unwrap();
         let request = SimulatedRequest::new("GET", "example.com", "/other");
 
         let result = simulate_with_agents(&config, &request, &[]);
@@ -768,7 +768,7 @@ mod tests {
             upstreams { upstream "backend" { target "127.0.0.1:8080" } }
         "#;
 
-        let config = sentinel_config::Config::from_kdl(config_kdl).unwrap();
+        let config = zentinel_config::Config::from_kdl(config_kdl).unwrap();
         let request = SimulatedRequest::new("GET", "example.com", "/api/users");
 
         let mock_responses = vec![MockAgentResponse {
@@ -822,7 +822,7 @@ mod tests {
             upstreams { upstream "backend" { target "127.0.0.1:8080" } }
         "#;
 
-        let config = sentinel_config::Config::from_kdl(config_kdl).unwrap();
+        let config = zentinel_config::Config::from_kdl(config_kdl).unwrap();
         let request = SimulatedRequest::new("POST", "example.com", "/api/admin");
 
         let mock_responses = vec![MockAgentResponse {
@@ -885,7 +885,7 @@ mod tests {
             upstreams { upstream "backend" { target "127.0.0.1:8080" } }
         "#;
 
-        let config = sentinel_config::Config::from_kdl(config_kdl).unwrap();
+        let config = zentinel_config::Config::from_kdl(config_kdl).unwrap();
         let request = SimulatedRequest::new("GET", "example.com", "/api/protected");
 
         let mock_responses = vec![MockAgentResponse {
@@ -936,7 +936,7 @@ mod tests {
             upstreams { upstream "backend" { target "127.0.0.1:8080" } }
         "#;
 
-        let config = sentinel_config::Config::from_kdl(config_kdl).unwrap();
+        let config = zentinel_config::Config::from_kdl(config_kdl).unwrap();
         let request = SimulatedRequest::new("GET", "example.com", "/api/users");
 
         // No mock responses provided

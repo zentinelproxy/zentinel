@@ -1,4 +1,4 @@
-//! Data Masking Agent for Sentinel
+//! Data Masking Agent for Zentinel
 //!
 //! This agent provides PII protection with:
 //! - Reversible tokenization (request-scoped)
@@ -11,16 +11,16 @@ use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
-use sentinel_agent_protocol::{AgentServer, GrpcAgentServer};
-use sentinel_data_masking_agent::{DataMaskingAgent, DataMaskingConfig};
+use zentinel_agent_protocol::{AgentServer, GrpcAgentServer};
+use zentinel_data_masking_agent::{DataMaskingAgent, DataMaskingConfig};
 
 /// Data Masking Agent command-line arguments.
 #[derive(Parser, Debug)]
 #[command(
-    name = "sentinel-data-masking-agent",
+    name = "zentinel-data-masking-agent",
     author,
     version,
-    about = "Data masking agent for Sentinel - tokenization, FPE, and pattern-based PII protection"
+    about = "Data masking agent for Zentinel - tokenization, FPE, and pattern-based PII protection"
 )]
 struct Args {
     /// Unix socket path to listen on (mutually exclusive with --grpc).

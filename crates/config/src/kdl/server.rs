@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tracing::{debug, trace};
 
-use sentinel_common::types::{TlsVersion, TraceIdFormat};
+use zentinel_common::types::{TlsVersion, TraceIdFormat};
 
 use crate::server::{
     default_acme_storage, default_graceful_shutdown_timeout, default_keepalive_timeout,
@@ -164,7 +164,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
 ///         email "admin@example.com"
 ///         domains "example.com" "www.example.com"
 ///         staging false
-///         storage "/var/lib/sentinel/acme"
+///         storage "/var/lib/zentinel/acme"
 ///         renew-before-days 30
 ///     }
 /// }
@@ -270,13 +270,13 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
 ///     email "admin@example.com"
 ///     domains "example.com" "www.example.com"
 ///     staging false
-///     storage "/var/lib/sentinel/acme"
+///     storage "/var/lib/zentinel/acme"
 ///     renew-before-days 30
 ///     challenge-type "dns-01"  // or "http-01" (default)
 ///
 ///     dns-provider {
 ///         type "hetzner"
-///         credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+///         credentials-file "/etc/zentinel/secrets/hetzner-dns.json"
 ///         api-timeout-secs 30
 ///
 ///         propagation {
@@ -402,7 +402,7 @@ fn parse_challenge_type(s: &str) -> AcmeChallengeType {
 /// ```kdl
 /// dns-provider {
 ///     type "hetzner"
-///     credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+///     credentials-file "/etc/zentinel/secrets/hetzner-dns.json"
 ///     credentials-env "HETZNER_DNS_TOKEN"
 ///     api-timeout-secs 30
 ///

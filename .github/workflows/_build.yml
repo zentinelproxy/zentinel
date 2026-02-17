@@ -1,4 +1,4 @@
-# Reusable build workflow for Sentinel
+# Reusable build workflow for Zentinel
 # Called by: release.yml, nightly.yml (future)
 
 name: Build
@@ -19,7 +19,7 @@ on:
       artifact-prefix:
         description: 'Prefix for artifact names'
         required: false
-        default: 'sentinel'
+        default: 'zentinel'
         type: string
       version:
         description: 'Version string to embed (optional)'
@@ -142,15 +142,15 @@ jobs:
           else
             STRIP=strip
           fi
-          $STRIP $BUILD_DIR/release/sentinel || true
-          $STRIP $BUILD_DIR/release/sentinel-echo-agent || true
+          $STRIP $BUILD_DIR/release/zentinel || true
+          $STRIP $BUILD_DIR/release/zentinel-echo-agent || true
 
       - name: Generate SBOM
         if: inputs.upload-artifacts && matrix.config.suffix == 'linux-amd64'
         run: |
           cargo install cargo-sbom --locked
-          cargo sbom --output-format cyclone_dx_json_1_5 > sentinel-sbom.cdx.json
-          cargo sbom --output-format spdx_json_2_3 > sentinel-sbom.spdx.json
+          cargo sbom --output-format cyclone_dx_json_1_5 > zentinel-sbom.cdx.json
+          cargo sbom --output-format spdx_json_2_3 > zentinel-sbom.spdx.json
 
       - name: Prepare artifacts
         if: inputs.upload-artifacts
@@ -163,8 +163,8 @@ jobs:
           fi
 
           # Copy binaries
-          cp "$SRC_DIR/sentinel" artifacts/ 2>/dev/null || true
-          cp "$SRC_DIR/sentinel-echo-agent" artifacts/ 2>/dev/null || true
+          cp "$SRC_DIR/zentinel" artifacts/ 2>/dev/null || true
+          cp "$SRC_DIR/zentinel-echo-agent" artifacts/ 2>/dev/null || true
 
           # Create version file if version provided
           if [ -n "${{ inputs.version }}" ]; then
@@ -185,6 +185,6 @@ jobs:
         with:
           name: ${{ inputs.artifact-prefix }}-sbom
           path: |
-            sentinel-sbom.cdx.json
-            sentinel-sbom.spdx.json
+            zentinel-sbom.cdx.json
+            zentinel-sbom.spdx.json
           retention-days: 30

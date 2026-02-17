@@ -15,7 +15,7 @@
 //! Qualified references (e.g., `"api:backend"`) bypass this chain and
 //! resolve directly to the specified scope.
 
-use sentinel_common::ids::{QualifiedId, Scope};
+use zentinel_common::ids::{QualifiedId, Scope};
 
 use crate::{AgentConfig, Config, FilterConfig, NamespaceConfig, ServiceConfig, UpstreamConfig};
 
@@ -394,7 +394,7 @@ mod tests {
         namespace::{ExportConfig, NamespaceConfig, ServiceConfig},
         ConnectionPoolConfig, HttpVersionConfig, UpstreamTarget, UpstreamTimeouts,
     };
-    use sentinel_common::types::LoadBalancingAlgorithm;
+    use zentinel_common::types::LoadBalancingAlgorithm;
     use std::collections::HashMap;
 
     fn test_upstream(id: &str) -> UpstreamConfig {

@@ -18,10 +18,10 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_agent_protocol::v2::{AgentPool, ReverseConnectionListener};
+//! use zentinel_agent_protocol::v2::{AgentPool, ReverseConnectionListener};
 //!
 //! let pool = AgentPool::new();
-//! let listener = ReverseConnectionListener::bind_uds("/var/run/sentinel/agents.sock").await?;
+//! let listener = ReverseConnectionListener::bind_uds("/var/run/zentinel/agents.sock").await?;
 //!
 //! // Accept connections in background
 //! listener.accept_loop(pool).await;
@@ -222,7 +222,7 @@ impl ReverseConnectionListener {
             let response = RegistrationResponse {
                 success: false,
                 error: Some(e.to_string()),
-                proxy_id: "sentinel-proxy".to_string(),
+                proxy_id: "zentinel-proxy".to_string(),
                 proxy_version: env!("CARGO_PKG_VERSION").to_string(),
                 connection_id: String::new(),
             };
@@ -245,7 +245,7 @@ impl ReverseConnectionListener {
         let response = RegistrationResponse {
             success: true,
             error: None,
-            proxy_id: "sentinel-proxy".to_string(),
+            proxy_id: "zentinel-proxy".to_string(),
             proxy_version: env!("CARGO_PKG_VERSION").to_string(),
             connection_id: connection_id.clone(),
         };
@@ -704,7 +704,7 @@ mod tests {
         let response = RegistrationResponse {
             success: true,
             error: None,
-            proxy_id: "sentinel".to_string(),
+            proxy_id: "zentinel".to_string(),
             proxy_version: "1.0.0".to_string(),
             connection_id: "conn-123".to_string(),
         };

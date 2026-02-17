@@ -118,7 +118,7 @@ impl BundleStatus {
 
         let mut output = String::new();
 
-        writeln!(output, "Sentinel Bundle Status").unwrap();
+        writeln!(output, "Zentinel Bundle Status").unwrap();
         writeln!(output, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━").unwrap();
         writeln!(output, "Bundle version: {}", self.bundle_version).unwrap();
         writeln!(output, "Install path:   {}", self.paths.bin_dir.display()).unwrap();
@@ -399,7 +399,7 @@ mod tests {
         };
 
         let output = status.display();
-        assert!(output.contains("Sentinel Bundle Status"));
+        assert!(output.contains("Zentinel Bundle Status"));
         assert!(output.contains("Bundle version: 26.01_1"));
     }
 

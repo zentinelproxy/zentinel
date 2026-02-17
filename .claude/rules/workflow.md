@@ -1,6 +1,6 @@
-# Sentinel Workflow
+# Zentinel Workflow
 
-Commands, processes, and common tasks for working with Sentinel.
+Commands, processes, and common tasks for working with Zentinel.
 
 ---
 
@@ -39,9 +39,9 @@ cargo build --workspace
 cargo build --workspace --release
 
 # Build specific crate
-cargo build -p sentinel-proxy
-cargo build -p sentinel-config
-cargo build -p sentinel-agent-protocol
+cargo build -p zentinel-proxy
+cargo build -p zentinel-config
+cargo build -p zentinel-agent-protocol
 ```
 
 ### Testing
@@ -51,12 +51,12 @@ cargo build -p sentinel-agent-protocol
 cargo test --workspace
 
 # Run tests for specific crate
-cargo test -p sentinel-proxy
-cargo test -p sentinel-config
-cargo test -p sentinel-agent-protocol
+cargo test -p zentinel-proxy
+cargo test -p zentinel-config
+cargo test -p zentinel-agent-protocol
 
 # Run specific test
-cargo test -p sentinel-proxy route_matching
+cargo test -p zentinel-proxy route_matching
 
 # Run tests with output
 cargo test --workspace -- --nocapture
@@ -96,32 +96,32 @@ cargo doc --workspace --no-deps 2>&1 | grep -i warning
 
 ---
 
-## Running Sentinel
+## Running Zentinel
 
 ### Local Development
 
 ```bash
 # Run with default config
-cargo run --bin sentinel -- --config config/sentinel.kdl
+cargo run --bin zentinel -- --config config/zentinel.kdl
 
 # Run with debug logging
-RUST_LOG=debug cargo run --bin sentinel -- --config config/sentinel.kdl
+RUST_LOG=debug cargo run --bin zentinel -- --config config/zentinel.kdl
 
 # Run with specific log levels
-RUST_LOG=sentinel=debug,pingora=info cargo run --bin sentinel
+RUST_LOG=zentinel=debug,pingora=info cargo run --bin zentinel
 
 # Run release build
-cargo run --release --bin sentinel -- --config config/sentinel.kdl
+cargo run --release --bin zentinel -- --config config/zentinel.kdl
 ```
 
 ### Docker
 
 ```bash
 # Build image
-docker build -t sentinel:dev .
+docker build -t zentinel:dev .
 
 # Run container
-docker run -p 8080:8080 -v $(pwd)/config:/etc/sentinel sentinel:dev
+docker run -p 8080:8080 -v $(pwd)/config:/etc/zentinel zentinel:dev
 
 # Docker Compose (with upstreams)
 docker-compose up
@@ -136,8 +136,8 @@ docker-compose up
 Run frequently during development:
 
 ```bash
-cargo test -p sentinel-config --lib
-cargo test -p sentinel-agent-protocol --lib
+cargo test -p zentinel-config --lib
+cargo test -p zentinel-agent-protocol --lib
 ```
 
 ### Integration Tests
@@ -161,14 +161,14 @@ Run for performance-sensitive changes:
 
 ```bash
 # Run all benchmarks
-cargo bench -p sentinel-proxy
+cargo bench -p zentinel-proxy
 
 # Run specific benchmark
-cargo bench -p sentinel-proxy routing
+cargo bench -p zentinel-proxy routing
 
 # Compare against baseline
-cargo bench -p sentinel-proxy -- --save-baseline main
-cargo bench -p sentinel-proxy -- --baseline main
+cargo bench -p zentinel-proxy -- --save-baseline main
+cargo bench -p zentinel-proxy -- --baseline main
 ```
 
 ---
@@ -245,10 +245,10 @@ cargo doc --workspace --no-deps
 
 ```bash
 # Publish in dependency order
-cargo publish -p sentinel-common
-cargo publish -p sentinel-config
-cargo publish -p sentinel-agent-protocol
-cargo publish -p sentinel-proxy
+cargo publish -p zentinel-common
+cargo publish -p zentinel-config
+cargo publish -p zentinel-agent-protocol
+cargo publish -p zentinel-proxy
 ```
 
 ### GitHub Release
@@ -258,7 +258,7 @@ cargo publish -p sentinel-proxy
 gh release create vX.Y.Z --title "vX.Y.Z" --notes-file RELEASE_NOTES.md
 
 # Attach binaries (if not done by CI)
-gh release upload vX.Y.Z target/release/sentinel
+gh release upload vX.Y.Z target/release/zentinel
 ```
 
 ---
@@ -269,36 +269,36 @@ gh release upload vX.Y.Z target/release/sentinel
 
 ```bash
 # Maximum verbosity
-RUST_LOG=trace cargo run --bin sentinel
+RUST_LOG=trace cargo run --bin zentinel
 
 # Specific modules
-RUST_LOG=sentinel::routing=debug,sentinel::agents=trace cargo run --bin sentinel
+RUST_LOG=zentinel::routing=debug,zentinel::agents=trace cargo run --bin zentinel
 
 # Filter by span
-RUST_LOG=sentinel[request_id]=debug cargo run --bin sentinel
+RUST_LOG=zentinel[request_id]=debug cargo run --bin zentinel
 ```
 
 ### Profiling
 
 ```bash
 # CPU profiling with flamegraph
-cargo flamegraph --bin sentinel -- --config config/sentinel.kdl
+cargo flamegraph --bin zentinel -- --config config/zentinel.kdl
 
 # Memory profiling with heaptrack
-heaptrack cargo run --release --bin sentinel
+heaptrack cargo run --release --bin zentinel
 
 # Perf stat
-perf stat cargo run --release --bin sentinel
+perf stat cargo run --release --bin zentinel
 ```
 
 ### Debugging Tests
 
 ```bash
 # Run single test with backtrace
-RUST_BACKTRACE=1 cargo test -p sentinel-proxy specific_test -- --nocapture
+RUST_BACKTRACE=1 cargo test -p zentinel-proxy specific_test -- --nocapture
 
 # Run under debugger
-rust-lldb target/debug/deps/sentinel_proxy-xxx specific_test
+rust-lldb target/debug/deps/zentinel_proxy-xxx specific_test
 ```
 
 ---
@@ -309,10 +309,10 @@ rust-lldb target/debug/deps/sentinel_proxy-xxx specific_test
 
 ```bash
 # Check config syntax
-cargo run --bin sentinel -- --config config/sentinel.kdl --check
+cargo run --bin zentinel -- --config config/zentinel.kdl --check
 
 # Dry run (parse and validate, don't start)
-cargo run --bin sentinel -- --config config/sentinel.kdl --dry-run
+cargo run --bin zentinel -- --config config/zentinel.kdl --dry-run
 ```
 
 ### Config Examples
@@ -322,7 +322,7 @@ Test against example configs:
 ```bash
 for config in config/examples/*.kdl; do
     echo "Testing $config"
-    cargo run --bin sentinel -- --config "$config" --check
+    cargo run --bin zentinel -- --config "$config" --check
 done
 ```
 
@@ -367,7 +367,7 @@ cargo outdated
 cargo test --workspace -- --nocapture
 
 # Run single test isolated
-cargo test -p sentinel-proxy test_name -- --test-threads=1
+cargo test -p zentinel-proxy test_name -- --test-threads=1
 
 # Check for port conflicts
 lsof -i :8080

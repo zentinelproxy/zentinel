@@ -1,6 +1,6 @@
-//! Sentinel Proxy Core Implementation
+//! Zentinel Proxy Core Implementation
 //!
-//! This module contains the main SentinelProxy struct and its implementation,
+//! This module contains the main ZentinelProxy struct and its implementation,
 //! split across several submodules for maintainability:
 //!
 //! - `context`: Request context maintained throughout the request lifecycle
@@ -34,8 +34,8 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use sentinel_common::ids::{QualifiedId, Scope};
-use sentinel_common::{Registry, ScopedMetrics, ScopedRegistry};
+use zentinel_common::ids::{QualifiedId, Scope};
+use zentinel_common::{Registry, ScopedMetrics, ScopedRegistry};
 
 use crate::agents::AgentManager;
 use crate::app::AppState;
@@ -57,11 +57,11 @@ use crate::static_files::StaticFileServer;
 use crate::upstream::{ActiveHealthChecker, HealthCheckRunner, UpstreamPool};
 use crate::validation::SchemaValidator;
 
-use sentinel_common::TraceIdFormat;
-use sentinel_config::{Config, FlattenedConfig};
+use zentinel_common::TraceIdFormat;
+use zentinel_config::{Config, FlattenedConfig};
 
 /// Main proxy service implementing Pingora's ProxyHttp trait
-pub struct SentinelProxy {
+pub struct ZentinelProxy {
     /// Configuration manager with hot reload
     pub config_manager: Arc<ConfigManager>,
     /// Route matcher (global routes only, for backward compatibility)
@@ -77,7 +77,7 @@ pub struct SentinelProxy {
     /// Passive health checker
     pub(super) passive_health: Arc<PassiveHealthChecker>,
     /// Metrics collector
-    pub(super) metrics: Arc<sentinel_common::observability::RequestMetrics>,
+    pub(super) metrics: Arc<zentinel_common::observability::RequestMetrics>,
     /// Scoped metrics collector (with namespace/service labels)
     pub(super) scoped_metrics: Arc<ScopedMetrics>,
     /// Application state
@@ -118,13 +118,13 @@ pub struct SentinelProxy {
     pub acme_client: Option<Arc<crate::acme::AcmeClient>>,
 }
 
-impl SentinelProxy {
+impl ZentinelProxy {
     /// Create new proxy instance
     ///
     /// If config_path is None, uses the embedded default configuration.
     /// Note: Tracing must be initialized by the caller before calling this function.
     pub async fn new(config_path: Option<&str>) -> Result<Self> {
-        info!("Starting Sentinel Proxy");
+        info!("Starting Zentinel Proxy");
 
         // Load initial configuration
         let (config, effective_config_path) = match config_path {
@@ -135,7 +135,7 @@ impl SentinelProxy {
             None => {
                 let cfg = Config::default_embedded()
                     .context("Failed to load embedded default configuration")?;
-                // Use a sentinel path to indicate embedded config
+                // Use a zentinel path to indicate embedded config
                 (cfg, "_embedded_".to_string())
             }
         };
@@ -212,7 +212,7 @@ impl SentinelProxy {
         agent_manager.initialize().await?;
 
         // Create metrics collectors
-        let metrics = Arc::new(sentinel_common::observability::RequestMetrics::new()?);
+        let metrics = Arc::new(zentinel_common::observability::RequestMetrics::new()?);
         let scoped_metrics =
             Arc::new(ScopedMetrics::new().context("Failed to create scoped metrics collector")?);
 
@@ -558,7 +558,7 @@ impl SentinelProxy {
             }
 
             // Initialize schema validator for API routes
-            if route.service_type == sentinel_config::ServiceType::Api {
+            if route.service_type == zentinel_config::ServiceType::Api {
                 if let Some(ref api_schema) = route.api_schema {
                     match SchemaValidator::new(api_schema.clone()) {
                         Ok(validator) => {
@@ -576,7 +576,7 @@ impl SentinelProxy {
             }
 
             // Initialize static file server for static routes
-            if route.service_type == sentinel_config::ServiceType::Static {
+            if route.service_type == zentinel_config::ServiceType::Static {
                 if let Some(ref static_config) = route.static_files {
                     let server = StaticFileServer::new(static_config.clone());
                     static_servers_map.insert(route.id.clone(), Arc::new(server));
@@ -604,7 +604,7 @@ impl SentinelProxy {
 
     /// Initialize rate limiters from configuration
     fn initialize_rate_limiters(config: &Config) -> RateLimitManager {
-        use sentinel_config::RateLimitAction;
+        use zentinel_config::RateLimitAction;
 
         // Create manager with global rate limit if configured
         let manager = if let Some(ref global) = config.rate_limits.global {
@@ -629,7 +629,7 @@ impl SentinelProxy {
                     action: RateLimitAction::Reject,
                     status_code: 429,
                     message: None,
-                    backend: sentinel_config::RateLimitBackend::Local,
+                    backend: zentinel_config::RateLimitBackend::Local,
                     max_delay_ms: 5000, // Default for policy-based rate limits
                 };
                 manager.register_route(&route.id, rl_config);
@@ -645,7 +645,7 @@ impl SentinelProxy {
             // Also check for rate limit filters in the filter chain
             for filter_id in &route.filters {
                 if let Some(filter_config) = config.filters.get(filter_id) {
-                    if let sentinel_config::Filter::RateLimit(ref rl_filter) = filter_config.filter
+                    if let zentinel_config::Filter::RateLimit(ref rl_filter) = filter_config.filter
                     {
                         let rl_config = RateLimitConfig {
                             max_rps: rl_filter.max_rps,
@@ -689,7 +689,7 @@ impl SentinelProxy {
 
         for route in &config.routes {
             // Only initialize for inference service type routes with inference config
-            if route.service_type == sentinel_config::ServiceType::Inference {
+            if route.service_type == zentinel_config::ServiceType::Inference {
                 if let Some(ref inference_config) = route.inference {
                     manager.register_route(&route.id, inference_config);
                 }
@@ -727,7 +727,7 @@ impl SentinelProxy {
                 }
             } else {
                 match route.service_type {
-                    sentinel_config::ServiceType::Static => CacheConfig {
+                    zentinel_config::ServiceType::Static => CacheConfig {
                         enabled: true,
                         default_ttl_secs: 3600,
                         max_size_bytes: 50 * 1024 * 1024, // 50MB for static
@@ -735,12 +735,12 @@ impl SentinelProxy {
                         stale_if_error_secs: 300,
                         ..Default::default()
                     },
-                    sentinel_config::ServiceType::Api => CacheConfig {
+                    zentinel_config::ServiceType::Api => CacheConfig {
                         enabled: false,
                         default_ttl_secs: 60,
                         ..Default::default()
                     },
-                    sentinel_config::ServiceType::Web => CacheConfig {
+                    zentinel_config::ServiceType::Web => CacheConfig {
                         enabled: false,
                         default_ttl_secs: 300,
                         ..Default::default()
@@ -775,7 +775,7 @@ impl SentinelProxy {
         let manager = GeoFilterManager::new();
 
         for (filter_id, filter_config) in &config.filters {
-            if let sentinel_config::Filter::Geo(ref geo_filter) = filter_config.filter {
+            if let zentinel_config::Filter::Geo(ref geo_filter) = filter_config.filter {
                 match manager.register_filter(filter_id, geo_filter.clone()) {
                     Ok(_) => {
                         info!(

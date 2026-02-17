@@ -5,9 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before proposing a feature, please read the [Manifesto](https://github.com/raskell-io/sentinel/blob/main/MANIFESTO.md).
+        Before proposing a feature, please read the [Manifesto](https://github.com/zentinelproxy/zentinel/blob/main/MANIFESTO.md).
 
-        Sentinel values **predictability over flexibility** and **calm operation over feature breadth**.
+        Zentinel values **predictability over flexibility** and **calm operation over feature breadth**.
 
   - type: textarea
     id: problem
@@ -23,7 +23,7 @@ body:
     attributes:
       label: Proposed Solution
       description: How would you like this to work?
-      placeholder: It would be great if Sentinel could...
+      placeholder: It would be great if Zentinel could...
     validations:
       required: true
 
@@ -56,7 +56,7 @@ body:
     id: manifesto
     attributes:
       label: Manifesto Alignment
-      description: Does this feature align with Sentinel's principles?
+      description: Does this feature align with Zentinel's principles?
       options:
         - label: This feature can be **bounded** (has clear limits)
         - label: This feature can be **observed** (metrics, logs)
@@ -70,5 +70,5 @@ body:
       options:
         - label: I have searched existing issues for duplicates
           required: true
-        - label: I have read the [Manifesto](https://github.com/raskell-io/sentinel/blob/main/MANIFESTO.md)
+        - label: I have read the [Manifesto](https://github.com/zentinelproxy/zentinel/blob/main/MANIFESTO.md)
           required: true

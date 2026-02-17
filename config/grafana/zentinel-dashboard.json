@@ -159,7 +159,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sentinel_up{instance=~\"$instance\"}",
+          "expr": "zentinel_up{instance=~\"$instance\"}",
           "legendFormat": "Status",
           "refId": "A"
         }
@@ -349,7 +349,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sentinel_cache_hit_ratio{instance=~\"$instance\"}",
+          "expr": "zentinel_cache_hit_ratio{instance=~\"$instance\"}",
           "legendFormat": "Hit Ratio",
           "refId": "A"
         }
@@ -1013,7 +1013,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(sentinel_cache_hits_total{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(zentinel_cache_hits_total{instance=~\"$instance\"}[$__rate_interval])",
           "legendFormat": "Hits",
           "refId": "A"
         },
@@ -1022,7 +1022,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(sentinel_cache_misses_total{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(zentinel_cache_misses_total{instance=~\"$instance\"}[$__rate_interval])",
           "legendFormat": "Misses",
           "refId": "B"
         },
@@ -1031,7 +1031,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(sentinel_cache_stores_total{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(zentinel_cache_stores_total{instance=~\"$instance\"}[$__rate_interval])",
           "legendFormat": "Stores",
           "refId": "C"
         }
@@ -1121,7 +1121,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sentinel_cache_hit_ratio{instance=~\"$instance\"}",
+          "expr": "zentinel_cache_hit_ratio{instance=~\"$instance\"}",
           "legendFormat": "Hit Ratio",
           "refId": "A"
         }
@@ -1331,7 +1331,7 @@
   "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["sentinel", "proxy", "pingora"],
+  "tags": ["zentinel", "proxy", "pingora"],
   "templating": {
     "list": [
       {
@@ -1344,7 +1344,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(sentinel_up, instance)",
+        "definition": "label_values(zentinel_up, instance)",
         "hide": 0,
         "includeAll": true,
         "label": "Instance",
@@ -1352,7 +1352,7 @@
         "name": "instance",
         "options": [],
         "query": {
-          "query": "label_values(sentinel_up, instance)",
+          "query": "label_values(zentinel_up, instance)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -1369,8 +1369,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Sentinel Proxy",
-  "uid": "sentinel-proxy",
+  "title": "Zentinel Proxy",
+  "uid": "zentinel-proxy",
   "version": 1,
   "weekStart": ""
 }

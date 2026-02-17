@@ -16,7 +16,7 @@ use super::loader::MultiFileLoader;
 ///
 /// ```text
 /// config/
-///   ├── sentinel.kdl         # Main config
+///   ├── zentinel.kdl         # Main config
 ///   ├── listeners/           # Listener definitions
 ///   │   ├── http.kdl
 ///   │   └── https.kdl
@@ -53,8 +53,8 @@ impl ConfigDirectory {
         let mut loader = MultiFileLoader::new(&self.root);
 
         // Load main configuration
-        if self.root.join("sentinel.kdl").exists() {
-            loader = loader.with_include("sentinel.kdl");
+        if self.root.join("zentinel.kdl").exists() {
+            loader = loader.with_include("zentinel.kdl");
         }
 
         // Load from subdirectories

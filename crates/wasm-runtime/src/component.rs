@@ -1,7 +1,7 @@
-//! WebAssembly Component Model bindings for Sentinel agents.
+//! WebAssembly Component Model bindings for Zentinel agents.
 //!
 //! This module generates type-safe bindings from the WIT interface definition
-//! using Wasmtime's `bindgen!` macro. Agents implementing the `sentinel:agent`
+//! using Wasmtime's `bindgen!` macro. Agents implementing the `zentinel:agent`
 //! world can be instantiated and called through these bindings.
 
 use wasmtime::component::bindgen;
@@ -12,25 +12,25 @@ use wasmtime::component::bindgen;
 // - Type definitions for all WIT types (RequestMetadata, Decision, etc.)
 // - Methods to call the exported functions
 bindgen!({
-    path: "wit/sentinel-agent.wit",
+    path: "wit/zentinel-agent.wit",
     world: "agent",
 });
 
 // Re-export the generated types for use in host.rs
-// Note: The types module path is sentinel::agent::types
-pub use sentinel::agent::types::{
+// Note: The types module path is zentinel::agent::types
+pub use zentinel::agent::types::{
     AgentInfo, AgentResponse, AuditMetadata, BlockParams, Decision, HeaderOp, RedirectParams,
     RequestMetadata,
 };
 
 // Re-export handler types (includes Header)
-pub use exports::sentinel::agent::handler::{Guest as Handler, Header};
+pub use exports::zentinel::agent::handler::{Guest as Handler, Header};
 
 // Re-export lifecycle interface
-pub use exports::sentinel::agent::lifecycle::Guest as Lifecycle;
+pub use exports::zentinel::agent::lifecycle::Guest as Lifecycle;
 
 /// Convert internal RequestMetadata to WIT RequestMetadata
-pub fn request_metadata_to_wit(meta: &sentinel_agent_protocol::RequestMetadata) -> RequestMetadata {
+pub fn request_metadata_to_wit(meta: &zentinel_agent_protocol::RequestMetadata) -> RequestMetadata {
     // Parse timestamp string to milliseconds
     let timestamp_ms = chrono::DateTime::parse_from_rfc3339(&meta.timestamp)
         .map(|dt| dt.timestamp_millis() as u64)
@@ -57,16 +57,16 @@ pub fn request_metadata_to_wit(meta: &sentinel_agent_protocol::RequestMetadata) 
 }
 
 /// Convert WIT AgentResponse to internal AgentResponse
-pub fn agent_response_from_wit(resp: AgentResponse) -> sentinel_agent_protocol::AgentResponse {
+pub fn agent_response_from_wit(resp: AgentResponse) -> zentinel_agent_protocol::AgentResponse {
     // Start with the appropriate decision
     let mut response = match resp.decision {
-        Decision::Allow => sentinel_agent_protocol::AgentResponse::default_allow(),
+        Decision::Allow => zentinel_agent_protocol::AgentResponse::default_allow(),
         Decision::Block(params) => {
-            let mut r = sentinel_agent_protocol::AgentResponse::block(params.status, params.body);
+            let mut r = zentinel_agent_protocol::AgentResponse::block(params.status, params.body);
             // Add block headers if present
             for h in params.headers {
                 r.response_headers
-                    .push(sentinel_agent_protocol::HeaderOp::Set {
+                    .push(zentinel_agent_protocol::HeaderOp::Set {
                         name: h.name,
                         value: h.value,
                     });
@@ -74,22 +74,22 @@ pub fn agent_response_from_wit(resp: AgentResponse) -> sentinel_agent_protocol::
             r
         }
         Decision::Redirect(params) => {
-            sentinel_agent_protocol::AgentResponse::redirect(params.url, params.status)
+            zentinel_agent_protocol::AgentResponse::redirect(params.url, params.status)
         }
     };
 
     // Apply request header modifications
     for op in resp.request_headers {
         let header_op = match op {
-            HeaderOp::Set(h) => sentinel_agent_protocol::HeaderOp::Set {
+            HeaderOp::Set(h) => zentinel_agent_protocol::HeaderOp::Set {
                 name: h.name,
                 value: h.value,
             },
-            HeaderOp::Add(h) => sentinel_agent_protocol::HeaderOp::Add {
+            HeaderOp::Add(h) => zentinel_agent_protocol::HeaderOp::Add {
                 name: h.name,
                 value: h.value,
             },
-            HeaderOp::Remove(name) => sentinel_agent_protocol::HeaderOp::Remove { name },
+            HeaderOp::Remove(name) => zentinel_agent_protocol::HeaderOp::Remove { name },
         };
         response.request_headers.push(header_op);
     }
@@ -97,21 +97,21 @@ pub fn agent_response_from_wit(resp: AgentResponse) -> sentinel_agent_protocol::
     // Apply response header modifications
     for op in resp.response_headers {
         let header_op = match op {
-            HeaderOp::Set(h) => sentinel_agent_protocol::HeaderOp::Set {
+            HeaderOp::Set(h) => zentinel_agent_protocol::HeaderOp::Set {
                 name: h.name,
                 value: h.value,
             },
-            HeaderOp::Add(h) => sentinel_agent_protocol::HeaderOp::Add {
+            HeaderOp::Add(h) => zentinel_agent_protocol::HeaderOp::Add {
                 name: h.name,
                 value: h.value,
             },
-            HeaderOp::Remove(name) => sentinel_agent_protocol::HeaderOp::Remove { name },
+            HeaderOp::Remove(name) => zentinel_agent_protocol::HeaderOp::Remove { name },
         };
         response.response_headers.push(header_op);
     }
 
     // Set audit metadata
-    response.audit = sentinel_agent_protocol::AuditMetadata {
+    response.audit = zentinel_agent_protocol::AuditMetadata {
         tags: resp.audit.tags,
         rule_ids: resp.audit.rule_ids,
         confidence: resp.audit.confidence,
@@ -190,7 +190,7 @@ mod tests {
         let internal = agent_response_from_wit(wit_response);
         assert!(matches!(
             internal.decision,
-            sentinel_agent_protocol::Decision::Allow
+            zentinel_agent_protocol::Decision::Allow
         ));
     }
 
@@ -218,7 +218,7 @@ mod tests {
 
         let internal = agent_response_from_wit(wit_response);
         match &internal.decision {
-            sentinel_agent_protocol::Decision::Block { status, body, .. } => {
+            zentinel_agent_protocol::Decision::Block { status, body, .. } => {
                 assert_eq!(*status, 403);
                 assert_eq!(body.as_deref(), Some("Forbidden"));
             }
@@ -261,17 +261,17 @@ mod tests {
         // Verify each header operation type
         assert!(matches!(
             &internal.request_headers[0],
-            sentinel_agent_protocol::HeaderOp::Set { name, value }
+            zentinel_agent_protocol::HeaderOp::Set { name, value }
             if name == "X-Custom" && value == "value1"
         ));
         assert!(matches!(
             &internal.request_headers[1],
-            sentinel_agent_protocol::HeaderOp::Add { name, value }
+            zentinel_agent_protocol::HeaderOp::Add { name, value }
             if name == "X-Multi" && value == "value2"
         ));
         assert!(matches!(
             &internal.request_headers[2],
-            sentinel_agent_protocol::HeaderOp::Remove { name }
+            zentinel_agent_protocol::HeaderOp::Remove { name }
             if name == "X-Remove"
         ));
     }

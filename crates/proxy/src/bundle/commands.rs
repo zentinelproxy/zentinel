@@ -1,6 +1,6 @@
 //! Bundle CLI command handlers
 //!
-//! Implements the `sentinel bundle` subcommand and its subcommands.
+//! Implements the `zentinel bundle` subcommand and its subcommands.
 
 use crate::bundle::fetch::{detect_arch, detect_os, download_agent};
 use crate::bundle::install::{
@@ -121,7 +121,7 @@ fn cmd_install(
         None => InstallPaths::detect(),
     };
 
-    println!("Sentinel Bundle Installer");
+    println!("Zentinel Bundle Installer");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Bundle version: {}", lock.bundle.version);
     println!("Platform:       {}-{}", detect_os(), detect_arch());
@@ -276,10 +276,10 @@ fn cmd_install(
         println!("To start the agents:");
         if paths.system_wide && install_systemd {
             println!("  sudo systemctl daemon-reload");
-            println!("  sudo systemctl start sentinel.target");
+            println!("  sudo systemctl start zentinel.target");
         } else {
-            println!("  # Add agent endpoints to your sentinel.kdl config");
-            println!("  # See: https://sentinel.raskell.io/docs/bundle");
+            println!("  # Add agent endpoints to your zentinel.kdl config");
+            println!("  # See: https://zentinelproxy.io/docs/bundle");
         }
     }
 
@@ -312,7 +312,7 @@ fn cmd_status(lock: &BundleLock, verbose: bool) -> Result<()> {
 
 /// List command implementation
 fn cmd_list(lock: &BundleLock, verbose: bool) -> Result<()> {
-    println!("Sentinel Bundle Agents");
+    println!("Zentinel Bundle Agents");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Bundle version: {}", lock.bundle.version);
     println!();
@@ -342,7 +342,7 @@ fn cmd_list(lock: &BundleLock, verbose: bool) -> Result<()> {
 fn cmd_uninstall(lock: &BundleLock, agent: Option<String>, dry_run: bool) -> Result<()> {
     let paths = InstallPaths::detect();
 
-    println!("Sentinel Bundle Uninstaller");
+    println!("Zentinel Bundle Uninstaller");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     let agents: Vec<_> = match &agent {
@@ -435,10 +435,10 @@ fn cmd_update(current_lock: &BundleLock, apply: bool) -> Result<()> {
 
     println!();
     if apply {
-        println!("To update, run: sentinel bundle install --force");
+        println!("To update, run: zentinel bundle install --force");
     } else {
         println!("Updates are available. Run with --apply to update.");
-        println!("  sentinel bundle update --apply");
+        println!("  zentinel bundle update --apply");
     }
 
     Ok(())

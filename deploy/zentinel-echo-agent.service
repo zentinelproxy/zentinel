@@ -1,14 +1,14 @@
 [Unit]
-Description=Sentinel Echo Agent - Reference Implementation
-Documentation=https://github.com/raskell-io/sentinel
-After=network.target sentinel.service
-PartOf=sentinel.service
+Description=Zentinel Echo Agent - Reference Implementation
+Documentation=https://github.com/zentinelproxy/zentinel
+After=network.target zentinel.service
+PartOf=zentinel.service
 StartLimitIntervalSec=60
 StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/echo-agent --socket /var/run/sentinel/echo.sock
+ExecStart=/usr/local/bin/echo-agent --socket /var/run/zentinel/echo.sock
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=10
@@ -17,19 +17,19 @@ KillMode=mixed
 KillSignal=SIGTERM
 
 # User and permissions
-User=sentinel
-Group=sentinel
+User=zentinel
+Group=zentinel
 UMask=0077
 
 # Environment
 Environment="RUST_LOG=info"
-Environment="ECHO_AGENT_SOCKET=/var/run/sentinel/echo.sock"
+Environment="ECHO_AGENT_SOCKET=/var/run/zentinel/echo.sock"
 Environment="ECHO_AGENT_PREFIX=X-Echo-"
-EnvironmentFile=-/etc/sentinel/agents/echo.env
+EnvironmentFile=-/etc/zentinel/agents/echo.env
 
 # Working directory
-WorkingDirectory=/var/lib/sentinel
-RuntimeDirectory=sentinel
+WorkingDirectory=/var/lib/zentinel
+RuntimeDirectory=zentinel
 RuntimeDirectoryMode=0755
 
 # Security hardening
@@ -67,10 +67,10 @@ MemoryHigh=200M
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sentinel-echo-agent
+SyslogIdentifier=zentinel-echo-agent
 
 # Process management
 OOMScoreAdjust=-100
 
 [Install]
-WantedBy=sentinel.service
+WantedBy=zentinel.service

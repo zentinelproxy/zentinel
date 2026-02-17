@@ -1,4 +1,4 @@
-//! Static file serving module for Sentinel proxy
+//! Static file serving module for Zentinel proxy
 //!
 //! This module provides high-performance static file serving with:
 //! - Range requests (206 Partial Content) for resumable downloads and video seeking
@@ -31,7 +31,7 @@ use std::time::Instant;
 use tokio::fs;
 use tracing::{debug, trace, warn};
 
-use sentinel_config::StaticFileConfig;
+use zentinel_config::StaticFileConfig;
 
 use compression::{compress_content, negotiate_encoding, should_compress};
 use range::serve_range_request;

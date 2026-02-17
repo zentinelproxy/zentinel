@@ -1,6 +1,6 @@
-//! Common utilities and shared components for Sentinel proxy
+//! Common utilities and shared components for Zentinel proxy
 //!
-//! This crate provides shared functionality used across all Sentinel components,
+//! This crate provides shared functionality used across all Zentinel components,
 //! including observability (metrics, logging, tracing), error types, and common utilities.
 //!
 //! # Module Organization
@@ -43,7 +43,7 @@ pub use observability::{
 pub type HealthChecker = ComponentHealthTracker;
 
 // Re-export error types
-pub use errors::{SentinelError, SentinelResult};
+pub use errors::{ZentinelError, ZentinelResult};
 
 // Re-export limit types
 pub use limits::{Limits, RateLimiter};

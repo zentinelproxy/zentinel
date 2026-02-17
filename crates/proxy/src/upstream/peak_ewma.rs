@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
 
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 
@@ -149,7 +149,7 @@ impl PeakEwmaBalancer {
 
 #[async_trait]
 impl LoadBalancer for PeakEwmaBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             algorithm = "peak_ewma",
@@ -170,7 +170,7 @@ impl LoadBalancer for PeakEwmaBalancer {
                 algorithm = "peak_ewma",
                 "No healthy upstream targets available"
             );
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         // Find target with lowest load score
@@ -195,7 +195,7 @@ impl LoadBalancer for PeakEwmaBalancer {
             }
         }
 
-        let target = best_target.ok_or(SentinelError::NoHealthyUpstream)?;
+        let target = best_target.ok_or(ZentinelError::NoHealthyUpstream)?;
 
         // Increment active connections for selected target
         if let Some(stats) = self.stats.get(&target.full_address()) {

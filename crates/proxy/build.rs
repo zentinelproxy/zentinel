@@ -1,4 +1,4 @@
-//! Build script for sentinel-proxy
+//! Build script for zentinel-proxy
 //!
 //! - Captures version information from git for display in --version output.
 //! - Copies bundle-versions.lock to OUT_DIR so it's available via include_str!
@@ -50,8 +50,8 @@ fn main() {
     let dirty_suffix = if dirty { "-dirty" } else { "" };
 
     // Export for use in main.rs
-    println!("cargo:rustc-env=SENTINEL_CALVER={}", calver);
-    println!("cargo:rustc-env=SENTINEL_COMMIT={}{}", commit, dirty_suffix);
+    println!("cargo:rustc-env=ZENTINEL_CALVER={}", calver);
+    println!("cargo:rustc-env=ZENTINEL_COMMIT={}{}", commit, dirty_suffix);
 
     // Rebuild if git state changes
     println!("cargo:rerun-if-changed=.git/HEAD");

@@ -1,4 +1,4 @@
-//! Built-in handlers for Sentinel proxy
+//! Built-in handlers for Zentinel proxy
 //!
 //! These handlers provide default responses for common endpoints like
 //! status pages, health checks, and metrics. They are used when routes
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace};
 
-use sentinel_config::{BuiltinHandler, Config};
+use zentinel_config::{BuiltinHandler, Config};
 
 use crate::cache::{CacheManager, HttpCacheStats};
 
@@ -246,14 +246,14 @@ fn metrics_handler(
     let mut buffer = Vec::new();
     match encoder.encode(&metric_families, &mut buffer) {
         Ok(()) => {
-            // Add sentinel_up and build_info metrics
+            // Add zentinel_up and build_info metrics
             let extra_metrics = format!(
-                "# HELP sentinel_up Sentinel proxy is up and running\n\
-                 # TYPE sentinel_up gauge\n\
-                 sentinel_up 1\n\
-                 # HELP sentinel_build_info Build information\n\
-                 # TYPE sentinel_build_info gauge\n\
-                 sentinel_build_info{{version=\"{}\"}} 1\n",
+                "# HELP zentinel_up Zentinel proxy is up and running\n\
+                 # TYPE zentinel_up gauge\n\
+                 zentinel_up 1\n\
+                 # HELP zentinel_build_info Build information\n\
+                 # TYPE zentinel_build_info gauge\n\
+                 zentinel_build_info{{version=\"{}\"}} 1\n",
                 env!("CARGO_PKG_VERSION")
             );
             buffer.extend_from_slice(extra_metrics.as_bytes());
@@ -261,18 +261,18 @@ fn metrics_handler(
             // Add HTTP cache metrics if available
             if let Some(stats) = cache_stats {
                 let cache_metrics = format!(
-                    "# HELP sentinel_cache_hits_total Total number of cache hits\n\
-                     # TYPE sentinel_cache_hits_total counter\n\
-                     sentinel_cache_hits_total {}\n\
-                     # HELP sentinel_cache_misses_total Total number of cache misses\n\
-                     # TYPE sentinel_cache_misses_total counter\n\
-                     sentinel_cache_misses_total {}\n\
-                     # HELP sentinel_cache_stores_total Total number of cache stores\n\
-                     # TYPE sentinel_cache_stores_total counter\n\
-                     sentinel_cache_stores_total {}\n\
-                     # HELP sentinel_cache_hit_ratio Cache hit ratio (0.0 to 1.0)\n\
-                     # TYPE sentinel_cache_hit_ratio gauge\n\
-                     sentinel_cache_hit_ratio {:.4}\n",
+                    "# HELP zentinel_cache_hits_total Total number of cache hits\n\
+                     # TYPE zentinel_cache_hits_total counter\n\
+                     zentinel_cache_hits_total {}\n\
+                     # HELP zentinel_cache_misses_total Total number of cache misses\n\
+                     # TYPE zentinel_cache_misses_total counter\n\
+                     zentinel_cache_misses_total {}\n\
+                     # HELP zentinel_cache_stores_total Total number of cache stores\n\
+                     # TYPE zentinel_cache_stores_total counter\n\
+                     zentinel_cache_stores_total {}\n\
+                     # HELP zentinel_cache_hit_ratio Cache hit ratio (0.0 to 1.0)\n\
+                     # TYPE zentinel_cache_hit_ratio gauge\n\
+                     zentinel_cache_hit_ratio {:.4}\n",
                     stats.hits(),
                     stats.misses(),
                     stats.stores(),

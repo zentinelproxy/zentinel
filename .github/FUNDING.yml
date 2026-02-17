@@ -1,7 +1,7 @@
-# Funding links for Sentinel
+# Funding links for Zentinel
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
 
-github: [raskell-io]
-open_collective: sentinel-proxy
+github: [zentinelproxy]
+open_collective: zentinel-proxy
 ko_fi: raskell
-custom: ["https://sentinel.raskell.io/support"]
+custom: ["https://zentinelproxy.io/support"]

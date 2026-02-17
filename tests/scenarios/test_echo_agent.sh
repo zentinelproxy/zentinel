@@ -68,8 +68,8 @@ done
 
 # Test 5: Custom header passthrough
 info "Test 5: Custom header passthrough"
-response=$(curl -s "${BASE_URL}/echo/headers" -H "X-Custom-Test: sentinel-test-value")
-if echo "$response" | grep -q "sentinel-test-value"; then
+response=$(curl -s "${BASE_URL}/echo/headers" -H "X-Custom-Test: zentinel-test-value")
+if echo "$response" | grep -q "zentinel-test-value"; then
     pass "Custom headers passed through to backend"
 else
     info "Custom header not visible in response (backend may not echo)"

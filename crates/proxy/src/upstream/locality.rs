@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
 
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 
@@ -35,7 +35,7 @@ pub struct LocalityAwareConfig {
 impl Default for LocalityAwareConfig {
     fn default() -> Self {
         Self {
-            local_zone: std::env::var("SENTINEL_ZONE")
+            local_zone: std::env::var("ZENTINEL_ZONE")
                 .or_else(|_| std::env::var("ZONE"))
                 .or_else(|_| std::env::var("REGION"))
                 .unwrap_or_else(|_| "default".to_string()),
@@ -246,7 +246,7 @@ impl LocalityAwareBalancer {
 
 #[async_trait]
 impl LoadBalancer for LocalityAwareBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             local_zone = %self.config.local_zone,
@@ -261,7 +261,7 @@ impl LoadBalancer for LocalityAwareBalancer {
             // Use local targets
             let selected = self
                 .select_round_robin(&local_healthy, &self.local_counter)
-                .ok_or(SentinelError::NoHealthyUpstream)?;
+                .ok_or(ZentinelError::NoHealthyUpstream)?;
 
             trace!(
                 selected_target = %selected.target.full_address(),
@@ -293,7 +293,7 @@ impl LoadBalancer for LocalityAwareBalancer {
                     algorithm = "locality_aware",
                     "No healthy local targets and fallback disabled"
                 );
-                return Err(SentinelError::NoHealthyUpstream);
+                return Err(ZentinelError::NoHealthyUpstream);
             }
             LocalityFallback::RoundRobin | LocalityFallback::Random => {
                 // Fall back to remote zones
@@ -317,7 +317,7 @@ impl LoadBalancer for LocalityAwareBalancer {
                 algorithm = "locality_aware",
                 "No healthy upstream targets available"
             );
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         // Select based on fallback strategy
@@ -328,7 +328,7 @@ impl LoadBalancer for LocalityAwareBalancer {
             LocalityFallback::Random => self.select_random(&all_targets),
             LocalityFallback::FailLocal => unreachable!(),
         }
-        .ok_or(SentinelError::NoHealthyUpstream)?;
+        .ok_or(ZentinelError::NoHealthyUpstream)?;
 
         let is_local = selected.zone == self.config.local_zone;
         debug!(

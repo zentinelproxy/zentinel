@@ -1,5 +1,5 @@
 apiVersion: v2
-name: sentinel
+name: zentinel
 description: A production-grade reverse proxy platform with WAF, rate limiting, and extensible agent architecture
 type: application
 
@@ -20,18 +20,18 @@ keywords:
   - rust
 
 # Project home and sources
-home: https://sentinel.raskell.io
+home: https://zentinelproxy.io
 sources:
-  - https://github.com/raskell-io/sentinel
+  - https://github.com/zentinelproxy/zentinel
 
 # Maintainers
 maintainers:
-  - name: Sentinel Team
-    email: sentinel@raskell.io
-    url: https://github.com/raskell-io
+  - name: Zentinel Team
+    email: zentinel@raskell.io
+    url: https://github.com/zentinelproxy
 
 # Icon (optional)
-icon: https://raw.githubusercontent.com/raskell-io/sentinel/main/docs/logo.png
+icon: https://raw.githubusercontent.com/zentinelproxy/zentinel/main/docs/logo.png
 
 # Minimum Kubernetes version
 kubeVersion: ">=1.21.0-0"
@@ -48,13 +48,13 @@ annotations:
   artifacthub.io/license: MIT
   artifacthub.io/signKey: |
     fingerprint: <signing-key-fingerprint>
-    url: https://keybase.io/sentinel
+    url: https://keybase.io/zentinel
   artifacthub.io/recommendations: |
     - url: https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
     - url: https://artifacthub.io/packages/helm/jaeger/jaeger
   artifacthub.io/changes: |
     - kind: added
-      description: Initial release of Sentinel Helm chart
+      description: Initial release of Zentinel Helm chart
     - kind: added
       description: Support for proxy, rate limiting, and WAF agents
     - kind: added
@@ -65,5 +65,5 @@ annotations:
   artifacthub.io/prerelease: "false"
 
   # Chart documentation
-  documentation.url: https://sentinel.raskell.io/docs/deployment/kubernetes/
-  support.url: https://github.com/raskell-io/sentinel/issues
+  documentation.url: https://zentinelproxy.io/docs/deployment/kubernetes/
+  support.url: https://github.com/zentinelproxy/zentinel/issues

@@ -1,10 +1,10 @@
-# Sentinel Playground WASM
+# Zentinel Playground WASM
 
-WebAssembly bindings for the Sentinel configuration playground.
+WebAssembly bindings for the Zentinel configuration playground.
 
 ## Overview
 
-The `sentinel-playground-wasm` crate provides JavaScript-friendly bindings for the Sentinel configuration simulator. It enables in-browser configuration validation and route decision tracing without running the actual proxy.
+The `zentinel-playground-wasm` crate provides JavaScript-friendly bindings for the Zentinel configuration simulator. It enables in-browser configuration validation and route decision tracing without running the actual proxy.
 
 **Key Features:**
 
@@ -31,16 +31,16 @@ The build produces files in `pkg/`:
 
 ```
 pkg/
-├── sentinel_playground_wasm.js      # ES module loader
-├── sentinel_playground_wasm_bg.wasm # WASM binary
-├── sentinel_playground_wasm.d.ts    # TypeScript definitions
+├── zentinel_playground_wasm.js      # ES module loader
+├── zentinel_playground_wasm_bg.wasm # WASM binary
+├── zentinel_playground_wasm.d.ts    # TypeScript definitions
 └── package.json                     # npm package manifest
 ```
 
 ## Quick Start
 
 ```javascript
-import init, { validate, simulate, get_version } from './pkg/sentinel_playground_wasm.js';
+import init, { validate, simulate, get_version } from './pkg/zentinel_playground_wasm.js';
 
 async function main() {
     // Initialize the WASM module
@@ -272,7 +272,7 @@ const request = create_sample_request("GET", "example.com", "/api/users");
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Sentinel Playground</title>
+    <title>Zentinel Playground</title>
 </head>
 <body>
     <textarea id="config"></textarea>
@@ -280,7 +280,7 @@ const request = create_sample_request("GET", "example.com", "/api/users");
     <pre id="output"></pre>
 
     <script type="module">
-        import init, { validate, simulate } from './pkg/sentinel_playground_wasm.js';
+        import init, { validate, simulate } from './pkg/zentinel_playground_wasm.js';
 
         await init();
 

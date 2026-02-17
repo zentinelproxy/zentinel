@@ -14,8 +14,8 @@ use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
-use sentinel_common::errors::{SentinelError, SentinelResult};
-use sentinel_config::upstreams::StickySessionConfig;
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
+use zentinel_config::upstreams::StickySessionConfig;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -31,7 +31,7 @@ pub struct StickySessionRuntimeConfig {
     /// Whether to set Secure and HttpOnly flags
     pub cookie_secure: bool,
     /// SameSite policy
-    pub cookie_same_site: sentinel_config::upstreams::SameSitePolicy,
+    pub cookie_same_site: zentinel_config::upstreams::SameSitePolicy,
     /// HMAC key for signing cookie values
     pub hmac_key: [u8; 32],
 }
@@ -233,7 +233,7 @@ impl StickySessionBalancer {
 
 #[async_trait]
 impl LoadBalancer for StickySessionBalancer {
-    async fn select(&self, context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             has_context = context.is_some(),
             cookie_name = %self.config.cookie_name,
@@ -389,7 +389,7 @@ mod tests {
             cookie_ttl_secs: 3600,
             cookie_path: "/".to_string(),
             cookie_secure: true,
-            cookie_same_site: sentinel_config::upstreams::SameSitePolicy::Lax,
+            cookie_same_site: zentinel_config::upstreams::SameSitePolicy::Lax,
             hmac_key: [42u8; 32], // Fixed key for testing
         }
     }
@@ -407,7 +407,7 @@ mod tests {
             async fn select(
                 &self,
                 _context: Option<&RequestContext>,
-            ) -> SentinelResult<TargetSelection> {
+            ) -> ZentinelResult<TargetSelection> {
                 Ok(TargetSelection {
                     address: "10.0.0.1:8080".to_string(),
                     weight: 100,
@@ -448,7 +448,7 @@ mod tests {
             async fn select(
                 &self,
                 _context: Option<&RequestContext>,
-            ) -> SentinelResult<TargetSelection> {
+            ) -> ZentinelResult<TargetSelection> {
                 unreachable!()
             }
             async fn report_health(&self, _address: &str, _healthy: bool) {}
@@ -480,7 +480,7 @@ mod tests {
             async fn select(
                 &self,
                 _context: Option<&RequestContext>,
-            ) -> SentinelResult<TargetSelection> {
+            ) -> ZentinelResult<TargetSelection> {
                 // Should not be called when we have valid cookie
                 panic!("Fallback should not be called for sticky hit");
             }
@@ -536,7 +536,7 @@ mod tests {
             async fn select(
                 &self,
                 _context: Option<&RequestContext>,
-            ) -> SentinelResult<TargetSelection> {
+            ) -> ZentinelResult<TargetSelection> {
                 Ok(TargetSelection {
                     address: "10.0.0.2:8080".to_string(),
                     weight: 100,
@@ -583,7 +583,7 @@ mod tests {
             async fn select(
                 &self,
                 _context: Option<&RequestContext>,
-            ) -> SentinelResult<TargetSelection> {
+            ) -> ZentinelResult<TargetSelection> {
                 Ok(TargetSelection {
                     address: "10.0.0.3:8080".to_string(), // Different target
                     weight: 100,

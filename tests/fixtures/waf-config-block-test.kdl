@@ -48,7 +48,7 @@ upstreams {
 
 agents {
     agent "waf-agent" type="waf" {
-        unix-socket "/tmp/sentinel-waf-e2e-test.sock"
+        unix-socket "/tmp/zentinel-waf-e2e-test.sock"
         events "request_headers" "request_body"
         timeout-ms 200
         failure-mode "closed"

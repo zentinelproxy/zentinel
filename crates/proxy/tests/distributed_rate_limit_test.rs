@@ -5,7 +5,7 @@
 //! To run with Docker:
 //! ```bash
 //! docker compose -f docker-compose.yml -f docker-compose.test.yml --profile persistence up -d
-//! cargo test -p sentinel-proxy --test distributed_rate_limit_test --features distributed-rate-limit
+//! cargo test -p zentinel-proxy --test distributed_rate_limit_test --features distributed-rate-limit
 //! ```
 //!
 //! Environment variables:
@@ -20,9 +20,9 @@ mod redis_tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    use sentinel_config::RedisBackendConfig;
-    use sentinel_proxy::distributed_rate_limit::RedisRateLimiter;
-    use sentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome};
+    use zentinel_config::RedisBackendConfig;
+    use zentinel_proxy::distributed_rate_limit::RedisRateLimiter;
+    use zentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome};
 
     fn redis_url() -> String {
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
@@ -35,7 +35,7 @@ mod redis_tests {
     fn test_redis_config(max_rps: u32) -> (RedisBackendConfig, RateLimitConfig) {
         let backend = RedisBackendConfig {
             url: redis_url(),
-            key_prefix: format!("sentinel:test:{}:", uuid::Uuid::new_v4()),
+            key_prefix: format!("zentinel:test:{}:", uuid::Uuid::new_v4()),
             pool_size: 4,
             timeout_ms: 1000,
             fallback_local: true,
@@ -321,9 +321,9 @@ mod memcached_tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    use sentinel_config::MemcachedBackendConfig;
-    use sentinel_proxy::memcached_rate_limit::MemcachedRateLimiter;
-    use sentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome};
+    use zentinel_config::MemcachedBackendConfig;
+    use zentinel_proxy::memcached_rate_limit::MemcachedRateLimiter;
+    use zentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome};
 
     fn memcached_url() -> String {
         std::env::var("MEMCACHED_URL").unwrap_or_else(|_| "memcache://127.0.0.1:11211".to_string())
@@ -336,7 +336,7 @@ mod memcached_tests {
     fn test_memcached_config(max_rps: u32) -> (MemcachedBackendConfig, RateLimitConfig) {
         let backend = MemcachedBackendConfig {
             url: memcached_url(),
-            key_prefix: format!("sentinel:test:{}:", uuid::Uuid::new_v4()),
+            key_prefix: format!("zentinel:test:{}:", uuid::Uuid::new_v4()),
             pool_size: 4,
             timeout_ms: 1000,
             fallback_local: true,
@@ -524,9 +524,9 @@ mod memcached_tests {
 mod fallback_tests {
     use std::time::Duration;
 
-    use sentinel_config::RedisBackendConfig;
-    use sentinel_proxy::distributed_rate_limit::RedisRateLimiter;
-    use sentinel_proxy::rate_limit::RateLimitConfig;
+    use zentinel_config::RedisBackendConfig;
+    use zentinel_proxy::distributed_rate_limit::RedisRateLimiter;
+    use zentinel_proxy::rate_limit::RateLimitConfig;
 
     #[tokio::test]
     async fn test_fallback_enabled_config() {
@@ -611,16 +611,16 @@ mod unit_tests {
     use std::sync::atomic::Ordering;
 
     #[cfg(feature = "distributed-rate-limit")]
-    use sentinel_proxy::distributed_rate_limit::DistributedRateLimitStats;
+    use zentinel_proxy::distributed_rate_limit::DistributedRateLimitStats;
 
     #[cfg(feature = "distributed-rate-limit-memcached")]
-    use sentinel_proxy::memcached_rate_limit::MemcachedRateLimitStats;
+    use zentinel_proxy::memcached_rate_limit::MemcachedRateLimitStats;
 
     #[cfg(any(
         feature = "distributed-rate-limit",
         feature = "distributed-rate-limit-memcached"
     ))]
-    use sentinel_proxy::rate_limit::RateLimitOutcome;
+    use zentinel_proxy::rate_limit::RateLimitOutcome;
 
     #[cfg(feature = "distributed-rate-limit")]
     #[test]

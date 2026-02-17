@@ -1,6 +1,6 @@
 [Unit]
-Description=Sentinel Security-First Reverse Proxy
-Documentation=https://github.com/raskell-io/sentinel
+Description=Zentinel Security-First Reverse Proxy
+Documentation=https://github.com/zentinelproxy/zentinel
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60
@@ -8,7 +8,7 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/sentinel
+ExecStart=/usr/local/bin/zentinel
 ExecReload=/bin/kill -HUP $MAINPID
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
@@ -19,24 +19,24 @@ KillMode=mixed
 KillSignal=SIGTERM
 
 # User and permissions
-User=sentinel
-Group=sentinel
+User=zentinel
+Group=zentinel
 UMask=0077
 
 # Environment
 Environment="RUST_LOG=info"
-Environment="SENTINEL_CONFIG=/etc/sentinel/config.kdl"
-EnvironmentFile=-/etc/sentinel/env
+Environment="ZENTINEL_CONFIG=/etc/zentinel/config.kdl"
+EnvironmentFile=-/etc/zentinel/env
 
 # Working directory
-WorkingDirectory=/var/lib/sentinel
-RuntimeDirectory=sentinel
+WorkingDirectory=/var/lib/zentinel
+RuntimeDirectory=zentinel
 RuntimeDirectoryMode=0755
-StateDirectory=sentinel
+StateDirectory=zentinel
 StateDirectoryMode=0700
-LogsDirectory=sentinel
+LogsDirectory=zentinel
 LogsDirectoryMode=0755
-ConfigurationDirectory=sentinel
+ConfigurationDirectory=zentinel
 ConfigurationDirectoryMode=0755
 
 # Security hardening
@@ -83,7 +83,7 @@ MemoryHigh=1500M
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sentinel
+SyslogIdentifier=zentinel
 
 # Process management
 # Set OOM score to avoid being killed
@@ -94,4 +94,4 @@ OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target
-Alias=sentinel-proxy.service
+Alias=zentinel-proxy.service

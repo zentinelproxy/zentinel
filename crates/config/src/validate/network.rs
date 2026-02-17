@@ -62,7 +62,7 @@ mod tests {
                     max_requests: None,
                     metadata: std::collections::HashMap::new(),
                 }],
-                load_balancing: sentinel_common::types::LoadBalancingAlgorithm::RoundRobin,
+                load_balancing: zentinel_common::types::LoadBalancingAlgorithm::RoundRobin,
                 sticky_session: None,
                 health_check: None,
                 connection_pool: ConnectionPoolConfig::default(),

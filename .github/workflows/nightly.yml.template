@@ -45,7 +45,7 @@ jobs:
     with:
       profile: release
       upload-artifacts: true
-      artifact-prefix: sentinel-nightly-${{ needs.version.outputs.date }}
+      artifact-prefix: zentinel-nightly-${{ needs.version.outputs.date }}
       version: ${{ needs.version.outputs.version }}
       targets: |
         [

@@ -2,7 +2,7 @@
 #
 # First-Time User Smoke Test: WAF Agent
 #
-# Validates that a first-time user can build Sentinel + the WAF agent,
+# Validates that a first-time user can build Zentinel + the WAF agent,
 # wire them together, and see the agent working. Catches broken builds,
 # protocol mismatches, config errors, and missing features.
 #
@@ -14,7 +14,7 @@
 #
 # Usage:
 #   ./tests/test_first_time_waf.sh
-#   SENTINEL_BIN=./target/release/sentinel WAF_BIN=./sentinel-waf-agent ./tests/test_first_time_waf.sh
+#   ZENTINEL_BIN=./target/release/zentinel WAF_BIN=./zentinel-waf-agent ./tests/test_first_time_waf.sh
 #
 
 set -euo pipefail
@@ -27,7 +27,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-TEST_DIR="/tmp/sentinel-first-time-waf-$$"
+TEST_DIR="/tmp/zentinel-first-time-waf-$$"
 WAF_SOCKET="$TEST_DIR/waf.sock"
 PROXY_CONFIG="$TEST_DIR/config.kdl"
 PROXY_PID=""
@@ -38,10 +38,10 @@ BACKEND_PORT=""
 METRICS_PORT=""
 
 # Paths (overridable via env)
-SENTINEL_BIN="${SENTINEL_BIN:-}"
+ZENTINEL_BIN="${ZENTINEL_BIN:-}"
 WAF_BIN="${WAF_BIN:-}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WAF_REPO="${WAF_REPO:-$REPO_ROOT/../sentinel-agent-waf}"
+WAF_REPO="${WAF_REPO:-$REPO_ROOT/../zentinel-agent-waf}"
 
 # Test counters
 TESTS_RUN=0
@@ -51,7 +51,7 @@ TESTS_FAILED=0
 # Clean headers to avoid WAF false positives on broad rules:
 # - Rule 933100 matches any parentheses (LDAP injection)
 # - Rule 934104 matches */* in Accept header (XPath node extraction)
-CLEAN_HEADERS=(-H "User-Agent: SentinelTest" -H "Accept: text/html")
+CLEAN_HEADERS=(-H "User-Agent: ZentinelTest" -H "Accept: text/html")
 
 # Overall timeout (60s)
 SCRIPT_START=$(date +%s)
@@ -112,33 +112,33 @@ trap cleanup EXIT INT TERM
 
 # Build binaries if needed
 build_binaries() {
-    if [[ -z "$SENTINEL_BIN" ]]; then
-        if [[ -f "$REPO_ROOT/target/release/sentinel" ]]; then
-            SENTINEL_BIN="$REPO_ROOT/target/release/sentinel"
-            log_info "Using existing Sentinel binary: $SENTINEL_BIN"
+    if [[ -z "$ZENTINEL_BIN" ]]; then
+        if [[ -f "$REPO_ROOT/target/release/zentinel" ]]; then
+            ZENTINEL_BIN="$REPO_ROOT/target/release/zentinel"
+            log_info "Using existing Zentinel binary: $ZENTINEL_BIN"
         else
-            log_info "Building Sentinel proxy (release)..."
-            (cd "$REPO_ROOT" && cargo build --release --bin sentinel)
-            SENTINEL_BIN="$REPO_ROOT/target/release/sentinel"
+            log_info "Building Zentinel proxy (release)..."
+            (cd "$REPO_ROOT" && cargo build --release --bin zentinel)
+            ZENTINEL_BIN="$REPO_ROOT/target/release/zentinel"
         fi
     fi
 
-    if [[ ! -f "$SENTINEL_BIN" ]]; then
-        echo -e "${RED}[ERROR]${NC} Sentinel binary not found at $SENTINEL_BIN"
+    if [[ ! -f "$ZENTINEL_BIN" ]]; then
+        echo -e "${RED}[ERROR]${NC} Zentinel binary not found at $ZENTINEL_BIN"
         exit 1
     fi
 
     if [[ -z "$WAF_BIN" ]]; then
-        if [[ -f "$WAF_REPO/target/release/sentinel-waf-agent" ]]; then
-            WAF_BIN="$WAF_REPO/target/release/sentinel-waf-agent"
+        if [[ -f "$WAF_REPO/target/release/zentinel-waf-agent" ]]; then
+            WAF_BIN="$WAF_REPO/target/release/zentinel-waf-agent"
             log_info "Using existing WAF agent binary: $WAF_BIN"
         elif [[ -d "$WAF_REPO" ]]; then
             log_info "Building WAF agent from $WAF_REPO (release)..."
             (cd "$WAF_REPO" && cargo build --release)
-            WAF_BIN="$WAF_REPO/target/release/sentinel-waf-agent"
+            WAF_BIN="$WAF_REPO/target/release/zentinel-waf-agent"
         else
             echo -e "${RED}[ERROR]${NC} WAF agent repo not found at $WAF_REPO"
-            echo "Clone it as a sibling: git clone <url> ../sentinel-agent-waf"
+            echo "Clone it as a sibling: git clone <url> ../zentinel-agent-waf"
             exit 1
         fi
     fi
@@ -294,10 +294,10 @@ start_waf_agent() {
 
 # Start proxy
 start_proxy() {
-    log_info "Starting Sentinel proxy..."
+    log_info "Starting Zentinel proxy..."
 
-    RUST_LOG=debug SENTINEL_CONFIG="$PROXY_CONFIG" \
-        "$SENTINEL_BIN" \
+    RUST_LOG=debug ZENTINEL_CONFIG="$PROXY_CONFIG" \
+        "$ZENTINEL_BIN" \
         > "$TEST_DIR/proxy.log" 2>&1 &
     PROXY_PID=$!
 

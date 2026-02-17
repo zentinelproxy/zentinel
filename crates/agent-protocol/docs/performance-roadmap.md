@@ -71,7 +71,7 @@
 **Usage:**
 ```rust
 // Enable in Cargo.toml
-sentinel-agent-protocol = { version = "0.3", features = ["binary-uds"] }
+zentinel-agent-protocol = { version = "0.3", features = ["binary-uds"] }
 
 // Encoding is negotiated automatically during connect()
 ```
@@ -218,7 +218,7 @@ pool.clear_correlation_affinity("correlation-123");
 
 **Usage:**
 ```rust
-use sentinel_agent_protocol::{BinaryRequestBodyChunkEvent, Bytes};
+use zentinel_agent_protocol::{BinaryRequestBodyChunkEvent, Bytes};
 
 // Create binary body chunk
 let chunk = BinaryRequestBodyChunkEvent::new(
@@ -265,10 +265,10 @@ fn bench_body_chunk_streaming(b: &mut Bencher) {
 
 ```bash
 # CPU profile under load
-cargo flamegraph --bin sentinel -- --config config/sentinel.kdl
+cargo flamegraph --bin zentinel -- --config config/zentinel.kdl
 
 # Allocation tracking
-DHAT_LOG=allocations cargo test -p sentinel-agent-protocol
+DHAT_LOG=allocations cargo test -p zentinel-agent-protocol
 
 # Latency histogram
 wrk -t4 -c100 -d30s --latency http://localhost:8080/

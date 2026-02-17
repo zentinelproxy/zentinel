@@ -1,6 +1,6 @@
 // Example: Inference Routing Configuration
 //
-// This example demonstrates how to configure Sentinel for LLM/AI inference
+// This example demonstrates how to configure Zentinel for LLM/AI inference
 // endpoints with token-based rate limiting, model routing, and cost tracking.
 
 server {
@@ -320,10 +320,10 @@ observability {
         address "0.0.0.0:9090"
         path "/metrics"
         // Inference-specific metrics are automatically exported:
-        // - sentinel_inference_tokens_total (by model, type)
-        // - sentinel_inference_latency_seconds
-        // - sentinel_inference_queue_depth
-        // - sentinel_inference_cost_dollars
+        // - zentinel_inference_tokens_total (by model, type)
+        // - zentinel_inference_latency_seconds
+        // - zentinel_inference_queue_depth
+        // - zentinel_inference_cost_dollars
     }
 
     logging {
@@ -332,7 +332,7 @@ observability {
 
         access-log {
             enabled #true
-            file "/var/log/sentinel/inference-access.log"
+            file "/var/log/zentinel/inference-access.log"
             // Include token counts in access logs
             include-trace-id #true
         }

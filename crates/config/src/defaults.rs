@@ -1,4 +1,4 @@
-//! Default embedded configuration for Sentinel proxy
+//! Default embedded configuration for Zentinel proxy
 //!
 //! This module provides the minimal default configuration that ships with
 //! the binary. It is used when no configuration file is provided.
@@ -11,7 +11,7 @@
 
 /// Embedded default configuration in KDL format
 pub const DEFAULT_CONFIG_KDL: &str = r#"
-// Sentinel Default Configuration
+// Zentinel Default Configuration
 // This minimal config is used when no configuration file is provided.
 // For production use, create a configuration file with your routes and upstreams.
 
@@ -138,7 +138,7 @@ use crate::{
     BuiltinHandler, Config, GlobalRateLimitConfig, ListenerConfig, ListenerProtocol,
     MatchCondition, ObservabilityConfig, RouteConfig, RoutePolicies, ServerConfig, ServiceType,
 };
-use sentinel_common::{limits::Limits, types::Priority};
+use zentinel_common::{limits::Limits, types::Priority};
 use std::collections::HashMap;
 
 /// Create the default embedded configuration programmatically.

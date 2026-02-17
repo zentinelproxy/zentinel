@@ -4,18 +4,18 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentClient, AgentResponse, ConfigureEvent, Decision, EventType, GrpcTlsConfig, HttpTlsConfig,
 };
-use sentinel_common::{errors::SentinelError, errors::SentinelResult, CircuitBreaker};
-use sentinel_config::{AgentConfig, AgentEvent, AgentTransport};
+use zentinel_common::{errors::ZentinelError, errors::ZentinelResult, CircuitBreaker};
+use zentinel_config::{AgentConfig, AgentEvent, AgentTransport};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
 
 use super::metrics::AgentMetrics;
 use super::pool::AgentConnectionPool;
 
-/// Sentinel value indicating no timestamp recorded (Option::None equivalent)
+/// Zentinel value indicating no timestamp recorded (Option::None equivalent)
 const NO_TIMESTAMP: u64 = 0;
 
 /// Individual agent configuration and state.
@@ -75,7 +75,7 @@ impl Agent {
     }
 
     /// Get the agent's failure mode.
-    pub fn failure_mode(&self) -> sentinel_config::FailureMode {
+    pub fn failure_mode(&self) -> zentinel_config::FailureMode {
         self.config.failure_mode
     }
 
@@ -103,7 +103,7 @@ impl Agent {
     }
 
     /// Initialize agent connection.
-    pub async fn initialize(&self) -> SentinelResult<()> {
+    pub async fn initialize(&self) -> ZentinelResult<()> {
         let timeout = Duration::from_millis(self.config.timeout_ms);
 
         debug!(
@@ -132,7 +132,7 @@ impl Agent {
                             error = %e,
                             "Failed to connect to agent via Unix socket"
                         );
-                        SentinelError::Agent {
+                        ZentinelError::Agent {
                             agent: self.config.id.clone(),
                             message: format!("Failed to connect via Unix socket: {}", e),
                             event: "initialize".to_string(),
@@ -176,7 +176,7 @@ impl Agent {
                                     error = %e,
                                     "Failed to load CA certificate for gRPC TLS"
                                 );
-                                SentinelError::Agent {
+                                ZentinelError::Agent {
                                     agent: self.config.id.clone(),
                                     message: format!("Failed to load CA certificate: {}", e),
                                     event: "initialize".to_string(),
@@ -200,7 +200,7 @@ impl Agent {
                                     error = %e,
                                     "Failed to load client certificate for gRPC mTLS"
                                 );
-                                SentinelError::Agent {
+                                ZentinelError::Agent {
                                     agent: self.config.id.clone(),
                                     message: format!("Failed to load client certificate: {}", e),
                                     event: "initialize".to_string(),
@@ -236,7 +236,7 @@ impl Agent {
                                     error = %e,
                                     "Failed to connect to agent via gRPC with TLS"
                                 );
-                                SentinelError::Agent {
+                                ZentinelError::Agent {
                                     agent: self.config.id.clone(),
                                     message: format!("Failed to connect via gRPC TLS: {}", e),
                                     event: "initialize".to_string(),
@@ -255,7 +255,7 @@ impl Agent {
                                     error = %e,
                                     "Failed to connect to agent via gRPC"
                                 );
-                                SentinelError::Agent {
+                                ZentinelError::Agent {
                                     agent: self.config.id.clone(),
                                     message: format!("Failed to connect via gRPC: {}", e),
                                     event: "initialize".to_string(),
@@ -302,7 +302,7 @@ impl Agent {
                                     error = %e,
                                     "Failed to load CA certificate for HTTP TLS"
                                 );
-                                SentinelError::Agent {
+                                ZentinelError::Agent {
                                     agent: self.config.id.clone(),
                                     message: format!("Failed to load CA certificate: {}", e),
                                     event: "initialize".to_string(),
@@ -326,7 +326,7 @@ impl Agent {
                                     error = %e,
                                     "Failed to load client certificate for HTTP mTLS"
                                 );
-                                SentinelError::Agent {
+                                ZentinelError::Agent {
                                     agent: self.config.id.clone(),
                                     message: format!("Failed to load client certificate: {}", e),
                                     event: "initialize".to_string(),
@@ -362,7 +362,7 @@ impl Agent {
                                     error = %e,
                                     "Failed to create HTTP TLS agent client"
                                 );
-                                SentinelError::Agent {
+                                ZentinelError::Agent {
                                     agent: self.config.id.clone(),
                                     message: format!("Failed to create HTTP TLS client: {}", e),
                                     event: "initialize".to_string(),
@@ -381,7 +381,7 @@ impl Agent {
                                     error = %e,
                                     "Failed to create HTTP agent client"
                                 );
-                                SentinelError::Agent {
+                                ZentinelError::Agent {
                                     agent: self.config.id.clone(),
                                     message: format!("Failed to create HTTP client: {}", e),
                                     event: "initialize".to_string(),
@@ -413,7 +413,7 @@ impl Agent {
     ///
     /// This creates a new AgentClient without storing it in `self.client`.
     /// Use this when you need a new connection for the pool.
-    async fn create_client(&self) -> SentinelResult<AgentClient> {
+    async fn create_client(&self) -> ZentinelResult<AgentClient> {
         let timeout = Duration::from_millis(self.config.timeout_ms);
 
         trace!(
@@ -433,7 +433,7 @@ impl Agent {
                             error = %e,
                             "Failed to create Unix socket client"
                         );
-                        SentinelError::Agent {
+                        ZentinelError::Agent {
                             agent: self.config.id.clone(),
                             message: format!("Failed to connect via Unix socket: {}", e),
                             event: "create_client".to_string(),
@@ -447,7 +447,7 @@ impl Agent {
 
                     if let Some(ca_path) = &tls_config.ca_cert {
                         grpc_tls = grpc_tls.with_ca_cert_file(ca_path).await.map_err(|e| {
-                            SentinelError::Agent {
+                            ZentinelError::Agent {
                                 agent: self.config.id.clone(),
                                 message: format!("Failed to load CA certificate: {}", e),
                                 event: "create_client".to_string(),
@@ -462,7 +462,7 @@ impl Agent {
                         grpc_tls = grpc_tls
                             .with_client_cert_files(cert_path, key_path)
                             .await
-                            .map_err(|e| SentinelError::Agent {
+                            .map_err(|e| ZentinelError::Agent {
                                 agent: self.config.id.clone(),
                                 message: format!("Failed to load client certificate: {}", e),
                                 event: "create_client".to_string(),
@@ -476,7 +476,7 @@ impl Agent {
 
                     AgentClient::grpc_tls(&self.config.id, address, timeout, grpc_tls)
                         .await
-                        .map_err(|e| SentinelError::Agent {
+                        .map_err(|e| ZentinelError::Agent {
                             agent: self.config.id.clone(),
                             message: format!("Failed to connect via gRPC TLS: {}", e),
                             event: "create_client".to_string(),
@@ -485,7 +485,7 @@ impl Agent {
                 }
                 None => AgentClient::grpc(&self.config.id, address, timeout)
                     .await
-                    .map_err(|e| SentinelError::Agent {
+                    .map_err(|e| ZentinelError::Agent {
                         agent: self.config.id.clone(),
                         message: format!("Failed to connect via gRPC: {}", e),
                         event: "create_client".to_string(),
@@ -498,7 +498,7 @@ impl Agent {
 
                     if let Some(ca_path) = &tls_config.ca_cert {
                         http_tls = http_tls.with_ca_cert_file(ca_path).await.map_err(|e| {
-                            SentinelError::Agent {
+                            ZentinelError::Agent {
                                 agent: self.config.id.clone(),
                                 message: format!("Failed to load CA certificate: {}", e),
                                 event: "create_client".to_string(),
@@ -513,7 +513,7 @@ impl Agent {
                         http_tls = http_tls
                             .with_client_cert_files(cert_path, key_path)
                             .await
-                            .map_err(|e| SentinelError::Agent {
+                            .map_err(|e| ZentinelError::Agent {
                                 agent: self.config.id.clone(),
                                 message: format!("Failed to load client certificate: {}", e),
                                 event: "create_client".to_string(),
@@ -527,7 +527,7 @@ impl Agent {
 
                     AgentClient::http_tls(&self.config.id, url, timeout, http_tls)
                         .await
-                        .map_err(|e| SentinelError::Agent {
+                        .map_err(|e| ZentinelError::Agent {
                             agent: self.config.id.clone(),
                             message: format!("Failed to create HTTP TLS client: {}", e),
                             event: "create_client".to_string(),
@@ -536,7 +536,7 @@ impl Agent {
                 }
                 None => AgentClient::http(&self.config.id, url, timeout)
                     .await
-                    .map_err(|e| SentinelError::Agent {
+                    .map_err(|e| ZentinelError::Agent {
                         agent: self.config.id.clone(),
                         message: format!("Failed to create HTTP client: {}", e),
                         event: "create_client".to_string(),
@@ -547,7 +547,7 @@ impl Agent {
     }
 
     /// Send Configure event to agent if config is present.
-    async fn send_configure_event(&self) -> SentinelResult<()> {
+    async fn send_configure_event(&self) -> ZentinelResult<()> {
         // Only send Configure if agent has config
         let config = match &self.config.config {
             Some(c) => c.clone(),
@@ -571,7 +571,7 @@ impl Agent {
         );
 
         let mut client_guard = self.client.write().await;
-        let client = client_guard.as_mut().ok_or_else(|| SentinelError::Agent {
+        let client = client_guard.as_mut().ok_or_else(|| ZentinelError::Agent {
             agent: self.config.id.clone(),
             message: "No client connection for Configure event".to_string(),
             event: "configure".to_string(),
@@ -587,7 +587,7 @@ impl Agent {
                     error = %e,
                     "Failed to send Configure event"
                 );
-                SentinelError::Agent {
+                ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: format!("Configure event failed: {}", e),
                     event: "configure".to_string(),
@@ -602,7 +602,7 @@ impl Agent {
                 decision = ?response.decision,
                 "Agent rejected configuration"
             );
-            return Err(SentinelError::Agent {
+            return Err(ZentinelError::Agent {
                 agent: self.config.id.clone(),
                 message: "Agent rejected configuration".to_string(),
                 event: "configure".to_string(),
@@ -626,7 +626,7 @@ impl Agent {
         &self,
         event_type: EventType,
         event: &T,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         trace!(
             agent_id = %self.config.id,
             event_type = ?event_type,
@@ -710,7 +710,7 @@ impl Agent {
                 self.pool.mark_failed();
                 // Connection will be dropped here
 
-                Err(SentinelError::Agent {
+                Err(ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: e.to_string(),
                     event: format!("{:?}", event_type),
@@ -725,7 +725,7 @@ impl Agent {
         &self,
         event_type: EventType,
         event: &T,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         // Get or create connection using the fallback single client
         let mut client_guard = self.client.write().await;
 
@@ -745,7 +745,7 @@ impl Agent {
                 event_type = ?event_type,
                 "No client connection available after initialization"
             );
-            SentinelError::Agent {
+            ZentinelError::Agent {
                 agent: self.config.id.clone(),
                 message: "No client connection".to_string(),
                 event: format!("{:?}", event_type),
@@ -793,7 +793,7 @@ impl Agent {
                     *self.client.write().await = None;
                 }
 
-                Err(SentinelError::Agent {
+                Err(ZentinelError::Agent {
                     agent: self.config.id.clone(),
                     message: e.to_string(),
                     event: format!("{:?}", event_type),

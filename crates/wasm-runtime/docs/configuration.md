@@ -7,7 +7,7 @@ This document covers all configuration options for the WASM runtime.
 Runtime-level configuration for the WASM agent runtime.
 
 ```rust
-use sentinel_wasm_runtime::{WasmAgentConfig, WasmResourceLimits};
+use zentinel_wasm_runtime::{WasmAgentConfig, WasmResourceLimits};
 use std::time::Duration;
 
 let config = WasmAgentConfig {
@@ -190,12 +190,12 @@ Example:
 
 ## KDL Configuration
 
-When configuring WASM agents via Sentinel's KDL config:
+When configuring WASM agents via Zentinel's KDL config:
 
 ```kdl
 agents {
     wasm-agent "header-validator" {
-        component "/opt/sentinel/agents/header-validator.wasm"
+        component "/opt/zentinel/agents/header-validator.wasm"
         config {
             required-headers "Authorization" "X-Request-ID"
             max-header-size 8192
@@ -223,6 +223,6 @@ routes {
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SENTINEL_WASM_CACHE_DIR` | Component cache directory | None (in-memory) |
-| `SENTINEL_WASM_MAX_INSTANCES` | Maximum agent instances | 4 |
-| `SENTINEL_WASM_FUEL_ENABLED` | Enable fuel metering | true |
+| `ZENTINEL_WASM_CACHE_DIR` | Component cache directory | None (in-memory) |
+| `ZENTINEL_WASM_MAX_INSTANCES` | Maximum agent instances | 4 |
+| `ZENTINEL_WASM_FUEL_ENABLED` | Enable fuel metering | true |

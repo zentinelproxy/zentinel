@@ -17,7 +17,7 @@ openssl genrsa -out ca.key 2048
 # Generate CA certificate
 openssl req -x509 -new -nodes -key ca.key -sha256 -days $VALIDITY \
     -out ca.crt \
-    -subj "/C=US/ST=Test/L=Test/O=Sentinel Test CA/CN=Sentinel Test Root CA"
+    -subj "/C=US/ST=Test/L=Test/O=Zentinel Test CA/CN=Zentinel Test Root CA"
 
 echo "=== Generating Server Certificates ==="
 
@@ -35,7 +35,7 @@ generate_server_cert() {
     # Generate CSR
     openssl req -new -key "${name}.key" \
         -out "${name}.csr" \
-        -subj "/C=US/ST=Test/L=Test/O=Sentinel Test/CN=${cn}"
+        -subj "/C=US/ST=Test/L=Test/O=Zentinel Test/CN=${cn}"
 
     # Create extensions file for SAN
     cat > "${name}.ext" <<EOF
@@ -78,7 +78,7 @@ openssl genrsa -out client.key 2048
 # Generate client CSR
 openssl req -new -key client.key \
     -out client.csr \
-    -subj "/C=US/ST=Test/L=Test/O=Sentinel Test Client/CN=test-client"
+    -subj "/C=US/ST=Test/L=Test/O=Zentinel Test Client/CN=test-client"
 
 # Create extensions file for client cert
 cat > client.ext <<EOF
@@ -105,7 +105,7 @@ echo "=== Generating Invalid/Expired Certificate for Testing ==="
 # Generate expired certificate (expired yesterday)
 openssl genrsa -out expired.key 2048
 openssl req -new -key expired.key -out expired.csr \
-    -subj "/C=US/ST=Test/L=Test/O=Sentinel Test/CN=expired.example.com"
+    -subj "/C=US/ST=Test/L=Test/O=Zentinel Test/CN=expired.example.com"
 
 # Create cert that expired yesterday
 openssl x509 -req -in expired.csr \

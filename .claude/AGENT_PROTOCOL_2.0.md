@@ -1,7 +1,7 @@
 # Agent Protocol 2.0 Design
 
 **Status:** Draft
-**Author:** Sentinel Core Team
+**Author:** Zentinel Core Team
 **Last Updated:** 2026-01-12
 
 > **⚠️ CRITICAL:** This document now includes performance bottlenecks identified in the v1 implementation that MUST be addressed in v2. See [Performance Critical Issues](#performance-critical-issues-v1-legacy).
@@ -10,11 +10,11 @@
 
 ## Executive Summary
 
-Agent Protocol 2.0 evolves Sentinel's external processing model from request/response to bidirectional streaming, enabling richer agent interactions, better observability, and lower latency through WASM support.
+Agent Protocol 2.0 evolves Zentinel's external processing model from request/response to bidirectional streaming, enabling richer agent interactions, better observability, and lower latency through WASM support.
 
 ### Architectural Decision: External Agents Only
 
-**Sentinel does not compile agents into the proxy binary.** All agent logic runs externally (separate process or WASM sandbox). This is a deliberate architectural choice:
+**Zentinel does not compile agents into the proxy binary.** All agent logic runs externally (separate process or WASM sandbox). This is a deliberate architectural choice:
 
 | Factor | In-Process | External Agent |
 |--------|------------|----------------|
@@ -68,7 +68,7 @@ In-process (hypothetical):  ~100ns    ← not worth the risk
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌─────────────┐         Bidirectional          ┌─────────────┐│
-│  │   Sentinel  │◄──────── gRPC Stream ─────────►│    Agent    ││
+│  │   Zentinel  │◄──────── gRPC Stream ─────────►│    Agent    ││
 │  │  Dataplane  │                                 │  (Process)  ││
 │  └──────┬──────┘                                 └─────────────┘│
 │         │                                                       │
@@ -129,7 +129,7 @@ In-process (hypothetical):  ~100ns    ← not worth the risk
 
 ### Why Not Compiled-In Agents?
 
-The Sentinel architecture explicitly avoids compiling agent logic into the proxy:
+The Zentinel architecture explicitly avoids compiling agent logic into the proxy:
 
 1. **Isolation requirement**: "A broken agent must not crash the dataplane" (CLAUDE.md)
 2. **C/C++ risk**: WAF engines like libmodsecurity have had CVEs; keep them out of the Rust dataplane
@@ -439,7 +439,7 @@ Replace request/response with bidirectional streams:
 ```protobuf
 syntax = "proto3";
 
-package sentinel.agent.v2;
+package zentinel.agent.v2;
 
 service AgentService {
     // Main bidirectional stream for all traffic
@@ -872,9 +872,9 @@ WASM agents are **not the default**—use them only when:
 For in-process agents using WebAssembly Component Model:
 
 ```wit
-// sentinel-agent.wit - WebAssembly Interface Type definition
+// zentinel-agent.wit - WebAssembly Interface Type definition
 
-package sentinel:agent@2.0.0;
+package zentinel:agent@2.0.0;
 
 /// Core types used throughout the agent interface
 interface types {
@@ -1260,7 +1260,7 @@ wrk -t4 -c100 -d60s --latency http://localhost:8080/agent-path
 # Target: p99 < 100ms with 50ms agent latency
 
 # Circuit breaker test (no async locks)
-cargo bench --package sentinel-common -- circuit_breaker
+cargo bench --package zentinel-common -- circuit_breaker
 # Target: is_closed() < 100ns
 
 # Parallel agent test

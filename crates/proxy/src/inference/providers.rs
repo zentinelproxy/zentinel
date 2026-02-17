@@ -6,7 +6,7 @@
 //! - Generic: `x-tokens-used` header, estimation fallback
 
 use http::HeaderMap;
-use sentinel_config::{InferenceProvider, TokenEstimation};
+use zentinel_config::{InferenceProvider, TokenEstimation};
 use serde_json::Value;
 use tracing::trace;
 

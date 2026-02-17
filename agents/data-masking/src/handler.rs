@@ -7,7 +7,7 @@ use crate::store::MemoryTokenStore;
 use async_trait::async_trait;
 use base64::Engine as _;
 use dashmap::DashMap;
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, AuditMetadata, BodyMutation, ConfigureEvent, HeaderOp,
     RequestBodyChunkEvent, RequestCompleteEvent, RequestHeadersEvent, ResponseBodyChunkEvent,
     ResponseHeadersEvent,

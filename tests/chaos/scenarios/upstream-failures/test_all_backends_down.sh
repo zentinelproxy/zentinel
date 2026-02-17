@@ -48,8 +48,8 @@ test_kill_all_backends() {
 
     # Check healthy count is zero
     local healthy_primary healthy_failover
-    healthy_primary=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
-    healthy_failover=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"with-failover\"")
+    healthy_primary=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy_failover=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"with-failover\"")
 
     log_info "Healthy backends - primary: ${healthy_primary:-unknown}, failover: ${healthy_failover:-unknown}"
 }
@@ -191,7 +191,7 @@ test_recovery_when_backends_return() {
 
     # Check healthy count restored
     local healthy
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
     if [[ -n "$healthy" && "$healthy" -ge 1 ]]; then
         log_pass "Primary upstream healthy: $healthy backend(s)"
     else
@@ -204,7 +204,7 @@ test_error_metrics_accumulated() {
 
     # Check for connection errors
     local errors
-    errors=$(get_metric "sentinel_upstream_connection_errors_total" "upstream=\"primary\"")
+    errors=$(get_metric "zentinel_upstream_connection_errors_total" "upstream=\"primary\"")
     if [[ -n "$errors" && "$errors" -gt 0 ]]; then
         log_pass "Connection errors recorded: $errors"
     else
@@ -213,7 +213,7 @@ test_error_metrics_accumulated() {
 
     # Check for health check failures
     local failures
-    failures=$(get_metric "sentinel_upstream_health_check_failures_total" "upstream=\"primary\"")
+    failures=$(get_metric "zentinel_upstream_health_check_failures_total" "upstream=\"primary\"")
     if [[ -n "$failures" && "$failures" -gt 0 ]]; then
         log_pass "Health check failures recorded: $failures"
     else

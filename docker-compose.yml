@@ -6,21 +6,21 @@ services:
     build:
       context: .
       target: proxy
-    container_name: sentinel-proxy
+    container_name: zentinel-proxy
     ports:
       - "8080:8080"   # HTTP
       - "8443:8443"   # HTTPS
       - "9090:9090"   # Health/Metrics
     volumes:
-      - ./config/docker/proxy.kdl:/etc/sentinel/config.kdl:ro
-      - proxy-data:/var/lib/sentinel
-      - proxy-logs:/var/log/sentinel
-      - agent-sockets:/var/run/sentinel
+      - ./config/docker/proxy.kdl:/etc/zentinel/config.kdl:ro
+      - proxy-data:/var/lib/zentinel
+      - proxy-logs:/var/log/zentinel
+      - agent-sockets:/var/run/zentinel
     environment:
-      RUST_LOG: info,sentinel_proxy=debug
-      SENTINEL_CONFIG: /etc/sentinel/config.kdl
+      RUST_LOG: info,zentinel_proxy=debug
+      ZENTINEL_CONFIG: /etc/zentinel/config.kdl
     networks:
-      - sentinel
+      - zentinel
     depends_on:
       - backend
     healthcheck:
@@ -36,21 +36,21 @@ services:
     build:
       context: .
       target: echo-agent
-    container_name: sentinel-echo
+    container_name: zentinel-echo
     volumes:
-      - agent-sockets:/var/run/sentinel
+      - agent-sockets:/var/run/zentinel
     environment:
-      RUST_LOG: info,sentinel_echo_agent=debug
+      RUST_LOG: info,zentinel_echo_agent=debug
     networks:
-      - sentinel
+      - zentinel
     restart: unless-stopped
 
   # Test backend service
   backend:
     image: kennethreitz/httpbin:latest
-    container_name: sentinel-backend
+    container_name: zentinel-backend
     networks:
-      - sentinel
+      - zentinel
     ports:
       - "8081:80"
     environment:
@@ -65,7 +65,7 @@ services:
   # Prometheus for metrics collection
   prometheus:
     image: prom/prometheus:latest
-    container_name: sentinel-prometheus
+    container_name: zentinel-prometheus
     volumes:
       - ./config/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -76,7 +76,7 @@ services:
       - '--web.console.templates=/etc/prometheus/consoles'
       - '--web.enable-lifecycle'
     networks:
-      - sentinel
+      - zentinel
     ports:
       - "9091:9090"
     restart: unless-stopped
@@ -84,18 +84,18 @@ services:
   # Grafana for visualization
   grafana:
     image: grafana/grafana:latest
-    container_name: sentinel-grafana
+    container_name: zentinel-grafana
     volumes:
       - grafana-data:/var/lib/grafana
       - ./config/docker/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./config/docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: sentinel
+      GF_SECURITY_ADMIN_PASSWORD: zentinel
       GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-worldmap-panel
       GF_USERS_ALLOW_SIGN_UP: false
     networks:
-      - sentinel
+      - zentinel
     ports:
       - "3000:3000"
     depends_on:
@@ -105,12 +105,12 @@ services:
   # Jaeger for distributed tracing (optional)
   jaeger:
     image: jaegertracing/all-in-one:latest
-    container_name: sentinel-jaeger
+    container_name: zentinel-jaeger
     environment:
       COLLECTOR_ZIPKIN_HOST_PORT: :9411
       COLLECTOR_OTLP_ENABLED: true
     networks:
-      - sentinel
+      - zentinel
     ports:
       - "5775:5775/udp"  # Zipkin compact thrift
       - "6831:6831/udp"  # Jaeger compact thrift
@@ -129,20 +129,20 @@ services:
     build:
       context: .
       target: dev
-    container_name: sentinel-dev
+    container_name: zentinel-dev
     profiles: ["dev"]  # Only run with --profile=dev
     ports:
       - "18080:8080"   # HTTP
       - "18443:8443"   # HTTPS
       - "19090:9090"   # Health/Metrics
     volumes:
-      - ./config:/etc/sentinel/config-examples:ro
-      - dev-data:/var/lib/sentinel
-      - dev-logs:/var/log/sentinel
+      - ./config:/etc/zentinel/config-examples:ro
+      - dev-data:/var/lib/zentinel
+      - dev-logs:/var/log/zentinel
     environment:
       RUST_LOG: debug
     networks:
-      - sentinel
+      - zentinel
     restart: unless-stopped
 
 volumes:
@@ -162,12 +162,12 @@ volumes:
     driver: local
 
 networks:
-  sentinel:
+  zentinel:
     driver: bridge
     ipam:
       config:
         - subnet: 172.28.0.0/16
 
 # NOTE: Additional agents (ratelimit, waf, denylist, etc.) are available as
-# separate repositories. See https://github.com/raskell-io for community agents
+# separate repositories. See https://github.com/zentinelproxy for community agents
 # or create your own following the Agent Development Guide in docs/

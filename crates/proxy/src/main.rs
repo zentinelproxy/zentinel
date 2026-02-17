@@ -1,7 +1,7 @@
 // Allow field reassignment for Pingora's Opt/ServerConf structs
 #![allow(clippy::field_reassign_with_default)]
 
-//! Sentinel Proxy - Main entry point
+//! Zentinel Proxy - Main entry point
 //!
 //! A security-first reverse proxy built on Pingora with sleepable ops at the edge.
 
@@ -20,33 +20,33 @@ use pingora::prelude::*;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use sentinel_config::server::AcmeChallengeType;
-use sentinel_config::Config;
-use sentinel_proxy::acme::{
+use zentinel_config::server::AcmeChallengeType;
+use zentinel_config::Config;
+use zentinel_proxy::acme::{
     AcmeClient, AcmeError, CertificateStorage, ChallengeManager, RenewalScheduler,
 };
-use sentinel_proxy::bundle::{run_bundle_command, BundleArgs};
-use sentinel_proxy::tls::HotReloadableSniResolver;
-use sentinel_proxy::{ReloadTrigger, SentinelProxy, SignalManager, SignalType};
+use zentinel_proxy::bundle::{run_bundle_command, BundleArgs};
+use zentinel_proxy::tls::HotReloadableSniResolver;
+use zentinel_proxy::{ReloadTrigger, ZentinelProxy, SignalManager, SignalType};
 
 /// Version string combining Cargo semver and CalVer release tag
 const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (release ",
-    env!("SENTINEL_CALVER"),
+    env!("ZENTINEL_CALVER"),
     ", commit ",
-    env!("SENTINEL_COMMIT"),
+    env!("ZENTINEL_COMMIT"),
     ")"
 );
 
-/// Sentinel - A security-first reverse proxy built on Pingora
+/// Zentinel - A security-first reverse proxy built on Pingora
 #[derive(Parser, Debug)]
-#[command(name = "sentinel")]
+#[command(name = "zentinel")]
 #[command(author, version = VERSION, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     /// Configuration file path
-    #[arg(short = 'c', long = "config", env = "SENTINEL_CONFIG")]
+    #[arg(short = 'c', long = "config", env = "ZENTINEL_CONFIG")]
     config: Option<String>,
 
     /// Test configuration and exit
@@ -206,7 +206,7 @@ fn test_config(config_path: Option<&str>) -> Result<()> {
     }
 
     println!(
-        "sentinel: configuration file {} test is successful",
+        "zentinel: configuration file {} test is successful",
         config_path.unwrap_or("(embedded)")
     );
 
@@ -248,7 +248,7 @@ fn validate_config(
     // Runtime validation (async)
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(async {
-        use sentinel_config::validate::*;
+        use zentinel_config::validate::*;
 
         let opts = ValidationOpts {
             skip_network,
@@ -335,7 +335,7 @@ fn lint_config(config_path: Option<&str>) -> Result<()> {
         .context("Configuration schema validation failed")?;
 
     // Lint for best practices
-    let result = sentinel_config::validate::lint::lint_config(&config);
+    let result = zentinel_config::validate::lint::lint_config(&config);
 
     // Print results
     if result.warnings.is_empty() {
@@ -381,7 +381,7 @@ async fn initialize_acme(
 ) -> Result<Option<AcmeState>, AcmeError> {
     // Find the first HTTPS listener with ACME configured
     let acme_listener = config.listeners.iter().find(|l| {
-        l.protocol == sentinel_config::ListenerProtocol::Https
+        l.protocol == zentinel_config::ListenerProtocol::Https
             && l.tls.as_ref().is_some_and(|t| t.acme.is_some())
     });
 
@@ -421,7 +421,7 @@ async fn initialize_acme(
     // If DNS-01, set up DNS challenge manager
     if acme_config.challenge_type == AcmeChallengeType::Dns01 {
         if let Some(ref dns_config) = acme_config.dns_provider {
-            let provider = sentinel_proxy::acme::dns::create_provider(dns_config)?;
+            let provider = zentinel_proxy::acme::dns::create_provider(dns_config)?;
 
             let nameservers: Vec<std::net::IpAddr> = dns_config
                 .propagation
@@ -430,7 +430,7 @@ async fn initialize_acme(
                 .filter_map(|s| s.parse().ok())
                 .collect();
 
-            let propagation_config = sentinel_proxy::acme::dns::PropagationConfig {
+            let propagation_config = zentinel_proxy::acme::dns::PropagationConfig {
                 initial_delay: std::time::Duration::from_secs(
                     dns_config.propagation.initial_delay_secs,
                 ),
@@ -441,7 +441,7 @@ async fn initialize_acme(
                 nameservers,
             };
 
-            let dns_manager = Arc::new(sentinel_proxy::acme::dns::Dns01ChallengeManager::new(
+            let dns_manager = Arc::new(zentinel_proxy::acme::dns::Dns01ChallengeManager::new(
                 provider,
                 propagation_config,
             )?);
@@ -467,7 +467,7 @@ async fn initialize_acme(
                 let http_addr = config
                     .listeners
                     .iter()
-                    .find(|l| l.protocol == sentinel_config::ListenerProtocol::Http)
+                    .find(|l| l.protocol == zentinel_config::ListenerProtocol::Http)
                     .map(|l| l.address.clone())
                     .unwrap_or_else(|| "0.0.0.0:80".to_string());
 
@@ -480,7 +480,7 @@ async fn initialize_acme(
                 let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
                 let cm_clone = Arc::clone(&challenge_manager);
                 let server_handle = tokio::spawn(async move {
-                    sentinel_proxy::acme::challenge_server::run_challenge_server(
+                    zentinel_proxy::acme::challenge_server::run_challenge_server(
                         &http_addr,
                         cm_clone,
                         shutdown_rx,
@@ -545,7 +545,7 @@ fn run_server(
     // Note: We'll configure threads via ServerConf after loading our config
 
     // Get config path with priority: CLI arg > env var > None (embedded default)
-    let effective_config_path = config_path.or_else(|| std::env::var("SENTINEL_CONFIG").ok());
+    let effective_config_path = config_path.or_else(|| std::env::var("ZENTINEL_CONFIG").ok());
 
     // Handle config file creation/loading
     let effective_config_path = match effective_config_path {
@@ -581,7 +581,7 @@ fn run_server(
 
     // Create proxy with configuration
     let mut proxy =
-        runtime.block_on(async { SentinelProxy::new(effective_config_path.as_deref()).await })?;
+        runtime.block_on(async { ZentinelProxy::new(effective_config_path.as_deref()).await })?;
 
     // Get config manager for reload operations
     let config_manager = proxy.config_manager.clone();
@@ -608,7 +608,7 @@ fn run_server(
 
     // Initialize OpenTelemetry tracer if configured
     if let Some(ref tracing_config) = config.observability.tracing {
-        match sentinel_proxy::otel::init_tracer(tracing_config) {
+        match zentinel_proxy::otel::init_tracer(tracing_config) {
             Ok(()) => {
                 info!(
                     backend = ?tracing_config.backend,
@@ -681,11 +681,11 @@ fn run_server(
     // Configure listening addresses from config
     for listener in &config.listeners {
         match listener.protocol {
-            sentinel_config::ListenerProtocol::Http => {
+            zentinel_config::ListenerProtocol::Http => {
                 proxy_service.add_tcp(&listener.address);
                 info!("HTTP listening on: {}", listener.address);
             }
-            sentinel_config::ListenerProtocol::Https => {
+            zentinel_config::ListenerProtocol::Https => {
                 match &listener.tls {
                     Some(tls_config) => {
                         // Determine certificate paths: manual or ACME-managed
@@ -840,7 +840,7 @@ fn run_server(
         run_signal_handler(signal_manager_clone, config_manager).await;
     });
 
-    info!("Sentinel proxy started successfully");
+    info!("Zentinel proxy started successfully");
     info!("Configuration hot reload enabled (SIGHUP)");
     if auto_reload_enabled && has_config_file {
         info!("Auto-reload enabled (watching config file)");
@@ -908,7 +908,7 @@ fn setup_signal_handlers(
 ///
 /// Creates parent directories if needed and writes the embedded default config.
 fn create_default_config_file(path: &std::path::Path) -> Result<()> {
-    use sentinel_config::DEFAULT_CONFIG_KDL;
+    use zentinel_config::DEFAULT_CONFIG_KDL;
     use std::fs;
 
     // Create parent directories if they don't exist
@@ -931,7 +931,7 @@ fn create_default_config_file(path: &std::path::Path) -> Result<()> {
 /// Receives signals from the signal manager and performs the appropriate action.
 async fn run_signal_handler(
     signal_manager: Arc<SignalManager>,
-    config_manager: Arc<sentinel_proxy::ConfigManager>,
+    config_manager: Arc<zentinel_proxy::ConfigManager>,
 ) {
     loop {
         // Use spawn_blocking to wait for signals without blocking the async runtime
@@ -955,7 +955,7 @@ async fn run_signal_handler(
             Ok(Some(SignalType::Shutdown)) => {
                 info!("Processing graceful shutdown request");
                 // Shutdown OpenTelemetry tracer to flush pending spans
-                sentinel_proxy::otel::shutdown_tracer();
+                zentinel_proxy::otel::shutdown_tracer();
                 // Note: Connection draining is handled by Pingora's internal mechanisms
                 // We give it a moment to start draining, then the signal thread will force exit
                 info!("Shutdown initiated, draining connections...");

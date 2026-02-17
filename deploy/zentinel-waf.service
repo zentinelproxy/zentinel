@@ -1,14 +1,14 @@
 [Unit]
-Description=Sentinel WAF Agent - ModSecurity-based Web Application Firewall
-Documentation=https://github.com/raskell-io/sentinel
-After=network.target sentinel-proxy.service
-Requires=sentinel-proxy.service
-PartOf=sentinel-proxy.service
+Description=Zentinel WAF Agent - ModSecurity-based Web Application Firewall
+Documentation=https://github.com/zentinelproxy/zentinel
+After=network.target zentinel-proxy.service
+Requires=zentinel-proxy.service
+PartOf=zentinel-proxy.service
 
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=/usr/local/bin/sentinel-waf-agent
+ExecStart=/usr/local/bin/zentinel-waf-agent
 ExecReload=/bin/kill -USR1 $MAINPID
 Restart=on-failure
 RestartSec=5s
@@ -18,31 +18,31 @@ KillMode=mixed
 KillSignal=SIGTERM
 
 # User and group
-User=sentinel
-Group=sentinel
+User=zentinel
+Group=zentinel
 
 # Environment
-Environment="RUST_LOG=info,sentinel_waf_agent=debug"
-Environment="WAF_CONFIG=/etc/sentinel/waf.yaml"
-EnvironmentFile=-/etc/sentinel/waf.env
+Environment="RUST_LOG=info,zentinel_waf_agent=debug"
+Environment="WAF_CONFIG=/etc/zentinel/waf.yaml"
+EnvironmentFile=-/etc/zentinel/waf.env
 
 # Working directory
-WorkingDirectory=/var/lib/sentinel/waf
+WorkingDirectory=/var/lib/zentinel/waf
 
 # Runtime directory and mode
-RuntimeDirectory=sentinel
+RuntimeDirectory=zentinel
 RuntimeDirectoryMode=0755
 
 # State directory
-StateDirectory=sentinel/waf
+StateDirectory=zentinel/waf
 StateDirectoryMode=0700
 
 # Logs directory
-LogsDirectory=sentinel-waf
+LogsDirectory=zentinel-waf
 LogsDirectoryMode=0750
 
 # Configuration directory
-ConfigurationDirectory=sentinel
+ConfigurationDirectory=zentinel
 ConfigurationDirectoryMode=0755
 
 # Security hardening
@@ -84,15 +84,15 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 
 # Read-write paths for WAF
-ReadWritePaths=/var/log/sentinel-waf
-ReadWritePaths=/var/run/sentinel
-ReadWritePaths=/var/lib/sentinel/waf
+ReadWritePaths=/var/log/zentinel-waf
+ReadWritePaths=/var/run/zentinel
+ReadWritePaths=/var/lib/zentinel/waf
 
 # Read-only paths for rules and libraries
 ReadOnlyPaths=/usr/share/modsecurity-crs
 ReadOnlyPaths=/usr/local/share/modsecurity-crs
 ReadOnlyPaths=/opt/modsecurity-crs
-ReadOnlyPaths=/etc/sentinel
+ReadOnlyPaths=/etc/zentinel
 ReadOnlyPaths=/usr/lib
 ReadOnlyPaths=/usr/local/lib
 
@@ -109,7 +109,7 @@ WatchdogSec=30s
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sentinel-waf
+SyslogIdentifier=zentinel-waf
 
 [Install]
 WantedBy=multi-user.target

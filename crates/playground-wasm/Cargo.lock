@@ -839,7 +839,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "sentinel-common"
+name = "zentinel-common"
 version = "0.4.9"
 dependencies = [
  "anyhow",
@@ -853,7 +853,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-config"
+name = "zentinel-config"
 version = "0.4.9"
 dependencies = [
  "anyhow",
@@ -862,7 +862,7 @@ dependencies = [
  "miette",
  "once_cell",
  "parking_lot",
- "sentinel-common",
+ "zentinel-common",
  "serde",
  "serde_json",
  "thiserror",
@@ -873,11 +873,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-playground-wasm"
+name = "zentinel-playground-wasm"
 version = "0.4.3"
 dependencies = [
  "console_error_panic_hook",
- "sentinel-sim",
+ "zentinel-sim",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -886,12 +886,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-sim"
+name = "zentinel-sim"
 version = "0.4.3"
 dependencies = [
  "regex",
- "sentinel-common",
- "sentinel-config",
+ "zentinel-common",
+ "zentinel-config",
  "serde",
  "serde_json",
  "thiserror",

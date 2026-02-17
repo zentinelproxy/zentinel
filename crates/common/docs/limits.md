@@ -4,7 +4,7 @@ Resource bounds and rate limiting infrastructure for predictable behavior.
 
 ## Design Philosophy
 
-Sentinel enforces hard limits everywhere to ensure "sleepable ops":
+Zentinel enforces hard limits everywhere to ensure "sleepable ops":
 
 - **Bounded memory** - No unbounded allocations
 - **Bounded queues** - All queues have maximum depth
@@ -18,7 +18,7 @@ Sentinel enforces hard limits everywhere to ensure "sleepable ops":
 Central configuration for all resource limits:
 
 ```rust
-use sentinel_common::Limits;
+use zentinel_common::Limits;
 
 // Production defaults (strict)
 let limits = Limits::for_production();
@@ -114,7 +114,7 @@ Token bucket rate limiter for single-instance deployments.
 ### Basic Usage
 
 ```rust
-use sentinel_common::RateLimiter;
+use zentinel_common::RateLimiter;
 
 // 100 requests per second with bucket of 100
 let limiter = RateLimiter::new(100, 100);
@@ -177,7 +177,7 @@ Multi-level rate limiting (global, per-client, per-route).
 ### Setup
 
 ```rust
-use sentinel_common::{MultiRateLimiter, Limits};
+use zentinel_common::{MultiRateLimiter, Limits};
 
 let limits = Limits {
     max_requests_per_second_global: Some(10000),
@@ -197,7 +197,7 @@ match limiter.check_request(client_id, route_id) {
     Ok(()) => {
         // Request allowed
     }
-    Err(SentinelError::RateLimit { message, retry_after_secs }) => {
+    Err(ZentinelError::RateLimit { message, retry_after_secs }) => {
         // Rate limited
     }
 }
@@ -221,7 +221,7 @@ Connection slot management with RAII guards.
 ### Setup
 
 ```rust
-use sentinel_common::{ConnectionLimiter, Limits};
+use zentinel_common::{ConnectionLimiter, Limits};
 
 let limits = Limits::default();
 let limiter = ConnectionLimiter::new(&limits);
@@ -237,7 +237,7 @@ match limiter.try_acquire(client_id, route_id) {
         // Guard automatically releases slot when dropped
         process_connection(connection, guard).await;
     }
-    Err(SentinelError::LimitExceeded { limit_type, .. }) => {
+    Err(ZentinelError::LimitExceeded { limit_type, .. }) => {
         // Connection rejected
         match limit_type {
             LimitType::ConnectionCount => { /* Total limit */ }
@@ -261,9 +261,9 @@ println!("Per-route: {}", stats.per_route_count);
 Complete request handling with limits:
 
 ```rust
-use sentinel_common::{
+use zentinel_common::{
     Limits, MultiRateLimiter, ConnectionLimiter,
-    SentinelError, LimitType,
+    ZentinelError, LimitType,
 };
 
 struct RequestHandler {
@@ -273,7 +273,7 @@ struct RequestHandler {
 }
 
 impl RequestHandler {
-    async fn handle(&self, req: Request) -> Result<Response, SentinelError> {
+    async fn handle(&self, req: Request) -> Result<Response, ZentinelError> {
         let client_id = extract_client_id(&req);
         let route_id = match_route(&req);
 
@@ -306,12 +306,12 @@ Rate limiting metrics are exported automatically:
 
 ```
 # Rate limit decisions
-sentinel_rate_limit_allowed_total{level="global"} 10000
-sentinel_rate_limit_allowed_total{level="client", client="1.2.3.4"} 100
-sentinel_rate_limit_rejected_total{level="client", client="1.2.3.4"} 5
+zentinel_rate_limit_allowed_total{level="global"} 10000
+zentinel_rate_limit_allowed_total{level="client", client="1.2.3.4"} 100
+zentinel_rate_limit_rejected_total{level="client", client="1.2.3.4"} 5
 
 # Connection limits
-sentinel_connections_total 500
-sentinel_connections_per_client{client="1.2.3.4"} 10
-sentinel_connection_rejections_total{reason="per_client"} 2
+zentinel_connections_total 500
+zentinel_connections_per_client{client="1.2.3.4"} 10
+zentinel_connection_rejections_total{reason="per_client"} 2
 ```

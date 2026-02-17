@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use validator::Validate;
 
-use sentinel_common::budget::{CostAttributionConfig, TokenBudgetConfig};
-use sentinel_common::types::{ByteSize, CircuitBreakerConfig, Priority, RetryPolicy};
+use zentinel_common::budget::{CostAttributionConfig, TokenBudgetConfig};
+use zentinel_common::types::{ByteSize, CircuitBreakerConfig, Priority, RetryPolicy};
 
 use crate::filters::RateLimitKey;
 

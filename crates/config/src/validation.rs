@@ -14,8 +14,8 @@ use std::net::SocketAddr;
 use tracing::{debug, trace, warn};
 
 use crate::{Config, Filter, NamespaceConfig, ServiceConfig, ServiceType, WafMode};
-use sentinel_common::ids::Scope;
-use sentinel_common::types::{Priority, TlsVersion};
+use zentinel_common::ids::Scope;
+use zentinel_common::types::{Priority, TlsVersion};
 
 // ============================================================================
 // Field Validators
@@ -1051,7 +1051,7 @@ mod tests {
         ConnectionPoolConfig, HttpVersionConfig, MatchCondition, RouteConfig, RoutePolicies,
         UpstreamConfig, UpstreamTarget, UpstreamTimeouts,
     };
-    use sentinel_common::types::LoadBalancingAlgorithm;
+    use zentinel_common::types::LoadBalancingAlgorithm;
 
     fn test_upstream(id: &str) -> UpstreamConfig {
         UpstreamConfig {
@@ -1474,7 +1474,7 @@ mod tests {
     #[test]
     fn server_pid_file_produces_no_warnings() {
         let mut config = Config::default_for_testing();
-        config.server.pid_file = Some("/run/sentinel.pid".into());
+        config.server.pid_file = Some("/run/zentinel.pid".into());
 
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
@@ -1510,7 +1510,7 @@ mod tests {
     #[test]
     fn logging_file_produces_warning() {
         let mut config = Config::default_for_testing();
-        config.observability.logging.file = Some("/var/log/sentinel/app.log".into());
+        config.observability.logging.file = Some("/var/log/zentinel/app.log".into());
 
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
@@ -1562,7 +1562,7 @@ mod tests {
         };
         use crate::server::{ListenerConfig, ListenerProtocol, ServerConfig, TlsConfig};
         use crate::waf::{BodyInspectionPolicy, WafConfig, WafEngine, WafRuleset};
-        use sentinel_common::types::LoadBalancingAlgorithm;
+        use zentinel_common::types::LoadBalancingAlgorithm;
 
         // --- ServerConfig ---
         let _server = ServerConfig {
@@ -1818,7 +1818,7 @@ mod tests {
         config.observability.metrics.address = "0.0.0.0:9191".to_string(); // non-default → warning
 
         // Logging file (unwired — goes to stdout/stderr)
-        config.observability.logging.file = Some("/var/log/sentinel/app.log".into());
+        config.observability.logging.file = Some("/var/log/zentinel/app.log".into());
 
         // Logging level/format (unwired — controlled by RUST_LOG env var)
         config.observability.logging.level = "debug".to_string();

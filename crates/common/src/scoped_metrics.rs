@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_common::{ScopedMetrics, Scope};
+//! use zentinel_common::{ScopedMetrics, Scope};
 //!
 //! let metrics = ScopedMetrics::new()?;
 //!
@@ -69,7 +69,7 @@ impl ScopedMetrics {
         ];
 
         let request_duration = register_histogram_vec!(
-            "sentinel_scoped_request_duration_seconds",
+            "zentinel_scoped_request_duration_seconds",
             "Request duration in seconds with scope labels",
             &["namespace", "service", "route", "method"],
             latency_buckets
@@ -77,42 +77,42 @@ impl ScopedMetrics {
         .context("Failed to register scoped_request_duration metric")?;
 
         let request_count = register_int_counter_vec!(
-            "sentinel_scoped_requests_total",
+            "zentinel_scoped_requests_total",
             "Total number of requests with scope labels",
             &["namespace", "service", "route", "method", "status"]
         )
         .context("Failed to register scoped_requests_total metric")?;
 
         let active_requests = register_int_gauge_vec!(
-            "sentinel_scoped_active_requests",
+            "zentinel_scoped_active_requests",
             "Number of currently active requests by scope",
             &["namespace", "service"]
         )
         .context("Failed to register scoped_active_requests metric")?;
 
         let upstream_attempts = register_int_counter_vec!(
-            "sentinel_scoped_upstream_attempts_total",
+            "zentinel_scoped_upstream_attempts_total",
             "Total upstream connection attempts with scope labels",
             &["namespace", "service", "upstream", "route"]
         )
         .context("Failed to register scoped_upstream_attempts metric")?;
 
         let upstream_failures = register_int_counter_vec!(
-            "sentinel_scoped_upstream_failures_total",
+            "zentinel_scoped_upstream_failures_total",
             "Total upstream connection failures with scope labels",
             &["namespace", "service", "upstream", "route", "reason"]
         )
         .context("Failed to register scoped_upstream_failures metric")?;
 
         let rate_limit_hits = register_int_counter_vec!(
-            "sentinel_scoped_rate_limit_hits_total",
+            "zentinel_scoped_rate_limit_hits_total",
             "Total rate limit hits with scope labels",
             &["namespace", "service", "route", "policy"]
         )
         .context("Failed to register scoped_rate_limit_hits metric")?;
 
         let circuit_breaker_state = register_int_gauge_vec!(
-            "sentinel_scoped_circuit_breaker_state",
+            "zentinel_scoped_circuit_breaker_state",
             "Circuit breaker state (0=closed, 1=open) with scope labels",
             &["namespace", "service", "upstream"]
         )

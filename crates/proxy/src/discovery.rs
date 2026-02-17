@@ -921,7 +921,7 @@ impl ServiceDiscovery for KubernetesDiscovery {
 /// ```kdl
 /// upstream "dynamic-backend" {
 ///     discovery "file" {
-///         path "/etc/sentinel/backends/api-servers.txt"
+///         path "/etc/zentinel/backends/api-servers.txt"
 ///         watch-interval 5
 ///     }
 /// }

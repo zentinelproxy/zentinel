@@ -1,4 +1,4 @@
-//! Common type definitions for Sentinel proxy.
+//! Common type definitions for Zentinel proxy.
 //!
 //! This module provides shared type definitions used throughout the platform,
 //! with a focus on type safety and operational clarity.

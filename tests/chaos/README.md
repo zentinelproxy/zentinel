@@ -1,6 +1,6 @@
-# Sentinel Chaos Tests
+# Zentinel Chaos Tests
 
-Chaos testing framework for validating Sentinel's resilience under failure conditions.
+Chaos testing framework for validating Zentinel's resilience under failure conditions.
 
 ## Overview
 
@@ -276,12 +276,12 @@ service_is_up <url>
 
 | Metric | Expected Behavior |
 |--------|-------------------|
-| `sentinel_agent_circuit_breaker_state` | Transitions 0→1→2→0 |
-| `sentinel_agent_failures_total` | Increments on failures |
-| `sentinel_agent_timeouts_total` | Increments on timeouts |
-| `sentinel_agent_bypasses_total` | Increments on fail-open bypass |
-| `sentinel_upstream_healthy_backends` | Decreases on crash |
-| `sentinel_upstream_retries_total` | Increments on retries |
+| `zentinel_agent_circuit_breaker_state` | Transitions 0→1→2→0 |
+| `zentinel_agent_failures_total` | Increments on failures |
+| `zentinel_agent_timeouts_total` | Increments on timeouts |
+| `zentinel_agent_bypasses_total` | Increments on fail-open bypass |
+| `zentinel_upstream_healthy_backends` | Decreases on crash |
+| `zentinel_upstream_retries_total` | Increments on retries |
 | Memory (RSS) | Stable after failure cycles |
 
 ## CI Integration
@@ -334,7 +334,7 @@ docker logs chaos-proxy-1
 docker logs chaos-echo-1
 
 # Check metrics
-curl http://localhost:9090/metrics | grep sentinel_agent
+curl http://localhost:9090/metrics | grep zentinel_agent
 
 # Manual chaos injection
 docker compose -p chaos -f docker-compose.chaos.yml kill echo

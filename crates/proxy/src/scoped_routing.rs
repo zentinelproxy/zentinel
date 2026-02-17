@@ -18,9 +18,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace};
 
-use sentinel_common::ids::{QualifiedId, Scope};
-use sentinel_common::RouteId;
-use sentinel_config::{FlattenedConfig, RouteConfig};
+use zentinel_common::ids::{QualifiedId, Scope};
+use zentinel_common::RouteId;
+use zentinel_config::{FlattenedConfig, RouteConfig};
 
 use crate::routing::{RequestInfo, RouteError, RouteMatch, RouteMatcher};
 
@@ -315,8 +315,8 @@ impl Default for ScopedRouteMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_common::types::Priority;
-    use sentinel_config::{MatchCondition, RoutePolicies, ServiceType};
+    use zentinel_common::types::Priority;
+    use zentinel_config::{MatchCondition, RoutePolicies, ServiceType};
 
     fn test_route(id: &str, path_prefix: &str) -> RouteConfig {
         RouteConfig {

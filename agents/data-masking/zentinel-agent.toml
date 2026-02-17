@@ -1,11 +1,11 @@
 # Data Masking Agent manifest
-# This file describes the agent for the Sentinel agent registry
+# This file describes the agent for the Zentinel agent registry
 
 [agent]
 name = "data-masking"
 version = "0.2.4"
 description = "PII protection with tokenization, format-preserving encryption, and pattern-based masking"
-authors = ["Sentinel Contributors"]
+authors = ["Zentinel Contributors"]
 
 [agent.capabilities]
 events = [

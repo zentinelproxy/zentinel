@@ -1,14 +1,14 @@
-//! Error types for Sentinel proxy
+//! Error types for Zentinel proxy
 //!
-//! This module defines common error types used throughout the Sentinel platform,
+//! This module defines common error types used throughout the Zentinel platform,
 //! with a focus on clear failure modes and operational visibility.
 
 use std::fmt;
 use thiserror::Error;
 
-/// Main error type for Sentinel operations
+/// Main error type for Zentinel operations
 #[derive(Error, Debug)]
-pub enum SentinelError {
+pub enum ZentinelError {
     /// Configuration errors
     #[error("Configuration error: {message}")]
     Config {
@@ -185,10 +185,10 @@ impl fmt::Display for LimitType {
     }
 }
 
-/// Result type alias for Sentinel operations
-pub type SentinelResult<T> = Result<T, SentinelError>;
+/// Result type alias for Zentinel operations
+pub type ZentinelResult<T> = Result<T, ZentinelError>;
 
-impl SentinelError {
+impl ZentinelError {
     /// Determine if this error should trigger a circuit breaker
     pub fn is_circuit_breaker_eligible(&self) -> bool {
         matches!(
@@ -338,7 +338,7 @@ impl SentinelError {
 }
 
 /// Helper for converting IO errors
-impl From<std::io::Error> for SentinelError {
+impl From<std::io::Error> for ZentinelError {
     fn from(err: std::io::Error) -> Self {
         Self::Io {
             message: err.to_string(),
@@ -355,31 +355,31 @@ mod tests {
     #[test]
     fn test_error_http_status() {
         assert_eq!(
-            SentinelError::upstream("backend", "connection refused").to_http_status(),
+            ZentinelError::upstream("backend", "connection refused").to_http_status(),
             502
         );
         assert_eq!(
-            SentinelError::timeout("upstream", 5000).to_http_status(),
+            ZentinelError::timeout("upstream", 5000).to_http_status(),
             504
         );
         assert_eq!(
-            SentinelError::limit_exceeded(LimitType::HeaderSize, 2048, 1024).to_http_status(),
+            ZentinelError::limit_exceeded(LimitType::HeaderSize, 2048, 1024).to_http_status(),
             429
         );
     }
 
     #[test]
     fn test_error_retryable() {
-        assert!(!SentinelError::upstream("backend", "error").is_retryable());
-        assert!(SentinelError::upstream_retryable("backend", "error").is_retryable());
-        assert!(SentinelError::timeout("operation", 1000).is_retryable());
+        assert!(!ZentinelError::upstream("backend", "error").is_retryable());
+        assert!(ZentinelError::upstream_retryable("backend", "error").is_retryable());
+        assert!(ZentinelError::timeout("operation", 1000).is_retryable());
     }
 
     #[test]
     fn test_error_circuit_breaker() {
-        assert!(SentinelError::upstream("backend", "error").is_circuit_breaker_eligible());
-        assert!(SentinelError::timeout("operation", 1000).is_circuit_breaker_eligible());
-        assert!(!SentinelError::RequestValidation {
+        assert!(ZentinelError::upstream("backend", "error").is_circuit_breaker_eligible());
+        assert!(ZentinelError::timeout("operation", 1000).is_circuit_breaker_eligible());
+        assert!(!ZentinelError::RequestValidation {
             reason: "invalid".to_string(),
             correlation_id: None
         }
@@ -388,14 +388,14 @@ mod tests {
 
     #[test]
     fn test_client_message() {
-        let err = SentinelError::Internal {
+        let err = ZentinelError::Internal {
             message: "Database connection failed".to_string(),
             correlation_id: Some("123".to_string()),
             source: None,
         };
         assert_eq!(err.client_message(), "Internal server error");
 
-        let err = SentinelError::WafBlocked {
+        let err = ZentinelError::WafBlocked {
             reason: "SQL injection detected".to_string(),
             rule_ids: vec!["942100".to_string()],
             confidence: 0.95,

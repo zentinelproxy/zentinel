@@ -1,5 +1,5 @@
 # GitHub Pages Configuration
-# This file configures GitHub Pages behavior for the Sentinel documentation
+# This file configures GitHub Pages behavior for the Zentinel documentation
 
 # Theme configuration (not used with mdBook, but required by GitHub Pages)
 theme: null
@@ -22,10 +22,10 @@ include:
 plugins: []
 
 # Site settings
-title: Sentinel Documentation
+title: Zentinel Documentation
 description: Production-grade reverse proxy built on Pingora
-url: https://raskell-io.github.io
-baseurl: /sentinel
+url: https://zentinelproxy.github.io
+baseurl: /zentinel
 
 # Build settings
 markdown: kramdown

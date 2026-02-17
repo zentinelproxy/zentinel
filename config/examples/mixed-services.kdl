@@ -24,8 +24,8 @@ listeners {
         address "0.0.0.0:8443"
         protocol "https"
         tls {
-            cert-file "/etc/sentinel/certs/gateway.crt"
-            key-file "/etc/sentinel/certs/gateway.key"
+            cert-file "/etc/zentinel/certs/gateway.crt"
+            key-file "/etc/zentinel/certs/gateway.key"
         }
     }
 }
@@ -385,7 +385,7 @@ observability {
 
         access-log {
             enabled #true
-            file "/var/log/sentinel/gateway-access.log"
+            file "/var/log/zentinel/gateway-access.log"
             include-trace-id #true
         }
     }

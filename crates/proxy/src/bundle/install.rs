@@ -43,7 +43,7 @@ impl InstallPaths {
     pub fn system() -> Self {
         Self {
             bin_dir: PathBuf::from("/usr/local/bin"),
-            config_dir: PathBuf::from("/etc/sentinel/agents"),
+            config_dir: PathBuf::from("/etc/zentinel/agents"),
             systemd_dir: Some(PathBuf::from("/etc/systemd/system")),
             system_wide: true,
         }
@@ -54,7 +54,7 @@ impl InstallPaths {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         Self {
             bin_dir: PathBuf::from(&home).join(".local/bin"),
-            config_dir: PathBuf::from(&home).join(".config/sentinel/agents"),
+            config_dir: PathBuf::from(&home).join(".config/zentinel/agents"),
             systemd_dir: Some(PathBuf::from(&home).join(".config/systemd/user")),
             system_wide: false,
         }
@@ -64,7 +64,7 @@ impl InstallPaths {
     pub fn with_prefix(prefix: &Path) -> Self {
         Self {
             bin_dir: prefix.join("bin"),
-            config_dir: prefix.join("etc/sentinel/agents"),
+            config_dir: prefix.join("etc/zentinel/agents"),
             systemd_dir: Some(prefix.join("lib/systemd/system")),
             system_wide: false,
         }
@@ -196,7 +196,7 @@ pub fn get_installed_version(bin_dir: &Path, binary_name: &str) -> Option<String
 /// Parse version from command output
 fn parse_version_output(output: &str) -> Option<String> {
     // Common patterns:
-    // "sentinel-waf-agent 0.2.0"
+    // "zentinel-waf-agent 0.2.0"
     // "version 0.2.0"
     // "0.2.0"
 
@@ -228,10 +228,10 @@ pub fn generate_default_config(agent_name: &str) -> String {
     match agent_name {
         "waf" => r#"# WAF Agent Configuration
 # ModSecurity-based Web Application Firewall
-# See https://sentinel.raskell.io/docs/agents/waf
+# See https://zentinelproxy.io/docs/agents/waf
 
 socket:
-  path: /var/run/sentinel/waf.sock
+  path: /var/run/zentinel/waf.sock
   mode: 0660
 
 logging:
@@ -250,10 +250,10 @@ crs:
 
         "ratelimit" => r#"# Rate Limit Agent Configuration
 # Token bucket rate limiting
-# See https://sentinel.raskell.io/docs/agents/ratelimit
+# See https://zentinelproxy.io/docs/agents/ratelimit
 
 socket:
-  path: /var/run/sentinel/ratelimit.sock
+  path: /var/run/zentinel/ratelimit.sock
   mode: 0660
 
 logging:
@@ -273,10 +273,10 @@ rules:
 
         "denylist" => r#"# Denylist Agent Configuration
 # IP and path blocking
-# See https://sentinel.raskell.io/docs/agents/denylist
+# See https://zentinelproxy.io/docs/agents/denylist
 
 socket:
-  path: /var/run/sentinel/denylist.sock
+  path: /var/run/zentinel/denylist.sock
   mode: 0660
 
 logging:
@@ -303,9 +303,9 @@ path_denylist:
 
         _ => format!(
             "# {} agent configuration\n\
-             # See https://sentinel.raskell.io/docs/agents/{}\n\n\
+             # See https://zentinelproxy.io/docs/agents/{}\n\n\
              socket:\n\
-               path: /var/run/sentinel/{}.sock\n\
+               path: /var/run/zentinel/{}.sock\n\
                mode: 0660\n\n\
              logging:\n\
                level: info\n\
@@ -344,15 +344,15 @@ pub fn install_config(
 
 /// Generate a systemd service file for an agent
 pub fn generate_systemd_service(agent_name: &str, bin_path: &Path, config_path: &Path) -> String {
-    let binary_name = format!("sentinel-{}-agent", agent_name);
+    let binary_name = format!("zentinel-{}-agent", agent_name);
 
     format!(
         r#"[Unit]
-Description=Sentinel {} Agent
-Documentation=https://sentinel.raskell.io/docs/agents/{}
-After=sentinel.service
-BindsTo=sentinel.service
-PartOf=sentinel.target
+Description=Zentinel {} Agent
+Documentation=https://zentinelproxy.io/docs/agents/{}
+After=zentinel.service
+BindsTo=zentinel.service
+PartOf=zentinel.target
 
 [Service]
 Type=simple
@@ -360,12 +360,12 @@ ExecStart={} --config {}
 Restart=on-failure
 RestartSec=5s
 
-User=sentinel
-Group=sentinel
+User=zentinel
+Group=zentinel
 
-Environment="RUST_LOG=info,sentinel_{}_agent=info"
+Environment="RUST_LOG=info,zentinel_{}_agent=info"
 
-RuntimeDirectory=sentinel
+RuntimeDirectory=zentinel
 RuntimeDirectoryMode=0755
 
 NoNewPrivileges=true
@@ -374,10 +374,10 @@ ProtectHome=true
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sentinel-{}
+SyslogIdentifier=zentinel-{}
 
 [Install]
-WantedBy=sentinel.target
+WantedBy=zentinel.target
 "#,
         agent_name,
         agent_name,
@@ -394,7 +394,7 @@ pub fn install_systemd_service(
     agent_name: &str,
     content: &str,
 ) -> Result<PathBuf, InstallError> {
-    let service_path = systemd_dir.join(format!("sentinel-{}.service", agent_name));
+    let service_path = systemd_dir.join(format!("zentinel-{}.service", agent_name));
 
     tracing::info!(
         path = %service_path.display(),
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn test_parse_version_output() {
         assert_eq!(
-            parse_version_output("sentinel-waf-agent 0.2.0"),
+            parse_version_output("zentinel-waf-agent 0.2.0"),
             Some("0.2.0".to_string())
         );
         assert_eq!(
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn test_parse_version_multiline() {
-        let output = "sentinel-waf-agent\nversion: 0.2.0\nbuilt with rustc";
+        let output = "zentinel-waf-agent\nversion: 0.2.0\nbuilt with rustc";
         assert_eq!(parse_version_output(output), Some("0.2.0".to_string()));
     }
 
@@ -452,7 +452,7 @@ mod tests {
         let paths = InstallPaths::system();
         assert!(paths.system_wide);
         assert_eq!(paths.bin_dir, PathBuf::from("/usr/local/bin"));
-        assert_eq!(paths.config_dir, PathBuf::from("/etc/sentinel/agents"));
+        assert_eq!(paths.config_dir, PathBuf::from("/etc/zentinel/agents"));
         assert_eq!(
             paths.systemd_dir,
             Some(PathBuf::from("/etc/systemd/system"))
@@ -469,12 +469,12 @@ mod tests {
 
     #[test]
     fn test_install_paths_with_prefix() {
-        let paths = InstallPaths::with_prefix(Path::new("/opt/sentinel"));
+        let paths = InstallPaths::with_prefix(Path::new("/opt/zentinel"));
         assert!(!paths.system_wide);
-        assert_eq!(paths.bin_dir, PathBuf::from("/opt/sentinel/bin"));
+        assert_eq!(paths.bin_dir, PathBuf::from("/opt/zentinel/bin"));
         assert_eq!(
             paths.config_dir,
-            PathBuf::from("/opt/sentinel/etc/sentinel/agents")
+            PathBuf::from("/opt/zentinel/etc/zentinel/agents")
         );
     }
 
@@ -485,7 +485,7 @@ mod tests {
         assert!(config.contains("modsecurity:"));
         assert!(config.contains("crs:"));
         assert!(config.contains("paranoia_level"));
-        assert!(config.contains("/var/run/sentinel/waf.sock"));
+        assert!(config.contains("/var/run/zentinel/waf.sock"));
     }
 
     #[test]
@@ -495,7 +495,7 @@ mod tests {
         assert!(config.contains("rules:"));
         assert!(config.contains("requests_per_second"));
         assert!(config.contains("burst"));
-        assert!(config.contains("/var/run/sentinel/ratelimit.sock"));
+        assert!(config.contains("/var/run/zentinel/ratelimit.sock"));
     }
 
     #[test]
@@ -505,33 +505,33 @@ mod tests {
         assert!(config.contains("ip_denylist:"));
         assert!(config.contains("path_denylist:"));
         assert!(config.contains("patterns:"));
-        assert!(config.contains("/var/run/sentinel/denylist.sock"));
+        assert!(config.contains("/var/run/zentinel/denylist.sock"));
     }
 
     #[test]
     fn test_generate_default_config_unknown() {
         let config = generate_default_config("custom");
         assert!(config.contains("custom agent configuration"));
-        assert!(config.contains("/var/run/sentinel/custom.sock"));
+        assert!(config.contains("/var/run/zentinel/custom.sock"));
     }
 
     #[test]
     fn test_generate_systemd_service() {
         let service = generate_systemd_service(
             "waf",
-            Path::new("/usr/local/bin/sentinel-waf-agent"),
-            Path::new("/etc/sentinel/agents/waf.yaml"),
+            Path::new("/usr/local/bin/zentinel-waf-agent"),
+            Path::new("/etc/zentinel/agents/waf.yaml"),
         );
 
         assert!(service.contains("[Unit]"));
         assert!(service.contains("[Service]"));
         assert!(service.contains("[Install]"));
-        assert!(service.contains("Description=Sentinel waf Agent"));
-        assert!(service.contains("ExecStart=/usr/local/bin/sentinel-waf-agent"));
-        assert!(service.contains("--config /etc/sentinel/agents/waf.yaml"));
-        assert!(service.contains("User=sentinel"));
-        assert!(service.contains("WantedBy=sentinel.target"));
-        assert!(service.contains("After=sentinel.service"));
+        assert!(service.contains("Description=Zentinel waf Agent"));
+        assert!(service.contains("ExecStart=/usr/local/bin/zentinel-waf-agent"));
+        assert!(service.contains("--config /etc/zentinel/agents/waf.yaml"));
+        assert!(service.contains("User=zentinel"));
+        assert!(service.contains("WantedBy=zentinel.target"));
+        assert!(service.contains("After=zentinel.service"));
     }
 
     #[test]

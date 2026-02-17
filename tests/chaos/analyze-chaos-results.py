@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sentinel Chaos Test Results Analyzer
+Zentinel Chaos Test Results Analyzer
 
 Analyzes chaos test results and generates a comprehensive report.
 Parses logs, metrics, and chaos events to provide insights.
@@ -244,12 +244,12 @@ class ChaosResultsAnalyzer:
         # Key metrics
         print("KEY METRICS")
         print("-" * 40)
-        self._print_metric("Agent failures", "sentinel_agent_failures_total")
-        self._print_metric("Agent timeouts", "sentinel_agent_timeouts_total")
-        self._print_metric("Agent bypasses (fail-open)", "sentinel_agent_bypasses_total")
-        self._print_metric("Circuit breaker opens", "sentinel_agent_circuit_breaker_opens_total")
-        self._print_metric("Upstream retries", "sentinel_upstream_retries_total")
-        self._print_metric("Health check failures", "sentinel_upstream_health_check_failures_total")
+        self._print_metric("Agent failures", "zentinel_agent_failures_total")
+        self._print_metric("Agent timeouts", "zentinel_agent_timeouts_total")
+        self._print_metric("Agent bypasses (fail-open)", "zentinel_agent_bypasses_total")
+        self._print_metric("Circuit breaker opens", "zentinel_agent_circuit_breaker_opens_total")
+        self._print_metric("Upstream retries", "zentinel_upstream_retries_total")
+        self._print_metric("Health check failures", "zentinel_upstream_health_check_failures_total")
         print()
 
         # Memory analysis
@@ -281,7 +281,7 @@ class ChaosResultsAnalyzer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze Sentinel chaos test results"
+        description="Analyze Zentinel chaos test results"
     )
     parser.add_argument(
         "results_dir",

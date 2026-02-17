@@ -24,8 +24,8 @@ listeners {
         address "0.0.0.0:8443"
         protocol "https"
         tls {
-            cert-file "/etc/sentinel/certs/site.crt"
-            key-file "/etc/sentinel/certs/site.key"
+            cert-file "/etc/zentinel/certs/site.crt"
+            key-file "/etc/zentinel/certs/site.key"
             min-version "TLS1.2"
         }
     }
@@ -220,7 +220,7 @@ observability {
 
         access-log {
             enabled #true
-            file "/var/log/sentinel/static-site-access.log"
+            file "/var/log/zentinel/static-site-access.log"
         }
     }
 }

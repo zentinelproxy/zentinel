@@ -2,10 +2,10 @@
 # TLS Certificate Rotation Tests
 #
 # Tests hot-reload of TLS certificates via SIGHUP signal.
-# Verifies that Sentinel picks up new certificates without restart.
+# Verifies that Zentinel picks up new certificates without restart.
 #
 # Prerequisites:
-# - Sentinel binary built
+# - Zentinel binary built
 # - Test certificates from tests/fixtures/tls/
 # - curl and openssl installed
 #
@@ -16,7 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FIXTURES_DIR="$PROJECT_ROOT/tests/fixtures/tls"
-SENTINEL_BIN="${SENTINEL_BIN:-$PROJECT_ROOT/target/debug/sentinel}"
+ZENTINEL_BIN="${ZENTINEL_BIN:-$PROJECT_ROOT/target/debug/zentinel}"
 
 # Test configuration
 TEST_PORT="${TEST_PORT:-18443}"
@@ -37,7 +37,7 @@ TESTS_FAILED=0
 TESTS_SKIPPED=0
 
 # Cleanup tracking
-SENTINEL_PID=""
+ZENTINEL_PID=""
 TEMP_DIR=""
 
 # Parse arguments
@@ -98,9 +98,9 @@ print_summary() {
 
 cleanup() {
     log_info "Cleaning up..."
-    if [[ -n "$SENTINEL_PID" ]] && kill -0 "$SENTINEL_PID" 2>/dev/null; then
-        kill "$SENTINEL_PID" 2>/dev/null || true
-        wait "$SENTINEL_PID" 2>/dev/null || true
+    if [[ -n "$ZENTINEL_PID" ]] && kill -0 "$ZENTINEL_PID" 2>/dev/null; then
+        kill "$ZENTINEL_PID" 2>/dev/null || true
+        wait "$ZENTINEL_PID" 2>/dev/null || true
     fi
     if [[ -n "$TEMP_DIR" ]] && [[ -d "$TEMP_DIR" ]]; then
         rm -rf "$TEMP_DIR"
@@ -123,13 +123,13 @@ check_prerequisites() {
         exit 1
     fi
 
-    if [[ ! -f "$SENTINEL_BIN" ]]; then
-        log_info "Building Sentinel..."
-        cargo build --package sentinel --quiet
+    if [[ ! -f "$ZENTINEL_BIN" ]]; then
+        log_info "Building Zentinel..."
+        cargo build --package zentinel --quiet
     fi
 
-    if [[ ! -f "$SENTINEL_BIN" ]]; then
-        log_fail "Sentinel binary not found: $SENTINEL_BIN"
+    if [[ ! -f "$ZENTINEL_BIN" ]]; then
+        log_fail "Zentinel binary not found: $ZENTINEL_BIN"
         exit 1
     fi
 
@@ -186,27 +186,27 @@ EOF
     echo "$config_file"
 }
 
-# Start Sentinel with test config
-start_sentinel() {
+# Start Zentinel with test config
+start_zentinel() {
     local config_file="$1"
 
-    log_info "Starting Sentinel..."
+    log_info "Starting Zentinel..."
 
-    "$SENTINEL_BIN" --config "$config_file" &
-    SENTINEL_PID=$!
+    "$ZENTINEL_BIN" --config "$config_file" &
+    ZENTINEL_PID=$!
 
     # Wait for startup
     local retries=20
     while [[ $retries -gt 0 ]]; do
         if curl -sk --connect-timeout 1 "$PROXY_URL/health" &> /dev/null; then
-            log_info "Sentinel started (PID: $SENTINEL_PID)"
+            log_info "Zentinel started (PID: $ZENTINEL_PID)"
             return 0
         fi
         sleep 0.5
         retries=$((retries - 1))
     done
 
-    log_fail "Sentinel failed to start"
+    log_fail "Zentinel failed to start"
     return 1
 }
 
@@ -259,8 +259,8 @@ test_cert_rotation_via_sighup() {
     cp "$FIXTURES_DIR/server-api.key" "$TEMP_KEY"
 
     # Send SIGHUP to trigger reload
-    log_info "Sending SIGHUP to Sentinel (PID: $SENTINEL_PID)..."
-    kill -HUP "$SENTINEL_PID"
+    log_info "Sending SIGHUP to Zentinel (PID: $ZENTINEL_PID)..."
+    kill -HUP "$ZENTINEL_PID"
 
     # Wait for reload to complete
     sleep 1
@@ -302,7 +302,7 @@ test_multiple_rotations() {
         cp "$FIXTURES_DIR/${cert_base}.crt" "$TEMP_CERT"
         cp "$FIXTURES_DIR/${cert_base}.key" "$TEMP_KEY"
 
-        kill -HUP "$SENTINEL_PID"
+        kill -HUP "$ZENTINEL_PID"
         sleep 1
 
         local current_serial
@@ -332,7 +332,7 @@ test_connection_stability() {
         if (( i % 3 == 0 )); then
             cp "$FIXTURES_DIR/server-default.crt" "$TEMP_CERT"
             cp "$FIXTURES_DIR/server-default.key" "$TEMP_KEY"
-            kill -HUP "$SENTINEL_PID"
+            kill -HUP "$ZENTINEL_PID"
         fi
 
         if curl -sk --connect-timeout 2 "$PROXY_URL/health" &> /dev/null; then
@@ -443,8 +443,8 @@ main() {
     local config_file
     config_file=$(create_test_config)
 
-    if ! start_sentinel "$config_file"; then
-        log_fail "Could not start Sentinel for online tests"
+    if ! start_zentinel "$config_file"; then
+        log_fail "Could not start Zentinel for online tests"
         print_summary
         exit 1
     fi

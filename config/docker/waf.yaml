@@ -8,7 +8,7 @@ engine:
 
 # Listener configuration
 listener:
-  socket_path: /var/run/sentinel/waf.sock
+  socket_path: /var/run/zentinel/waf.sock
   socket_permissions: 0666
   max_connections: 100
 
@@ -88,7 +88,7 @@ body_inspection:
 # Audit logging
 audit:
   enabled: true
-  log_dir: /var/log/sentinel-waf
+  log_dir: /var/log/zentinel-waf
   log_relevant: true
   format: json
   include:

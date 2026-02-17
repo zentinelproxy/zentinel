@@ -17,7 +17,7 @@ on:
       artifact-prefix:
         description: 'Prefix for artifact names to download'
         required: false
-        default: 'sentinel'
+        default: 'zentinel'
         type: string
       push:
         description: 'Push images to registry'
@@ -67,9 +67,9 @@ jobs:
           echo "Contents of artifacts directory:"
           find artifacts -type f -ls || true
 
-          if [ -f "artifacts/linux-amd64/sentinel" ]; then
+          if [ -f "artifacts/linux-amd64/zentinel" ]; then
             echo "amd64=true" >> $GITHUB_OUTPUT
-            chmod +x artifacts/linux-amd64/sentinel
+            chmod +x artifacts/linux-amd64/zentinel
             # Copy default config into artifact directory for Docker build
             # Preserve directory structure expected by Dockerfile
             mkdir -p artifacts/linux-amd64/config/docker
@@ -78,9 +78,9 @@ jobs:
             echo "amd64=false" >> $GITHUB_OUTPUT
           fi
 
-          if [ -f "artifacts/linux-arm64/sentinel" ]; then
+          if [ -f "artifacts/linux-arm64/zentinel" ]; then
             echo "arm64=true" >> $GITHUB_OUTPUT
-            chmod +x artifacts/linux-arm64/sentinel
+            chmod +x artifacts/linux-arm64/zentinel
             # Copy default config into artifact directory for Docker build
             mkdir -p artifacts/linux-arm64/config/docker
             cp config/docker/default.kdl artifacts/linux-arm64/config/docker/default.kdl
@@ -199,16 +199,16 @@ jobs:
       - name: Check echo-agent artifacts
         id: check-echo-artifacts
         run: |
-          if [ -f "artifacts/linux-amd64/sentinel-echo-agent" ]; then
+          if [ -f "artifacts/linux-amd64/zentinel-echo-agent" ]; then
             echo "echo-amd64=true" >> $GITHUB_OUTPUT
-            chmod +x artifacts/linux-amd64/sentinel-echo-agent
+            chmod +x artifacts/linux-amd64/zentinel-echo-agent
           else
             echo "echo-amd64=false" >> $GITHUB_OUTPUT
           fi
 
-          if [ -f "artifacts/linux-arm64/sentinel-echo-agent" ]; then
+          if [ -f "artifacts/linux-arm64/zentinel-echo-agent" ]; then
             echo "echo-arm64=true" >> $GITHUB_OUTPUT
-            chmod +x artifacts/linux-arm64/sentinel-echo-agent
+            chmod +x artifacts/linux-arm64/zentinel-echo-agent
           else
             echo "echo-arm64=false" >> $GITHUB_OUTPUT
           fi

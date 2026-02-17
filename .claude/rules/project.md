@@ -1,6 +1,6 @@
-# Sentinel Project Rules
+# Zentinel Project Rules
 
-These rules ensure contributions align with Sentinel's architecture and philosophy.
+These rules ensure contributions align with Zentinel's architecture and philosophy.
 
 ---
 
@@ -87,7 +87,7 @@ tracing::info!(
     "Request completed"
 );
 
-metrics::counter!("sentinel_requests_total",
+metrics::counter!("zentinel_requests_total",
     "route" => route.id.clone(),
     "status" => status_class
 ).increment(1);
@@ -231,8 +231,8 @@ Don't guess about performance:
 
 ```bash
 # Profile before optimizing
-cargo bench -p sentinel-proxy
-cargo flamegraph --bin sentinel
+cargo bench -p zentinel-proxy
+cargo flamegraph --bin zentinel
 ```
 
 ---

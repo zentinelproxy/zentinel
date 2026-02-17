@@ -1,12 +1,12 @@
-# Sentinel Code Patterns
+# Zentinel Code Patterns
 
-Specific patterns for working with Sentinel's codebase.
+Specific patterns for working with Zentinel's codebase.
 
 ---
 
 ## Pingora Patterns
 
-Sentinel builds on Cloudflare's Pingora framework. Follow these patterns when working with Pingora types.
+Zentinel builds on Cloudflare's Pingora framework. Follow these patterns when working with Pingora types.
 
 ### ProxyHttp Trait
 
@@ -16,7 +16,7 @@ The core proxy logic implements `pingora_proxy::ProxyHttp`:
 use pingora_proxy::{ProxyHttp, Session};
 use pingora_error::Result;
 
-impl ProxyHttp for SentinelProxy {
+impl ProxyHttp for ZentinelProxy {
     type CTX = RequestContext;
 
     fn new_ctx(&self) -> Self::CTX {
@@ -68,7 +68,7 @@ session.req_header_mut().insert_header("X-Request-Id", &request_id)?;
 session.req_header_mut().remove_header("X-Internal-Header");
 
 // Modifying response headers (in response_filter)
-response.insert_header("X-Served-By", "sentinel")?;
+response.insert_header("X-Served-By", "zentinel")?;
 ```
 
 ### HTTP Peer Selection
@@ -98,7 +98,7 @@ fn select_peer(upstream: &Upstream) -> Box<HttpPeer> {
 Always use the pool for agent communication:
 
 ```rust
-use sentinel_agent_protocol::v2::{AgentPool, AgentPoolConfig, LoadBalanceStrategy};
+use zentinel_agent_protocol::v2::{AgentPool, AgentPoolConfig, LoadBalanceStrategy};
 
 // Create pool (typically at startup)
 let config = AgentPoolConfig {
@@ -123,7 +123,7 @@ let decision = pool.send_request_headers("waf", &headers).await?;
 Handle all decision variants:
 
 ```rust
-use sentinel_agent_protocol::v2::Decision;
+use zentinel_agent_protocol::v2::Decision;
 
 match decision {
     Decision::Allow => {
@@ -150,7 +150,7 @@ match decision {
 Always handle agent failures:
 
 ```rust
-use sentinel_agent_protocol::v2::AgentProtocolError;
+use zentinel_agent_protocol::v2::AgentProtocolError;
 
 match pool.send_request_headers("auth", &headers).await {
     Ok(decision) => handle_decision(decision),
@@ -181,10 +181,10 @@ match pool.send_request_headers("auth", &headers).await {
 Use the config crate's parsing utilities:
 
 ```rust
-use sentinel_config::{Config, ConfigError};
+use zentinel_config::{Config, ConfigError};
 
 // Parse from file
-let config = Config::from_file("sentinel.kdl")?;
+let config = Config::from_file("zentinel.kdl")?;
 
 // Parse from string (useful in tests)
 let config = Config::from_str(r#"
@@ -235,7 +235,7 @@ Support env vars in config values:
 // port "${PORT:-8080}"  // With default
 
 // Parsing handles substitution automatically
-let config = Config::from_file_with_env("sentinel.kdl")?;
+let config = Config::from_file_with_env("zentinel.kdl")?;
 ```
 
 ---
@@ -303,14 +303,14 @@ let upstream = select_upstream(&route)
 use metrics::{counter, gauge, histogram};
 
 // Request counters
-counter!("sentinel_requests_total",
+counter!("zentinel_requests_total",
     "route" => route_id.clone(),
     "method" => method.to_string(),
     "status" => status_class(&response.status),
 ).increment(1);
 
 // Error counters
-counter!("sentinel_errors_total",
+counter!("zentinel_errors_total",
     "type" => error_type,
     "route" => route_id.clone(),
 ).increment(1);
@@ -320,12 +320,12 @@ counter!("sentinel_errors_total",
 
 ```rust
 // Latency histograms
-histogram!("sentinel_request_duration_seconds",
+histogram!("zentinel_request_duration_seconds",
     "route" => route_id.clone(),
 ).record(elapsed.as_secs_f64());
 
 // Size histograms
-histogram!("sentinel_request_size_bytes",
+histogram!("zentinel_request_size_bytes",
     "route" => route_id.clone(),
 ).record(request_size as f64);
 ```
@@ -334,10 +334,10 @@ histogram!("sentinel_request_size_bytes",
 
 ```rust
 // Connection gauges
-gauge!("sentinel_connections_active").set(active_count as f64);
+gauge!("zentinel_connections_active").set(active_count as f64);
 
 // Pool gauges
-gauge!("sentinel_upstream_pool_size",
+gauge!("zentinel_upstream_pool_size",
     "upstream" => upstream_name.clone(),
 ).set(pool_size as f64);
 ```
@@ -416,7 +416,7 @@ async fn full_proxy_request() {
         }
     "#).unwrap();
 
-    let proxy = SentinelProxy::from_config(config).await.unwrap();
+    let proxy = ZentinelProxy::from_config(config).await.unwrap();
     let addr = proxy.local_addr();
 
     let client = reqwest::Client::new();

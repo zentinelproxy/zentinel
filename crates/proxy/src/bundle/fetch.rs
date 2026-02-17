@@ -101,7 +101,7 @@ pub async fn download_agent(
     );
 
     let client = reqwest::Client::builder()
-        .user_agent("sentinel-bundle")
+        .user_agent("zentinel-bundle")
         .build()?;
 
     // Download the archive
@@ -377,10 +377,10 @@ mod tests {
     #[test]
     fn test_find_binary_nested() {
         let temp = tempfile::tempdir().unwrap();
-        let binary_name = "sentinel-waf-agent";
+        let binary_name = "zentinel-waf-agent";
 
         // Create deeply nested structure (like some release artifacts)
-        let nested = temp.path().join("sentinel-waf-agent-0.2.0").join("bin");
+        let nested = temp.path().join("zentinel-waf-agent-0.2.0").join("bin");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join(binary_name), "binary content").unwrap();
 

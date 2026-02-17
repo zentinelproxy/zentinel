@@ -2,10 +2,10 @@
 # mTLS Integration Tests
 #
 # Tests mutual TLS (client certificate authentication)
-# using a running Sentinel instance with mTLS configured.
+# using a running Zentinel instance with mTLS configured.
 #
 # Prerequisites:
-# - Sentinel running with mTLS enabled (client_auth: true)
+# - Zentinel running with mTLS enabled (client_auth: true)
 # - Test certificates from tests/fixtures/tls/
 # - curl with client certificate support
 #

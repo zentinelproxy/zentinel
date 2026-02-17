@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 /// Load metric type for P2C selection
 #[derive(Debug, Clone, Copy, Default)]
@@ -365,7 +365,7 @@ impl P2cBalancer {
 
 #[async_trait]
 impl LoadBalancer for P2cBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         // Select candidates
         let num_choices = if self.config.power_of_three { 3 } else { 2 };
 
@@ -388,13 +388,13 @@ impl LoadBalancer for P2cBalancer {
 
         if candidates.is_empty() {
             warn!("P2C: No healthy targets available");
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         // Select least loaded from candidates
         let target_index = self.select_least_loaded(candidates).await.ok_or_else(|| {
             warn!("P2C: Failed to select from candidates");
-            SentinelError::NoHealthyUpstream
+            ZentinelError::NoHealthyUpstream
         })?;
 
         let target = &self.targets[target_index];

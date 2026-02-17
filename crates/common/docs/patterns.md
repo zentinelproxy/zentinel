@@ -37,7 +37,7 @@ Failure isolation pattern to prevent cascade failures.
 ### Basic Usage
 
 ```rust
-use sentinel_common::{CircuitBreaker, CircuitBreakerConfig};
+use zentinel_common::{CircuitBreaker, CircuitBreakerConfig};
 
 // Configure thresholds
 let config = CircuitBreakerConfig {
@@ -76,7 +76,7 @@ async fn call_upstream(breaker: &CircuitBreaker) -> Result<Response, Error> {
 ### State Inspection
 
 ```rust
-use sentinel_common::CircuitBreakerState;
+use zentinel_common::CircuitBreakerState;
 
 // Get current state
 match breaker.state() {
@@ -107,7 +107,7 @@ Generic thread-safe component storage.
 ### Basic Usage
 
 ```rust
-use sentinel_common::Registry;
+use zentinel_common::Registry;
 
 // Create registry
 let routes: Registry<Route> = Registry::new();
@@ -192,7 +192,7 @@ Hierarchical registry with scope-based resolution.
 ### Setup
 
 ```rust
-use sentinel_common::{ScopedRegistry, QualifiedId, Scope};
+use zentinel_common::{ScopedRegistry, QualifiedId, Scope};
 
 let registry: ScopedRegistry<Policy> = ScopedRegistry::new();
 ```
@@ -262,7 +262,7 @@ Usage limits for inference endpoints.
 ### Configuration
 
 ```rust
-use sentinel_common::{TokenBudgetConfig, BudgetPeriod};
+use zentinel_common::{TokenBudgetConfig, BudgetPeriod};
 
 let config = TokenBudgetConfig {
     period: BudgetPeriod::Daily,
@@ -277,7 +277,7 @@ let config = TokenBudgetConfig {
 ### Budget Periods
 
 ```rust
-use sentinel_common::BudgetPeriod;
+use zentinel_common::BudgetPeriod;
 
 // Predefined periods
 let hourly = BudgetPeriod::Hourly;   // Resets every hour
@@ -294,7 +294,7 @@ let duration = daily.as_duration(); // 86400 seconds
 ### Checking Budget
 
 ```rust
-use sentinel_common::BudgetCheckResult;
+use zentinel_common::BudgetCheckResult;
 
 match tracker.check(estimated_tokens) {
     BudgetCheckResult::Allowed { remaining } => {
@@ -317,7 +317,7 @@ if result.is_allowed() {
 ### Budget Status
 
 ```rust
-use sentinel_common::TenantBudgetStatus;
+use zentinel_common::TenantBudgetStatus;
 
 let status = tracker.status();
 println!("Used: {} / {}", status.tokens_used, status.tokens_limit);
@@ -330,7 +330,7 @@ println!("Period: {} to {}", status.period_start, status.period_end);
 ### Alerts
 
 ```rust
-use sentinel_common::BudgetAlert;
+use zentinel_common::BudgetAlert;
 
 // Alerts triggered when thresholds crossed
 fn handle_alert(alert: BudgetAlert) {
@@ -351,7 +351,7 @@ Track costs for inference requests.
 ### Configuration
 
 ```rust
-use sentinel_common::{CostAttributionConfig, ModelPricing};
+use zentinel_common::{CostAttributionConfig, ModelPricing};
 
 let config = CostAttributionConfig {
     enabled: true,
@@ -395,7 +395,7 @@ assert!(!pricing.matches("gpt-3.5-turbo"));
 ### Cost Calculation
 
 ```rust
-use sentinel_common::CostResult;
+use zentinel_common::CostResult;
 
 // Calculate cost
 let cost = pricing.calculate_cost(1000, 500);
@@ -424,7 +424,7 @@ Advanced health checks for LLM backends.
 Send minimal completion request:
 
 ```rust
-use sentinel_common::InferenceProbeConfig;
+use zentinel_common::InferenceProbeConfig;
 
 let config = InferenceProbeConfig {
     endpoint: "/v1/completions".to_string(),
@@ -441,7 +441,7 @@ let config = InferenceProbeConfig {
 Query provider status endpoints:
 
 ```rust
-use sentinel_common::ModelStatusConfig;
+use zentinel_common::ModelStatusConfig;
 
 let config = ModelStatusConfig {
     endpoint_pattern: "/v1/models/{model}/status".to_string(),
@@ -457,7 +457,7 @@ let config = ModelStatusConfig {
 Monitor backend queue depth:
 
 ```rust
-use sentinel_common::QueueDepthConfig;
+use zentinel_common::QueueDepthConfig;
 
 let config = QueueDepthConfig {
     header: Some("X-Queue-Depth".to_string()),
@@ -474,7 +474,7 @@ let config = QueueDepthConfig {
 Detect cold models:
 
 ```rust
-use sentinel_common::{WarmthDetectionConfig, ColdModelAction};
+use zentinel_common::{WarmthDetectionConfig, ColdModelAction};
 
 let config = WarmthDetectionConfig {
     sample_size: 10,

@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use sentinel_agent_protocol::AgentClient;
+use zentinel_agent_protocol::AgentClient;
 use tracing::{debug, trace, warn};
 
 /// Agent connection pool for efficient connection reuse.

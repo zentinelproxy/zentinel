@@ -1,4 +1,4 @@
-//! Integration tests for Sentinel proxy.
+//! Integration tests for Zentinel proxy.
 //!
 //! These tests verify the end-to-end flow from configuration loading
 //! through agent processing to proxy operation.
@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, AgentServer, AuditMetadata, Decision, EventType, HeaderOp,
     RequestHeadersEvent, RequestMetadata,
 };
-use sentinel_common::CorrelationId;
-use sentinel_config::Config;
-use sentinel_proxy::agents::AgentDecision;
+use zentinel_common::CorrelationId;
+use zentinel_config::Config;
+use zentinel_proxy::agents::AgentDecision;
 
 // ============================================================================
 // Test Agent Implementation
@@ -215,7 +215,7 @@ async fn test_agent_server_client_roundtrip() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create client and send request
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),
@@ -276,7 +276,7 @@ async fn test_blocking_agent_rejects_request() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),
@@ -373,7 +373,7 @@ fn test_agent_decision_merge_block_wins() {
 
 #[test]
 fn test_agent_decision_headers_accumulate() {
-    use sentinel_agent_protocol::HeaderOp;
+    use zentinel_agent_protocol::HeaderOp;
 
     let mut decision1 = AgentDecision::default_allow();
     decision1.request_headers.push(HeaderOp::Set {
@@ -400,7 +400,7 @@ fn test_agent_decision_headers_accumulate() {
 #[test]
 fn test_config_from_file() {
     let dir = tempdir().unwrap();
-    let config_path = dir.path().join("sentinel.kdl");
+    let config_path = dir.path().join("zentinel.kdl");
 
     // Create config file
     std::fs::write(
@@ -458,7 +458,7 @@ fn test_correlation_id_type_safety() {
 
 #[test]
 fn test_route_and_upstream_ids_distinct() {
-    use sentinel_common::{RouteId, UpstreamId};
+    use zentinel_common::{RouteId, UpstreamId};
 
     let route_id = RouteId::new("my-route");
     let upstream_id = UpstreamId::new("my-upstream");
@@ -474,7 +474,7 @@ fn test_route_and_upstream_ids_distinct() {
 
 #[tokio::test]
 async fn test_registry_concurrent_access() {
-    use sentinel_common::Registry;
+    use zentinel_common::Registry;
 
     let registry: Registry<String> = Registry::new();
 
@@ -505,10 +505,10 @@ async fn test_registry_concurrent_access() {
 // ============================================================================
 
 #[test]
-fn test_sentinel_error_display() {
-    use sentinel_common::SentinelError;
+fn test_zentinel_error_display() {
+    use zentinel_common::ZentinelError;
 
-    let error = SentinelError::Config {
+    let error = ZentinelError::Config {
         message: "Invalid configuration".to_string(),
         source: None,
     };
@@ -518,16 +518,16 @@ fn test_sentinel_error_display() {
 }
 
 #[test]
-fn test_sentinel_error_to_http_status() {
-    use sentinel_common::SentinelError;
+fn test_zentinel_error_to_http_status() {
+    use zentinel_common::ZentinelError;
 
-    let config_error = SentinelError::Config {
+    let config_error = ZentinelError::Config {
         message: "test".to_string(),
         source: None,
     };
     assert_eq!(config_error.to_http_status(), 500);
 
-    let timeout_error = SentinelError::Timeout {
+    let timeout_error = ZentinelError::Timeout {
         operation: "test".to_string(),
         duration_ms: 1000,
         correlation_id: None,

@@ -20,9 +20,9 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tracing::{debug, trace, warn};
 
-use sentinel_common::ids::Scope;
-use sentinel_common::types::{CircuitBreakerConfig, CircuitBreakerState};
-use sentinel_common::CircuitBreaker;
+use zentinel_common::ids::Scope;
+use zentinel_common::types::{CircuitBreakerConfig, CircuitBreakerState};
+use zentinel_common::CircuitBreaker;
 
 /// Scope-aware circuit breaker manager.
 ///

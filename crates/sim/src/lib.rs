@@ -1,6 +1,6 @@
-//! Sentinel Configuration Simulator
+//! Zentinel Configuration Simulator
 //!
-//! A WASM-compatible simulation engine for Sentinel proxy configurations.
+//! A WASM-compatible simulation engine for Zentinel proxy configurations.
 //! This crate enables in-browser config validation and route decision tracing
 //! without running the actual proxy.
 //!
@@ -15,7 +15,7 @@
 //!
 //! # WASM Usage
 //!
-//! This crate is designed to compile to WebAssembly. Use the `sentinel-playground-wasm`
+//! This crate is designed to compile to WebAssembly. Use the `zentinel-playground-wasm`
 //! crate for JavaScript bindings.
 
 pub mod agents;
@@ -42,7 +42,7 @@ pub use agents::{
     AuditInfo, BlockResponse, ChallengeInfo, HeaderMutation, MockAgentResponse, TransformedRequest,
 };
 
-use sentinel_config::Config;
+use zentinel_config::Config;
 
 /// Validate a KDL configuration string
 ///
@@ -153,7 +153,7 @@ fn lint_config(config: &Config) -> Vec<Warning> {
 
     // Check for routes without upstreams (unless static/builtin)
     for route in &config.routes {
-        use sentinel_config::ServiceType;
+        use zentinel_config::ServiceType;
 
         if route.upstream.is_none()
             && route.static_files.is_none()
@@ -236,7 +236,7 @@ fn extract_agent_hooks(route: &MatchedRoute, config: &Config) -> Vec<AgentHook> 
             // Look up filter in config (filters is HashMap<String, FilterConfig>)
             if let Some(filter_config) = config.filters.get(filter_id) {
                 // Check if it's an agent filter
-                if let sentinel_config::Filter::Agent(agent_filter) = &filter_config.filter {
+                if let zentinel_config::Filter::Agent(agent_filter) = &filter_config.filter {
                     // Find agent config
                     let agent_config = config.agents.iter().find(|a| a.id == agent_filter.agent);
 

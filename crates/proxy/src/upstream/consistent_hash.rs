@@ -9,7 +9,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 use async_trait::async_trait;
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 use tracing::{debug, info, trace, warn};
 
 /// Hash function types supported by the consistent hash balancer
@@ -484,7 +484,7 @@ impl ConsistentHashBalancer {
 
 #[async_trait]
 impl LoadBalancer for ConsistentHashBalancer {
-    async fn select(&self, context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             has_context = context.is_some(),
             "Consistent hash select called"
@@ -505,7 +505,7 @@ impl LoadBalancer for ConsistentHashBalancer {
 
         let target_index = self.find_target(&hash_key).await.ok_or_else(|| {
             warn!("No healthy upstream targets available");
-            SentinelError::NoHealthyUpstream
+            ZentinelError::NoHealthyUpstream
         })?;
 
         let target = &self.targets[target_index];

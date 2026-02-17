@@ -7,16 +7,16 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::future::join_all;
 use pingora_timeout::timeout;
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     v2::MetricsCollector, AgentResponse, EventType, GuardrailInspectEvent, RequestBodyChunkEvent,
     RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketFrameEvent,
 };
-use sentinel_common::{
-    errors::{SentinelError, SentinelResult},
+use zentinel_common::{
+    errors::{ZentinelError, ZentinelResult},
     types::CircuitBreakerConfig,
     CircuitBreaker,
 };
-use sentinel_config::{AgentConfig, AgentProtocolVersion, FailureMode};
+use zentinel_config::{AgentConfig, AgentProtocolVersion, FailureMode};
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, trace, warn};
 
@@ -75,7 +75,7 @@ impl UnifiedAgent {
     }
 
     /// Initialize agent connection(s).
-    pub async fn initialize(&self) -> SentinelResult<()> {
+    pub async fn initialize(&self) -> ZentinelResult<()> {
         match self {
             UnifiedAgent::V1(agent) => agent.initialize().await,
             UnifiedAgent::V2(agent) => agent.initialize().await,
@@ -91,12 +91,12 @@ impl UnifiedAgent {
         &self,
         event_type: EventType,
         event: &T,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         match self {
             UnifiedAgent::V1(agent) => agent.call_event(event_type, event).await,
             UnifiedAgent::V2(agent) => {
                 // V2 uses typed methods - convert to appropriate event type
-                let json = serde_json::to_value(event).map_err(|e| SentinelError::Agent {
+                let json = serde_json::to_value(event).map_err(|e| ZentinelError::Agent {
                     agent: agent.id().to_string(),
                     message: format!("Failed to serialize event: {}", e),
                     event: format!("{:?}", event_type),
@@ -106,7 +106,7 @@ impl UnifiedAgent {
                 match event_type {
                     EventType::RequestHeaders => {
                         let typed_event: RequestHeadersEvent = serde_json::from_value(json)
-                            .map_err(|e| SentinelError::Agent {
+                            .map_err(|e| ZentinelError::Agent {
                                 agent: agent.id().to_string(),
                                 message: format!(
                                     "Failed to deserialize RequestHeadersEvent: {}",
@@ -119,7 +119,7 @@ impl UnifiedAgent {
                     }
                     EventType::RequestBodyChunk => {
                         let typed_event: RequestBodyChunkEvent = serde_json::from_value(json)
-                            .map_err(|e| SentinelError::Agent {
+                            .map_err(|e| ZentinelError::Agent {
                                 agent: agent.id().to_string(),
                                 message: format!(
                                     "Failed to deserialize RequestBodyChunkEvent: {}",
@@ -132,7 +132,7 @@ impl UnifiedAgent {
                     }
                     EventType::ResponseHeaders => {
                         let typed_event: ResponseHeadersEvent = serde_json::from_value(json)
-                            .map_err(|e| SentinelError::Agent {
+                            .map_err(|e| ZentinelError::Agent {
                                 agent: agent.id().to_string(),
                                 message: format!(
                                     "Failed to deserialize ResponseHeadersEvent: {}",
@@ -145,7 +145,7 @@ impl UnifiedAgent {
                     }
                     EventType::ResponseBodyChunk => {
                         let typed_event: ResponseBodyChunkEvent = serde_json::from_value(json)
-                            .map_err(|e| SentinelError::Agent {
+                            .map_err(|e| ZentinelError::Agent {
                                 agent: agent.id().to_string(),
                                 message: format!(
                                     "Failed to deserialize ResponseBodyChunkEvent: {}",
@@ -158,7 +158,7 @@ impl UnifiedAgent {
                     }
                     EventType::GuardrailInspect => {
                         let typed_event: GuardrailInspectEvent = serde_json::from_value(json)
-                            .map_err(|e| SentinelError::Agent {
+                            .map_err(|e| ZentinelError::Agent {
                                 agent: agent.id().to_string(),
                                 message: format!(
                                     "Failed to deserialize GuardrailInspectEvent: {}",
@@ -171,7 +171,7 @@ impl UnifiedAgent {
                     }
                     _ => {
                         // For unsupported event types, return error
-                        Err(SentinelError::Agent {
+                        Err(ZentinelError::Agent {
                             agent: agent.id().to_string(),
                             message: format!("V2 does not support event type {:?}", event_type),
                             event: format!("{:?}", event_type),
@@ -187,7 +187,7 @@ impl UnifiedAgent {
     pub async fn call_request_headers(
         &self,
         event: &RequestHeadersEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         match self {
             UnifiedAgent::V1(agent) => agent.call_event(EventType::RequestHeaders, event).await,
             UnifiedAgent::V2(agent) => agent.call_request_headers(event).await,
@@ -198,7 +198,7 @@ impl UnifiedAgent {
     pub async fn call_request_body_chunk(
         &self,
         event: &RequestBodyChunkEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         match self {
             UnifiedAgent::V1(agent) => agent.call_event(EventType::RequestBodyChunk, event).await,
             UnifiedAgent::V2(agent) => agent.call_request_body_chunk(event).await,
@@ -209,7 +209,7 @@ impl UnifiedAgent {
     pub async fn call_response_headers(
         &self,
         event: &ResponseHeadersEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         match self {
             UnifiedAgent::V1(agent) => agent.call_event(EventType::ResponseHeaders, event).await,
             UnifiedAgent::V2(agent) => agent.call_response_headers(event).await,
@@ -220,7 +220,7 @@ impl UnifiedAgent {
     pub async fn call_response_body_chunk(
         &self,
         event: &ResponseBodyChunkEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         match self {
             UnifiedAgent::V1(agent) => agent.call_event(EventType::ResponseBodyChunk, event).await,
             UnifiedAgent::V2(agent) => agent.call_response_body_chunk(event).await,
@@ -231,7 +231,7 @@ impl UnifiedAgent {
     pub async fn call_guardrail_inspect(
         &self,
         event: &GuardrailInspectEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         match self {
             UnifiedAgent::V1(agent) => agent.call_event(EventType::GuardrailInspect, event).await,
             UnifiedAgent::V2(agent) => agent.call_guardrail_inspect(event).await,
@@ -302,7 +302,7 @@ impl AgentManager {
     /// limit is configured per-agent via `max_concurrent_calls` in the agent config.
     ///
     /// Supports both v1 and v2 protocol agents based on the `protocol_version` field.
-    pub async fn new(agents: Vec<AgentConfig>) -> SentinelResult<Self> {
+    pub async fn new(agents: Vec<AgentConfig>) -> ZentinelResult<Self> {
         info!(agent_count = agents.len(), "Creating agent manager");
 
         let mut agent_map = HashMap::new();
@@ -423,7 +423,7 @@ impl AgentManager {
         ctx: &AgentCallContext,
         mut headers: HashMap<String, Vec<String>>,
         route_agents: &[(String, FailureMode)],
-    ) -> SentinelResult<AgentDecision> {
+    ) -> ZentinelResult<AgentDecision> {
         let method = headers
             .remove(":method")
             .and_then(|mut v| {
@@ -463,7 +463,7 @@ impl AgentManager {
         data: &[u8],
         is_last: bool,
         route_agents: &[String],
-    ) -> SentinelResult<AgentDecision> {
+    ) -> ZentinelResult<AgentDecision> {
         // Check body size limits
         let max_size = 1024 * 1024; // 1MB default
         if data.len() > max_size {
@@ -501,7 +501,7 @@ impl AgentManager {
         bytes_received: usize,
         total_size: Option<usize>,
         route_agents: &[String],
-    ) -> SentinelResult<AgentDecision> {
+    ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
             chunk_index = chunk_index,
@@ -534,7 +534,7 @@ impl AgentManager {
         bytes_sent: usize,
         total_size: Option<usize>,
         route_agents: &[String],
-    ) -> SentinelResult<AgentDecision> {
+    ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
             chunk_index = chunk_index,
@@ -564,7 +564,7 @@ impl AgentManager {
         status: u16,
         headers: &HashMap<String, Vec<String>>,
         route_agents: &[String],
-    ) -> SentinelResult<AgentDecision> {
+    ) -> ZentinelResult<AgentDecision> {
         let event = ResponseHeadersEvent {
             correlation_id: ctx.correlation_id.to_string(),
             status,
@@ -584,7 +584,7 @@ impl AgentManager {
         &self,
         route_id: &str,
         event: WebSocketFrameEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         trace!(
             correlation_id = %event.correlation_id,
             route_id = %route_id,
@@ -665,7 +665,7 @@ impl AgentManager {
                     if let Some(ref ws_decision) = response.websocket_decision {
                         if !matches!(
                             ws_decision,
-                            sentinel_agent_protocol::WebSocketDecision::Allow
+                            zentinel_agent_protocol::WebSocketDecision::Allow
                         ) {
                             debug!(
                                 correlation_id = %event.correlation_id,
@@ -726,7 +726,7 @@ impl AgentManager {
         event: &T,
         route_agents: &[String],
         ctx: &AgentCallContext,
-    ) -> SentinelResult<AgentDecision> {
+    ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
             event_type = ?event_type,
@@ -789,7 +789,7 @@ impl AgentManager {
                             agent_id = %agent.id(),
                             "Failed to acquire agent call semaphore permit"
                         );
-                        SentinelError::Internal {
+                        ZentinelError::Internal {
                             message: "Failed to acquire agent call permit".to_string(),
                             correlation_id: Some(ctx.correlation_id.to_string()),
                             source: None,
@@ -923,7 +923,7 @@ impl AgentManager {
         event: &T,
         route_agents: &[(String, FailureMode)],
         ctx: &AgentCallContext,
-    ) -> SentinelResult<AgentDecision> {
+    ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
             event_type = ?event_type,
@@ -986,7 +986,7 @@ impl AgentManager {
                         agent_id = %agent.id(),
                         "Failed to acquire agent call semaphore permit"
                     );
-                    SentinelError::Internal {
+                    ZentinelError::Internal {
                         message: "Failed to acquire agent call permit".to_string(),
                         correlation_id: Some(ctx.correlation_id.to_string()),
                         source: None,
@@ -1148,7 +1148,7 @@ impl AgentManager {
         event: &T,
         route_agents: &[(String, FailureMode)],
         ctx: &AgentCallContext,
-    ) -> SentinelResult<AgentDecision> {
+    ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
             event_type = ?event_type,
@@ -1372,9 +1372,9 @@ impl AgentManager {
         &self,
         agent_name: &str,
         event: GuardrailInspectEvent,
-    ) -> SentinelResult<AgentResponse> {
+    ) -> ZentinelResult<AgentResponse> {
         let agents = self.agents.read().await;
-        let agent = agents.get(agent_name).ok_or_else(|| SentinelError::Agent {
+        let agent = agents.get(agent_name).ok_or_else(|| ZentinelError::Agent {
             agent: agent_name.to_string(),
             message: format!("Agent '{}' not found", agent_name),
             event: "guardrail_inspect".to_string(),
@@ -1393,7 +1393,7 @@ impl AgentManager {
             Some(
                 sem.acquire_owned()
                     .await
-                    .map_err(|_| SentinelError::Agent {
+                    .map_err(|_| ZentinelError::Agent {
                         agent: agent_name.to_string(),
                         message: "Failed to acquire agent call permit".to_string(),
                         event: "guardrail_inspect".to_string(),
@@ -1406,7 +1406,7 @@ impl AgentManager {
 
         // Check circuit breaker
         if !agent.circuit_breaker().is_closed() {
-            return Err(SentinelError::Agent {
+            return Err(ZentinelError::Agent {
                 agent: agent_name.to_string(),
                 message: "Circuit breaker open".to_string(),
                 event: "guardrail_inspect".to_string(),
@@ -1428,7 +1428,7 @@ impl AgentManager {
             }
             Err(_) => {
                 agent.record_timeout().await;
-                Err(SentinelError::Agent {
+                Err(ZentinelError::Agent {
                     agent: agent_name.to_string(),
                     message: format!(
                         "Guardrail agent call timed out after {}ms",
@@ -1442,7 +1442,7 @@ impl AgentManager {
     }
 
     /// Initialize agent connections.
-    pub async fn initialize(&self) -> SentinelResult<()> {
+    pub async fn initialize(&self) -> ZentinelResult<()> {
         let agents = self.agents.read().await;
 
         info!(agent_count = agents.len(), "Initializing agent connections");

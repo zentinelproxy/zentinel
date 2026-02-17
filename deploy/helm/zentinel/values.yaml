@@ -1,4 +1,4 @@
-# Default values for sentinel helm chart.
+# Default values for zentinel helm chart.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
@@ -27,7 +27,7 @@ proxy:
   replicaCount: 3
 
   image:
-    repository: ghcr.io/raskell-io/sentinel
+    repository: ghcr.io/zentinelproxy/zentinel
     pullPolicy: IfNotPresent
     tag: ""  # Defaults to chart appVersion
 
@@ -67,14 +67,14 @@ proxy:
       # kubernetes.io/tls-acme: "true"
       # cert-manager.io/cluster-issuer: letsencrypt-prod
     hosts:
-      - host: sentinel.example.com
+      - host: zentinel.example.com
         paths:
           - path: /
             pathType: Prefix
     tls: []
-    #  - secretName: sentinel-tls
+    #  - secretName: zentinel-tls
     #    hosts:
-    #      - sentinel.example.com
+    #      - zentinel.example.com
 
   # Configuration
   config:
@@ -89,8 +89,8 @@ proxy:
           address "0.0.0.0:8443"
           protocol "https"
           tls {
-              cert "/etc/sentinel/tls/tls.crt"
-              key "/etc/sentinel/tls/tls.key"
+              cert "/etc/zentinel/tls/tls.crt"
+              key "/etc/zentinel/tls/tls.key"
           }
       }
 
@@ -205,7 +205,7 @@ proxy:
             - key: app.kubernetes.io/name
               operator: In
               values:
-              - sentinel-proxy
+              - zentinel-proxy
           topologyKey: kubernetes.io/hostname
 
   # Persistence
@@ -240,7 +240,7 @@ ratelimit:
   replicaCount: 2
 
   image:
-    repository: ghcr.io/raskell-io/sentinel-ratelimit
+    repository: ghcr.io/zentinelproxy/zentinel-ratelimit
     pullPolicy: IfNotPresent
     tag: ""
 
@@ -290,7 +290,7 @@ waf:
   replicaCount: 2
 
   image:
-    repository: ghcr.io/raskell-io/sentinel-waf
+    repository: ghcr.io/zentinelproxy/zentinel-waf
     pullPolicy: IfNotPresent
     tag: ""
 
@@ -362,7 +362,7 @@ denylist:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/raskell-io/sentinel-denylist
+    repository: ghcr.io/zentinelproxy/zentinel-denylist
     pullPolicy: IfNotPresent
     tag: ""
 
@@ -394,7 +394,7 @@ echo:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/raskell-io/sentinel-echo-agent
+    repository: ghcr.io/zentinelproxy/zentinel-echo-agent
     pullPolicy: IfNotPresent
     tag: ""
 
@@ -411,7 +411,7 @@ agents:
   # Unix socket configuration
   unixSocket:
     enabled: true
-    directory: /var/run/sentinel
+    directory: /var/run/zentinel
     permissions: "0660"
 
   # Network configuration (alternative to unix socket)
@@ -440,17 +440,17 @@ monitoring:
     enabled: true
     additionalLabels: {}
     rules:
-      - alert: SentinelProxyDown
-        expr: up{job="sentinel-proxy"} == 0
+      - alert: ZentinelProxyDown
+        expr: up{job="zentinel-proxy"} == 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "Sentinel proxy is down"
-          description: "Sentinel proxy {{ $labels.instance }} has been down for more than 5 minutes."
+          summary: "Zentinel proxy is down"
+          description: "Zentinel proxy {{ $labels.instance }} has been down for more than 5 minutes."
 
-      - alert: SentinelHighLatency
-        expr: histogram_quantile(0.99, rate(sentinel_request_duration_seconds_bucket[5m])) > 0.5
+      - alert: ZentinelHighLatency
+        expr: histogram_quantile(0.99, rate(zentinel_request_duration_seconds_bucket[5m])) > 0.5
         for: 10m
         labels:
           severity: warning
@@ -458,8 +458,8 @@ monitoring:
           summary: "High latency detected"
           description: "99th percentile latency is above 500ms for more than 10 minutes."
 
-      - alert: SentinelHighErrorRate
-        expr: rate(sentinel_requests_total{status=~"5.."}[5m]) > 0.05
+      - alert: ZentinelHighErrorRate
+        expr: rate(zentinel_requests_total{status=~"5.."}[5m]) > 0.05
         for: 5m
         labels:
           severity: warning
@@ -467,7 +467,7 @@ monitoring:
           summary: "High error rate detected"
           description: "Error rate is above 5% for more than 5 minutes."
 
-      - alert: SentinelWAFHighBlockRate
+      - alert: ZentinelWAFHighBlockRate
         expr: rate(waf_requests_blocked_total[5m]) > 10
         for: 5m
         labels:
@@ -526,7 +526,7 @@ security:
       - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: sentinel
+              app.kubernetes.io/name: zentinel
     egress:
       - to:
         - podSelector:

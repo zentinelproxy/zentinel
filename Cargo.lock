@@ -5069,7 +5069,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-agent-protocol"
+name = "zentinel-agent-protocol"
 version = "0.5.0"
 dependencies = [
  "anyhow",
@@ -5090,7 +5090,7 @@ dependencies = [
  "reqwest 0.13.2",
  "rmp-serde",
  "rustls",
- "sentinel-common",
+ "zentinel-common",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -5109,7 +5109,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-common"
+name = "zentinel-common"
 version = "0.5.0"
 dependencies = [
  "anyhow",
@@ -5131,7 +5131,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-config"
+name = "zentinel-config"
 version = "0.5.0"
 dependencies = [
  "anyhow",
@@ -5148,7 +5148,7 @@ dependencies = [
  "parking_lot",
  "pem",
  "proptest",
- "sentinel-common",
+ "zentinel-common",
  "serde",
  "serde_json",
  "tempfile",
@@ -5162,7 +5162,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-data-masking-agent"
+name = "zentinel-data-masking-agent"
 version = "0.5.0"
 dependencies = [
  "aes",
@@ -5174,8 +5174,8 @@ dependencies = [
  "dashmap",
  "quick-xml",
  "regex",
- "sentinel-agent-protocol",
- "sentinel-common",
+ "zentinel-agent-protocol",
+ "zentinel-common",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -5190,15 +5190,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-echo-agent"
+name = "zentinel-echo-agent"
 version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
  "clap",
- "sentinel-agent-protocol",
- "sentinel-common",
+ "zentinel-agent-protocol",
+ "zentinel-common",
  "serde",
  "serde_json",
  "tempfile",
@@ -5210,7 +5210,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-proxy"
+name = "zentinel-proxy"
 version = "0.5.0"
 dependencies = [
  "anyhow",
@@ -5269,9 +5269,9 @@ dependencies = [
  "reqwest 0.13.2",
  "rustls",
  "rustls-pemfile 2.2.0",
- "sentinel-agent-protocol",
- "sentinel-common",
- "sentinel-config",
+ "zentinel-agent-protocol",
+ "zentinel-common",
+ "zentinel-config",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -5301,7 +5301,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-stack"
+name = "zentinel-stack"
 version = "0.5.0"
 dependencies = [
  "anyhow",
@@ -5318,7 +5318,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-wasm-runtime"
+name = "zentinel-wasm-runtime"
 version = "0.5.0"
 dependencies = [
  "anyhow",
@@ -5326,7 +5326,7 @@ dependencies = [
  "bytes",
  "chrono",
  "parking_lot",
- "sentinel-agent-protocol",
+ "zentinel-agent-protocol",
  "serde",
  "serde_json",
  "tempfile",

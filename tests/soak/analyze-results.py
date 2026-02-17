@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sentinel Soak Test Results Analyzer
+Zentinel Soak Test Results Analyzer
 
 Analyzes memory usage data from soak tests to detect memory leaks
 using statistical methods.
@@ -234,7 +234,7 @@ def main():
         sys.exit(1)
 
     print("=" * 60)
-    print("     Sentinel Soak Test Analysis")
+    print("     Zentinel Soak Test Analysis")
     print("=" * 60)
     print()
 

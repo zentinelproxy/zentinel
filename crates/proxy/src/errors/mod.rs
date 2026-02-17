@@ -1,4 +1,4 @@
-//! Error handling module for Sentinel proxy
+//! Error handling module for Zentinel proxy
 //!
 //! This module provides customizable error page generation for different
 //! service types (web, API, static) and formats (HTML, JSON, text, XML).
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use sentinel_config::{ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType};
+use zentinel_config::{ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType};
 
 /// Error response generator
 pub struct ErrorHandler {

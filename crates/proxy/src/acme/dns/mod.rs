@@ -25,7 +25,7 @@
 //!
 //!     dns-provider {
 //!         type "hetzner"
-//!         credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+//!         credentials-file "/etc/zentinel/secrets/hetzner-dns.json"
 //!         api-timeout-secs 30
 //!
 //!         propagation {

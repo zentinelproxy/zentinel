@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sentinel Playground WASM Test</title>
+    <title>Zentinel Playground WASM Test</title>
     <style>
         body {
             font-family: system-ui, -apple-system, sans-serif;
@@ -66,13 +66,13 @@
     </style>
 </head>
 <body>
-    <h1>Sentinel Playground WASM Test</h1>
+    <h1>Zentinel Playground WASM Test</h1>
 
     <div id="status" class="status loading">Loading WASM module...</div>
 
     <h2>1. Validate Configuration</h2>
     <div class="section">
-        <textarea id="config">// Sentinel Basic Configuration Example
+        <textarea id="config">// Zentinel Basic Configuration Example
 system {
     worker-threads 0
     max-connections 10000
@@ -187,7 +187,7 @@ limits {
             create_sample_request,
             get_version,
             init_panic_hook
-        } from './pkg/sentinel_playground_wasm.js';
+        } from './pkg/zentinel_playground_wasm.js';
 
         let wasmReady = false;
 

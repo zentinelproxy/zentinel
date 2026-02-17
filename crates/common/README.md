@@ -1,10 +1,10 @@
-# Sentinel Common
+# Zentinel Common
 
-Shared types, utilities, and infrastructure for all Sentinel components.
+Shared types, utilities, and infrastructure for all Zentinel components.
 
 ## Overview
 
-The `sentinel-common` crate provides the foundational building blocks used across the Sentinel platform:
+The `zentinel-common` crate provides the foundational building blocks used across the Zentinel platform:
 
 - **Type-safe identifiers** - Compile-time safety for IDs and scopes
 - **Error handling** - Comprehensive error types with HTTP mapping
@@ -33,7 +33,7 @@ The `sentinel-common` crate provides the foundational building blocks used acros
 ## Quick Start
 
 ```rust
-use sentinel_common::{
+use zentinel_common::{
     // Identifiers
     RouteId, UpstreamId, Scope, QualifiedId, CorrelationId,
 
@@ -41,7 +41,7 @@ use sentinel_common::{
     HttpMethod, LoadBalancingAlgorithm, CircuitBreakerConfig,
 
     // Errors
-    SentinelError, SentinelResult,
+    ZentinelError, ZentinelResult,
 
     // Limits
     Limits, RateLimiter,
@@ -84,7 +84,7 @@ Detailed documentation is available in the [`docs/`](./docs/) directory:
 
 ## Hierarchical Scoping
 
-Sentinel supports hierarchical configuration with scope-based resolution:
+Zentinel supports hierarchical configuration with scope-based resolution:
 
 ```
 Global
@@ -95,7 +95,7 @@ Global
 Names resolve through the scope chain (most specific wins):
 
 ```rust
-use sentinel_common::{Scope, ScopedRegistry};
+use zentinel_common::{Scope, ScopedRegistry};
 
 let registry: ScopedRegistry<Config> = ScopedRegistry::new();
 
@@ -119,11 +119,11 @@ let config = registry.resolve("timeout", &scope);
 All errors map to appropriate HTTP status codes:
 
 ```rust
-use sentinel_common::{SentinelError, SentinelResult};
+use zentinel_common::{ZentinelError, ZentinelResult};
 
-fn process_request() -> SentinelResult<Response> {
+fn process_request() -> ZentinelResult<Response> {
     // Errors automatically map to HTTP status
-    Err(SentinelError::RateLimit {
+    Err(ZentinelError::RateLimit {
         message: "Too many requests".to_string(),
         retry_after_secs: Some(60),
     })
@@ -145,14 +145,14 @@ match result {
 Hard bounds prevent resource exhaustion:
 
 ```rust
-use sentinel_common::Limits;
+use zentinel_common::Limits;
 
 // Production defaults
 let limits = Limits::for_production();
 
 // Check before processing
 if body.len() > limits.max_body_size_bytes {
-    return Err(SentinelError::LimitExceeded {
+    return Err(ZentinelError::LimitExceeded {
         limit_type: LimitType::BodySize,
         message: "Request body too large".to_string(),
         current_value: body.len() as u64,
@@ -166,7 +166,7 @@ if body.len() > limits.max_body_size_bytes {
 Prometheus metrics with automatic registration:
 
 ```rust
-use sentinel_common::RequestMetrics;
+use zentinel_common::RequestMetrics;
 
 let metrics = RequestMetrics::new();
 
@@ -187,7 +187,7 @@ metrics.set_circuit_breaker_state("upstream", "api", true);
 Failure isolation with automatic recovery:
 
 ```rust
-use sentinel_common::{CircuitBreaker, CircuitBreakerConfig};
+use zentinel_common::{CircuitBreaker, CircuitBreakerConfig};
 
 let config = CircuitBreakerConfig {
     failure_threshold: 5,
@@ -200,7 +200,7 @@ let breaker = CircuitBreaker::new(config);
 
 // Check before calling
 if !breaker.is_closed() {
-    return Err(SentinelError::CircuitBreakerOpen { ... });
+    return Err(ZentinelError::CircuitBreakerOpen { ... });
 }
 
 // Record result
@@ -221,7 +221,7 @@ match upstream_call().await {
 For inference routes with usage limits:
 
 ```rust
-use sentinel_common::{TokenBudgetConfig, BudgetPeriod, BudgetCheckResult};
+use zentinel_common::{TokenBudgetConfig, BudgetPeriod, BudgetCheckResult};
 
 let config = TokenBudgetConfig {
     period: BudgetPeriod::Daily,
@@ -237,7 +237,7 @@ match budget_tracker.check(estimated_tokens) {
         // Process request
     }
     BudgetCheckResult::Exhausted { retry_after_secs } => {
-        return Err(SentinelError::LimitExceeded { ... });
+        return Err(ZentinelError::LimitExceeded { ... });
     }
     BudgetCheckResult::Soft { remaining, over_by } => {
         // Allowed via burst allowance

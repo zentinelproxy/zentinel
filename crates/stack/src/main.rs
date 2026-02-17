@@ -1,6 +1,6 @@
-//! sentinel-stack: All-in-one launcher for Sentinel proxy and agents
+//! zentinel-stack: All-in-one launcher for Zentinel proxy and agents
 //!
-//! Spawns and manages Sentinel proxy along with configured agents as child processes.
+//! Spawns and manages Zentinel proxy along with configured agents as child processes.
 //! Designed for development and simple production deployments.
 
 use std::collections::HashMap;
@@ -16,12 +16,12 @@ use tokio::process::{Child, Command};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
-/// sentinel-stack: All-in-one launcher for Sentinel proxy and agents
+/// zentinel-stack: All-in-one launcher for Zentinel proxy and agents
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to sentinel configuration file
-    #[arg(short, long, default_value = "sentinel.kdl")]
+    /// Path to zentinel configuration file
+    #[arg(short, long, default_value = "zentinel.kdl")]
     config: PathBuf,
 
     /// Log level (trace, debug, info, warn, error)
@@ -49,7 +49,7 @@ struct Args {
     startup_timeout: u64,
 }
 
-/// Agent configuration for sentinel-stack
+/// Agent configuration for zentinel-stack
 #[derive(Debug, Clone)]
 struct AgentConfig {
     id: String,
@@ -250,7 +250,7 @@ fn get_child_int(node: &kdl::KdlNode, name: &str) -> Option<i64> {
         .map(|v| v as i64)
 }
 
-/// Parse agent configurations from the sentinel config
+/// Parse agent configurations from the zentinel config
 fn parse_agent_configs(config_path: &PathBuf) -> Result<Vec<AgentConfig>> {
     // Read and parse the KDL config
     let content = std::fs::read_to_string(config_path)
@@ -353,7 +353,7 @@ async fn main() -> Result<()> {
     info!(
         config = ?args.config,
         version = env!("CARGO_PKG_VERSION"),
-        "Starting sentinel-stack"
+        "Starting zentinel-stack"
     );
 
     // Parse configuration
@@ -427,9 +427,9 @@ async fn main() -> Result<()> {
     let mut proxy: Option<Child> = None;
 
     if !args.agents_only {
-        info!(config = ?args.config, "Starting Sentinel proxy");
+        info!(config = ?args.config, "Starting Zentinel proxy");
 
-        let proxy_child = Command::new("sentinel")
+        let proxy_child = Command::new("zentinel")
             .arg("--config")
             .arg(&args.config)
             .stdin(Stdio::null())
@@ -437,15 +437,15 @@ async fn main() -> Result<()> {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()
-            .context("Failed to spawn Sentinel proxy")?;
+            .context("Failed to spawn Zentinel proxy")?;
 
         let pid = proxy_child.id().unwrap_or(0);
-        info!(pid = pid, "Sentinel proxy started");
+        info!(pid = pid, "Zentinel proxy started");
         proxy = Some(proxy_child);
     }
 
     // Main monitoring loop
-    info!("sentinel-stack running, press Ctrl+C to stop");
+    info!("zentinel-stack running, press Ctrl+C to stop");
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -521,6 +521,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    info!("sentinel-stack shutdown complete");
+    info!("zentinel-stack shutdown complete");
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! Limits and rate limiting for Sentinel proxy
+//! Limits and rate limiting for Zentinel proxy
 //!
 //! This module implements bounded limits for all resources to ensure predictable
 //! behavior and prevent resource exhaustion - core to "sleepable ops".
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
 
-use crate::errors::{LimitType, SentinelError, SentinelResult};
+use crate::errors::{LimitType, ZentinelError, ZentinelResult};
 
 /// System-wide limits configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,30 +129,30 @@ impl Limits {
     }
 
     /// Validate the limits configuration
-    pub fn validate(&self) -> SentinelResult<()> {
+    pub fn validate(&self) -> ZentinelResult<()> {
         if self.max_header_size_bytes == 0 {
-            return Err(SentinelError::Config {
+            return Err(ZentinelError::Config {
                 message: "max_header_size_bytes must be greater than 0".to_string(),
                 source: None,
             });
         }
 
         if self.max_header_count == 0 {
-            return Err(SentinelError::Config {
+            return Err(ZentinelError::Config {
                 message: "max_header_count must be greater than 0".to_string(),
                 source: None,
             });
         }
 
         if self.max_body_buffer_bytes > self.max_body_size_bytes {
-            return Err(SentinelError::Config {
+            return Err(ZentinelError::Config {
                 message: "max_body_buffer_bytes cannot exceed max_body_size_bytes".to_string(),
                 source: None,
             });
         }
 
         if self.max_decompression_ratio <= 0.0 {
-            return Err(SentinelError::Config {
+            return Err(ZentinelError::Config {
                 message: "max_decompression_ratio must be positive".to_string(),
                 source: None,
             });
@@ -160,7 +160,7 @@ impl Limits {
 
         if let Some(pct) = self.max_memory_percent {
             if pct <= 0.0 || pct > 100.0 {
-                return Err(SentinelError::Config {
+                return Err(ZentinelError::Config {
                     message: "max_memory_percent must be between 0 and 100".to_string(),
                     source: None,
                 });
@@ -171,9 +171,9 @@ impl Limits {
     }
 
     /// Check if a header size exceeds limits
-    pub fn check_header_size(&self, size: usize) -> SentinelResult<()> {
+    pub fn check_header_size(&self, size: usize) -> ZentinelResult<()> {
         if size > self.max_header_size_bytes {
-            return Err(SentinelError::limit_exceeded(
+            return Err(ZentinelError::limit_exceeded(
                 LimitType::HeaderSize,
                 size,
                 self.max_header_size_bytes,
@@ -183,9 +183,9 @@ impl Limits {
     }
 
     /// Check if header count exceeds limits
-    pub fn check_header_count(&self, count: usize) -> SentinelResult<()> {
+    pub fn check_header_count(&self, count: usize) -> ZentinelResult<()> {
         if count > self.max_header_count {
-            return Err(SentinelError::limit_exceeded(
+            return Err(ZentinelError::limit_exceeded(
                 LimitType::HeaderCount,
                 count,
                 self.max_header_count,
@@ -195,9 +195,9 @@ impl Limits {
     }
 
     /// Check if body size exceeds limits
-    pub fn check_body_size(&self, size: usize) -> SentinelResult<()> {
+    pub fn check_body_size(&self, size: usize) -> ZentinelResult<()> {
         if size > self.max_body_size_bytes {
-            return Err(SentinelError::limit_exceeded(
+            return Err(ZentinelError::limit_exceeded(
                 LimitType::BodySize,
                 size,
                 self.max_body_size_bytes,
@@ -331,7 +331,7 @@ impl MultiRateLimiter {
     }
 
     /// Check if request is allowed for client and route
-    pub fn check_request(&self, client_id: &str, route: &str) -> SentinelResult<()> {
+    pub fn check_request(&self, client_id: &str, route: &str) -> ZentinelResult<()> {
         trace!(
             client_id = %client_id,
             route = %route,
@@ -346,7 +346,7 @@ impl MultiRateLimiter {
                     route = %route,
                     "Global rate limit exceeded"
                 );
-                return Err(SentinelError::RateLimit {
+                return Err(ZentinelError::RateLimit {
                     message: "Global rate limit exceeded".to_string(),
                     limit: limiter.capacity,
                     window_seconds: 10,
@@ -368,7 +368,7 @@ impl MultiRateLimiter {
                     route = %route,
                     "Per-client rate limit exceeded"
                 );
-                return Err(SentinelError::RateLimit {
+                return Err(ZentinelError::RateLimit {
                     message: format!("Rate limit exceeded for client {}", client_id),
                     limit: capacity,
                     window_seconds: 10,
@@ -390,7 +390,7 @@ impl MultiRateLimiter {
                     route = %route,
                     "Per-route rate limit exceeded"
                 );
-                return Err(SentinelError::RateLimit {
+                return Err(ZentinelError::RateLimit {
                     message: format!("Rate limit exceeded for route {}", route),
                     limit: capacity,
                     window_seconds: 10,
@@ -489,7 +489,7 @@ impl ConnectionLimiter {
     }
 
     /// Try to acquire a connection slot
-    pub fn try_acquire(&self, client_id: &str, route: &str) -> SentinelResult<ConnectionGuard<'_>> {
+    pub fn try_acquire(&self, client_id: &str, route: &str) -> ZentinelResult<ConnectionGuard<'_>> {
         trace!(
             client_id = %client_id,
             route = %route,
@@ -505,7 +505,7 @@ impl ConnectionLimiter {
                     max = self.limits.max_total_connections,
                     "Total connection limit exceeded"
                 );
-                return Err(SentinelError::limit_exceeded(
+                return Err(ZentinelError::limit_exceeded(
                     LimitType::ConnectionCount,
                     *total,
                     self.limits.max_total_connections,
@@ -527,7 +527,7 @@ impl ConnectionLimiter {
                     max = self.limits.max_connections_per_client,
                     "Per-client connection limit exceeded"
                 );
-                return Err(SentinelError::limit_exceeded(
+                return Err(ZentinelError::limit_exceeded(
                     LimitType::ConnectionCount,
                     *client_count,
                     self.limits.max_connections_per_client,
@@ -550,7 +550,7 @@ impl ConnectionLimiter {
                     max = self.limits.max_connections_per_route,
                     "Per-route connection limit exceeded"
                 );
-                return Err(SentinelError::limit_exceeded(
+                return Err(ZentinelError::limit_exceeded(
                     LimitType::ConnectionCount,
                     *route_count,
                     self.limits.max_connections_per_route,

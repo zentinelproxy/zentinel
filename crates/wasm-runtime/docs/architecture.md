@@ -86,7 +86,7 @@ Comprehensive error handling:
 ## Request Flow
 
 ```
-1. Request arrives at Sentinel
+1. Request arrives at Zentinel
            │
            ▼
 2. Route matches, WASM agent configured

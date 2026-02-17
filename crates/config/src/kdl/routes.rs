@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::trace;
 
-use sentinel_common::budget::{
+use zentinel_common::budget::{
     BudgetPeriod, CostAttributionConfig, ModelPricing, TokenBudgetConfig,
 };
 
@@ -161,11 +161,11 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
     Ok(matches)
 }
 
-fn parse_priority(node: &kdl::KdlNode) -> sentinel_common::types::Priority {
+fn parse_priority(node: &kdl::KdlNode) -> zentinel_common::types::Priority {
     match get_string_entry(node, "priority").as_deref() {
-        Some("high") => sentinel_common::types::Priority::High,
-        Some("low") => sentinel_common::types::Priority::Low,
-        _ => sentinel_common::types::Priority::Normal,
+        Some("high") => zentinel_common::types::Priority::High,
+        Some("low") => zentinel_common::types::Priority::Low,
+        _ => zentinel_common::types::Priority::Normal,
     }
 }
 
@@ -358,7 +358,7 @@ fn parse_api_schema_config_opt(node: &kdl::KdlNode) -> Result<Option<ApiSchemaCo
 /// Example KDL with external file:
 /// ```kdl
 /// api-schema {
-///     schema-file "/etc/sentinel/schemas/api-v1.yaml"
+///     schema-file "/etc/zentinel/schemas/api-v1.yaml"
 ///     validate-requests #true
 ///     validate-responses #false
 ///     strict-mode #false

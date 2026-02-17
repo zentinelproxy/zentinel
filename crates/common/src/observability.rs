@@ -1,4 +1,4 @@
-//! Observability module for Sentinel proxy
+//! Observability module for Zentinel proxy
 //!
 //! Provides metrics, logging, and tracing infrastructure with a focus on
 //! production reliability and sleepable operations.
@@ -17,7 +17,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 pub fn init_tracing() -> Result<()> {
     // Use JSON format for structured logging in production
     let json_layer =
-        if std::env::var("SENTINEL_LOG_FORMAT").unwrap_or_else(|_| "json".to_string()) == "json" {
+        if std::env::var("ZENTINEL_LOG_FORMAT").unwrap_or_else(|_| "json".to_string()) == "json" {
             Some(
                 fmt::layer()
                     .json()
@@ -32,7 +32,7 @@ pub fn init_tracing() -> Result<()> {
         };
 
     // Pretty format for development
-    let pretty_layer = if std::env::var("SENTINEL_LOG_FORMAT")
+    let pretty_layer = if std::env::var("ZENTINEL_LOG_FORMAT")
         .unwrap_or_else(|_| "json".to_string())
         == "pretty"
     {
@@ -164,7 +164,7 @@ impl RequestMetrics {
         ];
 
         let request_duration = register_histogram_vec!(
-            "sentinel_request_duration_seconds",
+            "zentinel_request_duration_seconds",
             "Request duration in seconds",
             &["route", "method"],
             latency_buckets.clone()
@@ -172,41 +172,41 @@ impl RequestMetrics {
         .context("Failed to register request_duration metric")?;
 
         let request_count = register_int_counter_vec!(
-            "sentinel_requests_total",
+            "zentinel_requests_total",
             "Total number of requests",
             &["route", "method", "status"]
         )
         .context("Failed to register request_count metric")?;
 
         let active_requests = register_int_gauge!(
-            "sentinel_active_requests",
+            "zentinel_active_requests",
             "Number of currently active requests"
         )
         .context("Failed to register active_requests metric")?;
 
         let upstream_attempts = register_int_counter_vec!(
-            "sentinel_upstream_attempts_total",
+            "zentinel_upstream_attempts_total",
             "Total upstream connection attempts",
             &["upstream", "route"]
         )
         .context("Failed to register upstream_attempts metric")?;
 
         let upstream_failures = register_int_counter_vec!(
-            "sentinel_upstream_failures_total",
+            "zentinel_upstream_failures_total",
             "Total upstream connection failures",
             &["upstream", "route", "reason"]
         )
         .context("Failed to register upstream_failures metric")?;
 
         let circuit_breaker_state = register_int_gauge_vec!(
-            "sentinel_circuit_breaker_state",
+            "zentinel_circuit_breaker_state",
             "Circuit breaker state (0=closed, 1=open)",
             &["component", "route"]
         )
         .context("Failed to register circuit_breaker_state metric")?;
 
         let agent_latency = register_histogram_vec!(
-            "sentinel_agent_latency_seconds",
+            "zentinel_agent_latency_seconds",
             "Agent call latency in seconds",
             &["agent", "event"],
             latency_buckets.clone()
@@ -214,21 +214,21 @@ impl RequestMetrics {
         .context("Failed to register agent_latency metric")?;
 
         let agent_timeouts = register_int_counter_vec!(
-            "sentinel_agent_timeouts_total",
+            "zentinel_agent_timeouts_total",
             "Total agent call timeouts",
             &["agent", "event"]
         )
         .context("Failed to register agent_timeouts metric")?;
 
         let blocked_requests = register_counter_vec!(
-            "sentinel_blocked_requests_total",
+            "zentinel_blocked_requests_total",
             "Total blocked requests by reason",
             &["reason"]
         )
         .context("Failed to register blocked_requests metric")?;
 
         let request_body_size = register_histogram_vec!(
-            "sentinel_request_body_size_bytes",
+            "zentinel_request_body_size_bytes",
             "Request body size in bytes",
             &["route"],
             size_buckets.clone()
@@ -236,7 +236,7 @@ impl RequestMetrics {
         .context("Failed to register request_body_size metric")?;
 
         let response_body_size = register_histogram_vec!(
-            "sentinel_response_body_size_bytes",
+            "zentinel_response_body_size_bytes",
             "Response body size in bytes",
             &["route"],
             size_buckets.clone()
@@ -244,7 +244,7 @@ impl RequestMetrics {
         .context("Failed to register response_body_size metric")?;
 
         let tls_handshake_duration = register_histogram_vec!(
-            "sentinel_tls_handshake_duration_seconds",
+            "zentinel_tls_handshake_duration_seconds",
             "TLS handshake duration in seconds",
             &["version"],
             latency_buckets
@@ -252,50 +252,50 @@ impl RequestMetrics {
         .context("Failed to register tls_handshake_duration metric")?;
 
         let connection_pool_size = register_int_gauge_vec!(
-            "sentinel_connection_pool_size",
+            "zentinel_connection_pool_size",
             "Total connections in pool",
             &["upstream"]
         )
         .context("Failed to register connection_pool_size metric")?;
 
         let connection_pool_idle = register_int_gauge_vec!(
-            "sentinel_connection_pool_idle",
+            "zentinel_connection_pool_idle",
             "Idle connections in pool",
             &["upstream"]
         )
         .context("Failed to register connection_pool_idle metric")?;
 
         let connection_pool_acquired = register_int_counter_vec!(
-            "sentinel_connection_pool_acquired_total",
+            "zentinel_connection_pool_acquired_total",
             "Total connections acquired from pool",
             &["upstream"]
         )
         .context("Failed to register connection_pool_acquired metric")?;
 
         let memory_usage = register_int_gauge!(
-            "sentinel_memory_usage_bytes",
+            "zentinel_memory_usage_bytes",
             "Current memory usage in bytes"
         )
         .context("Failed to register memory_usage metric")?;
 
         let cpu_usage =
-            register_gauge!("sentinel_cpu_usage_percent", "Current CPU usage percentage")
+            register_gauge!("zentinel_cpu_usage_percent", "Current CPU usage percentage")
                 .context("Failed to register cpu_usage metric")?;
 
         let open_connections =
-            register_int_gauge!("sentinel_open_connections", "Number of open connections")
+            register_int_gauge!("zentinel_open_connections", "Number of open connections")
                 .context("Failed to register open_connections metric")?;
 
         // WebSocket metrics
         let websocket_frames_total = register_int_counter_vec!(
-            "sentinel_websocket_frames_total",
+            "zentinel_websocket_frames_total",
             "Total WebSocket frames processed",
             &["route", "direction", "opcode", "decision"]
         )
         .context("Failed to register websocket_frames_total metric")?;
 
         let websocket_connections_total = register_int_counter_vec!(
-            "sentinel_websocket_connections_total",
+            "zentinel_websocket_connections_total",
             "Total WebSocket connections with inspection enabled",
             &["route"]
         )
@@ -307,7 +307,7 @@ impl RequestMetrics {
         ];
 
         let websocket_inspection_duration = register_histogram_vec!(
-            "sentinel_websocket_inspection_duration_seconds",
+            "zentinel_websocket_inspection_duration_seconds",
             "WebSocket frame inspection duration in seconds",
             &["route"],
             frame_latency_buckets
@@ -320,7 +320,7 @@ impl RequestMetrics {
         ];
 
         let websocket_frame_size = register_histogram_vec!(
-            "sentinel_websocket_frame_size_bytes",
+            "zentinel_websocket_frame_size_bytes",
             "WebSocket frame payload size in bytes",
             &["route", "direction", "opcode"],
             frame_size_buckets
@@ -329,7 +329,7 @@ impl RequestMetrics {
 
         // Body decompression metrics
         let decompression_total = register_int_counter_vec!(
-            "sentinel_decompression_total",
+            "zentinel_decompression_total",
             "Total body decompression operations",
             &["encoding", "result"]
         )
@@ -339,7 +339,7 @@ impl RequestMetrics {
         let ratio_buckets = vec![1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0];
 
         let decompression_ratio = register_histogram_vec!(
-            "sentinel_decompression_ratio",
+            "zentinel_decompression_ratio",
             "Decompression ratio (decompressed_size / compressed_size)",
             &["encoding"],
             ratio_buckets
@@ -348,14 +348,14 @@ impl RequestMetrics {
 
         // Shadow / traffic mirroring metrics
         let shadow_requests_total = register_int_counter_vec!(
-            "sentinel_shadow_requests_total",
+            "zentinel_shadow_requests_total",
             "Total shadow requests sent to mirror upstream",
             &["route", "upstream", "result"]
         )
         .context("Failed to register shadow_requests_total metric")?;
 
         let shadow_errors_total = register_int_counter_vec!(
-            "sentinel_shadow_errors_total",
+            "zentinel_shadow_errors_total",
             "Total shadow request errors",
             &["route", "upstream", "error_type"]
         )
@@ -367,7 +367,7 @@ impl RequestMetrics {
         ];
 
         let shadow_latency_seconds = register_histogram_vec!(
-            "sentinel_shadow_latency_seconds",
+            "zentinel_shadow_latency_seconds",
             "Shadow request latency in seconds",
             &["route", "upstream"],
             shadow_latency_buckets
@@ -375,7 +375,7 @@ impl RequestMetrics {
         .context("Failed to register shadow_latency_seconds metric")?;
 
         let pii_detected_total = register_int_counter_vec!(
-            "sentinel_pii_detected_total",
+            "zentinel_pii_detected_total",
             "Total PII detections in inference responses",
             &["route", "category"]
         )

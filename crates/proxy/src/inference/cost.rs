@@ -4,7 +4,7 @@
 
 use tracing::{debug, trace};
 
-use sentinel_common::budget::{CostAttributionConfig, CostResult, ModelPricing};
+use zentinel_common::budget::{CostAttributionConfig, CostResult, ModelPricing};
 
 /// Cost calculator for inference requests.
 ///

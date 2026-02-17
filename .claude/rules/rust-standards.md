@@ -3,10 +3,10 @@
 > Minimum Rust version: **1.92.0** (Edition 2021)
 > Last updated: 2026-01-13
 
-These standards apply to all Rust code in Sentinel. They enforce the [Manifesto](../../MANIFESTO.md) principles of **explicit behavior**, **bounded resources**, and **production correctness**.
+These standards apply to all Rust code in Zentinel. They enforce the [Manifesto](../../MANIFESTO.md) principles of **explicit behavior**, **bounded resources**, and **production correctness**.
 
 **Related rules:**
-- [project.md](project.md) — Sentinel-specific architecture rules
+- [project.md](project.md) — Zentinel-specific architecture rules
 - [patterns.md](patterns.md) — Code patterns for Pingora, agents, config
 - [workflow.md](workflow.md) — Commands and processes
 
@@ -387,7 +387,7 @@ pub async fn process(
 ### Use `//!` for Module Documentation
 
 ```rust
-//! HTTP caching infrastructure for Sentinel.
+//! HTTP caching infrastructure for Zentinel.
 //!
 //! This module provides response caching using Pingora's cache infrastructure.
 //!
@@ -480,5 +480,5 @@ let handler = async |request: Request| {
 
 | Date | Rust Version | Changes |
 |------|--------------|---------|
-| 2026-01-13 | 1.92.0 | Integrated with Sentinel rules structure |
+| 2026-01-13 | 1.92.0 | Integrated with Zentinel rules structure |
 | 2026-01-10 | 1.92.0 | Initial standards, added div_ceil, or_default, RwLock::downgrade |

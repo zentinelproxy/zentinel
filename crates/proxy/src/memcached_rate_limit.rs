@@ -22,7 +22,7 @@ use async_memcached::AsciiProtocol;
 use parking_lot::RwLock;
 use tracing::{debug, error, trace, warn};
 
-use sentinel_config::MemcachedBackendConfig;
+use zentinel_config::MemcachedBackendConfig;
 
 use crate::rate_limit::{RateLimitConfig, RateLimitOutcome};
 

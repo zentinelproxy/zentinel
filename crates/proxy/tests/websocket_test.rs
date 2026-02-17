@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, connect_async};
 
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, AgentServer, Decision, EventType, RequestHeadersEvent,
     WebSocketDecision, WebSocketFrameEvent,
 };
@@ -353,7 +353,7 @@ async fn test_agent_allows_all_frames() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create client and send WebSocket frame event
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),
@@ -426,7 +426,7 @@ async fn test_agent_drops_blocked_frames() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),
@@ -521,7 +521,7 @@ async fn test_agent_closes_connection() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),
@@ -615,7 +615,7 @@ async fn test_bidirectional_frame_inspection() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),
@@ -711,7 +711,7 @@ async fn test_frame_index_tracking() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),
@@ -786,7 +786,7 @@ async fn test_binary_frame_inspection() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),
@@ -863,7 +863,7 @@ async fn test_fragmented_message_handling() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut client = sentinel_agent_protocol::AgentClient::unix_socket(
+    let mut client = zentinel_agent_protocol::AgentClient::unix_socket(
         "test-client",
         &socket_path,
         Duration::from_secs(5),

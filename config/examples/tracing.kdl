@@ -146,7 +146,7 @@ observability {
         // Include trace ID in all logs for correlation
         access-log {
             enabled #true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             include-trace-id #true
         }
     }
@@ -201,7 +201,7 @@ limits {
 // =============================================================================
 // Trace Propagation
 // =============================================================================
-// Sentinel automatically propagates trace context using W3C Trace Context format.
+// Zentinel automatically propagates trace context using W3C Trace Context format.
 // Headers propagated:
 // - traceparent: Contains trace ID, span ID, and sampling decision
 // - tracestate: Vendor-specific trace data

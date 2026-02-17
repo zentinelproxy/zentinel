@@ -1,5 +1,5 @@
 #
-# Sentinel Chaos Test Environment
+# Zentinel Chaos Test Environment
 #
 # This compose file creates an isolated environment for chaos testing.
 # Services can be killed, paused, and restarted to test resilience.
@@ -19,11 +19,11 @@ services:
     ports:
       - "18080:8080"   # HTTP (using 18080 to avoid conflicts)
     volumes:
-      - ./chaos-config.kdl:/etc/sentinel/config.kdl:ro
-      - chaos-agent-sockets:/var/run/sentinel
+      - ./chaos-config.kdl:/etc/zentinel/config.kdl:ro
+      - chaos-agent-sockets:/var/run/zentinel
     environment:
-      RUST_LOG: info,sentinel_proxy=debug
-      SENTINEL_CONFIG: /etc/sentinel/config.kdl
+      RUST_LOG: info,zentinel_proxy=debug
+      ZENTINEL_CONFIG: /etc/zentinel/config.kdl
     networks:
       - chaos-net
     depends_on:
@@ -44,10 +44,10 @@ services:
       target: echo-agent
     container_name: chaos-echo
     volumes:
-      - chaos-agent-sockets:/var/run/sentinel
+      - chaos-agent-sockets:/var/run/zentinel
     environment:
-      RUST_LOG: info,sentinel_echo_agent=debug
-      ECHO_AGENT_SOCKET: /var/run/sentinel/echo.sock
+      RUST_LOG: info,zentinel_echo_agent=debug
+      ECHO_AGENT_SOCKET: /var/run/zentinel/echo.sock
     networks:
       - chaos-net
     restart: "no"  # Don't auto-restart during chaos tests

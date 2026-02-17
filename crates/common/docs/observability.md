@@ -9,13 +9,13 @@ Prometheus metrics, structured logging, and tracing infrastructure.
 Initialize structured logging and tracing:
 
 ```rust
-use sentinel_common::init_tracing;
+use zentinel_common::init_tracing;
 
 fn main() {
     // Initialize with environment-based configuration
     init_tracing();
 
-    tracing::info!("Sentinel starting");
+    tracing::info!("Zentinel starting");
 }
 ```
 
@@ -23,20 +23,20 @@ fn main() {
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `SENTINEL_LOG_FORMAT` | `json`, `pretty` | Text | Log output format |
+| `ZENTINEL_LOG_FORMAT` | `json`, `pretty` | Text | Log output format |
 | `RUST_LOG` | Log filter | `info` | Log level filter |
 
 **Format Examples:**
 
 ```bash
 # JSON format (production)
-SENTINEL_LOG_FORMAT=json ./sentinel
+ZENTINEL_LOG_FORMAT=json ./zentinel
 
 # Pretty format (development)
-SENTINEL_LOG_FORMAT=pretty ./sentinel
+ZENTINEL_LOG_FORMAT=pretty ./zentinel
 
 # Custom log levels
-RUST_LOG=sentinel=debug,tower=warn ./sentinel
+RUST_LOG=zentinel=debug,tower=warn ./zentinel
 ```
 
 ## RequestMetrics
@@ -46,7 +46,7 @@ Comprehensive Prometheus metrics collector.
 ### Setup
 
 ```rust
-use sentinel_common::RequestMetrics;
+use zentinel_common::RequestMetrics;
 
 // Create and register metrics
 let metrics = RequestMetrics::new();
@@ -74,9 +74,9 @@ metrics.dec_active_requests();
 **Prometheus Metrics:**
 
 ```
-sentinel_request_duration_seconds{route="api", method="GET", quantile="0.99"}
-sentinel_requests_total{route="api", method="GET", status="200"}
-sentinel_active_requests
+zentinel_request_duration_seconds{route="api", method="GET", quantile="0.99"}
+zentinel_requests_total{route="api", method="GET", status="200"}
+zentinel_active_requests
 ```
 
 ### Upstream Metrics
@@ -96,8 +96,8 @@ metrics.record_upstream_failure(
 **Prometheus Metrics:**
 
 ```
-sentinel_upstream_attempts_total{upstream="backend", route="api"}
-sentinel_upstream_failures_total{upstream="backend", route="api", reason="timeout"}
+zentinel_upstream_attempts_total{upstream="backend", route="api"}
+zentinel_upstream_failures_total{upstream="backend", route="api", reason="timeout"}
 ```
 
 ### Circuit Breaker Metrics
@@ -114,7 +114,7 @@ metrics.set_circuit_breaker_state(
 **Prometheus Metrics:**
 
 ```
-sentinel_circuit_breaker_state{component="backend", route="api"} 1
+zentinel_circuit_breaker_state{component="backend", route="api"} 1
 ```
 
 ### Agent Metrics
@@ -137,9 +137,9 @@ metrics.record_blocked_request("waf_rule_942100");
 **Prometheus Metrics:**
 
 ```
-sentinel_agent_latency_seconds{agent="waf-agent", event="request-headers", quantile="0.99"}
-sentinel_agent_timeouts_total{agent="waf-agent", event="request-body"}
-sentinel_blocked_requests_total{reason="waf_rule_942100"}
+zentinel_agent_latency_seconds{agent="waf-agent", event="request-headers", quantile="0.99"}
+zentinel_agent_timeouts_total{agent="waf-agent", event="request-body"}
+zentinel_blocked_requests_total{reason="waf_rule_942100"}
 ```
 
 ### Body Metrics
@@ -152,8 +152,8 @@ metrics.record_response_body_size("api-route", 2048);
 **Prometheus Metrics:**
 
 ```
-sentinel_request_body_size_bytes{route="api"}
-sentinel_response_body_size_bytes{route="api"}
+zentinel_request_body_size_bytes{route="api"}
+zentinel_response_body_size_bytes{route="api"}
 ```
 
 ### TLS Metrics
@@ -168,7 +168,7 @@ metrics.record_tls_handshake(
 **Prometheus Metrics:**
 
 ```
-sentinel_tls_handshake_duration_seconds{version="TLS1.3", quantile="0.99"}
+zentinel_tls_handshake_duration_seconds{version="TLS1.3", quantile="0.99"}
 ```
 
 ### Connection Pool Metrics
@@ -188,9 +188,9 @@ metrics.record_connection_acquired("backend");
 **Prometheus Metrics:**
 
 ```
-sentinel_connection_pool_size{upstream="backend"}
-sentinel_connection_pool_idle{upstream="backend"}
-sentinel_connection_pool_acquired_total{upstream="backend"}
+zentinel_connection_pool_size{upstream="backend"}
+zentinel_connection_pool_idle{upstream="backend"}
+zentinel_connection_pool_acquired_total{upstream="backend"}
 ```
 
 ### System Metrics
@@ -203,9 +203,9 @@ metrics.update_system_metrics();
 **Prometheus Metrics:**
 
 ```
-sentinel_memory_usage_bytes
-sentinel_cpu_usage_percent
-sentinel_open_connections
+zentinel_memory_usage_bytes
+zentinel_cpu_usage_percent
+zentinel_open_connections
 ```
 
 ### WebSocket Metrics
@@ -240,10 +240,10 @@ metrics.record_websocket_inspection(
 **Prometheus Metrics:**
 
 ```
-sentinel_websocket_frames_total{route, direction, opcode, decision}
-sentinel_websocket_frame_size_bytes{route, direction, opcode}
-sentinel_websocket_connections_total{route}
-sentinel_websocket_inspection_duration_seconds{route}
+zentinel_websocket_frames_total{route, direction, opcode, decision}
+zentinel_websocket_frame_size_bytes{route, direction, opcode}
+zentinel_websocket_connections_total{route}
+zentinel_websocket_inspection_duration_seconds{route}
 ```
 
 ### Decompression Metrics
@@ -256,8 +256,8 @@ metrics.record_decompression_ratio("gzip", 10.5);
 **Prometheus Metrics:**
 
 ```
-sentinel_decompression_total{encoding="gzip", result="success"}
-sentinel_decompression_ratio{encoding="gzip"}
+zentinel_decompression_total{encoding="gzip", result="success"}
+zentinel_decompression_ratio{encoding="gzip"}
 ```
 
 ### Shadow/Mirror Metrics
@@ -271,9 +271,9 @@ metrics.record_shadow_latency("api", "canary", Duration::from_ms(100));
 **Prometheus Metrics:**
 
 ```
-sentinel_shadow_requests_total{route, upstream, result}
-sentinel_shadow_errors_total{route, upstream, error_type}
-sentinel_shadow_latency_seconds{route, upstream}
+zentinel_shadow_requests_total{route, upstream, result}
+zentinel_shadow_errors_total{route, upstream, error_type}
+zentinel_shadow_latency_seconds{route, upstream}
 ```
 
 ### PII Detection Metrics
@@ -285,7 +285,7 @@ metrics.record_pii_detected("api-route", "credit_card");
 **Prometheus Metrics:**
 
 ```
-sentinel_pii_detected_total{route="api", category="credit_card"}
+zentinel_pii_detected_total{route="api", category="credit_card"}
 ```
 
 ## ScopedMetrics
@@ -295,7 +295,7 @@ Namespace and service-scoped metrics for multi-tenant deployments.
 ### Setup
 
 ```rust
-use sentinel_common::{ScopedMetrics, Scope};
+use zentinel_common::{ScopedMetrics, Scope};
 
 let metrics = ScopedMetrics::new();
 ```
@@ -330,41 +330,41 @@ metrics.set_circuit_breaker_state("payment-gateway", false, &scope);
 **Prometheus Metrics:**
 
 ```
-sentinel_scoped_requests_total{namespace="production", service="payments", route="checkout", method="POST", status="200"}
-sentinel_scoped_request_duration_seconds{namespace="production", service="payments", route="checkout", method="POST"}
-sentinel_scoped_upstream_attempts_total{namespace="production", service="payments", upstream="payment-gateway", route="checkout"}
-sentinel_scoped_rate_limit_hits_total{namespace="production", service="payments", route="checkout", policy="default"}
-sentinel_scoped_circuit_breaker_state{namespace="production", service="payments", upstream="payment-gateway"}
+zentinel_scoped_requests_total{namespace="production", service="payments", route="checkout", method="POST", status="200"}
+zentinel_scoped_request_duration_seconds{namespace="production", service="payments", route="checkout", method="POST"}
+zentinel_scoped_upstream_attempts_total{namespace="production", service="payments", upstream="payment-gateway", route="checkout"}
+zentinel_scoped_rate_limit_hits_total{namespace="production", service="payments", route="checkout", policy="default"}
+zentinel_scoped_circuit_breaker_state{namespace="production", service="payments", upstream="payment-gateway"}
 ```
 
 ## Complete Metrics List
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `sentinel_request_duration_seconds` | Histogram | route, method | Request latency |
-| `sentinel_requests_total` | Counter | route, method, status | Request count |
-| `sentinel_active_requests` | Gauge | - | Current in-flight |
-| `sentinel_upstream_attempts_total` | Counter | upstream, route | Upstream attempts |
-| `sentinel_upstream_failures_total` | Counter | upstream, route, reason | Upstream failures |
-| `sentinel_circuit_breaker_state` | Gauge | component, route | CB state (0/1) |
-| `sentinel_agent_latency_seconds` | Histogram | agent, event | Agent call latency |
-| `sentinel_agent_timeouts_total` | Counter | agent, event | Agent timeouts |
-| `sentinel_blocked_requests_total` | Counter | reason | Blocked requests |
-| `sentinel_request_body_size_bytes` | Histogram | route | Request body size |
-| `sentinel_response_body_size_bytes` | Histogram | route | Response body size |
-| `sentinel_tls_handshake_duration_seconds` | Histogram | version | TLS handshake time |
-| `sentinel_connection_pool_size` | Gauge | upstream | Pool total size |
-| `sentinel_connection_pool_idle` | Gauge | upstream | Pool idle connections |
-| `sentinel_connection_pool_acquired_total` | Counter | upstream | Connections acquired |
-| `sentinel_memory_usage_bytes` | Gauge | - | Memory usage |
-| `sentinel_cpu_usage_percent` | Gauge | - | CPU usage |
-| `sentinel_open_connections` | Gauge | - | Open connections |
-| `sentinel_websocket_frames_total` | Counter | route, direction, opcode, decision | WS frames |
-| `sentinel_websocket_connections_total` | Counter | route | WS connections |
-| `sentinel_decompression_total` | Counter | encoding, result | Decompressions |
-| `sentinel_decompression_ratio` | Histogram | encoding | Decompression ratio |
-| `sentinel_shadow_requests_total` | Counter | route, upstream, result | Shadow requests |
-| `sentinel_pii_detected_total` | Counter | route, category | PII detections |
+| `zentinel_request_duration_seconds` | Histogram | route, method | Request latency |
+| `zentinel_requests_total` | Counter | route, method, status | Request count |
+| `zentinel_active_requests` | Gauge | - | Current in-flight |
+| `zentinel_upstream_attempts_total` | Counter | upstream, route | Upstream attempts |
+| `zentinel_upstream_failures_total` | Counter | upstream, route, reason | Upstream failures |
+| `zentinel_circuit_breaker_state` | Gauge | component, route | CB state (0/1) |
+| `zentinel_agent_latency_seconds` | Histogram | agent, event | Agent call latency |
+| `zentinel_agent_timeouts_total` | Counter | agent, event | Agent timeouts |
+| `zentinel_blocked_requests_total` | Counter | reason | Blocked requests |
+| `zentinel_request_body_size_bytes` | Histogram | route | Request body size |
+| `zentinel_response_body_size_bytes` | Histogram | route | Response body size |
+| `zentinel_tls_handshake_duration_seconds` | Histogram | version | TLS handshake time |
+| `zentinel_connection_pool_size` | Gauge | upstream | Pool total size |
+| `zentinel_connection_pool_idle` | Gauge | upstream | Pool idle connections |
+| `zentinel_connection_pool_acquired_total` | Counter | upstream | Connections acquired |
+| `zentinel_memory_usage_bytes` | Gauge | - | Memory usage |
+| `zentinel_cpu_usage_percent` | Gauge | - | CPU usage |
+| `zentinel_open_connections` | Gauge | - | Open connections |
+| `zentinel_websocket_frames_total` | Counter | route, direction, opcode, decision | WS frames |
+| `zentinel_websocket_connections_total` | Counter | route | WS connections |
+| `zentinel_decompression_total` | Counter | encoding, result | Decompressions |
+| `zentinel_decompression_ratio` | Histogram | encoding | Decompression ratio |
+| `zentinel_shadow_requests_total` | Counter | route, upstream, result | Shadow requests |
+| `zentinel_pii_detected_total` | Counter | route, category | PII detections |
 
 ## Structured Logging
 
@@ -398,7 +398,7 @@ async fn handle_request(req: Request, route_id: &str) {
 {
   "timestamp": "2024-01-15T10:30:00.000Z",
   "level": "INFO",
-  "target": "sentinel::proxy",
+  "target": "zentinel::proxy",
   "fields": {
     "route": "api-v1",
     "upstream": "backend",

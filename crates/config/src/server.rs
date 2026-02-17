@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use validator::Validate;
 
-use sentinel_common::types::{TlsVersion, TraceIdFormat};
+use zentinel_common::types::{TlsVersion, TraceIdFormat};
 
 // ============================================================================
 // Server Configuration
@@ -161,7 +161,7 @@ pub struct TlsConfig {
 /// ACME automatic certificate configuration
 ///
 /// Enables zero-config TLS via Let's Encrypt and compatible CAs.
-/// When configured, Sentinel will automatically obtain, renew, and
+/// When configured, Zentinel will automatically obtain, renew, and
 /// manage TLS certificates for the specified domains.
 ///
 /// # Example
@@ -172,14 +172,14 @@ pub struct TlsConfig {
 ///         email "admin@example.com"
 ///         domains "example.com" "www.example.com"
 ///         staging false
-///         storage "/var/lib/sentinel/acme"
+///         storage "/var/lib/zentinel/acme"
 ///         renew-before-days 30
 ///         challenge-type "http-01"  // or "dns-01" for wildcards
 ///
 ///         // Required for DNS-01 challenges
 ///         dns-provider {
 ///             type "hetzner"
-///             credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+///             credentials-file "/etc/zentinel/secrets/hetzner-dns.json"
 ///             api-timeout-secs 30
 ///
 ///             propagation {
@@ -209,7 +209,7 @@ pub struct AcmeConfig {
     pub staging: bool,
 
     /// Directory for storing certificates and account keys
-    /// Defaults to /var/lib/sentinel/acme
+    /// Defaults to /var/lib/zentinel/acme
     #[serde(default = "default_acme_storage")]
     pub storage: PathBuf,
 
@@ -379,7 +379,7 @@ fn default_session_resumption() -> bool {
 }
 
 pub(crate) fn default_acme_storage() -> PathBuf {
-    PathBuf::from("/var/lib/sentinel/acme")
+    PathBuf::from("/var/lib/zentinel/acme")
 }
 
 pub(crate) fn default_renewal_days() -> u32 {

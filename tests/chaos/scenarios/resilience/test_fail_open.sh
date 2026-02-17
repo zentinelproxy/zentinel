@@ -158,7 +158,7 @@ test_failopen_metrics() {
 
     # Check for fail-open bypass events
     local bypasses
-    bypasses=$(get_metric "sentinel_agent_bypasses_total" "agent=\"echo\",mode=\"open\"")
+    bypasses=$(get_metric "zentinel_agent_bypasses_total" "agent=\"echo\",mode=\"open\"")
 
     if [[ -n "$bypasses" && "$bypasses" -gt 0 ]]; then
         log_pass "Fail-open bypasses recorded: $bypasses"
@@ -168,7 +168,7 @@ test_failopen_metrics() {
 
     # Check agent failure events
     local failures
-    failures=$(get_metric "sentinel_agent_failures_total" "agent=\"echo\"")
+    failures=$(get_metric "zentinel_agent_failures_total" "agent=\"echo\"")
 
     if [[ -n "$failures" && "$failures" -gt 0 ]]; then
         log_pass "Agent failures recorded: $failures"

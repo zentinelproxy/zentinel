@@ -129,7 +129,7 @@ pub async fn validate_certificates(config: &Config) -> ValidationResult {
 /// Check if a directory is writable
 fn is_dir_writable(path: &Path) -> bool {
     use std::fs;
-    let test_file = path.join(".sentinel_write_test");
+    let test_file = path.join(".zentinel_write_test");
     match fs::write(&test_file, b"test") {
         Ok(()) => {
             let _ = fs::remove_file(&test_file);
@@ -200,7 +200,7 @@ fn load_and_validate_cert(cert_path: &Path) -> Result<Option<ValidationWarning>,
 mod tests {
     use super::*;
     use crate::{ListenerConfig, ListenerProtocol, TlsConfig};
-    use sentinel_common::types::TlsVersion;
+    use zentinel_common::types::TlsVersion;
 
     fn test_tls_config() -> TlsConfig {
         TlsConfig {

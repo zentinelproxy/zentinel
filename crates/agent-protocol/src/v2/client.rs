@@ -189,7 +189,7 @@ impl AgentClientV2 {
             message: Some(grpc_v2::proxy_to_agent::Message::Handshake(
                 grpc_v2::HandshakeRequest {
                     supported_versions: vec![PROTOCOL_VERSION_2, 1],
-                    proxy_id: "sentinel-proxy".to_string(),
+                    proxy_id: "zentinel-proxy".to_string(),
                     proxy_version: env!("CARGO_PKG_VERSION").to_string(),
                     config_json: "{}".to_string(),
                 },

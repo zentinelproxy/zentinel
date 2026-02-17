@@ -8,7 +8,7 @@ use kdl::KdlNode;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use sentinel_common::TraceIdFormat;
+use zentinel_common::TraceIdFormat;
 
 use crate::namespace::ExportConfig;
 use crate::{
@@ -256,7 +256,7 @@ pub(super) fn parse_agent(node: &KdlNode) -> Result<AgentConfig> {
 
     // Parse transport - default to unix socket
     let socket_path = get_string_entry(node, "socket-path")
-        .unwrap_or_else(|| format!("/var/run/sentinel/{}.sock", id));
+        .unwrap_or_else(|| format!("/var/run/zentinel/{}.sock", id));
     let transport = crate::AgentTransport::UnixSocket {
         path: PathBuf::from(socket_path),
     };

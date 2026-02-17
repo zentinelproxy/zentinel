@@ -11,8 +11,8 @@ use prometheus::{
     CounterVec, HistogramVec, IntCounterVec, IntGaugeVec,
 };
 
-use sentinel_common::budget::{BudgetAlert, BudgetCheckResult, CostResult};
-use sentinel_common::ids::Scope;
+use zentinel_common::budget::{BudgetAlert, BudgetCheckResult, CostResult};
+use zentinel_common::ids::Scope;
 
 /// Inference-specific metrics collector.
 ///
@@ -51,63 +51,63 @@ impl InferenceMetrics {
         ];
 
         let budget_limit = register_int_gauge_vec!(
-            "sentinel_inference_budget_limit",
+            "zentinel_inference_budget_limit",
             "Token budget limit per tenant",
             &["namespace", "service", "route", "tenant"]
         )
         .context("Failed to register inference_budget_limit metric")?;
 
         let budget_used = register_int_counter_vec!(
-            "sentinel_inference_budget_used_total",
+            "zentinel_inference_budget_used_total",
             "Total tokens consumed against budget",
             &["namespace", "service", "route", "tenant"]
         )
         .context("Failed to register inference_budget_used metric")?;
 
         let budget_remaining = register_int_gauge_vec!(
-            "sentinel_inference_budget_remaining",
+            "zentinel_inference_budget_remaining",
             "Tokens remaining in budget (can be negative if over)",
             &["namespace", "service", "route", "tenant"]
         )
         .context("Failed to register inference_budget_remaining metric")?;
 
         let budget_exhausted = register_int_counter_vec!(
-            "sentinel_inference_budget_exhausted_total",
+            "zentinel_inference_budget_exhausted_total",
             "Number of requests blocked due to exhausted budget",
             &["namespace", "service", "route", "tenant"]
         )
         .context("Failed to register inference_budget_exhausted metric")?;
 
         let budget_alerts = register_int_counter_vec!(
-            "sentinel_inference_budget_alerts_total",
+            "zentinel_inference_budget_alerts_total",
             "Number of budget alert thresholds crossed",
             &["namespace", "service", "route", "tenant", "threshold"]
         )
         .context("Failed to register inference_budget_alerts metric")?;
 
         let cost_total = register_counter_vec!(
-            "sentinel_inference_cost_total",
+            "zentinel_inference_cost_total",
             "Total cost of inference requests",
             &["namespace", "service", "route", "model", "currency"]
         )
         .context("Failed to register inference_cost_total metric")?;
 
         let input_tokens_total = register_int_counter_vec!(
-            "sentinel_inference_input_tokens_total",
+            "zentinel_inference_input_tokens_total",
             "Total input tokens processed",
             &["namespace", "service", "route", "model"]
         )
         .context("Failed to register inference_input_tokens metric")?;
 
         let output_tokens_total = register_int_counter_vec!(
-            "sentinel_inference_output_tokens_total",
+            "zentinel_inference_output_tokens_total",
             "Total output tokens generated",
             &["namespace", "service", "route", "model"]
         )
         .context("Failed to register inference_output_tokens metric")?;
 
         let cost_per_request = register_histogram_vec!(
-            "sentinel_inference_cost_per_request",
+            "zentinel_inference_cost_per_request",
             "Cost per inference request in dollars",
             &["namespace", "service", "route", "model"],
             cost_buckets

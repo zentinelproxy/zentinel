@@ -4,7 +4,7 @@
 //! tokens from requests for rate limiting purposes.
 
 use http::HeaderMap;
-use sentinel_config::TokenEstimation;
+use zentinel_config::TokenEstimation;
 use tracing::{debug, trace};
 
 use super::providers::InferenceProviderAdapter;
@@ -130,7 +130,7 @@ impl TokenCounter {
 mod tests {
     use super::*;
     use crate::inference::providers::create_provider;
-    use sentinel_config::InferenceProvider;
+    use zentinel_config::InferenceProvider;
 
     #[test]
     fn test_request_estimation() {

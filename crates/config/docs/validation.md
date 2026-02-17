@@ -291,7 +291,7 @@ Configuration validation failed:
 
 ## Security Defaults
 
-Sentinel follows a **security-first** design philosophy:
+Zentinel follows a **security-first** design philosophy:
 
 | Setting | Default | Security Impact |
 |---------|---------|-----------------|
@@ -338,13 +338,13 @@ KDL configuration parse error:
 Validate configuration without starting the proxy:
 
 ```bash
-sentinel --config sentinel.kdl --validate
+zentinel --config zentinel.kdl --validate
 ```
 
 Or programmatically:
 
 ```rust
-let config = Config::from_file("sentinel.kdl")?;
+let config = Config::from_file("zentinel.kdl")?;
 config.validate()?;
 println!("Configuration is valid");
 ```

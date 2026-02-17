@@ -802,7 +802,7 @@ impl AgentClient {
             .client
             .post(&conn.url)
             .header("Content-Type", "application/json")
-            .header("X-Sentinel-Protocol-Version", PROTOCOL_VERSION.to_string())
+            .header("X-Zentinel-Protocol-Version", PROTOCOL_VERSION.to_string())
             .body(request_json)
             .send()
             .await

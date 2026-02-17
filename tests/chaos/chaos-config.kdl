@@ -1,4 +1,4 @@
-// Sentinel Chaos Testing Configuration
+// Zentinel Chaos Testing Configuration
 //
 // This configuration is designed for chaos testing scenarios:
 // - Fail-open vs fail-closed mode validation
@@ -26,7 +26,7 @@ agents {
     // Echo agent with circuit breaker for testing
     agent "echo" {
         type "echo"
-        unix-socket path="/var/run/sentinel/echo.sock"
+        unix-socket path="/var/run/zentinel/echo.sock"
         events "request_headers"
         timeout-ms 1000
         failure-mode "closed"

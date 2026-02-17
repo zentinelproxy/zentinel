@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use validator::Validate;
 
-use sentinel_common::types::CircuitBreakerConfig;
+use zentinel_common::types::CircuitBreakerConfig;
 
 use crate::routes::FailureMode;
 

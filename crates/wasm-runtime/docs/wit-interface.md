@@ -4,7 +4,7 @@ This document describes the WebAssembly Interface Types (WIT) specification that
 
 ## Overview
 
-Sentinel WASM agents implement the `sentinel:agent@2.0.0` world, which exports two interfaces:
+Zentinel WASM agents implement the `zentinel:agent@2.0.0` world, which exports two interfaces:
 
 - **handler**: Request/response processing functions
 - **lifecycle**: Health check and shutdown
@@ -12,7 +12,7 @@ Sentinel WASM agents implement the `sentinel:agent@2.0.0` world, which exports t
 ## World Definition
 
 ```wit
-package sentinel:agent@2.0.0;
+package zentinel:agent@2.0.0;
 
 world agent {
     export handler;
@@ -243,8 +243,8 @@ record audit-metadata {
 ## Example Implementation (Rust)
 
 ```rust
-use sentinel_agent_wit::exports::sentinel::agent::{handler, lifecycle};
-use sentinel_agent_wit::sentinel::agent::types::*;
+use zentinel_agent_wit::exports::zentinel::agent::{handler, lifecycle};
+use zentinel_agent_wit::zentinel::agent::types::*;
 
 struct MyAgent {
     config: MyConfig,
@@ -333,7 +333,7 @@ impl lifecycle::Guest for MyAgent {
 
 The WIT file is located at:
 ```
-crates/wasm-runtime/wit/sentinel-agent.wit
+crates/wasm-runtime/wit/zentinel-agent.wit
 ```
 
 This file is used by `wasmtime::component::bindgen!` to generate Rust bindings.

@@ -1,4 +1,4 @@
-//! Core types for the Sentinel configuration simulator
+//! Core types for the Zentinel configuration simulator
 //!
 //! These types represent simulated requests, route decisions, and the
 //! detailed trace information that explains routing behavior.
@@ -319,7 +319,7 @@ pub struct ValidationResult {
 
     /// The parsed configuration (if valid)
     #[serde(skip)]
-    pub effective_config: Option<sentinel_config::Config>,
+    pub effective_config: Option<zentinel_config::Config>,
 }
 
 /// A validation error

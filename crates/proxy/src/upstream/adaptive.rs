@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 /// Configuration for adaptive load balancing
 #[derive(Debug, Clone)]
@@ -484,7 +484,7 @@ impl AdaptiveBalancer {
 
 #[async_trait]
 impl LoadBalancer for AdaptiveBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!("Adaptive select started");
 
         // Periodically adjust weights
@@ -495,13 +495,13 @@ impl LoadBalancer for AdaptiveBalancer {
 
         if scores.is_empty() {
             warn!("Adaptive: No healthy targets available");
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         // Select target based on scores
         let target_index = self.weighted_select(&scores).await.ok_or_else(|| {
             warn!("Adaptive: Failed to select from scores");
-            SentinelError::NoHealthyUpstream
+            ZentinelError::NoHealthyUpstream
         })?;
 
         let target = &self.targets[target_index];

@@ -1,10 +1,10 @@
-# Sentinel Stack
+# Zentinel Stack
 
-All-in-one launcher for Sentinel proxy and agents.
+All-in-one launcher for Zentinel proxy and agents.
 
 ## Overview
 
-The `sentinel-stack` binary spawns and manages the Sentinel proxy along with configured external agents as child processes. It's designed for development and simple production deployments where you need to coordinate multiple processes as a single unit.
+The `zentinel-stack` binary spawns and manages the Zentinel proxy along with configured external agents as child processes. It's designed for development and simple production deployments where you need to coordinate multiple processes as a single unit.
 
 ## Features
 
@@ -17,38 +17,38 @@ The `sentinel-stack` binary spawns and manages the Sentinel proxy along with con
 ## Installation
 
 ```bash
-cargo install sentinel-stack
+cargo install zentinel-stack
 ```
 
 Or build from source:
 
 ```bash
-cargo build --release -p sentinel-stack
+cargo build --release -p zentinel-stack
 ```
 
 ## Quick Start
 
 ```bash
 # Start proxy and all configured agents
-sentinel-stack --config sentinel.kdl
+zentinel-stack --config zentinel.kdl
 
 # Validate configuration without starting
-sentinel-stack --config sentinel.kdl --dry-run
+zentinel-stack --config zentinel.kdl --dry-run
 
 # Start only the proxy (agents managed externally)
-sentinel-stack --config sentinel.kdl --proxy-only
+zentinel-stack --config zentinel.kdl --proxy-only
 
 # Start only agents (proxy managed externally)
-sentinel-stack --config sentinel.kdl --agents-only
+zentinel-stack --config zentinel.kdl --agents-only
 ```
 
 ## Command-Line Options
 
 ```
-sentinel-stack [OPTIONS]
+zentinel-stack [OPTIONS]
 
 Options:
-  -c, --config <PATH>           Path to configuration file [default: sentinel.kdl]
+  -c, --config <PATH>           Path to configuration file [default: zentinel.kdl]
   -l, --log-level <LEVEL>       Log level: trace, debug, info, warn, error [default: info]
       --proxy-only              Start only the proxy (agents managed externally)
       --agents-only             Start only agents (proxy managed externally)
@@ -66,13 +66,13 @@ Agents are configured in the KDL configuration file:
 ```kdl
 agents {
     agent "waf-agent" {
-        command "/usr/local/bin/waf-agent" "--config" "/etc/sentinel/waf.toml"
+        command "/usr/local/bin/waf-agent" "--config" "/etc/zentinel/waf.toml"
         restart-policy "always"
         restart-delay-ms 1000
         max-restarts 5
         env {
             RUST_LOG "info"
-            WAF_RULES_PATH "/etc/sentinel/rules"
+            WAF_RULES_PATH "/etc/zentinel/rules"
         }
     }
 
@@ -83,7 +83,7 @@ agents {
         max-restarts 3
         env {
             AUTH_BACKEND "https://auth.internal:8443"
-            API_KEY "${HOME}/.config/sentinel/api-key"
+            API_KEY "${HOME}/.config/zentinel/api-key"
         }
     }
 }
@@ -116,8 +116,8 @@ agent "my-agent" {
     command "/usr/local/bin/agent"
     env {
         HOME_DIR "${HOME}"
-        CONFIG_PATH "${XDG_CONFIG_HOME}/sentinel"
-        API_KEY "${SENTINEL_API_KEY}"
+        CONFIG_PATH "${XDG_CONFIG_HOME}/zentinel"
+        API_KEY "${ZENTINEL_API_KEY}"
     }
 }
 ```
@@ -135,7 +135,7 @@ agent "my-agent" {
 │   4. Register signal handlers (SIGTERM, SIGINT)                  │
 │   5. Start all configured agents                                 │
 │   6. Wait for startup timeout                                    │
-│   7. Start Sentinel proxy                                        │
+│   7. Start Zentinel proxy                                        │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -186,10 +186,10 @@ Set log level via CLI or environment:
 
 ```bash
 # Via CLI
-sentinel-stack --log-level debug
+zentinel-stack --log-level debug
 
 # Via environment
-RUST_LOG=debug sentinel-stack
+RUST_LOG=debug zentinel-stack
 ```
 
 ## Use Cases
@@ -199,7 +199,7 @@ RUST_LOG=debug sentinel-stack
 Start the entire stack with a single command:
 
 ```bash
-sentinel-stack --config dev.kdl
+zentinel-stack --config dev.kdl
 ```
 
 ### Simple Production
@@ -207,7 +207,7 @@ sentinel-stack --config dev.kdl
 For standalone servers without complex orchestration:
 
 ```bash
-sentinel-stack --config /etc/sentinel/sentinel.kdl \
+zentinel-stack --config /etc/zentinel/zentinel.kdl \
     --shutdown-timeout 60 \
     --log-level info
 ```
@@ -217,7 +217,7 @@ sentinel-stack --config /etc/sentinel/sentinel.kdl \
 Validate configuration before deployment:
 
 ```bash
-sentinel-stack --config sentinel.kdl --dry-run
+zentinel-stack --config zentinel.kdl --dry-run
 ```
 
 ### Separate Management
@@ -226,17 +226,17 @@ Run proxy and agents independently:
 
 ```bash
 # Terminal 1: Run agents
-sentinel-stack --config sentinel.kdl --agents-only
+zentinel-stack --config zentinel.kdl --agents-only
 
 # Terminal 2: Run proxy
-sentinel-stack --config sentinel.kdl --proxy-only
+zentinel-stack --config zentinel.kdl --proxy-only
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        sentinel-stack                            │
+│                        zentinel-stack                            │
 │                     (Process Manager)                            │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
@@ -257,7 +257,7 @@ sentinel-stack --config sentinel.kdl --proxy-only
 
 | Approach | Use Case | Complexity |
 |----------|----------|------------|
-| `sentinel-stack` | Development, simple deployments | Low |
+| `zentinel-stack` | Development, simple deployments | Low |
 | systemd | Production Linux servers | Medium |
 | Docker Compose | Containerized deployments | Medium |
 | Kubernetes | Large-scale production | High |

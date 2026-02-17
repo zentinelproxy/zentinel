@@ -1,4 +1,4 @@
-//! Health checking module for Sentinel proxy
+//! Health checking module for Zentinel proxy
 //!
 //! This module implements active and passive health checking for upstream servers,
 //! supporting HTTP, TCP, and gRPC health checks with configurable thresholds.
@@ -14,8 +14,8 @@ use tokio::sync::RwLock;
 use tokio::time;
 use tracing::{debug, info, trace, warn};
 
-use sentinel_common::{errors::SentinelResult, types::HealthCheckType};
-use sentinel_config::{HealthCheck as HealthCheckConfig, UpstreamTarget};
+use zentinel_common::{errors::ZentinelResult, types::HealthCheckType};
+use zentinel_config::{HealthCheck as HealthCheckConfig, UpstreamTarget};
 
 /// Active health checker for upstream targets
 ///
@@ -117,7 +117,7 @@ struct InferenceHealthCheck {
 ///
 /// Verifies model can actually process requests, not just that server is running.
 struct InferenceProbeCheck {
-    config: sentinel_common::InferenceProbeConfig,
+    config: zentinel_common::InferenceProbeConfig,
     timeout: Duration,
 }
 
@@ -125,7 +125,7 @@ struct InferenceProbeCheck {
 ///
 /// Queries provider-specific status endpoints to verify model readiness.
 struct ModelStatusCheck {
-    config: sentinel_common::ModelStatusConfig,
+    config: zentinel_common::ModelStatusConfig,
     timeout: Duration,
 }
 
@@ -133,7 +133,7 @@ struct ModelStatusCheck {
 ///
 /// Monitors queue depth from headers or response body to detect overload.
 struct QueueDepthCheck {
-    config: sentinel_common::QueueDepthConfig,
+    config: zentinel_common::QueueDepthConfig,
     models_endpoint: String,
     timeout: Duration,
 }
@@ -270,7 +270,7 @@ impl ActiveHealthChecker {
     }
 
     /// Start health checking for targets
-    pub async fn start(&self, targets: &[UpstreamTarget]) -> SentinelResult<()> {
+    pub async fn start(&self, targets: &[UpstreamTarget]) -> ZentinelResult<()> {
         info!(
             target_count = targets.len(),
             interval_secs = self.config.interval_secs,
@@ -555,7 +555,7 @@ impl HealthCheckImpl for HttpHealthCheck {
         // Build HTTP request
         let host = self.host.as_deref().unwrap_or(target);
         let request = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Sentinel-HealthCheck/1.0\r\nConnection: close\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Zentinel-HealthCheck/1.0\r\nConnection: close\r\n\r\n",
             self.path,
             host
         );
@@ -679,7 +679,7 @@ impl HealthCheckImpl for InferenceHealthCheck {
 
         // Build HTTP request for the models endpoint
         let request = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Sentinel-HealthCheck/1.0\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Zentinel-HealthCheck/1.0\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
             self.endpoint,
             target
         );
@@ -777,7 +777,7 @@ impl HealthCheckImpl for InferenceProbeCheck {
 
         // Build HTTP request
         let request = format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Sentinel-HealthCheck/1.0\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Zentinel-HealthCheck/1.0\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             self.config.endpoint,
             target,
             body.len(),
@@ -872,7 +872,7 @@ impl HealthCheckImpl for ModelStatusCheck {
 
             // Build HTTP request
             let request = format!(
-                "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Sentinel-HealthCheck/1.0\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+                "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Zentinel-HealthCheck/1.0\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
                 endpoint,
                 target
             );
@@ -968,7 +968,7 @@ impl HealthCheckImpl for QueueDepthCheck {
 
         // Build HTTP request
         let request = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Sentinel-HealthCheck/1.0\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Zentinel-HealthCheck/1.0\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
             endpoint,
             target
         );
@@ -1246,7 +1246,7 @@ impl PassiveHealthChecker {
 // ============================================================================
 
 use dashmap::DashMap;
-use sentinel_common::{ColdModelAction, WarmthDetectionConfig};
+use zentinel_common::{ColdModelAction, WarmthDetectionConfig};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Warmth tracker for detecting cold models after idle periods

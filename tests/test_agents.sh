@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Sentinel Agent Integration Tests
+# Zentinel Agent Integration Tests
 # Tests the external agent processing functionality
 #
 # Prerequisites:
@@ -19,7 +19,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Test configuration
-TEST_DIR="/tmp/sentinel-test-$$"
+TEST_DIR="/tmp/zentinel-test-$$"
 PROXY_PORT=18080
 METRICS_PORT=19090
 ECHO_SOCKET="$TEST_DIR/echo.sock"
@@ -199,12 +199,12 @@ EOF
 start_echo_agent() {
     log_info "Starting echo agent..."
 
-    if [[ ! -f "target/release/sentinel-echo-agent" ]]; then
+    if [[ ! -f "target/release/zentinel-echo-agent" ]]; then
         log_failure "Echo agent binary not found"
         return 1
     fi
 
-    RUST_LOG=debug ./target/release/sentinel-echo-agent \
+    RUST_LOG=debug ./target/release/zentinel-echo-agent \
         --socket "$ECHO_SOCKET" \
         --prefix "X-Test-" \
         --verbose \
@@ -232,12 +232,12 @@ start_echo_agent() {
 start_ratelimit_agent() {
     log_info "Starting rate limit agent..."
 
-    if [[ ! -f "target/release/sentinel-ratelimit-agent" ]]; then
+    if [[ ! -f "target/release/zentinel-ratelimit-agent" ]]; then
         log_failure "Rate limit agent binary not found"
         return 1
     fi
 
-    RUST_LOG=debug ./target/release/sentinel-ratelimit-agent \
+    RUST_LOG=debug ./target/release/zentinel-ratelimit-agent \
         --socket "$RATELIMIT_SOCKET" \
         --default-rps 5 \
         --default-burst 10 \
@@ -263,15 +263,15 @@ start_ratelimit_agent() {
 
 # Start proxy
 start_proxy() {
-    log_info "Starting Sentinel proxy..."
+    log_info "Starting Zentinel proxy..."
 
-    if [[ ! -f "target/release/sentinel" ]]; then
+    if [[ ! -f "target/release/zentinel" ]]; then
         log_failure "Proxy binary not found"
         return 1
     fi
 
-    RUST_LOG=debug SENTINEL_CONFIG="$PROXY_CONFIG" \
-        ./target/release/sentinel \
+    RUST_LOG=debug ZENTINEL_CONFIG="$PROXY_CONFIG" \
+        ./target/release/zentinel \
         > "$TEST_DIR/proxy.log" 2>&1 &
 
     PROXY_PID=$!
@@ -426,13 +426,13 @@ test_metrics() {
 
     local metrics=$(curl -s "http://127.0.0.1:$METRICS_PORT/metrics")
 
-    if echo "$metrics" | grep -q "sentinel_agent_calls_total"; then
+    if echo "$metrics" | grep -q "zentinel_agent_calls_total"; then
         log_success "Agent metrics exposed"
     else
         log_failure "Agent metrics not exposed"
     fi
 
-    if echo "$metrics" | grep -q "sentinel_agent_latency_seconds"; then
+    if echo "$metrics" | grep -q "zentinel_agent_latency_seconds"; then
         log_success "Agent latency metrics exposed"
     else
         log_failure "Agent latency metrics not exposed"
@@ -500,7 +500,7 @@ test_performance() {
 # Main test execution
 main() {
     echo "==================================="
-    echo "Sentinel Agent Integration Tests"
+    echo "Zentinel Agent Integration Tests"
     echo "==================================="
     echo
 

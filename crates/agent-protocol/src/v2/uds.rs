@@ -416,7 +416,7 @@ impl AgentClientV2Uds {
         // Send handshake request with supported encodings
         let handshake_req = UdsHandshakeRequest {
             supported_versions: vec![PROTOCOL_VERSION_2],
-            proxy_id: "sentinel-proxy".to_string(),
+            proxy_id: "zentinel-proxy".to_string(),
             proxy_version: env!("CARGO_PKG_VERSION").to_string(),
             config: None,
             supported_encodings: Self::supported_encodings(),

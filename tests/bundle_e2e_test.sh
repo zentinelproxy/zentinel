@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Sentinel Bundle End-to-End Test
+# Zentinel Bundle End-to-End Test
 #
 # This test validates the complete bundle distribution system by:
-# 1. Installing all available agents via `sentinel bundle install`
+# 1. Installing all available agents via `zentinel bundle install`
 # 2. Starting each agent with appropriate configuration
 # 3. Configuring the proxy to chain all agents together
 # 4. Sending test requests through the full agent pipeline
@@ -24,7 +24,7 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Test configuration
-TEST_DIR="/tmp/sentinel-e2e-test-$$"
+TEST_DIR="/tmp/zentinel-e2e-test-$$"
 PROXY_PORT=18080
 BACKEND_PORT=19000
 INSTALL_DIR=""  # Set after bundle install
@@ -176,7 +176,7 @@ detect_platform() {
 }
 
 # All 22 agents in the bundle
-ALL_AGENTS="waf ratelimit denylist sentinelsec modsec ip-reputation bot-management content-scanner graphql-security grpc-inspector soap api-deprecation websocket-inspector mqtt-gateway lua js wasm transform audit-logger mock-server chaos spiffe"
+ALL_AGENTS="waf ratelimit denylist zentinelsec modsec ip-reputation bot-management content-scanner graphql-security grpc-inspector soap api-deprecation websocket-inspector mqtt-gateway lua js wasm transform audit-logger mock-server chaos spiffe"
 
 # Get agent-specific CLI arguments
 # Each agent may have different CLI requirements
@@ -199,8 +199,8 @@ get_agent_args() {
             # Denylist: empty list by default (no blocking)
             echo "--socket $socket"
             ;;
-        sentinelsec)
-            # SentinelSec: comprehensive security agent
+        zentinelsec)
+            # ZentinelSec: comprehensive security agent
             echo "--socket $socket"
             ;;
         modsec)
@@ -330,7 +330,7 @@ get_agent_env() {
 # Start an agent
 start_agent() {
     local agent="$1"
-    local binary="$INSTALL_DIR/sentinel-${agent}-agent"
+    local binary="$INSTALL_DIR/zentinel-${agent}-agent"
     local socket="$SOCKET_DIR/${agent}.sock"
     local log_file="$LOG_DIR/${agent}.log"
 
@@ -447,7 +447,7 @@ generate_proxy_config() {
     done
 
     cat > "$config_file" << EOF
-// Sentinel E2E Test Configuration
+// Zentinel E2E Test Configuration
 // Generated for testing all agents in parallel
 
 system {
@@ -576,20 +576,20 @@ start_proxy() {
     local config_file="$1"
     local log_file="$LOG_DIR/proxy.log"
 
-    # Find sentinel binary
-    local sentinel_bin=""
-    if [[ -x "./target/release/sentinel" ]]; then
-        sentinel_bin="./target/release/sentinel"
-    elif [[ -x "./target/debug/sentinel" ]]; then
-        sentinel_bin="./target/debug/sentinel"
-    elif command -v sentinel &>/dev/null; then
-        sentinel_bin="sentinel"
+    # Find zentinel binary
+    local zentinel_bin=""
+    if [[ -x "./target/release/zentinel" ]]; then
+        zentinel_bin="./target/release/zentinel"
+    elif [[ -x "./target/debug/zentinel" ]]; then
+        zentinel_bin="./target/debug/zentinel"
+    elif command -v zentinel &>/dev/null; then
+        zentinel_bin="zentinel"
     else
-        log_error "Sentinel binary not found. Please build with 'cargo build --release'"
+        log_error "Zentinel binary not found. Please build with 'cargo build --release'"
         return 1
     fi
 
-    RUST_LOG=debug "$sentinel_bin" --config "$config_file" > "$log_file" 2>&1 &
+    RUST_LOG=debug "$zentinel_bin" --config "$config_file" > "$log_file" 2>&1 &
     PROXY_PID=$!
 
     # Wait for proxy to be ready
@@ -618,14 +618,14 @@ main() {
 
     echo -e "${BOLD}"
     echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║     Sentinel Bundle End-to-End Test                          ║"
+    echo "║     Zentinel Bundle End-to-End Test                          ║"
     echo "║     Testing ALL 22 agents in enterprise deployment           ║"
     echo "╚═══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 
     log_info "Platform: $platform"
     log_info "Test directory: $TEST_DIR"
-    log_info "Expected agents: 22 (waf, ratelimit, denylist, sentinelsec, modsec,"
+    log_info "Expected agents: 22 (waf, ratelimit, denylist, zentinelsec, modsec,"
     log_info "                     ip-reputation, bot-management, content-scanner,"
     log_info "                     graphql-security, grpc-inspector, soap, api-deprecation,"
     log_info "                     websocket-inspector, mqtt-gateway, lua, js, wasm,"
@@ -639,22 +639,22 @@ main() {
     log_section "Phase 1: Install Agents"
     # =========================================================================
 
-    log_info "Installing all available agents via 'sentinel bundle install'..."
+    log_info "Installing all available agents via 'zentinel bundle install'..."
 
-    # Find sentinel binary
-    local sentinel_bin=""
-    if [[ -x "./target/release/sentinel" ]]; then
-        sentinel_bin="./target/release/sentinel"
-    elif [[ -x "./target/debug/sentinel" ]]; then
-        sentinel_bin="./target/debug/sentinel"
+    # Find zentinel binary
+    local zentinel_bin=""
+    if [[ -x "./target/release/zentinel" ]]; then
+        zentinel_bin="./target/release/zentinel"
+    elif [[ -x "./target/debug/zentinel" ]]; then
+        zentinel_bin="./target/debug/zentinel"
     else
-        log_error "Sentinel binary not found. Please build with 'cargo build --release'"
+        log_error "Zentinel binary not found. Please build with 'cargo build --release'"
         exit 1
     fi
 
     # Run bundle install with custom prefix
     local install_log="$LOG_DIR/bundle-install.log"
-    if "$sentinel_bin" bundle install --prefix "$TEST_DIR" > "$install_log" 2>&1; then
+    if "$zentinel_bin" bundle install --prefix "$TEST_DIR" > "$install_log" 2>&1; then
         log_success "Bundle install completed"
     else
         log_warn "Bundle install had some failures (check $install_log)"
@@ -687,10 +687,10 @@ main() {
 
     # Get list of installed agents
     local agents=""
-    for binary in "$INSTALL_DIR"/sentinel-*-agent; do
+    for binary in "$INSTALL_DIR"/zentinel-*-agent; do
         if [[ -x "$binary" ]]; then
             local name
-            name=$(basename "$binary" | sed 's/sentinel-//' | sed 's/-agent$//')
+            name=$(basename "$binary" | sed 's/zentinel-//' | sed 's/-agent$//')
             agents="$agents $name"
         fi
     done
@@ -754,7 +754,7 @@ main() {
     fi
 
     # Start proxy
-    log_info "Starting Sentinel proxy..."
+    log_info "Starting Zentinel proxy..."
     start_proxy "$proxy_config"
 
     assert "Proxy is running" "kill -0 $PROXY_PID 2>/dev/null"

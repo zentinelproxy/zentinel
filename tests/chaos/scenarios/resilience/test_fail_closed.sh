@@ -215,7 +215,7 @@ test_failclosed_metrics() {
 
     # Check for blocked requests metric
     local blocked
-    blocked=$(get_metric "sentinel_agent_blocks_total" "agent=\"echo\",mode=\"closed\"")
+    blocked=$(get_metric "zentinel_agent_blocks_total" "agent=\"echo\",mode=\"closed\"")
 
     if [[ -n "$blocked" && "$blocked" -gt 0 ]]; then
         log_pass "Fail-closed blocks recorded: $blocked"
@@ -225,7 +225,7 @@ test_failclosed_metrics() {
 
     # Check agent failure events
     local failures
-    failures=$(get_metric "sentinel_agent_failures_total" "agent=\"echo\"")
+    failures=$(get_metric "zentinel_agent_failures_total" "agent=\"echo\"")
 
     if [[ -n "$failures" && "$failures" -gt 0 ]]; then
         log_pass "Agent failures recorded: $failures"

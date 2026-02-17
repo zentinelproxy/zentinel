@@ -124,7 +124,7 @@ fn parse_rate_limit_backend(node: &kdl::KdlNode) -> Result<RateLimitBackend> {
             let redis_url = get_string_entry(node, "redis-url")
                 .unwrap_or_else(|| "redis://127.0.0.1:6379".to_string());
             let key_prefix = get_string_entry(node, "redis-prefix")
-                .unwrap_or_else(|| "sentinel:ratelimit:".to_string());
+                .unwrap_or_else(|| "zentinel:ratelimit:".to_string());
             let pool_size = get_int_entry(node, "redis-pool-size")
                 .map(|v| v as u32)
                 .unwrap_or(10);
@@ -146,7 +146,7 @@ fn parse_rate_limit_backend(node: &kdl::KdlNode) -> Result<RateLimitBackend> {
             let memcached_url = get_string_entry(node, "memcached-url")
                 .unwrap_or_else(|| "memcache://127.0.0.1:11211".to_string());
             let key_prefix = get_string_entry(node, "memcached-prefix")
-                .unwrap_or_else(|| "sentinel:ratelimit:".to_string());
+                .unwrap_or_else(|| "zentinel:ratelimit:".to_string());
             let pool_size = get_int_entry(node, "memcached-pool-size")
                 .map(|v| v as u32)
                 .unwrap_or(10);

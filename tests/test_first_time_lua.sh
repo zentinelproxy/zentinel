@@ -2,7 +2,7 @@
 #
 # First-Time User Smoke Test: Lua Agent
 #
-# Validates that a first-time user can build Sentinel + the Lua agent,
+# Validates that a first-time user can build Zentinel + the Lua agent,
 # wire them together with a custom Lua script, and see the agent working.
 # Uses an echo backend to verify header injection via request headers.
 #
@@ -14,7 +14,7 @@
 #
 # Usage:
 #   ./tests/test_first_time_lua.sh
-#   SENTINEL_BIN=./target/release/sentinel LUA_BIN=./sentinel-lua-agent ./tests/test_first_time_lua.sh
+#   ZENTINEL_BIN=./target/release/zentinel LUA_BIN=./zentinel-lua-agent ./tests/test_first_time_lua.sh
 #
 
 set -euo pipefail
@@ -27,7 +27,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-TEST_DIR="/tmp/sentinel-first-time-lua-$$"
+TEST_DIR="/tmp/zentinel-first-time-lua-$$"
 LUA_SOCKET="$TEST_DIR/lua.sock"
 PROXY_CONFIG="$TEST_DIR/config.kdl"
 LUA_SCRIPT="$TEST_DIR/agent.lua"
@@ -40,10 +40,10 @@ METRICS_PORT=""
 LUA_GRPC_PORT=""
 
 # Paths (overridable via env)
-SENTINEL_BIN="${SENTINEL_BIN:-}"
+ZENTINEL_BIN="${ZENTINEL_BIN:-}"
 LUA_BIN="${LUA_BIN:-}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LUA_REPO="${LUA_REPO:-$REPO_ROOT/../sentinel-agent-lua}"
+LUA_REPO="${LUA_REPO:-$REPO_ROOT/../zentinel-agent-lua}"
 
 # Test counters
 TESTS_RUN=0
@@ -109,33 +109,33 @@ trap cleanup EXIT INT TERM
 
 # Build binaries if needed
 build_binaries() {
-    if [[ -z "$SENTINEL_BIN" ]]; then
-        if [[ -f "$REPO_ROOT/target/release/sentinel" ]]; then
-            SENTINEL_BIN="$REPO_ROOT/target/release/sentinel"
-            log_info "Using existing Sentinel binary: $SENTINEL_BIN"
+    if [[ -z "$ZENTINEL_BIN" ]]; then
+        if [[ -f "$REPO_ROOT/target/release/zentinel" ]]; then
+            ZENTINEL_BIN="$REPO_ROOT/target/release/zentinel"
+            log_info "Using existing Zentinel binary: $ZENTINEL_BIN"
         else
-            log_info "Building Sentinel proxy (release)..."
-            (cd "$REPO_ROOT" && cargo build --release --bin sentinel)
-            SENTINEL_BIN="$REPO_ROOT/target/release/sentinel"
+            log_info "Building Zentinel proxy (release)..."
+            (cd "$REPO_ROOT" && cargo build --release --bin zentinel)
+            ZENTINEL_BIN="$REPO_ROOT/target/release/zentinel"
         fi
     fi
 
-    if [[ ! -f "$SENTINEL_BIN" ]]; then
-        echo -e "${RED}[ERROR]${NC} Sentinel binary not found at $SENTINEL_BIN"
+    if [[ ! -f "$ZENTINEL_BIN" ]]; then
+        echo -e "${RED}[ERROR]${NC} Zentinel binary not found at $ZENTINEL_BIN"
         exit 1
     fi
 
     if [[ -z "$LUA_BIN" ]]; then
-        if [[ -f "$LUA_REPO/target/release/sentinel-lua-agent" ]]; then
-            LUA_BIN="$LUA_REPO/target/release/sentinel-lua-agent"
+        if [[ -f "$LUA_REPO/target/release/zentinel-lua-agent" ]]; then
+            LUA_BIN="$LUA_REPO/target/release/zentinel-lua-agent"
             log_info "Using existing Lua agent binary: $LUA_BIN"
         elif [[ -d "$LUA_REPO" ]]; then
             log_info "Building Lua agent from $LUA_REPO (release)..."
             (cd "$LUA_REPO" && cargo build --release)
-            LUA_BIN="$LUA_REPO/target/release/sentinel-lua-agent"
+            LUA_BIN="$LUA_REPO/target/release/zentinel-lua-agent"
         else
             echo -e "${RED}[ERROR]${NC} Lua agent repo not found at $LUA_REPO"
-            echo "Clone it as a sibling: git clone <url> ../sentinel-agent-lua"
+            echo "Clone it as a sibling: git clone <url> ../zentinel-agent-lua"
             exit 1
         fi
     fi
@@ -192,7 +192,7 @@ create_lua_script() {
     log_info "Creating Lua agent script..."
 
     cat > "$LUA_SCRIPT" <<'LUAEOF'
--- Sentinel Lua Agent: first-time user test script
+-- Zentinel Lua Agent: first-time user test script
 -- Adds a custom request header to every allowed request, blocks requests with ?block=true
 
 function on_request_headers()
@@ -333,10 +333,10 @@ start_lua_agent() {
 
 # Start proxy
 start_proxy() {
-    log_info "Starting Sentinel proxy..."
+    log_info "Starting Zentinel proxy..."
 
-    RUST_LOG=debug SENTINEL_CONFIG="$PROXY_CONFIG" \
-        "$SENTINEL_BIN" \
+    RUST_LOG=debug ZENTINEL_CONFIG="$PROXY_CONFIG" \
+        "$ZENTINEL_BIN" \
         > "$TEST_DIR/proxy.log" 2>&1 &
     PROXY_PID=$!
 

@@ -1,6 +1,6 @@
 # Configuration Examples
 
-Common configuration patterns for the Sentinel proxy.
+Common configuration patterns for the Zentinel proxy.
 
 ## Basic HTTP Proxy
 
@@ -362,7 +362,7 @@ observability {
     logging {
         audit-log {
             enabled true
-            file "/var/log/sentinel/audit.log"
+            file "/var/log/zentinel/audit.log"
             log-blocked true
             log-waf-events true
         }
@@ -515,7 +515,7 @@ schema-version "1.0"
 filters {
     filter "geo-block" {
         type "geo"
-        database-path "/etc/sentinel/GeoLite2-Country.mmdb"
+        database-path "/etc/zentinel/GeoLite2-Country.mmdb"
         action "block"
         countries ["RU", "CN", "KP", "IR"]
         on-failure "open"
@@ -524,7 +524,7 @@ filters {
 
     filter "geo-allow" {
         type "geo"
-        database-path "/etc/sentinel/GeoLite2-Country.mmdb"
+        database-path "/etc/zentinel/GeoLite2-Country.mmdb"
         action "allow"
         countries ["US", "CA", "GB", "AU"]
         on-failure "closed"
@@ -680,7 +680,7 @@ observability {
 
         access-log {
             enabled true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             format "json"
             sample-rate 1.0
             include-trace-id true
@@ -688,13 +688,13 @@ observability {
 
         error-log {
             enabled true
-            file "/var/log/sentinel/error.log"
+            file "/var/log/zentinel/error.log"
             level "warn"
         }
 
         audit-log {
             enabled true
-            file "/var/log/sentinel/audit.log"
+            file "/var/log/zentinel/audit.log"
             log-blocked true
             log-waf-events true
         }
@@ -707,7 +707,7 @@ observability {
             }
         }
         sampling-rate 0.01
-        service-name "sentinel"
+        service-name "zentinel"
     }
 }
 ```

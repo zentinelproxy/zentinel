@@ -1,7 +1,7 @@
-# Sentinel Distribution Bundle - Version Lock File
+# Zentinel Distribution Bundle - Version Lock File
 #
 # This file pins the agent versions included in the bundle distribution.
-# The lock file is embedded in the Sentinel binary at compile time.
+# The lock file is embedded in the Zentinel binary at compile time.
 #
 # Update via PR when agents release new versions.
 # Format: CalVer for bundle, SemVer for agents
@@ -17,7 +17,7 @@ ratelimit = "0.2.0"
 denylist = "0.2.0"
 
 # Security agents
-sentinelsec = "0.1.0"
+zentinelsec = "0.1.0"
 modsec = "0.1.0"
 ip-reputation = "0.1.0"
 bot-management = "0.1.0"
@@ -49,40 +49,40 @@ spiffe = "0.1.0"
 
 [repositories]
 # Core agents
-waf = "raskell-io/sentinel-agent-waf"
-ratelimit = "raskell-io/sentinel-agent-ratelimit"
-denylist = "raskell-io/sentinel-agent-denylist"
+waf = "zentinelproxy/zentinel-agent-waf"
+ratelimit = "zentinelproxy/zentinel-agent-ratelimit"
+denylist = "zentinelproxy/zentinel-agent-denylist"
 
 # Security agents
-sentinelsec = "raskell-io/sentinel-agent-sentinelsec"
-modsec = "raskell-io/sentinel-agent-modsec"
-ip-reputation = "raskell-io/sentinel-agent-ip-reputation"
-bot-management = "raskell-io/sentinel-agent-bot-management"
-content-scanner = "raskell-io/sentinel-agent-content-scanner"
+zentinelsec = "zentinelproxy/zentinel-agent-zentinelsec"
+modsec = "zentinelproxy/zentinel-agent-modsec"
+ip-reputation = "zentinelproxy/zentinel-agent-ip-reputation"
+bot-management = "zentinelproxy/zentinel-agent-bot-management"
+content-scanner = "zentinelproxy/zentinel-agent-content-scanner"
 
 # API security agents
-graphql-security = "raskell-io/sentinel-agent-graphql-security"
-grpc-inspector = "raskell-io/sentinel-agent-grpc-inspector"
-soap = "raskell-io/sentinel-agent-soap"
-api-deprecation = "raskell-io/sentinel-agent-api-deprecation"
+graphql-security = "zentinelproxy/zentinel-agent-graphql-security"
+grpc-inspector = "zentinelproxy/zentinel-agent-grpc-inspector"
+soap = "zentinelproxy/zentinel-agent-soap"
+api-deprecation = "zentinelproxy/zentinel-agent-api-deprecation"
 
 # Protocol agents
-websocket-inspector = "raskell-io/sentinel-agent-websocket-inspector"
-mqtt-gateway = "raskell-io/sentinel-agent-mqtt-gateway"
+websocket-inspector = "zentinelproxy/zentinel-agent-websocket-inspector"
+mqtt-gateway = "zentinelproxy/zentinel-agent-mqtt-gateway"
 
 # Scripting agents
-lua = "raskell-io/sentinel-agent-lua"
-js = "raskell-io/sentinel-agent-js"
-wasm = "raskell-io/sentinel-agent-wasm"
+lua = "zentinelproxy/zentinel-agent-lua"
+js = "zentinelproxy/zentinel-agent-js"
+wasm = "zentinelproxy/zentinel-agent-wasm"
 
 # Utility agents
-transform = "raskell-io/sentinel-agent-transform"
-audit-logger = "raskell-io/sentinel-agent-audit-logger"
-mock-server = "raskell-io/sentinel-agent-mock-server"
-chaos = "raskell-io/sentinel-agent-chaos"
+transform = "zentinelproxy/zentinel-agent-transform"
+audit-logger = "zentinelproxy/zentinel-agent-audit-logger"
+mock-server = "zentinelproxy/zentinel-agent-mock-server"
+chaos = "zentinelproxy/zentinel-agent-chaos"
 
 # Identity agents
-spiffe = "raskell-io/sentinel-agent-spiffe"
+spiffe = "zentinelproxy/zentinel-agent-spiffe"
 
 [checksums]
 # SHA256 checksums for verification (optional, updated by release CI)

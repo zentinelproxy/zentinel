@@ -68,7 +68,7 @@ cache {
     lock-timeout 10
 
     // Disk cache settings (only used with "disk" or "hybrid" backend)
-    // disk-path "/var/cache/sentinel"
+    // disk-path "/var/cache/zentinel"
     // disk-shards 16
 }
 
@@ -365,13 +365,13 @@ observability {
         address "0.0.0.0:9090"
         path "/metrics"
         // Cache metrics exported:
-        // - sentinel_cache_hits_total
-        // - sentinel_cache_misses_total
-        // - sentinel_cache_stale_hits_total
-        // - sentinel_cache_size_bytes
-        // - sentinel_cache_entries_count
-        // - sentinel_cache_evictions_total
-        // - sentinel_cache_lock_waits_total
+        // - zentinel_cache_hits_total
+        // - zentinel_cache_misses_total
+        // - zentinel_cache_stale_hits_total
+        // - zentinel_cache_size_bytes
+        // - zentinel_cache_entries_count
+        // - zentinel_cache_evictions_total
+        // - zentinel_cache_lock_waits_total
     }
 
     logging {
@@ -380,7 +380,7 @@ observability {
 
         access-log {
             enabled #true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             // Cache status included in logs (HIT, MISS, STALE, BYPASS)
         }
     }

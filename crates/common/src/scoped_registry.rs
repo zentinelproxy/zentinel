@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_common::{ScopedRegistry, QualifiedId, Scope};
+//! use zentinel_common::{ScopedRegistry, QualifiedId, Scope};
 //!
 //! let registry: ScopedRegistry<UpstreamPool> = ScopedRegistry::new();
 //!

@@ -7,7 +7,7 @@
 //! It also handles cross-provider model mapping (e.g., `gpt-4` → `claude-3-opus`)
 //! with support for glob patterns in model names.
 
-use sentinel_config::{FallbackConfig, FallbackUpstream};
+use zentinel_config::{FallbackConfig, FallbackUpstream};
 
 use super::context::FallbackReason;
 
@@ -298,7 +298,7 @@ fn glob_match_recursive(pattern: &[char], text: &[char], p_idx: usize, t_idx: us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_config::{FallbackTriggers, InferenceProvider};
+    use zentinel_config::{FallbackTriggers, InferenceProvider};
     use std::collections::HashMap;
 
     fn create_test_config() -> FallbackConfig {

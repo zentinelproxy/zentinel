@@ -38,7 +38,7 @@ test_baseline() {
 
     # Verify healthy backends count
     local healthy
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
     log_info "Initial healthy backends (primary): ${healthy:-unknown}"
 }
 
@@ -55,7 +55,7 @@ test_backend_failure_detection() {
 
     # Verify backend marked unhealthy
     local healthy
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
 
     if [[ -n "$healthy" && "$healthy" == "0" ]]; then
         log_pass "Health check detected failure (0 healthy backends)"
@@ -87,7 +87,7 @@ test_backend_recovery_detection() {
 
     # Verify backend marked healthy again
     local healthy
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
 
     if [[ -n "$healthy" && "$healthy" -ge 1 ]]; then
         log_pass "Health check detected recovery ($healthy healthy backend(s))"
@@ -124,7 +124,7 @@ test_rapid_failure_recovery_cycle() {
 
         # Verify failure detected
         local healthy
-        healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+        healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
         log_info "  Healthy after failure: ${healthy:-unknown}"
 
         log_info "Cycle $cycle: Restoring..."
@@ -132,7 +132,7 @@ test_rapid_failure_recovery_cycle() {
         sleep $((HEALTH_CHECK_INTERVAL * 3))
 
         # Verify recovery detected
-        healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+        healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
         log_info "  Healthy after restore: ${healthy:-unknown}"
 
         # Check traffic works
@@ -189,8 +189,8 @@ test_health_check_metrics() {
 
     # Check health check success/failure counts
     local successes failures
-    successes=$(get_metric "sentinel_upstream_health_check_successes_total" "upstream=\"primary\"")
-    failures=$(get_metric "sentinel_upstream_health_check_failures_total" "upstream=\"primary\"")
+    successes=$(get_metric "zentinel_upstream_health_check_successes_total" "upstream=\"primary\"")
+    failures=$(get_metric "zentinel_upstream_health_check_failures_total" "upstream=\"primary\"")
 
     log_info "Health check metrics:"
     log_info "  Successes: ${successes:-not found}"
@@ -210,7 +210,7 @@ test_health_check_metrics() {
 
     # Check for state transition events
     local transitions
-    transitions=$(get_metrics_matching "sentinel_upstream_health_state_transitions")
+    transitions=$(get_metrics_matching "zentinel_upstream_health_state_transitions")
     if [[ -n "$transitions" ]]; then
         log_info "Health state transitions:"
         echo "$transitions" | head -5 | while read -r line; do

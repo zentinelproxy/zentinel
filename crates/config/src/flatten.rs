@@ -13,8 +13,8 @@
 //! 2. Collects scope-specific limits for runtime isolation
 //! 3. Enables O(1) lookups via HashMap
 
-use sentinel_common::ids::{QualifiedId, Scope};
-use sentinel_common::limits::Limits;
+use zentinel_common::ids::{QualifiedId, Scope};
+use zentinel_common::limits::Limits;
 use std::collections::HashMap;
 
 use crate::{AgentConfig, Config, FilterConfig, ListenerConfig, RouteConfig, UpstreamConfig};
@@ -330,7 +330,7 @@ mod tests {
         namespace::{ExportConfig, NamespaceConfig, ServiceConfig},
         ConnectionPoolConfig, HttpVersionConfig, UpstreamTarget, UpstreamTimeouts,
     };
-    use sentinel_common::types::LoadBalancingAlgorithm;
+    use zentinel_common::types::LoadBalancingAlgorithm;
 
     fn test_upstream(id: &str) -> UpstreamConfig {
         UpstreamConfig {

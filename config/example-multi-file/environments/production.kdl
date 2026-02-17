@@ -1,6 +1,6 @@
 // Production Environment Configuration Overrides
 // This file contains production-specific settings that override base configuration
-// Load this with: sentinel --config-dir /etc/sentinel --environment production
+// Load this with: zentinel --config-dir /etc/zentinel --environment production
 
 metadata {
     environment "production"
@@ -13,7 +13,7 @@ metadata {
 system {
     worker-threads 16  // More workers for production
     graceful-shutdown-timeout "60s"  // Longer graceful shutdown
-    pid-file "/var/run/sentinel/sentinel.pid"
+    pid-file "/var/run/zentinel/zentinel.pid"
 
     // Production process limits
     rlimits {
@@ -35,8 +35,8 @@ tls {
     ]
 
     // Production certificates from secrets management
-    default-cert "/etc/sentinel/certs/prod/default.crt"
-    default-key "/etc/sentinel/certs/prod/default.key"
+    default-cert "/etc/zentinel/certs/prod/default.crt"
+    default-key "/etc/zentinel/certs/prod/default.key"
 
     // Certificate rotation
     cert-watch {
@@ -119,7 +119,7 @@ logging {
 
         file {
             enabled true
-            path "/var/log/sentinel/sentinel.log"
+            path "/var/log/zentinel/zentinel.log"
             rotation "hourly"
             max-size "1GB"
             max-backups 24
@@ -130,7 +130,7 @@ logging {
             enabled true
             address "syslog.internal:514"
             facility "local0"
-            tag "sentinel"
+            tag "zentinel"
         }
 
         // External logging service
@@ -143,7 +143,7 @@ logging {
             // Add metadata to all logs
             tags [
                 "env:production"
-                "service:sentinel"
+                "service:zentinel"
                 "version:$VERSION"
             ]
         }
@@ -152,7 +152,7 @@ logging {
     // Production access log
     access-log {
         enabled true
-        path "/var/log/sentinel/access.log"
+        path "/var/log/zentinel/access.log"
         format "json"
         buffer-size "256KB"
 
@@ -182,7 +182,7 @@ logging {
     // Audit logging for compliance
     audit-log {
         enabled true
-        path "/var/log/sentinel/audit.log"
+        path "/var/log/zentinel/audit.log"
 
         // What to audit
         events [
@@ -292,16 +292,16 @@ listener "https" {
             provider "aws-secrets-manager"
 
             default {
-                secret-name "prod/sentinel/default-cert"
+                secret-name "prod/zentinel/default-cert"
                 auto-rotate true
             }
 
             sni {
                 "api.example.com" {
-                    secret-name "prod/sentinel/api-cert"
+                    secret-name "prod/zentinel/api-cert"
                 }
                 "*.app.example.com" {
-                    secret-name "prod/sentinel/wildcard-app-cert"
+                    secret-name "prod/zentinel/wildcard-app-cert"
                 }
             }
         }
@@ -315,11 +315,11 @@ listener "https" {
             paths {
                 "/admin/*" {
                     mode "require"
-                    ca-file "/etc/sentinel/certs/prod/admin-ca.crt"
+                    ca-file "/etc/zentinel/certs/prod/admin-ca.crt"
                 }
                 "/internal/*" {
                     mode "require"
-                    ca-file "/etc/sentinel/certs/prod/internal-ca.crt"
+                    ca-file "/etc/zentinel/certs/prod/internal-ca.crt"
                 }
             }
         }
@@ -429,13 +429,13 @@ waf {
     // Custom rules for production
     custom-rules {
         enabled true
-        path "/etc/sentinel/waf/custom-rules.conf"
+        path "/etc/zentinel/waf/custom-rules.conf"
     }
 
     // WAF logging
     audit-log {
         enabled true
-        path "/var/log/sentinel/waf-audit.log"
+        path "/var/log/zentinel/waf-audit.log"
         format "json"
 
         // Log all blocks and a sample of allows
@@ -472,7 +472,7 @@ cache {
         }
 
         // Cache key prefix
-        key-prefix "sentinel:prod:"
+        key-prefix "zentinel:prod:"
 
         // Default TTL
         default-ttl "10m"
@@ -504,7 +504,7 @@ monitoring {
         enabled true
         provider "datadog"  // or "new-relic", "elastic-apm"
 
-        service-name "sentinel"
+        service-name "zentinel"
         environment "production"
 
         // Trace sampling
@@ -556,7 +556,7 @@ backup {
         interval "1h"
 
         // Backup to S3
-        destination "s3://sentinel-backups-prod/configs/"
+        destination "s3://zentinel-backups-prod/configs/"
 
         // Keep last 30 days
         retention "30d"

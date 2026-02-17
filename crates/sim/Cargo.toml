@@ -1,20 +1,20 @@
 [package]
-name = "sentinel-sim"
+name = "zentinel-sim"
 version = "0.4.3"
 edition = "2021"
-authors = ["Sentinel Contributors"]
+authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/raskell-io/sentinel"
-homepage = "https://github.com/raskell-io/sentinel"
+repository = "https://github.com/zentinelproxy/zentinel"
+homepage = "https://github.com/zentinelproxy/zentinel"
 rust-version = "1.85"
-description = "Configuration simulation engine for Sentinel reverse proxy (WASM-compatible)"
+description = "Configuration simulation engine for Zentinel reverse proxy (WASM-compatible)"
 keywords = ["proxy", "reverse-proxy", "simulation", "wasm", "routing"]
 categories = ["simulation", "wasm", "network-programming"]
 
 [dependencies]
 # Local crates (WASM-compatible - disable runtime features)
-sentinel-config = { path = "../config", version = "0.4.3", default-features = false }
-sentinel-common = { path = "../common", version = "0.4.3", default-features = false }
+zentinel-config = { path = "../config", version = "0.4.3", default-features = false }
+zentinel-common = { path = "../common", version = "0.4.3", default-features = false }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

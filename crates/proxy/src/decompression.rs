@@ -19,7 +19,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_proxy::decompression::{decompress_body, DecompressionConfig};
+//! use zentinel_proxy::decompression::{decompress_body, DecompressionConfig};
 //!
 //! let config = DecompressionConfig {
 //!     max_ratio: 100.0,

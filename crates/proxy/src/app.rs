@@ -1,4 +1,4 @@
-//! Application module for Sentinel proxy
+//! Application module for Zentinel proxy
 //!
 //! This module contains application-level logic and utilities for the proxy.
 

@@ -1,10 +1,10 @@
 # ACME Automatic Certificate Management
 
-This document describes Sentinel's ACME (Automatic Certificate Management Environment) implementation for automatic TLS certificate issuance and renewal via Let's Encrypt.
+This document describes Zentinel's ACME (Automatic Certificate Management Environment) implementation for automatic TLS certificate issuance and renewal via Let's Encrypt.
 
 ## Overview
 
-Sentinel supports automatic TLS certificate management using the ACME protocol (RFC 8555). This eliminates the need for manual certificate management by automatically:
+Zentinel supports automatic TLS certificate management using the ACME protocol (RFC 8555). This eliminates the need for manual certificate management by automatically:
 
 - Requesting certificates from Let's Encrypt
 - Completing HTTP-01 or DNS-01 domain validation challenges
@@ -236,10 +236,10 @@ if let Some(ref resolver) = self.sni_resolver {
 
 This uses the existing `HotReloadableSniResolver` infrastructure.
 
-### SentinelProxy Fields
+### ZentinelProxy Fields
 
 ```rust
-pub struct SentinelProxy {
+pub struct ZentinelProxy {
     // ... existing fields ...
 
     /// ACME challenge manager for HTTP-01 validation
@@ -264,7 +264,7 @@ listeners {
                 email "admin@example.com"
                 domains "example.com" "www.example.com"
                 staging false
-                storage "/var/lib/sentinel/acme"
+                storage "/var/lib/zentinel/acme"
                 renew-before-days 30
             }
         }
@@ -282,13 +282,13 @@ listeners {
                 email "admin@example.com"
                 domains "example.com" "*.example.com"
                 staging false
-                storage "/var/lib/sentinel/acme"
+                storage "/var/lib/zentinel/acme"
                 renew-before-days 30
                 challenge-type "dns-01"
 
                 dns-provider {
                     type "hetzner"
-                    credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+                    credentials-file "/etc/zentinel/secrets/hetzner-dns.json"
                     api-timeout-secs 30
 
                     propagation {
@@ -311,7 +311,7 @@ dns-provider {
     type "webhook"
     url "https://dns-api.internal/v1"
     auth-header "X-API-Key"
-    credentials-file "/etc/sentinel/secrets/dns-webhook.json"
+    credentials-file "/etc/zentinel/secrets/dns-webhook.json"
 }
 ```
 
@@ -322,7 +322,7 @@ dns-provider {
 | `email` | string | required | Contact email for Let's Encrypt account |
 | `domains` | string[] | required | Domains to include in certificate |
 | `staging` | bool | `false` | Use Let's Encrypt staging environment |
-| `storage` | path | `/var/lib/sentinel/acme` | Directory for certificates and credentials |
+| `storage` | path | `/var/lib/zentinel/acme` | Directory for certificates and credentials |
 | `renew-before-days` | u32 | `30` | Days before expiry to trigger renewal |
 | `challenge-type` | string | `"http-01"` | Challenge type: `http-01` or `dns-01` |
 | `dns-provider` | block | - | DNS provider config (required for dns-01) |

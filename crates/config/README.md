@@ -1,6 +1,6 @@
-# Sentinel Configuration
+# Zentinel Configuration
 
-Configuration loading, parsing, validation, and hot-reload support for Sentinel reverse proxy.
+Configuration loading, parsing, validation, and hot-reload support for Zentinel reverse proxy.
 
 ## Features
 
@@ -48,10 +48,10 @@ routes {
 ### Loading Configuration
 
 ```rust
-use sentinel_config::Config;
+use zentinel_config::Config;
 
 // From file (format detected by extension)
-let config = Config::from_file("sentinel.kdl")?;
+let config = Config::from_file("zentinel.kdl")?;
 
 // From KDL string
 let config = Config::from_kdl(kdl_content)?;
@@ -156,7 +156,7 @@ server {
 Or manually trigger reload:
 
 ```rust
-config.reload("sentinel.kdl")?;
+config.reload("zentinel.kdl")?;
 ```
 
 ## Multi-File Configuration
@@ -178,7 +178,7 @@ config/
 Load with:
 
 ```rust
-use sentinel_config::MultiFileLoader;
+use zentinel_config::MultiFileLoader;
 
 let loader = MultiFileLoader::new("config/");
 let config = loader.load()?;
@@ -186,7 +186,7 @@ let config = loader.load()?;
 
 ## Default Configuration
 
-When no configuration file is provided, Sentinel uses an embedded default:
+When no configuration file is provided, Zentinel uses an embedded default:
 
 - HTTP listener on `0.0.0.0:8080`
 - Admin listener on `0.0.0.0:9090`

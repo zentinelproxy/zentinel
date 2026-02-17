@@ -266,10 +266,10 @@ Cost metrics are exported for monitoring:
 
 ```
 # Total cost in dollars
-sentinel_inference_cost_dollars_total{route="chat", model="gpt-4"} 1.23
+zentinel_inference_cost_dollars_total{route="chat", model="gpt-4"} 1.23
 
 # Cost per request
-sentinel_inference_cost_per_request{route="chat", model="gpt-4", quantile="0.5"} 0.05
+zentinel_inference_cost_per_request{route="chat", model="gpt-4", quantile="0.5"} 0.05
 ```
 
 ## Guardrails
@@ -465,30 +465,30 @@ Inference-specific metrics:
 
 ```
 # Token rate limiting
-sentinel_inference_rate_limit_tokens_allowed_total{route="chat"}
-sentinel_inference_rate_limit_tokens_limited_total{route="chat"}
-sentinel_inference_rate_limit_current_tokens{route="chat"}
+zentinel_inference_rate_limit_tokens_allowed_total{route="chat"}
+zentinel_inference_rate_limit_tokens_limited_total{route="chat"}
+zentinel_inference_rate_limit_current_tokens{route="chat"}
 
 # Token budgets
-sentinel_inference_budget_tokens_used{route="chat", period="daily"}
-sentinel_inference_budget_tokens_remaining{route="chat", period="daily"}
-sentinel_inference_budget_exhausted_total{route="chat", period="daily"}
+zentinel_inference_budget_tokens_used{route="chat", period="daily"}
+zentinel_inference_budget_tokens_remaining{route="chat", period="daily"}
+zentinel_inference_budget_exhausted_total{route="chat", period="daily"}
 
 # Token usage
-sentinel_inference_input_tokens_total{route="chat", model="gpt-4"}
-sentinel_inference_output_tokens_total{route="chat", model="gpt-4"}
-sentinel_inference_tokens_per_request{route="chat", model="gpt-4", quantile="0.5"}
+zentinel_inference_input_tokens_total{route="chat", model="gpt-4"}
+zentinel_inference_output_tokens_total{route="chat", model="gpt-4"}
+zentinel_inference_tokens_per_request{route="chat", model="gpt-4", quantile="0.5"}
 
 # Cost
-sentinel_inference_cost_dollars_total{route="chat", model="gpt-4"}
+zentinel_inference_cost_dollars_total{route="chat", model="gpt-4"}
 
 # Guardrails
-sentinel_inference_guardrail_blocked_total{route="chat", guardrail="prompt_injection"}
-sentinel_inference_guardrail_latency_ms{route="chat", guardrail="prompt_injection"}
+zentinel_inference_guardrail_blocked_total{route="chat", guardrail="prompt_injection"}
+zentinel_inference_guardrail_latency_ms{route="chat", guardrail="prompt_injection"}
 
 # Model routing
-sentinel_inference_model_requests_total{route="chat", model="gpt-4", upstream="openai"}
-sentinel_inference_fallback_total{route="chat", from="openai", to="anthropic"}
+zentinel_inference_model_requests_total{route="chat", model="gpt-4", upstream="openai"}
+zentinel_inference_fallback_total{route="chat", from="openai", to="anthropic"}
 ```
 
 ## Example Configuration

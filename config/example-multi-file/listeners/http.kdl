@@ -1,5 +1,5 @@
 // HTTP Listener Configuration
-// This file defines the main HTTP listener for Sentinel
+// This file defines the main HTTP listener for Zentinel
 
 listener "http" {
     address "0.0.0.0:80"

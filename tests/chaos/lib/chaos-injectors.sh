@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Sentinel Chaos Tests - Chaos Injectors
+# Zentinel Chaos Tests - Chaos Injectors
 #
 # Functions to inject various failure conditions for chaos testing.
 # Source this file after common.sh in test scripts.

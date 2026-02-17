@@ -1,11 +1,11 @@
 name: Question
-description: Ask a question about Sentinel
+description: Ask a question about Zentinel
 labels: ["question"]
 body:
   - type: markdown
     attributes:
       value: |
-        For general questions, consider using [GitHub Discussions](https://github.com/raskell-io/sentinel/discussions) instead.
+        For general questions, consider using [GitHub Discussions](https://github.com/zentinelproxy/zentinel/discussions) instead.
 
         This template is for specific technical questions.
 
@@ -43,7 +43,7 @@ body:
     attributes:
       label: Checklist
       options:
-        - label: I have searched the [documentation](https://sentinel.raskell.io/docs)
+        - label: I have searched the [documentation](https://zentinelproxy.io/docs)
           required: true
         - label: I have searched existing issues and discussions
           required: true

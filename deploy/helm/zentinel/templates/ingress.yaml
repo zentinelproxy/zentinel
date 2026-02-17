@@ -1,18 +1,18 @@
 {{- if and .Values.proxy.enabled .Values.proxy.ingress.enabled }}
-apiVersion: {{ include "sentinel.ingress.apiVersion" . }}
+apiVersion: {{ include "zentinel.ingress.apiVersion" . }}
 kind: Ingress
 metadata:
-  name: {{ include "sentinel.fullname" . }}-proxy
+  name: {{ include "zentinel.fullname" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "sentinel.labels" . | nindent 4 }}
+    {{- include "zentinel.labels" . | nindent 4 }}
     app.kubernetes.io/component: proxy
   {{- with .Values.proxy.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if and .Values.proxy.ingress.className (eq (include "sentinel.ingress.isStable" .) "true") }}
+  {{- if and .Values.proxy.ingress.className (eq (include "zentinel.ingress.isStable" .) "true") }}
   ingressClassName: {{ .Values.proxy.ingress.className }}
   {{- end }}
   {{- if .Values.proxy.ingress.tls }}
@@ -32,17 +32,17 @@ spec:
         paths:
           {{- range .paths }}
           - path: {{ .path }}
-            {{- if eq (include "sentinel.ingress.supportsPathType" $) "true" }}
+            {{- if eq (include "zentinel.ingress.supportsPathType" $) "true" }}
             pathType: {{ .pathType }}
             {{- end }}
             backend:
-              {{- if eq (include "sentinel.ingress.isStable" $) "true" }}
+              {{- if eq (include "zentinel.ingress.isStable" $) "true" }}
               service:
-                name: {{ include "sentinel.fullname" $ }}-proxy
+                name: {{ include "zentinel.fullname" $ }}-proxy
                 port:
                   number: {{ $.Values.proxy.service.httpPort }}
               {{- else }}
-              serviceName: {{ include "sentinel.fullname" $ }}-proxy
+              serviceName: {{ include "zentinel.fullname" $ }}-proxy
               servicePort: {{ $.Values.proxy.service.httpPort }}
               {{- end }}
           {{- end }}

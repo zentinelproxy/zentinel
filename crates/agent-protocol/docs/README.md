@@ -1,6 +1,6 @@
 # Agent Protocol Documentation
 
-This directory contains documentation for the Sentinel Agent Protocol, which defines how the proxy communicates with external processing agents.
+This directory contains documentation for the Zentinel Agent Protocol, which defines how the proxy communicates with external processing agents.
 
 ## Protocol Versions
 
@@ -61,7 +61,7 @@ To migrate from v1 to v2:
 
 ```rust
 // Before (v1)
-use sentinel_agent_protocol::AgentClient;
+use zentinel_agent_protocol::AgentClient;
 
 let client = AgentClient::unix_socket(
     "proxy",
@@ -72,7 +72,7 @@ let client = AgentClient::unix_socket(
 let response = client.send_event(EventType::RequestHeaders, &event).await?;
 
 // After (v2 with pooling)
-use sentinel_agent_protocol::v2::AgentPool;
+use zentinel_agent_protocol::v2::AgentPool;
 
 let pool = AgentPool::new();
 pool.add_agent("agent", "/tmp/agent.sock").await?;
@@ -87,7 +87,7 @@ For detailed migration instructions, see the [RELEASE_NOTES_v0.3.0.md](../../../
 ### v2 (Recommended)
 
 ```rust
-use sentinel_agent_protocol::v2::{AgentPool, AgentPoolConfig, LoadBalanceStrategy};
+use zentinel_agent_protocol::v2::{AgentPool, AgentPoolConfig, LoadBalanceStrategy};
 use std::time::Duration;
 
 // Create a connection pool
@@ -111,7 +111,7 @@ let response = pool.send_request_headers("waf", &headers).await?;
 ### v1 (Legacy)
 
 ```rust
-use sentinel_agent_protocol::AgentClient;
+use zentinel_agent_protocol::AgentClient;
 use std::time::Duration;
 
 let client = AgentClient::unix_socket(
@@ -126,5 +126,5 @@ let response = client.send_event(EventType::RequestHeaders, &event).await?;
 ## Related Documentation
 
 - [Release Notes v0.3.0](../../../RELEASE_NOTES_v0.3.0.md) - Agent Protocol 2.0 announcement
-- [Sentinel CLAUDE.md](../../../.claude/CLAUDE.md) - Overall project documentation
+- [Zentinel CLAUDE.md](../../../.claude/CLAUDE.md) - Overall project documentation
 - [Performance Roadmap](./performance-roadmap.md) - Bottleneck analysis and optimization plans

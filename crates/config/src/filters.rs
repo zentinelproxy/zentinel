@@ -1,4 +1,4 @@
-//! Filter chain configuration for Sentinel proxy
+//! Filter chain configuration for Zentinel proxy
 //!
 //! Filters provide an ordered pipeline for request/response processing.
 //! They can be built-in (rate-limit, headers, compress) or external agents.
@@ -314,7 +314,7 @@ pub struct RedisBackendConfig {
     /// Redis connection URL (e.g., "redis://127.0.0.1:6379")
     pub url: String,
 
-    /// Key prefix for rate limit keys (default: "sentinel:ratelimit:")
+    /// Key prefix for rate limit keys (default: "zentinel:ratelimit:")
     #[serde(default = "default_redis_prefix", rename = "key-prefix")]
     pub key_prefix: String,
 
@@ -344,7 +344,7 @@ impl Default for RedisBackendConfig {
 }
 
 fn default_redis_prefix() -> String {
-    "sentinel:ratelimit:".to_string()
+    "zentinel:ratelimit:".to_string()
 }
 
 fn default_redis_pool_size() -> u32 {
@@ -361,7 +361,7 @@ pub struct MemcachedBackendConfig {
     /// Memcached server URL (e.g., "memcache://127.0.0.1:11211")
     pub url: String,
 
-    /// Key prefix for rate limit keys (default: "sentinel:ratelimit:")
+    /// Key prefix for rate limit keys (default: "zentinel:ratelimit:")
     #[serde(default = "default_memcached_prefix", rename = "key-prefix")]
     pub key_prefix: String,
 
@@ -396,7 +396,7 @@ impl Default for MemcachedBackendConfig {
 }
 
 fn default_memcached_prefix() -> String {
-    "sentinel:ratelimit:".to_string()
+    "zentinel:ratelimit:".to_string()
 }
 
 fn default_memcached_pool_size() -> u32 {
@@ -897,7 +897,7 @@ mod tests {
     fn test_redis_backend_config() {
         let config = RedisBackendConfig::default();
         assert_eq!(config.url, "redis://127.0.0.1:6379");
-        assert_eq!(config.key_prefix, "sentinel:ratelimit:");
+        assert_eq!(config.key_prefix, "zentinel:ratelimit:");
         assert_eq!(config.pool_size, 10);
         assert_eq!(config.timeout_ms, 50);
         assert!(config.fallback_local);
@@ -1051,7 +1051,7 @@ mod tests {
         let config = FilterConfig::new(
             "block-countries",
             Filter::Geo(GeoFilter {
-                database_path: "/etc/sentinel/GeoLite2-Country.mmdb".to_string(),
+                database_path: "/etc/zentinel/GeoLite2-Country.mmdb".to_string(),
                 database_type: Some(GeoDatabaseType::MaxMind),
                 action: GeoFilterAction::Block,
                 countries: vec!["RU".to_string(), "CN".to_string()],

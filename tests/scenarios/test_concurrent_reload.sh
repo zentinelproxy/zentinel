@@ -5,7 +5,7 @@
 # Validates zero-downtime config reloading with live traffic.
 #
 # Prerequisites:
-# - Sentinel binary built
+# - Zentinel binary built
 # - curl installed
 #
 # Usage: ./test_concurrent_reload.sh [--skip-connectivity]
@@ -14,7 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SENTINEL_BIN="${SENTINEL_BIN:-$PROJECT_ROOT/target/debug/sentinel}"
+ZENTINEL_BIN="${ZENTINEL_BIN:-$PROJECT_ROOT/target/debug/zentinel}"
 
 # Test configuration
 TEST_PORT="${TEST_PORT:-18080}"
@@ -34,7 +34,7 @@ TESTS_FAILED=0
 TESTS_SKIPPED=0
 
 # Cleanup tracking
-SENTINEL_PID=""
+ZENTINEL_PID=""
 TEMP_DIR=""
 declare -a REQUEST_PIDS=()
 
@@ -104,9 +104,9 @@ cleanup() {
         done
     fi
 
-    if [[ -n "$SENTINEL_PID" ]] && kill -0 "$SENTINEL_PID" 2>/dev/null; then
-        kill "$SENTINEL_PID" 2>/dev/null || true
-        wait "$SENTINEL_PID" 2>/dev/null || true
+    if [[ -n "$ZENTINEL_PID" ]] && kill -0 "$ZENTINEL_PID" 2>/dev/null; then
+        kill "$ZENTINEL_PID" 2>/dev/null || true
+        wait "$ZENTINEL_PID" 2>/dev/null || true
     fi
     if [[ -n "$TEMP_DIR" ]] && [[ -d "$TEMP_DIR" ]]; then
         rm -rf "$TEMP_DIR"
@@ -124,13 +124,13 @@ check_prerequisites() {
         exit 1
     fi
 
-    if [[ ! -f "$SENTINEL_BIN" ]]; then
-        log_info "Building Sentinel..."
-        cargo build --package sentinel --quiet
+    if [[ ! -f "$ZENTINEL_BIN" ]]; then
+        log_info "Building Zentinel..."
+        cargo build --package zentinel --quiet
     fi
 
-    if [[ ! -f "$SENTINEL_BIN" ]]; then
-        log_fail "Sentinel binary not found: $SENTINEL_BIN"
+    if [[ ! -f "$ZENTINEL_BIN" ]]; then
+        log_fail "Zentinel binary not found: $ZENTINEL_BIN"
         exit 1
     fi
 
@@ -174,27 +174,27 @@ routes {
 EOF
 }
 
-# Start Sentinel with test config
-start_sentinel() {
+# Start Zentinel with test config
+start_zentinel() {
     local config_file="$1"
 
-    log_info "Starting Sentinel..."
+    log_info "Starting Zentinel..."
 
-    "$SENTINEL_BIN" --config "$config_file" &
-    SENTINEL_PID=$!
+    "$ZENTINEL_BIN" --config "$config_file" &
+    ZENTINEL_PID=$!
 
     # Wait for startup
     local retries=30
     while [[ $retries -gt 0 ]]; do
         if curl -s --connect-timeout 1 "$PROXY_URL/health" &> /dev/null; then
-            log_info "Sentinel started (PID: $SENTINEL_PID)"
+            log_info "Zentinel started (PID: $ZENTINEL_PID)"
             return 0
         fi
         sleep 0.2
         retries=$((retries - 1))
     done
 
-    log_fail "Sentinel failed to start"
+    log_fail "Zentinel failed to start"
     return 1
 }
 
@@ -235,7 +235,7 @@ test_reload_during_requests() {
     # Wait a bit then trigger reload
     sleep 0.5
     log_info "Sending SIGHUP to trigger reload..."
-    kill -HUP "$SENTINEL_PID"
+    kill -HUP "$ZENTINEL_PID"
 
     # Wait for requests to complete
     wait "$request_pid" 2>/dev/null || true
@@ -272,7 +272,7 @@ test_rapid_reloads() {
     for i in $(seq 1 5); do
         sleep 0.2
         log_info "Reload $i/5..."
-        kill -HUP "$SENTINEL_PID"
+        kill -HUP "$ZENTINEL_PID"
     done
 
     # Wait for requests to complete
@@ -309,7 +309,7 @@ test_config_changes_visible() {
     create_config "$TEMP_DIR/test-config.kdl" "UPDATED_RESPONSE_V2"
 
     # Reload
-    kill -HUP "$SENTINEL_PID"
+    kill -HUP "$ZENTINEL_PID"
     sleep 0.5
 
     # Get new response
@@ -325,7 +325,7 @@ test_config_changes_visible() {
 
     # Restore original config
     create_config "$TEMP_DIR/test-config.kdl" "ORIGINAL_RESPONSE"
-    kill -HUP "$SENTINEL_PID"
+    kill -HUP "$ZENTINEL_PID"
     sleep 0.3
 }
 
@@ -347,9 +347,9 @@ test_concurrent_clients_during_reload() {
 
     # Trigger reload mid-way
     sleep 0.3
-    kill -HUP "$SENTINEL_PID"
+    kill -HUP "$ZENTINEL_PID"
     sleep 0.3
-    kill -HUP "$SENTINEL_PID"
+    kill -HUP "$ZENTINEL_PID"
 
     # Wait for all clients
     for pid in "${pids[@]}"; do
@@ -398,7 +398,7 @@ test_invalid_config_reload() {
     echo "this is { invalid } kdl {{{{" > "$TEMP_DIR/test-config.kdl"
 
     # Attempt reload (should fail gracefully)
-    kill -HUP "$SENTINEL_PID"
+    kill -HUP "$ZENTINEL_PID"
     sleep 0.5
 
     # Service should still be running with old config
@@ -413,7 +413,7 @@ test_invalid_config_reload() {
 
     # Restore valid config
     create_config "$TEMP_DIR/test-config.kdl" "ORIGINAL_RESPONSE"
-    kill -HUP "$SENTINEL_PID"
+    kill -HUP "$ZENTINEL_PID"
     sleep 0.3
 }
 
@@ -427,7 +427,7 @@ test_metrics_after_reload() {
     done
 
     # Trigger reload
-    kill -HUP "$SENTINEL_PID"
+    kill -HUP "$ZENTINEL_PID"
     sleep 0.3
 
     # Make more requests
@@ -456,7 +456,7 @@ run_offline_tests() {
     local test_config="$TEMP_DIR/parse-test.kdl"
     create_config "$test_config" "test"
 
-    if "$SENTINEL_BIN" --config "$test_config" --dry-run 2>/dev/null; then
+    if "$ZENTINEL_BIN" --config "$test_config" --dry-run 2>/dev/null; then
         log_pass "Config file parses successfully"
     else
         # dry-run might not be implemented, skip
@@ -488,8 +488,8 @@ main() {
     # Create initial config
     create_config "$TEMP_DIR/test-config.kdl" "ORIGINAL_RESPONSE"
 
-    if ! start_sentinel "$TEMP_DIR/test-config.kdl"; then
-        log_fail "Could not start Sentinel for online tests"
+    if ! start_zentinel "$TEMP_DIR/test-config.kdl"; then
+        log_fail "Could not start Zentinel for online tests"
         print_summary
         exit 1
     fi

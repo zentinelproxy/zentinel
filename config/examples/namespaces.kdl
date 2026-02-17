@@ -27,8 +27,8 @@ listeners {
         protocol "https"
 
         tls {
-            cert-file "/etc/sentinel/certs/wildcard.crt"
-            key-file "/etc/sentinel/certs/wildcard.key"
+            cert-file "/etc/zentinel/certs/wildcard.crt"
+            key-file "/etc/zentinel/certs/wildcard.key"
             min-version "TLS1.2"
         }
     }
@@ -486,7 +486,7 @@ observability {
 
         access-log {
             enabled #true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             // Namespace and service fields included in logs
         }
     }

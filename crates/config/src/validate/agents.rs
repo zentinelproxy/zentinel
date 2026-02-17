@@ -203,7 +203,7 @@ mod tests {
     use crate::agents::{AgentConfig, AgentEvent, AgentType};
     use crate::filters::{AgentFilter, FilterConfig};
     use crate::{MatchCondition, RouteConfig, RoutePolicies, ServiceType};
-    use sentinel_common::types::Priority;
+    use zentinel_common::types::Priority;
     use std::path::PathBuf;
 
     fn test_route_with_filter(filter: &str) -> RouteConfig {

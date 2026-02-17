@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentinel-wasm-allowlist"
+name = "zentinel-wasm-allowlist"
 version = "0.2.5"
 dependencies = [
  "serde",

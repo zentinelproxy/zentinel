@@ -1,10 +1,10 @@
 [package]
-name = "sentinel-wasm-allowlist"
+name = "zentinel-wasm-allowlist"
 version = "0.4.1"
 edition = "2021"
-authors = ["Sentinel Contributors"]
+authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/raskell-io/sentinel"
+repository = "https://github.com/zentinelproxy/zentinel"
 description = "Example WASM agent for path-based allowlist/denylist"
 
 [lib]

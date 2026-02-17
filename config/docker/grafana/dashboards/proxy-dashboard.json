@@ -97,7 +97,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "up{job=\"sentinel-proxy\"}",
+          "expr": "up{job=\"zentinel-proxy\"}",
           "refId": "A"
         }
       ],
@@ -156,7 +156,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(sentinel_requests_total{job=\"sentinel-proxy\"}[5m]))",
+          "expr": "sum(rate(zentinel_requests_total{job=\"zentinel-proxy\"}[5m]))",
           "refId": "A"
         }
       ],
@@ -223,7 +223,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(sentinel_request_duration_seconds_bucket{job=\"sentinel-proxy\"}[5m])) by (le)) * 1000",
+          "expr": "histogram_quantile(0.99, sum(rate(zentinel_request_duration_seconds_bucket{job=\"zentinel-proxy\"}[5m])) by (le)) * 1000",
           "refId": "A"
         }
       ],
@@ -292,7 +292,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(1 - (sum(rate(sentinel_requests_total{job=\"sentinel-proxy\",status=~\"5..\"}[5m])) / sum(rate(sentinel_requests_total{job=\"sentinel-proxy\"}[5m])))) * 100",
+          "expr": "(1 - (sum(rate(zentinel_requests_total{job=\"zentinel-proxy\",status=~\"5..\"}[5m])) / sum(rate(zentinel_requests_total{job=\"zentinel-proxy\"}[5m])))) * 100",
           "refId": "A"
         }
       ],
@@ -359,7 +359,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(sentinel_active_connections{job=\"sentinel-proxy\"})",
+          "expr": "sum(zentinel_active_connections{job=\"zentinel-proxy\"})",
           "refId": "A"
         }
       ],
@@ -459,7 +459,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (status) (rate(sentinel_requests_total{job=\"sentinel-proxy\"}[5m]))",
+          "expr": "sum by (status) (rate(zentinel_requests_total{job=\"zentinel-proxy\"}[5m]))",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -547,7 +547,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(sentinel_request_duration_seconds_bucket{job=\"sentinel-proxy\"}[5m])) by (le)) * 1000",
+          "expr": "histogram_quantile(0.50, sum(rate(zentinel_request_duration_seconds_bucket{job=\"zentinel-proxy\"}[5m])) by (le)) * 1000",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -556,7 +556,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.90, sum(rate(sentinel_request_duration_seconds_bucket{job=\"sentinel-proxy\"}[5m])) by (le)) * 1000",
+          "expr": "histogram_quantile(0.90, sum(rate(zentinel_request_duration_seconds_bucket{job=\"zentinel-proxy\"}[5m])) by (le)) * 1000",
           "legendFormat": "p90",
           "refId": "B"
         },
@@ -565,7 +565,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(sentinel_request_duration_seconds_bucket{job=\"sentinel-proxy\"}[5m])) by (le)) * 1000",
+          "expr": "histogram_quantile(0.95, sum(rate(zentinel_request_duration_seconds_bucket{job=\"zentinel-proxy\"}[5m])) by (le)) * 1000",
           "legendFormat": "p95",
           "refId": "C"
         },
@@ -574,7 +574,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(sentinel_request_duration_seconds_bucket{job=\"sentinel-proxy\"}[5m])) by (le)) * 1000",
+          "expr": "histogram_quantile(0.99, sum(rate(zentinel_request_duration_seconds_bucket{job=\"zentinel-proxy\"}[5m])) by (le)) * 1000",
           "legendFormat": "p99",
           "refId": "D"
         }
@@ -681,7 +681,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sentinel_upstream_healthy{job=\"sentinel-proxy\"}",
+          "expr": "zentinel_upstream_healthy{job=\"zentinel-proxy\"}",
           "legendFormat": "{{upstream}}",
           "refId": "A"
         }
@@ -769,7 +769,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (upstream, le) (rate(sentinel_upstream_request_duration_seconds_bucket{job=\"sentinel-proxy\"}[5m]))) * 1000",
+          "expr": "histogram_quantile(0.99, sum by (upstream, le) (rate(zentinel_upstream_request_duration_seconds_bucket{job=\"zentinel-proxy\"}[5m]))) * 1000",
           "legendFormat": "{{upstream}}",
           "refId": "A"
         }
@@ -870,7 +870,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (agent, le) (rate(sentinel_agent_request_duration_seconds_bucket{job=\"sentinel-proxy\"}[5m]))) * 1000",
+          "expr": "histogram_quantile(0.99, sum by (agent, le) (rate(zentinel_agent_request_duration_seconds_bucket{job=\"zentinel-proxy\"}[5m]))) * 1000",
           "legendFormat": "{{agent}}",
           "refId": "A"
         }
@@ -962,7 +962,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(sentinel_agent_failures_total{job=\"sentinel-proxy\"}[5m])",
+          "expr": "rate(zentinel_agent_failures_total{job=\"zentinel-proxy\"}[5m])",
           "legendFormat": "{{agent}}",
           "refId": "A"
         }
@@ -1063,7 +1063,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(container_cpu_usage_seconds_total{pod=~\".*sentinel-proxy.*\"}[5m])",
+          "expr": "rate(container_cpu_usage_seconds_total{pod=~\".*zentinel-proxy.*\"}[5m])",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://sentinel.raskell.io/docs
+    url: https://zentinelproxy.io/docs
     about: Check the documentation for guides, examples, and reference
   - name: Discussions
-    url: https://github.com/raskell-io/sentinel/discussions
+    url: https://github.com/zentinelproxy/zentinel/discussions
     about: Ask questions and share ideas with the community

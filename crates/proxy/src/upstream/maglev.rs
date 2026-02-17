@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
 use xxhash_rust::xxh3::xxh3_64;
 
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 
@@ -237,7 +237,7 @@ impl MaglevBalancer {
 
 #[async_trait]
 impl LoadBalancer for MaglevBalancer {
-    async fn select(&self, context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             algorithm = "maglev",
@@ -260,7 +260,7 @@ impl LoadBalancer for MaglevBalancer {
                 algorithm = "maglev",
                 "No healthy upstream targets available"
             );
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         // Extract key and compute hash
@@ -286,21 +286,21 @@ impl LoadBalancer for MaglevBalancer {
                     healthy_targets
                         .first()
                         .map(|(_, t)| *t)
-                        .ok_or(SentinelError::NoHealthyUpstream)?
+                        .ok_or(ZentinelError::NoHealthyUpstream)?
                 }
             } else {
                 // Index out of bounds, fall back
                 healthy_targets
                     .first()
                     .map(|(_, t)| *t)
-                    .ok_or(SentinelError::NoHealthyUpstream)?
+                    .ok_or(ZentinelError::NoHealthyUpstream)?
             }
         } else {
             // No entry in table, fall back to first healthy
             healthy_targets
                 .first()
                 .map(|(_, t)| *t)
-                .ok_or(SentinelError::NoHealthyUpstream)?
+                .ok_or(ZentinelError::NoHealthyUpstream)?
         };
 
         trace!(

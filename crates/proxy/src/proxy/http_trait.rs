@@ -1,4 +1,4 @@
-//! ProxyHttp trait implementation for SentinelProxy.
+//! ProxyHttp trait implementation for ZentinelProxy.
 //!
 //! This module contains the Pingora ProxyHttp trait implementation which defines
 //! the core request/response lifecycle handling.
@@ -31,7 +31,7 @@ use super::fallback::FallbackEvaluator;
 use super::fallback_metrics::get_fallback_metrics;
 use super::model_routing;
 use super::model_routing_metrics::get_model_routing_metrics;
-use super::SentinelProxy;
+use super::ZentinelProxy;
 
 /// Helper type for rate limiting when we don't need header access
 struct NoHeaderAccessor;
@@ -42,7 +42,7 @@ impl HeaderAccessor for NoHeaderAccessor {
 }
 
 #[async_trait]
-impl ProxyHttp for SentinelProxy {
+impl ProxyHttp for ZentinelProxy {
     type CTX = RequestContext;
 
     fn new_ctx(&self) -> Self::CTX {
@@ -151,7 +151,7 @@ impl ProxyHttp for SentinelProxy {
         }
 
         // Check if this is a builtin handler route
-        if route_match.config.service_type == sentinel_config::ServiceType::Builtin {
+        if route_match.config.service_type == zentinel_config::ServiceType::Builtin {
             trace!(
                 correlation_id = %ctx.trace_id,
                 route_id = %route_match.route_id,
@@ -231,7 +231,7 @@ impl ProxyHttp for SentinelProxy {
         let route_match = if let Some(ref route_config) = ctx.route_config {
             let route_id = ctx.route_id.as_deref().unwrap_or("");
             crate::routing::RouteMatch {
-                route_id: sentinel_common::RouteId::new(route_id),
+                route_id: zentinel_common::RouteId::new(route_id),
                 config: route_config.clone(),
             }
         } else {
@@ -311,7 +311,7 @@ impl ProxyHttp for SentinelProxy {
         };
 
         // Check if this is a builtin handler route (no upstream needed)
-        if route_match.config.service_type == sentinel_config::ServiceType::Builtin {
+        if route_match.config.service_type == zentinel_config::ServiceType::Builtin {
             trace!(
                 correlation_id = %ctx.trace_id,
                 route_id = %route_match.route_id,
@@ -328,7 +328,7 @@ impl ProxyHttp for SentinelProxy {
         }
 
         // Check if this is a static file route
-        if route_match.config.service_type == sentinel_config::ServiceType::Static {
+        if route_match.config.service_type == zentinel_config::ServiceType::Static {
             trace!(
                 correlation_id = %ctx.trace_id,
                 route_id = %route_match.route_id,
@@ -757,7 +757,7 @@ impl ProxyHttp for SentinelProxy {
                 }
 
                 if !rate_result.allowed {
-                    use sentinel_config::RateLimitAction;
+                    use zentinel_config::RateLimitAction;
 
                     match rate_result.action {
                         RateLimitAction::Reject => {
@@ -849,7 +849,7 @@ impl ProxyHttp for SentinelProxy {
         // This runs after regular rate limiting and checks service type
         if let Some(route_id) = ctx.route_id.as_deref() {
             if let Some(ref route_config) = ctx.route_config {
-                if route_config.service_type == sentinel_config::ServiceType::Inference
+                if route_config.service_type == zentinel_config::ServiceType::Inference
                     && self.inference_rate_limit_manager.has_route(route_id)
                 {
                     // For inference rate limiting, we need access to the request body
@@ -998,10 +998,10 @@ impl ProxyHttp for SentinelProxy {
 
                                 // Capture budget status for response headers
                                 let remaining = match &budget_result {
-                                    sentinel_common::budget::BudgetCheckResult::Allowed {
+                                    zentinel_common::budget::BudgetCheckResult::Allowed {
                                         remaining,
                                     } => *remaining as i64,
-                                    sentinel_common::budget::BudgetCheckResult::Soft {
+                                    zentinel_common::budget::BudgetCheckResult::Soft {
                                         remaining,
                                         ..
                                     } => *remaining,
@@ -1289,7 +1289,7 @@ impl ProxyHttp for SentinelProxy {
 
                         // Get agents that handle WebSocketFrame events
                         ctx.websocket_inspection_agents = self.agent_manager.get_agents_for_event(
-                            sentinel_agent_protocol::EventType::WebSocketFrame,
+                            zentinel_agent_protocol::EventType::WebSocketFrame,
                         );
 
                         debug!(
@@ -1306,7 +1306,7 @@ impl ProxyHttp for SentinelProxy {
         // Use cached route config from upstream_peer (avoids duplicate route matching)
         // Handle static file and builtin routes
         if let Some(route_config) = ctx.route_config.clone() {
-            if route_config.service_type == sentinel_config::ServiceType::Static {
+            if route_config.service_type == zentinel_config::ServiceType::Static {
                 trace!(
                     correlation_id = %ctx.trace_id,
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
@@ -1314,11 +1314,11 @@ impl ProxyHttp for SentinelProxy {
                 );
                 // Create a minimal RouteMatch for the handler
                 let route_match = crate::routing::RouteMatch {
-                    route_id: sentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
+                    route_id: zentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
                     config: route_config.clone(),
                 };
                 return self.handle_static_route(session, ctx, &route_match).await;
-            } else if route_config.service_type == sentinel_config::ServiceType::Builtin {
+            } else if route_config.service_type == zentinel_config::ServiceType::Builtin {
                 trace!(
                     correlation_id = %ctx.trace_id,
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
@@ -1327,7 +1327,7 @@ impl ProxyHttp for SentinelProxy {
                 );
                 // Create a minimal RouteMatch for the handler
                 let route_match = crate::routing::RouteMatch {
-                    route_id: sentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
+                    route_id: zentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
                     config: route_config.clone(),
                 };
                 return self.handle_builtin_route(session, ctx, &route_match).await;
@@ -1370,7 +1370,7 @@ impl ProxyHttp for SentinelProxy {
         req_header
             .insert_header("X-Correlation-Id", &ctx.trace_id)
             .ok();
-        req_header.insert_header("X-Forwarded-By", "Sentinel").ok();
+        req_header.insert_header("X-Forwarded-By", "Zentinel").ok();
 
         // Use cached config (set in upstream_peer, or fetch now if needed)
         let config = ctx
@@ -1473,7 +1473,7 @@ impl ProxyHttp for SentinelProxy {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<Error>> {
-        use sentinel_config::BodyStreamingMode;
+        use zentinel_config::BodyStreamingMode;
 
         // Handle WebSocket frame inspection (client -> server)
         if ctx.is_websocket_upgrade {
@@ -2010,7 +2010,7 @@ impl ProxyHttp for SentinelProxy {
 
         // Add request metadata headers
         upstream_request
-            .insert_header("X-Forwarded-By", "Sentinel")
+            .insert_header("X-Forwarded-By", "Zentinel")
             .ok();
 
         // Apply route-specific request header modifications
@@ -2668,7 +2668,7 @@ impl ProxyHttp for SentinelProxy {
             // Static file routes and media routes should support range requests
             matches!(
                 config.service_type,
-                sentinel_config::ServiceType::Static | sentinel_config::ServiceType::Web
+                zentinel_config::ServiceType::Static | zentinel_config::ServiceType::Web
             )
         });
 
@@ -3306,7 +3306,7 @@ impl ProxyHttp for SentinelProxy {
 // Helper methods for body streaming (not part of ProxyHttp trait)
 // =============================================================================
 
-impl SentinelProxy {
+impl ZentinelProxy {
     /// Process a single body chunk in streaming mode.
     async fn process_body_chunk_streaming(
         &self,
@@ -3330,8 +3330,8 @@ impl SentinelProxy {
 
         // Create agent call context
         let agent_ctx = crate::agents::AgentCallContext {
-            correlation_id: sentinel_common::CorrelationId::from_string(&ctx.trace_id),
-            metadata: sentinel_agent_protocol::RequestMetadata {
+            correlation_id: zentinel_common::CorrelationId::from_string(&ctx.trace_id),
+            metadata: zentinel_agent_protocol::RequestMetadata {
                 correlation_id: ctx.trace_id.clone(),
                 request_id: ctx.trace_id.clone(),
                 client_ip: ctx.client_ip.clone(),
@@ -3426,7 +3426,7 @@ impl SentinelProxy {
                 let fail_closed = ctx
                     .route_config
                     .as_ref()
-                    .map(|r| r.policies.failure_mode == sentinel_config::FailureMode::Closed)
+                    .map(|r| r.policies.failure_mode == zentinel_config::FailureMode::Closed)
                     .unwrap_or(false);
 
                 if fail_closed {
@@ -3515,7 +3515,7 @@ impl SentinelProxy {
                             .route_config
                             .as_ref()
                             .map(|r| {
-                                r.policies.failure_mode == sentinel_config::FailureMode::Closed
+                                r.policies.failure_mode == zentinel_config::FailureMode::Closed
                             })
                             .unwrap_or(false);
 
@@ -3549,8 +3549,8 @@ impl SentinelProxy {
         };
 
         let agent_ctx = crate::agents::AgentCallContext {
-            correlation_id: sentinel_common::CorrelationId::from_string(&ctx.trace_id),
-            metadata: sentinel_agent_protocol::RequestMetadata {
+            correlation_id: zentinel_common::CorrelationId::from_string(&ctx.trace_id),
+            metadata: zentinel_agent_protocol::RequestMetadata {
                 correlation_id: ctx.trace_id.clone(),
                 request_id: ctx.trace_id.clone(),
                 client_ip: ctx.client_ip.clone(),
@@ -3605,7 +3605,7 @@ impl SentinelProxy {
                 let fail_closed = ctx
                     .route_config
                     .as_ref()
-                    .map(|r| r.policies.failure_mode == sentinel_config::FailureMode::Closed)
+                    .map(|r| r.policies.failure_mode == zentinel_config::FailureMode::Closed)
                     .unwrap_or(false);
 
                 if fail_closed {

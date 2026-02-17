@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use sentinel_config::{BodyStreamingMode, Config, RouteConfig, ServiceType};
+use zentinel_config::{BodyStreamingMode, Config, RouteConfig, ServiceType};
 
 use crate::inference::StreamingTokenCounter;
 use crate::websocket::WebSocketHandler;
@@ -201,7 +201,7 @@ pub struct RequestContext {
     /// Model name detected from request
     pub(crate) inference_model: Option<String>,
     /// Provider override from model-based routing (for cross-provider routing)
-    pub(crate) inference_provider_override: Option<sentinel_config::InferenceProvider>,
+    pub(crate) inference_provider_override: Option<zentinel_config::InferenceProvider>,
     /// Whether model-based routing was used to select the upstream
     pub(crate) model_routing_used: bool,
     /// Actual tokens from response (filled in after response)
@@ -644,7 +644,7 @@ impl RequestContext {
 
     /// Get the provider override from model-based routing (if any).
     #[inline]
-    pub fn inference_provider_override(&self) -> Option<sentinel_config::InferenceProvider> {
+    pub fn inference_provider_override(&self) -> Option<zentinel_config::InferenceProvider> {
         self.inference_provider_override
     }
 
@@ -656,7 +656,7 @@ impl RequestContext {
         &mut self,
         upstream: &str,
         model: Option<String>,
-        provider_override: Option<sentinel_config::InferenceProvider>,
+        provider_override: Option<zentinel_config::InferenceProvider>,
     ) {
         self.upstream = Some(upstream.to_string());
         self.model_routing_used = true;

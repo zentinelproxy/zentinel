@@ -24,8 +24,8 @@ listeners {
         address "0.0.0.0:8443"
         protocol "https"
         tls {
-            cert-file "/etc/sentinel/certs/ws.crt"
-            key-file "/etc/sentinel/certs/ws.key"
+            cert-file "/etc/zentinel/certs/ws.crt"
+            key-file "/etc/zentinel/certs/ws.key"
         }
     }
 }
@@ -230,10 +230,10 @@ observability {
         address "0.0.0.0:9090"
         path "/metrics"
         // WebSocket-specific metrics:
-        // - sentinel_websocket_connections_active
-        // - sentinel_websocket_messages_total
-        // - sentinel_websocket_frames_inspected_total
-        // - sentinel_websocket_frames_blocked_total
+        // - zentinel_websocket_connections_active
+        // - zentinel_websocket_messages_total
+        // - zentinel_websocket_frames_inspected_total
+        // - zentinel_websocket_frames_blocked_total
     }
 
     logging {
@@ -242,7 +242,7 @@ observability {
 
         access-log {
             enabled #true
-            file "/var/log/sentinel/websocket-access.log"
+            file "/var/log/zentinel/websocket-access.log"
         }
     }
 }

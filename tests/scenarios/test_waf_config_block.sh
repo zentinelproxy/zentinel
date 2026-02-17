@@ -8,11 +8,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-WAF_AGENT_DIR="${WAF_AGENT_DIR:-$PROJECT_ROOT/../sentinel-agent-waf}"
+WAF_AGENT_DIR="${WAF_AGENT_DIR:-$PROJECT_ROOT/../zentinel-agent-waf}"
 
 PROXY_HOST="127.0.0.1"
 PROXY_PORT="18080"
-SOCKET_PATH="/tmp/sentinel-waf-e2e-test.sock"
+SOCKET_PATH="/tmp/zentinel-waf-e2e-test.sock"
 BASE_URL="http://${PROXY_HOST}:${PROXY_PORT}"
 CONFIG_FILE="$PROJECT_ROOT/tests/fixtures/waf-config-block-test.kdl"
 
@@ -50,12 +50,12 @@ echo "════════════════════════�
 echo ""
 
 # Check prerequisites
-if [[ ! -f "$PROJECT_ROOT/target/release/sentinel" ]]; then
-    echo "Building sentinel proxy..."
-    (cd "$PROJECT_ROOT" && cargo build --release -p sentinel-proxy)
+if [[ ! -f "$PROJECT_ROOT/target/release/zentinel" ]]; then
+    echo "Building zentinel proxy..."
+    (cd "$PROJECT_ROOT" && cargo build --release -p zentinel-proxy)
 fi
 
-if [[ ! -f "$WAF_AGENT_DIR/target/release/sentinel-waf-agent" ]]; then
+if [[ ! -f "$WAF_AGENT_DIR/target/release/zentinel-waf-agent" ]]; then
     echo "Building WAF agent..."
     (cd "$WAF_AGENT_DIR" && cargo build --release)
 fi
@@ -70,7 +70,7 @@ rm -f "$SOCKET_PATH"
 
 # Start WAF agent (no CLI config - will receive via Configure event)
 info "Starting WAF agent (listening on $SOCKET_PATH)..."
-RUST_LOG=info "$WAF_AGENT_DIR/target/release/sentinel-waf-agent" \
+RUST_LOG=info "$WAF_AGENT_DIR/target/release/zentinel-waf-agent" \
     --socket "$SOCKET_PATH" \
     2>&1 | sed 's/^/  [WAF] /' &
 WAF_PID=$!
@@ -90,8 +90,8 @@ fi
 pass "WAF agent started"
 
 # Start proxy
-info "Starting Sentinel proxy..."
-RUST_LOG=info "$PROJECT_ROOT/target/release/sentinel" \
+info "Starting Zentinel proxy..."
+RUST_LOG=info "$PROJECT_ROOT/target/release/zentinel" \
     --config "$CONFIG_FILE" \
     2>&1 | sed 's/^/  [PROXY] /' &
 PROXY_PID=$!

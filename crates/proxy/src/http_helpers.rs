@@ -1,4 +1,4 @@
-//! HTTP request and response helpers for Sentinel proxy
+//! HTTP request and response helpers for Zentinel proxy
 //!
 //! This module provides utilities for:
 //! - Extracting request information from Pingora sessions

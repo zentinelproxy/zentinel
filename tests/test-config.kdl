@@ -52,7 +52,7 @@ agents {
     agent "echo-agent" {
         type "custom"
         transport "unix_socket" {
-            path "/tmp/sentinel-test-echo.sock"
+            path "/tmp/zentinel-test-echo.sock"
         }
         events ["request_headers"]
         timeout-ms 100

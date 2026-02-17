@@ -1,4 +1,4 @@
-//! WebAssembly Agent Runtime for Sentinel
+//! WebAssembly Agent Runtime for Zentinel
 //!
 //! This crate provides a sandboxed runtime for executing WASM agents in-process.
 //! WASM agents offer lower latency than external agents (~10-50μs vs ~40-50μs)
@@ -20,7 +20,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_wasm_runtime::{WasmAgentRuntime, WasmAgentConfig};
+//! use zentinel_wasm_runtime::{WasmAgentRuntime, WasmAgentConfig};
 //!
 //! // Create runtime with resource limits
 //! let config = WasmAgentConfig::default();
@@ -47,4 +47,4 @@ pub use host::WasmAgentInstance;
 pub use runtime::WasmAgentRuntime;
 
 /// Re-export types from agent-protocol for convenience
-pub use sentinel_agent_protocol::{AgentResponse, Decision, EventType, HeaderOp, RequestMetadata};
+pub use zentinel_agent_protocol::{AgentResponse, Decision, EventType, HeaderOp, RequestMetadata};

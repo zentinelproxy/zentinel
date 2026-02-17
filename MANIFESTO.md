@@ -1,10 +1,10 @@
-# Sentinel Manifesto
+# Zentinel Manifesto
 
-Sentinel exists because critical web infrastructure should be **boring, inspectable, and shared**.
+Zentinel exists because critical web infrastructure should be **boring, inspectable, and shared**.
 
 The web runs on systems that sit quietly at the edge, making decisions millions of times per second. When those systems fail, people wake up at 03:00. When they fail in opaque ways, people lose trust in the web itself.
 
-Sentinel is an attempt to do this layer right.
+Zentinel is an attempt to do this layer right.
 
 Not bigger.
 Not smarter.
@@ -12,7 +12,7 @@ Just **more honest**.
 
 We build on proven foundations. Cloudflare's Pingora has handled trillions of requests. We inherit that battle-tested core and focus on what matters above it: configuration that humans can reason about, extension points that don't destabilize the system, and operational behavior you can trust with your sleep.
 
-Sentinel aspires to be a **reference implementation**—not because we claim to be the best, but because we aim to demonstrate how this layer *should* be built: with explicit contracts, bounded resources, and a clear separation between what must be fast and what must be flexible.
+Zentinel aspires to be a **reference implementation**—not because we claim to be the best, but because we aim to demonstrate how this layer *should* be built: with explicit contracts, bounded resources, and a clear separation between what must be fast and what must be flexible.
 
 ---
 
@@ -28,14 +28,14 @@ It should:
 
 If a system requires heroics to operate, it is already broken.
 
-Sentinel is built so operators can sleep.
+Zentinel is built so operators can sleep.
 
 ---
 
 ### 2. Security must be explicit
 Security that relies on hidden behavior is not security.
 
-Every limit, timeout, and decision in Sentinel is meant to be:
+Every limit, timeout, and decision in Zentinel is meant to be:
 - visible in configuration,
 - observable in metrics and logs,
 - and explainable after the fact.
@@ -43,12 +43,12 @@ Every limit, timeout, and decision in Sentinel is meant to be:
 There is no “magic”.
 There is no implied policy.
 
-If Sentinel is protecting something, you should be able to point to **where and why**.
+If Zentinel is protecting something, you should be able to point to **where and why**.
 
 ---
 
 ### 3. The edge is a boundary, not a battleground
-Sentinel does not treat the network as a war zone.
+Zentinel does not treat the network as a war zone.
 
 It treats it as a **boundary**:
 - where traffic enters,
@@ -62,7 +62,7 @@ Being a guardian means stepping in **only when necessary**, and doing so proport
 ### 4. Complexity must be isolated
 Complex systems fail in complex ways.
 
-Sentinel keeps the core dataplane intentionally small and predictable.
+Zentinel keeps the core dataplane intentionally small and predictable.
 Anything that is:
 - parsing-heavy,
 - policy-rich,
@@ -70,7 +70,7 @@ Anything that is:
 
 belongs **outside** the core, behind explicit contracts.
 
-This is why Sentinel favors **external agents** over embedded logic.
+This is why Zentinel favors **external agents** over embedded logic.
 
 The agent architecture is not a workaround or a plugin system bolted on as an afterthought. It is a fundamental design choice: the dataplane does one thing well (moving bytes with bounded resources), while agents handle everything else (WAF inspection, authentication, rate limiting, custom business logic).
 
@@ -81,7 +81,7 @@ The blast radius of complexity is contained by process boundaries, not just code
 ---
 
 ### 5. The web is a commons
-Sentinel is built for the free and open web.
+Zentinel is built for the free and open web.
 
 That means:
 - no hidden control planes,
@@ -94,12 +94,12 @@ You should be able to:
 - modify it,
 - and run it independently.
 
-Sentinel exists to keep this layer **shared**, not owned.
+Zentinel exists to keep this layer **shared**, not owned.
 
 ---
 
 ### 6. Production correctness beats feature breadth
-Sentinel will always choose:
+Zentinel will always choose:
 - correctness over cleverness,
 - boring reliability over shiny features,
 - and fewer knobs over unsafe defaults.
@@ -119,24 +119,24 @@ does not belong in the core.
 The web is changing. New challenges are emerging that reverse proxies must address:
 
 **Inference traffic is different.**
-AI workloads don't fit the request-response model we've optimized for decades. Token streams, long-running connections, and cost-per-token economics require new primitives. Sentinel will treat inference as a first-class traffic type—with token-aware rate limiting, model routing, and semantic guardrails—without compromising the simplicity of HTTP routing.
+AI workloads don't fit the request-response model we've optimized for decades. Token streams, long-running connections, and cost-per-token economics require new primitives. Zentinel will treat inference as a first-class traffic type—with token-aware rate limiting, model routing, and semantic guardrails—without compromising the simplicity of HTTP routing.
 
 **Identity is becoming workload-native.**
-The future of security is not firewalls at the perimeter but cryptographic identity at every hop. Sentinel will embrace workload identity (SPIFFE, mTLS, continuous verification) so that every request can answer: *who is asking, and should they be allowed?*
+The future of security is not firewalls at the perimeter but cryptographic identity at every hop. Zentinel will embrace workload identity (SPIFFE, mTLS, continuous verification) so that every request can answer: *who is asking, and should they be allowed?*
 
 **Explainability is mandatory.**
-As edge decisions grow more complex—WAF rules, rate limits, routing policies, agent verdicts—operators need to understand *why* a request was blocked or allowed. Sentinel will make every decision traceable: not just what happened, but which rule, which agent, which configuration line.
+As edge decisions grow more complex—WAF rules, rate limits, routing policies, agent verdicts—operators need to understand *why* a request was blocked or allowed. Zentinel will make every decision traceable: not just what happened, but which rule, which agent, which configuration line.
 
 **The attack surface is expanding.**
-Prompt injection, model jailbreaking, PII leakage through AI APIs—these are new categories of harm that the edge must help prevent. Sentinel's agent architecture is designed precisely for this: specialized agents can inspect, classify, and guard against threats we haven't fully imagined yet, without requiring changes to the core.
+Prompt injection, model jailbreaking, PII leakage through AI APIs—these are new categories of harm that the edge must help prevent. Zentinel's agent architecture is designed precisely for this: specialized agents can inspect, classify, and guard against threats we haven't fully imagined yet, without requiring changes to the core.
 
-We do not know exactly what the web will look like in ten years. But we know that the layer sitting at the boundary—accepting connections, making decisions, routing traffic—will still matter. Sentinel is built to evolve with that future, not to predict it.
+We do not know exactly what the web will look like in ten years. But we know that the layer sitting at the boundary—accepting connections, making decisions, routing traffic—will still matter. Zentinel is built to evolve with that future, not to predict it.
 
 ---
 
-## What Sentinel Is Not
+## What Zentinel Is Not
 
-Sentinel is not:
+Zentinel is not:
 - a platform that needs a sales call,
 - a framework that reinvents everything below it,
 - a place to embed arbitrary logic because it “might be useful”.
@@ -148,7 +148,7 @@ It is not trying to centralize power at the edge.
 
 ## A Note to Contributors
 
-If you contribute to Sentinel, you are helping guard a shared layer of the web.
+If you contribute to Zentinel, you are helping guard a shared layer of the web.
 
 That comes with responsibility.
 
@@ -159,13 +159,13 @@ Before adding anything, ask:
 
 If the answer is unclear, slow down.
 
-Sentinel will still be here tomorrow.
+Zentinel will still be here tomorrow.
 
 ---
 
 ## In Short
 
-Sentinel stands for:
+Zentinel stands for:
 - explicit limits,
 - predictable behavior,
 - observable decisions,

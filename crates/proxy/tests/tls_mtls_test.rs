@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 use std::sync::Once;
 
-use sentinel_config::UpstreamTlsConfig;
-use sentinel_proxy::tls::{build_upstream_tls_config, validate_upstream_tls_config, TlsError};
+use zentinel_config::UpstreamTlsConfig;
+use zentinel_proxy::tls::{build_upstream_tls_config, validate_upstream_tls_config, TlsError};
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 

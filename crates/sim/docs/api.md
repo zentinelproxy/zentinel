@@ -1,6 +1,6 @@
 # API Reference
 
-Public API for the Sentinel simulation engine.
+Public API for the Zentinel simulation engine.
 
 ## Functions
 

@@ -1,4 +1,4 @@
-//! Multi-file configuration support for Sentinel.
+//! Multi-file configuration support for Zentinel.
 //!
 //! This module provides the ability to load and merge configurations from
 //! multiple KDL files, supporting modular configuration management.
@@ -14,9 +14,9 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_config::multi_file::MultiFileLoader;
+//! use zentinel_config::multi_file::MultiFileLoader;
 //!
-//! let mut loader = MultiFileLoader::new("/etc/sentinel/conf.d")
+//! let mut loader = MultiFileLoader::new("/etc/zentinel/conf.d")
 //!     .with_include("*.kdl")
 //!     .with_exclude("*.example.kdl")
 //!     .recursive(true);
@@ -30,7 +30,7 @@
 //!
 //! ```text
 //! config/
-//!   ├── sentinel.kdl         # Main config
+//!   ├── zentinel.kdl         # Main config
 //!   ├── listeners/           # Listener definitions
 //!   ├── routes/              # Route definitions
 //!   ├── upstreams/           # Upstream definitions
@@ -191,7 +191,7 @@ mod tests {
 
         // Create main config with required server block
         fs::write(
-            config_dir.join("sentinel.kdl"),
+            config_dir.join("zentinel.kdl"),
             r#"
             server {
                 worker-threads 2

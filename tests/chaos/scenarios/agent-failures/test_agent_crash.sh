@@ -94,7 +94,7 @@ test_circuit_breaker_opens() {
 
     # Check metrics for circuit breaker state
     local cb_state
-    cb_state=$(get_metric "sentinel_agent_circuit_breaker_state" "agent=\"echo\"")
+    cb_state=$(get_metric "zentinel_agent_circuit_breaker_state" "agent=\"echo\"")
     if [[ -n "$cb_state" && "$cb_state" != "0" ]]; then
         log_pass "Circuit breaker metric shows non-closed state: $cb_state"
     else
@@ -140,7 +140,7 @@ test_metrics_recorded() {
 
     # Check agent failure counter
     local failures
-    failures=$(get_metric "sentinel_agent_failures_total" "agent=\"echo\"")
+    failures=$(get_metric "zentinel_agent_failures_total" "agent=\"echo\"")
     if [[ -n "$failures" && "$failures" -gt 0 ]]; then
         log_pass "Agent failures recorded in metrics: $failures"
     else
@@ -149,7 +149,7 @@ test_metrics_recorded() {
 
     # Check agent timeout counter (may not be present if no timeouts)
     local timeouts
-    timeouts=$(get_metric "sentinel_agent_timeouts_total" "agent=\"echo\"")
+    timeouts=$(get_metric "zentinel_agent_timeouts_total" "agent=\"echo\"")
     log_info "Agent timeouts recorded: ${timeouts:-0}"
 }
 

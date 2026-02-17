@@ -132,7 +132,7 @@ Agent                                                     Proxy
 ### Basic Setup
 
 ```rust
-use sentinel_agent_protocol::v2::{
+use zentinel_agent_protocol::v2::{
     ReverseConnectionListener,
     ReverseConnectionConfig,
 };
@@ -147,7 +147,7 @@ let config = ReverseConnectionConfig {
 
 // UDS listener for local agents
 let listener = ReverseConnectionListener::bind_uds(
-    "/var/run/sentinel/agents.sock",
+    "/var/run/zentinel/agents.sock",
     config.clone(),
 ).await?;
 
@@ -197,7 +197,7 @@ let config = ReverseConnectionConfig {
 ```rust
 let pool = AgentPool::new();
 let listener = ReverseConnectionListener::bind_uds(
-    "/var/run/sentinel/agents.sock",
+    "/var/run/zentinel/agents.sock",
     ReverseConnectionConfig::default(),
 ).await?;
 
@@ -306,7 +306,7 @@ async fn handle_new_connection(
 
 ```rust
 use tokio::net::UnixStream;
-use sentinel_agent_protocol::v2::reverse::{
+use zentinel_agent_protocol::v2::reverse::{
     RegistrationRequest,
     RegistrationResponse,
     write_registration_request,
@@ -576,10 +576,10 @@ println!("Success rate: {:.2}%", health.success_rate * 100.0);
 
 ```rust
 // Enable detailed logging for reverse connections
-RUST_LOG="sentinel_agent_protocol::v2::reverse=debug"
+RUST_LOG="zentinel_agent_protocol::v2::reverse=debug"
 
 // Example output:
-// DEBUG reverse: Accepted connection from /var/run/sentinel/agents.sock
+// DEBUG reverse: Accepted connection from /var/run/zentinel/agents.sock
 // DEBUG reverse: Registration request from agent_id="waf-worker-1"
 // DEBUG reverse: Validating auth token
 // DEBUG reverse: Agent registered successfully assigned_id="waf-worker-1-conn-3"
@@ -595,7 +595,7 @@ RUST_LOG="sentinel_agent_protocol::v2::reverse=debug"
 ```rust
 // Agent side: maintain 4 connections
 let manager = AgentConnectionManager::new(
-    "/var/run/sentinel/agents.sock",
+    "/var/run/zentinel/agents.sock",
     "waf-worker-1",
     Some("auth-token".to_string()),
     4,  // target connections

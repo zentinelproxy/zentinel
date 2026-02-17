@@ -72,7 +72,7 @@
       "agent_type": "custom",
       "transport": {
         "UnixSocket": {
-          "path": "/tmp/sentinel-test-echo.sock"
+          "path": "/tmp/zentinel-test-echo.sock"
         }
       },
       "events": ["request_headers"],

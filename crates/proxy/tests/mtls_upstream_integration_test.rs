@@ -20,7 +20,7 @@ use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::TlsConnector;
 
-use sentinel_proxy::tls::load_client_cert_key;
+use zentinel_proxy::tls::load_client_cert_key;
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();
 
@@ -71,7 +71,7 @@ fn generate_ca() -> CaBundle {
 
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, "Test CA");
-    dn.push(DnType::OrganizationName, "Sentinel Test");
+    dn.push(DnType::OrganizationName, "Zentinel Test");
     params.distinguished_name = dn;
 
     let key_pair = KeyPair::generate().unwrap();

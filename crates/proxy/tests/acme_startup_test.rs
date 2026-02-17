@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sentinel_config::server::{AcmeChallengeType, AcmeConfig};
-use sentinel_config::TlsConfig;
-use sentinel_proxy::acme::{CertificateStorage, ChallengeManager};
+use zentinel_config::server::{AcmeChallengeType, AcmeConfig};
+use zentinel_config::TlsConfig;
+use zentinel_proxy::acme::{CertificateStorage, ChallengeManager};
 
 /// Get the path to the test fixtures directory
 fn fixtures_path() -> PathBuf {
@@ -42,7 +42,7 @@ fn acme_config(storage: PathBuf) -> AcmeConfig {
 mod storage_resolver_integration {
     use super::*;
     use chrono::Utc;
-    use sentinel_proxy::tls::SniResolver;
+    use zentinel_proxy::tls::SniResolver;
 
     #[test]
     fn test_storage_saves_then_resolver_loads() {
@@ -72,7 +72,7 @@ mod storage_resolver_integration {
             key_file: None,
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -145,7 +145,7 @@ mod storage_resolver_integration {
 
 mod challenge_server {
     use super::*;
-    use sentinel_proxy::acme::challenge_server::run_challenge_server;
+    use zentinel_proxy::acme::challenge_server::run_challenge_server;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::watch;
@@ -297,7 +297,7 @@ mod challenge_server {
 
 mod validate_acme_config {
     use super::*;
-    use sentinel_proxy::tls::{validate_tls_config, TlsError};
+    use zentinel_proxy::tls::{validate_tls_config, TlsError};
 
     #[test]
     fn test_validate_skips_cert_check_for_acme_config() {
@@ -308,7 +308,7 @@ mod validate_acme_config {
             key_file: None,
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -333,7 +333,7 @@ mod validate_acme_config {
             key_file: None,
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,

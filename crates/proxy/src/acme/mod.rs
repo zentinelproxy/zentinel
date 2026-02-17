@@ -33,7 +33,7 @@
 //!             email "admin@example.com"
 //!             domains "example.com" "www.example.com"
 //!             staging false
-//!             storage "/var/lib/sentinel/acme"
+//!             storage "/var/lib/zentinel/acme"
 //!             renew-before-days 30
 //!         }
 //!     }
@@ -55,7 +55,7 @@
 //!
 //!             dns-provider {
 //!                 type "hetzner"
-//!                 credentials-file "/etc/sentinel/secrets/hetzner-dns.json"
+//!                 credentials-file "/etc/zentinel/secrets/hetzner-dns.json"
 //!                 api-timeout-secs 30
 //!
 //!                 propagation {
@@ -77,7 +77,7 @@
 //! 2. For each domain, the ACME server provides a challenge token
 //! 3. [`ChallengeManager`] registers the token and key authorization
 //! 4. The ACME server validates by requesting `/.well-known/acme-challenge/<token>`
-//! 5. Sentinel's request filter intercepts and returns the key authorization
+//! 5. Zentinel's request filter intercepts and returns the key authorization
 //! 6. Once validated, [`AcmeClient`] finalizes the order and receives the certificate
 //! 7. [`CertificateStorage`] persists the certificate and triggers TLS reload
 //!

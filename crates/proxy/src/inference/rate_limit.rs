@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, trace};
 
-use sentinel_config::TokenRateLimit;
+use zentinel_config::TokenRateLimit;
 
 /// Result of a rate limit check
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,7 +273,7 @@ pub struct TokenRateLimiterStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_config::TokenEstimation;
+    use zentinel_config::TokenEstimation;
 
     fn test_config() -> TokenRateLimit {
         TokenRateLimit {

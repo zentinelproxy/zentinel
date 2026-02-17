@@ -1,6 +1,6 @@
 # Security Policy
 
-Sentinel is infrastructure that sits at the edge of the web. Security is foundational to its design.
+Zentinel is infrastructure that sits at the edge of the web. Security is foundational to its design.
 
 ## Supported Versions
 
@@ -17,7 +17,7 @@ Instead, report them privately via GitHub:
 
 **[@raffaelschneider](https://github.com/raffaelschneider)**
 
-You can use [GitHub's private vulnerability reporting](https://github.com/raskell-io/sentinel/security/advisories/new) if enabled, or contact directly via GitHub.
+You can use [GitHub's private vulnerability reporting](https://github.com/zentinelproxy/zentinel/security/advisories/new) if enabled, or contact directly via GitHub.
 
 Please include:
 
@@ -45,7 +45,7 @@ Please include:
 
 ## Security Design Principles
 
-Sentinel's security is built on the principles in our [Manifesto](MANIFESTO.md):
+Zentinel's security is built on the principles in our [Manifesto](MANIFESTO.md):
 
 1. **Explicit over implicit** — No hidden defaults or magic behavior
 2. **Bounded resources** — Memory limits, queue depths, timeouts
@@ -70,5 +70,5 @@ Sentinel's security is built on the principles in our [Manifesto](MANIFESTO.md):
 
 Security updates are announced via:
 
-- [GitHub Security Advisories](https://github.com/raskell-io/sentinel/security/advisories)
-- [GitHub Releases](https://github.com/raskell-io/sentinel/releases)
+- [GitHub Security Advisories](https://github.com/zentinelproxy/zentinel/security/advisories)
+- [GitHub Releases](https://github.com/zentinelproxy/zentinel/releases)

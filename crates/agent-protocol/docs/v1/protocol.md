@@ -1,6 +1,6 @@
 # Protocol Specification
 
-This document describes the wire protocol for communication between the Sentinel proxy dataplane and external processing agents.
+This document describes the wire protocol for communication between the Zentinel proxy dataplane and external processing agents.
 
 ## Protocol Constants
 

@@ -1,5 +1,5 @@
 // HTTPS Listener Configuration
-// This file defines the secure HTTPS listener for Sentinel
+// This file defines the secure HTTPS listener for Zentinel
 
 listener "https" {
     address "0.0.0.0:443"
@@ -23,20 +23,20 @@ listener "https" {
         certificates {
             // Default certificate
             default {
-                cert "/etc/sentinel/certs/default.crt"
-                key "/etc/sentinel/certs/default.key"
+                cert "/etc/zentinel/certs/default.crt"
+                key "/etc/zentinel/certs/default.key"
             }
 
             // SNI-based certificates
             sni {
                 "api.example.com" {
-                    cert "/etc/sentinel/certs/api.example.com.crt"
-                    key "/etc/sentinel/certs/api.example.com.key"
+                    cert "/etc/zentinel/certs/api.example.com.crt"
+                    key "/etc/zentinel/certs/api.example.com.key"
                 }
 
                 "*.app.example.com" {
-                    cert "/etc/sentinel/certs/wildcard.app.example.com.crt"
-                    key "/etc/sentinel/certs/wildcard.app.example.com.key"
+                    cert "/etc/zentinel/certs/wildcard.app.example.com.crt"
+                    key "/etc/zentinel/certs/wildcard.app.example.com.key"
                 }
             }
         }
@@ -85,7 +85,7 @@ listener "https" {
         client-auth {
             enabled false
             mode "optional"  // none, optional, require
-            ca-file "/etc/sentinel/certs/client-ca.crt"
+            ca-file "/etc/zentinel/certs/client-ca.crt"
             verify-depth 2
         }
     }
@@ -188,7 +188,7 @@ listener "https" {
         // Geographic restrictions (requires GeoIP database)
         geo-blocking {
             enabled false
-            database "/etc/sentinel/GeoLite2-Country.mmdb"
+            database "/etc/zentinel/GeoLite2-Country.mmdb"
             allow-countries ["US", "CA", "GB", "DE", "FR"]
             deny-countries []
         }

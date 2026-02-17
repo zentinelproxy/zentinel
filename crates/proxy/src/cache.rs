@@ -1,4 +1,4 @@
-//! HTTP caching infrastructure for Sentinel
+//! HTTP caching infrastructure for Zentinel
 //!
 //! This module provides the foundation for HTTP response caching using
 //! Pingora's cache infrastructure.
@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace, warn};
 
-use sentinel_config::CacheStorageConfig;
+use zentinel_config::CacheStorageConfig;
 
 // ============================================================================
 // Cache Configuration
@@ -56,8 +56,8 @@ static CACHE_CONFIG: OnceCell<CacheStorageConfig> = OnceCell::new();
 ///
 /// # Example
 /// ```ignore
-/// use sentinel_config::CacheStorageConfig;
-/// use sentinel_proxy::cache::configure_cache;
+/// use zentinel_config::CacheStorageConfig;
+/// use zentinel_proxy::cache::configure_cache;
 ///
 /// let config = CacheStorageConfig {
 ///     max_size_bytes: 200 * 1024 * 1024, // 200MB

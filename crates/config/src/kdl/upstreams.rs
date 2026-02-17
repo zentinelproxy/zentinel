@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::trace;
 
-use sentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
+use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 
 use crate::upstreams::*;
 
@@ -569,8 +569,8 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
 }
 
 /// Parse inference readiness configuration
-fn parse_inference_readiness(node: &kdl::KdlNode) -> sentinel_common::InferenceReadinessConfig {
-    use sentinel_common::{
+fn parse_inference_readiness(node: &kdl::KdlNode) -> zentinel_common::InferenceReadinessConfig {
+    use zentinel_common::{
         ColdModelAction, InferenceProbeConfig, InferenceReadinessConfig, ModelStatusConfig,
         QueueDepthConfig, WarmthDetectionConfig,
     };

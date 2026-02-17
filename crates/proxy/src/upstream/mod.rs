@@ -1,4 +1,4 @@
-//! Upstream pool management module for Sentinel proxy
+//! Upstream pool management module for Zentinel proxy
 //!
 //! This module handles upstream server pools, load balancing, health checking,
 //! connection pooling, and retry logic with circuit breakers.
@@ -14,12 +14,12 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
 
-use sentinel_common::{
-    errors::{SentinelError, SentinelResult},
+use zentinel_common::{
+    errors::{ZentinelError, ZentinelResult},
     types::{CircuitBreakerConfig, LoadBalancingAlgorithm},
     CircuitBreaker, UpstreamId,
 };
-use sentinel_config::UpstreamConfig;
+use zentinel_config::UpstreamConfig;
 
 // ============================================================================
 // Internal Upstream Target Type
@@ -66,7 +66,7 @@ impl UpstreamTarget {
     }
 
     /// Convert from config UpstreamTarget
-    pub fn from_config(config: &sentinel_config::UpstreamTarget) -> Option<Self> {
+    pub fn from_config(config: &zentinel_config::UpstreamTarget) -> Option<Self> {
         Self::from_address(&config.address).map(|mut t| {
             t.weight = config.weight;
             t
@@ -126,7 +126,7 @@ pub struct RequestContext {
 #[async_trait]
 pub trait LoadBalancer: Send + Sync {
     /// Select next upstream target
-    async fn select(&self, context: Option<&RequestContext>) -> SentinelResult<TargetSelection>;
+    async fn select(&self, context: Option<&RequestContext>) -> ZentinelResult<TargetSelection>;
 
     /// Report target health status
     async fn report_health(&self, address: &str, healthy: bool);
@@ -194,7 +194,7 @@ pub struct UpstreamPool {
     /// SNI for TLS connections
     tls_sni: Option<String>,
     /// TLS configuration for upstream mTLS (client certificates)
-    tls_config: Option<sentinel_config::UpstreamTlsConfig>,
+    tls_config: Option<zentinel_config::UpstreamTlsConfig>,
     /// Circuit breakers per target
     circuit_breakers: Arc<RwLock<HashMap<String, CircuitBreaker>>>,
     /// Pool statistics
@@ -241,8 +241,8 @@ pub struct HttpVersionOptions {
 impl ConnectionPoolConfig {
     /// Create from upstream config
     pub fn from_config(
-        pool_config: &sentinel_config::ConnectionPoolConfig,
-        timeouts: &sentinel_config::UpstreamTimeouts,
+        pool_config: &zentinel_config::ConnectionPoolConfig,
+        timeouts: &zentinel_config::UpstreamTimeouts,
     ) -> Self {
         Self {
             max_connections: pool_config.max_connections,
@@ -256,7 +256,7 @@ impl ConnectionPoolConfig {
     }
 }
 
-// CircuitBreaker is imported from sentinel_common
+// CircuitBreaker is imported from zentinel_common
 
 /// Pool statistics
 #[derive(Default)]
@@ -340,7 +340,7 @@ impl RoundRobinBalancer {
 
 #[async_trait]
 impl LoadBalancer for RoundRobinBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             algorithm = "round_robin",
@@ -360,7 +360,7 @@ impl LoadBalancer for RoundRobinBalancer {
                 algorithm = "round_robin",
                 "No healthy upstream targets available"
             );
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         let index = self.current.fetch_add(1, Ordering::Relaxed) % healthy_targets.len();
@@ -426,7 +426,7 @@ impl RandomBalancer {
 
 #[async_trait]
 impl LoadBalancer for RandomBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         use rand::seq::SliceRandom;
 
         trace!(
@@ -448,13 +448,13 @@ impl LoadBalancer for RandomBalancer {
                 algorithm = "random",
                 "No healthy upstream targets available"
             );
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         let mut rng = rand::rng();
         let target = healthy_targets
             .choose(&mut rng)
-            .ok_or(SentinelError::NoHealthyUpstream)?;
+            .ok_or(ZentinelError::NoHealthyUpstream)?;
 
         trace!(
             selected_target = %target.full_address(),
@@ -521,7 +521,7 @@ impl LeastConnectionsBalancer {
 
 #[async_trait]
 impl LoadBalancer for LeastConnectionsBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             algorithm = "least_connections",
@@ -577,7 +577,7 @@ impl LoadBalancer for LeastConnectionsBalancer {
                     algorithm = "least_connections",
                     "No healthy upstream targets available"
                 );
-                Err(SentinelError::NoHealthyUpstream)
+                Err(ZentinelError::NoHealthyUpstream)
             }
         }
     }
@@ -615,7 +615,7 @@ struct WeightedBalancer {
 
 #[async_trait]
 impl LoadBalancer for WeightedBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             algorithm = "weighted",
@@ -637,7 +637,7 @@ impl LoadBalancer for WeightedBalancer {
                 algorithm = "weighted",
                 "No healthy upstream targets available"
             );
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         let idx = self.current_index.fetch_add(1, Ordering::Relaxed) % healthy_indices.len();
@@ -691,7 +691,7 @@ struct IpHashBalancer {
 
 #[async_trait]
 impl LoadBalancer for IpHashBalancer {
-    async fn select(&self, context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             algorithm = "ip_hash",
@@ -711,7 +711,7 @@ impl LoadBalancer for IpHashBalancer {
                 algorithm = "ip_hash",
                 "No healthy upstream targets available"
             );
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         // Hash the client IP to select a target
@@ -773,7 +773,7 @@ impl LoadBalancer for IpHashBalancer {
 
 impl UpstreamPool {
     /// Create new upstream pool from configuration
-    pub async fn new(config: UpstreamConfig) -> SentinelResult<Self> {
+    pub async fn new(config: UpstreamConfig) -> ZentinelResult<Self> {
         let id = UpstreamId::new(&config.id);
 
         info!(
@@ -795,7 +795,7 @@ impl UpstreamPool {
                 upstream_id = %config.id,
                 "No valid upstream targets configured"
             );
-            return Err(SentinelError::Config {
+            return Err(ZentinelError::Config {
                 message: "No valid upstream targets".to_string(),
                 source: None,
             });
@@ -907,7 +907,7 @@ impl UpstreamPool {
         algorithm: &LoadBalancingAlgorithm,
         targets: &[UpstreamTarget],
         config: &UpstreamConfig,
-    ) -> SentinelResult<Arc<dyn LoadBalancer>> {
+    ) -> ZentinelResult<Arc<dyn LoadBalancer>> {
         let balancer: Arc<dyn LoadBalancer> = match algorithm {
             LoadBalancingAlgorithm::RoundRobin => {
                 Arc::new(RoundRobinBalancer::new(targets.to_vec()))
@@ -969,7 +969,7 @@ impl UpstreamPool {
             LoadBalancingAlgorithm::Sticky => {
                 // Get sticky session config (required for Sticky algorithm)
                 let sticky_config = config.sticky_session.as_ref().ok_or_else(|| {
-                    SentinelError::Config {
+                    ZentinelError::Config {
                         message: format!(
                             "Upstream '{}' uses Sticky algorithm but no sticky_session config provided",
                             config.id
@@ -1006,7 +1006,7 @@ impl UpstreamPool {
     fn create_load_balancer_inner(
         algorithm: &LoadBalancingAlgorithm,
         targets: &[UpstreamTarget],
-    ) -> SentinelResult<Arc<dyn LoadBalancer>> {
+    ) -> ZentinelResult<Arc<dyn LoadBalancer>> {
         let balancer: Arc<dyn LoadBalancer> = match algorithm {
             LoadBalancingAlgorithm::RoundRobin => {
                 Arc::new(RoundRobinBalancer::new(targets.to_vec()))
@@ -1067,7 +1067,7 @@ impl UpstreamPool {
             }
             LoadBalancingAlgorithm::Sticky => {
                 // Sticky cannot be used as fallback (would cause infinite recursion)
-                return Err(SentinelError::Config {
+                return Err(ZentinelError::Config {
                     message: "Sticky algorithm cannot be used as fallback for sticky sessions"
                         .to_string(),
                     source: None,
@@ -1085,7 +1085,7 @@ impl UpstreamPool {
     pub async fn select_peer_with_metadata(
         &self,
         context: Option<&RequestContext>,
-    ) -> SentinelResult<(HttpPeer, HashMap<String, String>)> {
+    ) -> ZentinelResult<(HttpPeer, HashMap<String, String>)> {
         let request_num = self.stats.requests.fetch_add(1, Ordering::Relaxed) + 1;
 
         trace!(
@@ -1172,14 +1172,14 @@ impl UpstreamPool {
             max_attempts = max_attempts,
             "Failed to select upstream after max attempts"
         );
-        Err(SentinelError::upstream(
+        Err(ZentinelError::upstream(
             self.id.to_string(),
             "Failed to select upstream after max attempts",
         ))
     }
 
     /// Select next upstream peer
-    pub async fn select_peer(&self, context: Option<&RequestContext>) -> SentinelResult<HttpPeer> {
+    pub async fn select_peer(&self, context: Option<&RequestContext>) -> ZentinelResult<HttpPeer> {
         // Delegate to select_peer_with_metadata and discard metadata
         self.select_peer_with_metadata(context)
             .await
@@ -1191,7 +1191,7 @@ impl UpstreamPool {
     /// Pingora handles actual connection pooling internally. When idle_timeout
     /// is set on the peer options, Pingora will keep the connection alive and
     /// reuse it for subsequent requests to the same upstream.
-    fn create_peer(&self, selection: &TargetSelection) -> SentinelResult<HttpPeer> {
+    fn create_peer(&self, selection: &TargetSelection) -> ZentinelResult<HttpPeer> {
         // Determine SNI hostname for TLS connections
         let sni_hostname = self.tls_sni.clone().unwrap_or_else(|| {
             // Extract hostname from address (strip port)
@@ -1215,7 +1215,7 @@ impl UpstreamPool {
                     error = %e,
                     "Failed to resolve upstream address"
                 );
-                SentinelError::Upstream {
+                ZentinelError::Upstream {
                     upstream: self.id.to_string(),
                     message: format!("DNS resolution failed for {}: {}", selection.address, e),
                     retryable: true,
@@ -1229,7 +1229,7 @@ impl UpstreamPool {
                     address = %selection.address,
                     "No addresses returned from DNS resolution"
                 );
-                SentinelError::Upstream {
+                ZentinelError::Upstream {
                     upstream: self.id.to_string(),
                     message: format!("No addresses for {}", selection.address),
                     retryable: true,
@@ -1327,7 +1327,7 @@ impl UpstreamPool {
                                 error = %e,
                                 "Failed to load mTLS client certificate"
                             );
-                            return Err(SentinelError::Tls {
+                            return Err(ZentinelError::Tls {
                                 message: format!("Failed to load client certificate: {}", e),
                                 source: None,
                             });
@@ -1526,7 +1526,7 @@ impl UpstreamPool {
     pub async fn select_shadow_target(
         &self,
         context: Option<&RequestContext>,
-    ) -> SentinelResult<ShadowTarget> {
+    ) -> ZentinelResult<ShadowTarget> {
         // Use load balancer to select target
         let selection = self.load_balancer.select(context).await?;
 
@@ -1534,7 +1534,7 @@ impl UpstreamPool {
         let breakers = self.circuit_breakers.read().await;
         if let Some(breaker) = breakers.get(&selection.address) {
             if !breaker.is_closed() {
-                return Err(SentinelError::upstream(
+                return Err(ZentinelError::upstream(
                     self.id.to_string(),
                     "Circuit breaker is open for shadow target",
                 ));

@@ -1,6 +1,6 @@
-# Sentinel Agent Protocol
+# Zentinel Agent Protocol
 
-A protocol crate for communication between the Sentinel proxy dataplane and external processing agents (WAF, auth, rate limiting, custom logic).
+A protocol crate for communication between the Zentinel proxy dataplane and external processing agents (WAF, auth, rate limiting, custom logic).
 
 Inspired by [SPOE](https://www.haproxy.com/blog/extending-haproxy-with-the-stream-processing-offload-engine) (Stream Processing Offload Engine) and [Envoy's ext_proc](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_proc_filter), designed for bounded, predictable behavior with strong failure isolation.
 
@@ -20,7 +20,7 @@ Inspired by [SPOE](https://www.haproxy.com/blog/extending-haproxy-with-the-strea
 ### Implementing an Agent (Server)
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentServer, AgentHandler, AgentResponse, Decision,
     RequestHeadersEvent, RequestMetadata,
 };
@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Connecting from the Proxy (Client)
 
 ```rust
-use sentinel_agent_protocol::{AgentClient, EventType, RequestHeadersEvent};
+use zentinel_agent_protocol::{AgentClient, EventType, RequestHeadersEvent};
 use std::time::Duration;
 
 // Unix socket transport
@@ -125,7 +125,7 @@ Detailed documentation is available in the [`docs/`](./docs/) directory:
 
 ```
 ┌─────────────────┐         ┌─────────────────┐
-│  Sentinel Proxy │         │  External Agent │
+│  Zentinel Proxy │         │  External Agent │
 │   (Dataplane)   │         │   (WAF/Auth/    │
 │                 │         │   Custom Logic) │
 │  ┌───────────┐  │  UDS/   │  ┌───────────┐  │
@@ -154,7 +154,7 @@ Two reference agents are included for testing and as implementation examples:
 Adds an `X-Agent-Processed: true` header to all requests. Useful for verifying agent connectivity.
 
 ```rust
-use sentinel_agent_protocol::{AgentServer, EchoAgent};
+use zentinel_agent_protocol::{AgentServer, EchoAgent};
 
 let server = AgentServer::new("echo", "/tmp/echo.sock", Box::new(EchoAgent));
 ```
@@ -164,7 +164,7 @@ let server = AgentServer::new("echo", "/tmp/echo.sock", Box::new(EchoAgent));
 Blocks requests matching configured paths or client IPs.
 
 ```rust
-use sentinel_agent_protocol::{AgentServer, DenylistAgent};
+use zentinel_agent_protocol::{AgentServer, DenylistAgent};
 
 let agent = DenylistAgent::new(
     vec!["/admin".to_string(), "/internal".to_string()],
@@ -179,11 +179,11 @@ Official SDKs are available for building agents in your preferred language:
 
 | Language | Repository | Installation |
 |----------|------------|--------------|
-| **Python** | [sentinel-agent-python-sdk](https://github.com/raskell-io/sentinel-agent-python-sdk) | `pip install sentinel-agent-sdk` |
-| **TypeScript** | [sentinel-agent-typescript-sdk](https://github.com/raskell-io/sentinel-agent-typescript-sdk) | `npm install sentinel-agent-sdk` |
-| **Go** | [sentinel-agent-go-sdk](https://github.com/raskell-io/sentinel-agent-go-sdk) | `go get github.com/raskell-io/sentinel-agent-go-sdk` |
-| **Rust** | [sentinel-agent-rust-sdk](https://github.com/raskell-io/sentinel-agent-rust-sdk) | `sentinel-agent-sdk = "0.1"` |
-| **Elixir** | [sentinel-agent-elixir-sdk](https://github.com/raskell-io/sentinel-agent-elixir-sdk) | `{:sentinel_agent_sdk, github: "raskell-io/sentinel-agent-elixir-sdk"}` |
+| **Python** | [zentinel-agent-python-sdk](https://github.com/zentinelproxy/zentinel-agent-python-sdk) | `pip install zentinel-agent-sdk` |
+| **TypeScript** | [zentinel-agent-typescript-sdk](https://github.com/zentinelproxy/zentinel-agent-typescript-sdk) | `npm install zentinel-agent-sdk` |
+| **Go** | [zentinel-agent-go-sdk](https://github.com/zentinelproxy/zentinel-agent-go-sdk) | `go get github.com/zentinelproxy/zentinel-agent-go-sdk` |
+| **Rust** | [zentinel-agent-rust-sdk](https://github.com/zentinelproxy/zentinel-agent-rust-sdk) | `zentinel-agent-sdk = "0.1"` |
+| **Elixir** | [zentinel-agent-elixir-sdk](https://github.com/zentinelproxy/zentinel-agent-elixir-sdk) | `{:zentinel_agent_sdk, github: "zentinelproxy/zentinel-agent-elixir-sdk"}` |
 
 All SDKs implement the same protocol and provide:
 - Simple agent interface with lifecycle hooks
@@ -194,4 +194,4 @@ All SDKs implement the same protocol and provide:
 
 ## License
 
-See the main Sentinel repository for license information.
+See the main Zentinel repository for license information.

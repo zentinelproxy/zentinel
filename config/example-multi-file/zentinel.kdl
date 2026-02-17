@@ -1,18 +1,18 @@
-// Main Sentinel configuration file
+// Main Zentinel configuration file
 // This file contains core server settings and global defaults
 // Additional configurations are loaded from subdirectories
 
 metadata {
     version "1.0.0"
     environment "production"
-    description "Main Sentinel configuration"
+    description "Main Zentinel configuration"
 }
 
 // Global server configuration
 system {
     worker-threads 4
     graceful-shutdown-timeout "30s"
-    pid-file "/var/run/sentinel.pid"
+    pid-file "/var/run/zentinel.pid"
 }
 
 // Global TLS configuration
@@ -26,8 +26,8 @@ tls {
     ]
 
     // Default certificate paths
-    default-cert "/etc/sentinel/certs/default.crt"
-    default-key "/etc/sentinel/certs/default.key"
+    default-cert "/etc/zentinel/certs/default.crt"
+    default-key "/etc/zentinel/certs/default.key"
 
     // OCSP stapling
     ocsp-stapling true
@@ -69,7 +69,7 @@ logging {
 
         file {
             enabled true
-            path "/var/log/sentinel/sentinel.log"
+            path "/var/log/zentinel/zentinel.log"
             rotation "daily"
             max-size "100MB"
             max-backups 7
@@ -80,7 +80,7 @@ logging {
     // Access log
     access-log {
         enabled true
-        path "/var/log/sentinel/access.log"
+        path "/var/log/zentinel/access.log"
         format "combined"
         buffer-size "64KB"
     }
@@ -103,7 +103,7 @@ metrics {
         enabled false
         host "localhost"
         port 8125
-        prefix "sentinel"
+        prefix "zentinel"
     }
 }
 

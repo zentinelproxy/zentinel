@@ -547,10 +547,10 @@ impl UnifiedMetricsAggregator {
 
         // Add service info metric
         output.push_str(
-            "# HELP sentinel_info Sentinel proxy information\n# TYPE sentinel_info gauge\n",
+            "# HELP zentinel_info Zentinel proxy information\n# TYPE zentinel_info gauge\n",
         );
         output.push_str(&format!(
-            "sentinel_info{{service=\"{}\",instance=\"{}\"}} 1\n",
+            "zentinel_info{{service=\"{}\",instance=\"{}\"}} 1\n",
             escape_label_value(&self.service_name),
             escape_label_value(&self.instance_id)
         ));
@@ -666,7 +666,7 @@ impl UnifiedMetricsAggregator {
 
 impl Default for UnifiedMetricsAggregator {
     fn default() -> Self {
-        Self::new("sentinel", "default")
+        Self::new("zentinel", "default")
     }
 }
 
@@ -1511,7 +1511,7 @@ mod tests {
         let aggregator = UnifiedMetricsAggregator::new("my-service", "node-42");
 
         let output = aggregator.export_prometheus();
-        assert!(output.contains("sentinel_info"));
+        assert!(output.contains("zentinel_info"));
         assert!(output.contains("service=\"my-service\""));
         assert!(output.contains("instance=\"node-42\""));
     }

@@ -3,7 +3,7 @@
 //! Routes inference requests to different upstreams based on the model name.
 //! Supports glob patterns for flexible model matching (e.g., `gpt-4*`, `claude-*`).
 
-use sentinel_config::{InferenceProvider, ModelRoutingConfig, ModelUpstreamMapping};
+use zentinel_config::{InferenceProvider, ModelRoutingConfig, ModelUpstreamMapping};
 
 /// Result of model-based routing lookup.
 #[derive(Debug, Clone)]

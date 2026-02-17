@@ -1,7 +1,7 @@
 # Rate Limit Agent Configuration for Docker Environment
 
 server:
-  socket_path: /var/run/sentinel/ratelimit.sock
+  socket_path: /var/run/zentinel/ratelimit.sock
   socket_permissions: 0666
   max_connections: 100
 

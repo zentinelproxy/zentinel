@@ -1,12 +1,12 @@
 # Proxy Architecture
 
-This document describes the internal architecture of the Sentinel proxy dataplane.
+This document describes the internal architecture of the Zentinel proxy dataplane.
 
 ## System Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Sentinel Proxy                                  │
+│                              Zentinel Proxy                                  │
 │                                                                              │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
 │  │  Listeners  │    │   Routes    │    │  Upstreams  │    │   Agents    │  │
@@ -18,7 +18,7 @@ This document describes the internal architecture of the Sentinel proxy dataplan
 │         │                  │                  │                  │          │
 │         ▼                  ▼                  ▼                  ▼          │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                         SentinelProxy                                  │  │
+│  │                         ZentinelProxy                                  │  │
 │  │                    (implements ProxyHttp)                              │  │
 │  │                                                                        │  │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐ │  │

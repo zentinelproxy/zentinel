@@ -1,7 +1,7 @@
 // Allow large enum variants in generated protobuf code
 #![allow(clippy::large_enum_variant)]
 
-//! Agent protocol for Sentinel proxy
+//! Agent protocol for Zentinel proxy
 //!
 //! This crate defines the protocol for communication between the proxy dataplane
 //! and external processing agents (WAF, auth, rate limiting, custom logic).
@@ -34,7 +34,7 @@
 //! # Example: Client Usage (Unix Socket)
 //!
 //! ```ignore
-//! use sentinel_agent_protocol::{AgentClient, EventType, RequestHeadersEvent};
+//! use zentinel_agent_protocol::{AgentClient, EventType, RequestHeadersEvent};
 //!
 //! let mut client = AgentClient::unix_socket("my-agent", "/tmp/agent.sock", timeout).await?;
 //! let response = client.send_event(EventType::RequestHeaders, &event).await?;
@@ -43,7 +43,7 @@
 //! # Example: Client Usage (gRPC)
 //!
 //! ```ignore
-//! use sentinel_agent_protocol::{AgentClient, EventType, RequestHeadersEvent};
+//! use zentinel_agent_protocol::{AgentClient, EventType, RequestHeadersEvent};
 //!
 //! let mut client = AgentClient::grpc("my-agent", "http://localhost:50051", timeout).await?;
 //! let response = client.send_event(EventType::RequestHeaders, &event).await?;
@@ -52,11 +52,11 @@
 //! # Example: Client Usage (gRPC with TLS)
 //!
 //! ```ignore
-//! use sentinel_agent_protocol::{AgentClient, GrpcTlsConfig, EventType, RequestHeadersEvent};
+//! use zentinel_agent_protocol::{AgentClient, GrpcTlsConfig, EventType, RequestHeadersEvent};
 //!
 //! // Simple TLS (server verification only)
 //! let tls_config = GrpcTlsConfig::new()
-//!     .with_ca_cert_file("/etc/sentinel/certs/ca.crt").await?;
+//!     .with_ca_cert_file("/etc/zentinel/certs/ca.crt").await?;
 //!
 //! let mut client = AgentClient::grpc_tls(
 //!     "my-agent",
@@ -67,10 +67,10 @@
 //!
 //! // mTLS (mutual authentication)
 //! let tls_config = GrpcTlsConfig::new()
-//!     .with_ca_cert_file("/etc/sentinel/certs/ca.crt").await?
+//!     .with_ca_cert_file("/etc/zentinel/certs/ca.crt").await?
 //!     .with_client_cert_files(
-//!         "/etc/sentinel/certs/client.crt",
-//!         "/etc/sentinel/certs/client.key"
+//!         "/etc/zentinel/certs/client.crt",
+//!         "/etc/zentinel/certs/client.key"
 //!     ).await?;
 //!
 //! let mut client = AgentClient::grpc_tls("my-agent", "https://agent.internal:50051", timeout, tls_config).await?;
@@ -79,7 +79,7 @@
 //! # Example: Client Usage (HTTP REST)
 //!
 //! ```ignore
-//! use sentinel_agent_protocol::{AgentClient, HttpTlsConfig, EventType, RequestHeadersEvent};
+//! use zentinel_agent_protocol::{AgentClient, HttpTlsConfig, EventType, RequestHeadersEvent};
 //!
 //! // Plain HTTP
 //! let mut client = AgentClient::http("my-agent", "http://localhost:8080/agent", timeout).await?;
@@ -87,7 +87,7 @@
 //!
 //! // HTTPS with TLS
 //! let tls_config = HttpTlsConfig::new()
-//!     .with_ca_cert_file("/etc/sentinel/certs/ca.crt").await?;
+//!     .with_ca_cert_file("/etc/zentinel/certs/ca.crt").await?;
 //!
 //! let mut client = AgentClient::http_tls(
 //!     "my-agent",
@@ -100,7 +100,7 @@
 //! # Example: Server Implementation
 //!
 //! ```ignore
-//! use sentinel_agent_protocol::{AgentServer, AgentHandler, AgentResponse};
+//! use zentinel_agent_protocol::{AgentServer, AgentHandler, AgentResponse};
 //!
 //! struct MyAgent;
 //!
@@ -130,7 +130,7 @@ mod server;
 
 /// gRPC protocol definitions generated from proto/agent.proto
 pub mod grpc {
-    tonic::include_proto!("sentinel.agent.v1");
+    tonic::include_proto!("zentinel.agent.v1");
 }
 
 /// Protocol v2 types with bidirectional streaming, capabilities, and flow control
@@ -138,7 +138,7 @@ pub mod v2;
 
 /// gRPC v2 protocol definitions generated from proto/agent_v2.proto
 pub mod grpc_v2 {
-    tonic::include_proto!("sentinel.agent.v2");
+    tonic::include_proto!("zentinel.agent.v2");
 }
 
 // Re-export error types

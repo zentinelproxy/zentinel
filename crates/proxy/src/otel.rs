@@ -19,7 +19,7 @@
 //!             endpoint "http://localhost:4317"
 //!         }
 //!         sampling-rate 0.1  // 10% of requests
-//!         service-name "sentinel"
+//!         service-name "zentinel"
 //!     }
 //! }
 //! ```
@@ -27,7 +27,7 @@
 use std::sync::OnceLock;
 use tracing::warn;
 
-use sentinel_config::TracingConfig;
+use zentinel_config::TracingConfig;
 
 /// W3C Trace Context header names
 pub const TRACEPARENT_HEADER: &str = "traceparent";
@@ -143,9 +143,9 @@ mod otel_impl {
         /// Initialize OpenTelemetry with OTLP exporter
         pub fn init(config: &TracingConfig) -> Result<Self, OtelError> {
             let endpoint = match &config.backend {
-                sentinel_config::TracingBackend::Otlp { endpoint } => endpoint.clone(),
-                sentinel_config::TracingBackend::Jaeger { endpoint } => endpoint.clone(),
-                sentinel_config::TracingBackend::Zipkin { endpoint } => endpoint.clone(),
+                zentinel_config::TracingBackend::Otlp { endpoint } => endpoint.clone(),
+                zentinel_config::TracingBackend::Jaeger { endpoint } => endpoint.clone(),
+                zentinel_config::TracingBackend::Zipkin { endpoint } => endpoint.clone(),
             };
 
             info!(
@@ -202,7 +202,7 @@ mod otel_impl {
             path: &str,
             trace_ctx: Option<&TraceContext>,
         ) -> RequestSpan {
-            let tracer = global::tracer("sentinel-proxy");
+            let tracer = global::tracer("zentinel-proxy");
 
             let span = tracer
                 .span_builder(format!("{} {}", method, path))

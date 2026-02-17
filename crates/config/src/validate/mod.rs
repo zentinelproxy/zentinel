@@ -1,6 +1,6 @@
 //! Configuration validation
 //!
-//! This module provides comprehensive validation for Sentinel configurations,
+//! This module provides comprehensive validation for Zentinel configurations,
 //! including network connectivity, certificate validation, and best practices linting.
 
 pub mod agents;

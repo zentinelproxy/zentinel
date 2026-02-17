@@ -55,28 +55,28 @@ impl ModelRoutingMetrics {
     /// Create new model routing metrics and register with Prometheus.
     pub fn new() -> Result<Self> {
         let model_routed = register_int_counter_vec!(
-            "sentinel_model_routing_total",
+            "zentinel_model_routing_total",
             "Total number of requests routed based on model name",
             &["route", "model", "upstream"]
         )
         .context("Failed to register model_routing metric")?;
 
         let default_upstream_used = register_int_counter_vec!(
-            "sentinel_model_routing_default_total",
+            "zentinel_model_routing_default_total",
             "Requests falling back to default upstream (no pattern matched)",
             &["route"]
         )
         .context("Failed to register model_routing_default metric")?;
 
         let no_model_header = register_int_counter_vec!(
-            "sentinel_model_routing_no_header_total",
+            "zentinel_model_routing_no_header_total",
             "Requests with no model header detected",
             &["route"]
         )
         .context("Failed to register model_routing_no_header metric")?;
 
         let provider_override = register_int_counter_vec!(
-            "sentinel_model_routing_provider_override_total",
+            "zentinel_model_routing_provider_override_total",
             "Requests where provider was overridden by model routing",
             &["route", "upstream", "provider"]
         )

@@ -10,7 +10,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sentinel-agent-protocol = { version = "0.3", features = ["mmap-buffers"] }
+//! zentinel-agent-protocol = { version = "0.3", features = ["mmap-buffers"] }
 //! ```
 //!
 //! # Performance
@@ -26,7 +26,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_agent_protocol::mmap_buffer::{LargeBodyBuffer, LargeBodyBufferConfig};
+//! use zentinel_agent_protocol::mmap_buffer::{LargeBodyBuffer, LargeBodyBufferConfig};
 //!
 //! // Configure with 1MB threshold
 //! let config = LargeBodyBufferConfig {

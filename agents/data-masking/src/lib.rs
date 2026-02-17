@@ -1,4 +1,4 @@
-//! Data Masking Agent for Sentinel
+//! Data Masking Agent for Zentinel
 //!
 //! This agent provides PII protection capabilities:
 //! - Reversible tokenization (request-scoped)

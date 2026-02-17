@@ -1,11 +1,11 @@
 {{- if and .Values.proxy.enabled .Values.podDisruptionBudget.enabled }}
-apiVersion: {{ include "sentinel.pdb.apiVersion" . }}
+apiVersion: {{ include "zentinel.pdb.apiVersion" . }}
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "sentinel.fullname" . }}-proxy
+  name: {{ include "zentinel.fullname" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "sentinel.labels" . | nindent 4 }}
+    {{- include "zentinel.labels" . | nindent 4 }}
     app.kubernetes.io/component: proxy
 spec:
   {{- if .Values.podDisruptionBudget.minAvailable }}
@@ -16,6 +16,6 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      {{- include "zentinel.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: proxy
 {{- end }}

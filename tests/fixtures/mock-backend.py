@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple mock backend for testing Sentinel inline OpenAPI validation.
+Simple mock backend for testing Zentinel inline OpenAPI validation.
 Echoes back received requests as JSON.
 """
 

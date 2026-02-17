@@ -22,11 +22,11 @@ use crate::routing::RouteMatch;
 use crate::validation::SchemaValidator;
 
 use super::context::RequestContext;
-use super::SentinelProxy;
+use super::ZentinelProxy;
 
-use sentinel_common::CorrelationId;
+use zentinel_common::CorrelationId;
 
-impl SentinelProxy {
+impl ZentinelProxy {
     /// Handle static file route
     pub(super) async fn handle_static_route(
         &self,
@@ -125,7 +125,7 @@ impl SentinelProxy {
             let cache_stats = Some(self.cache_manager.stats());
 
             // Parse cache purge request for PURGE handler
-            let cache_purge = if matches!(handler, sentinel_config::BuiltinHandler::CachePurge) {
+            let cache_purge = if matches!(handler, zentinel_config::BuiltinHandler::CachePurge) {
                 // Extract purge pattern from request path or X-Purge-Pattern header
                 let path = session.req_header().uri.path().to_string();
                 Some(builtin_handlers::CachePurgeRequest {
@@ -339,12 +339,12 @@ impl SentinelProxy {
             .get_or_insert_with(|| self.config_manager.current());
 
         // Extract agent IDs and their failure modes from filter chain by looking up filter definitions
-        let agent_filters: Vec<(String, sentinel_config::FailureMode)> = route_config
+        let agent_filters: Vec<(String, zentinel_config::FailureMode)> = route_config
             .filters
             .iter()
             .filter_map(|filter_id| {
                 config.filters.get(filter_id).and_then(|filter_config| {
-                    if let sentinel_config::Filter::Agent(agent_filter) = &filter_config.filter {
+                    if let zentinel_config::Filter::Agent(agent_filter) = &filter_config.filter {
                         // Use filter's failure mode if specified, otherwise fall back to route's policy
                         let failure_mode = agent_filter
                             .failure_mode
@@ -491,7 +491,7 @@ impl SentinelProxy {
         // Create agent call context
         let agent_ctx = crate::agents::AgentCallContext {
             correlation_id: CorrelationId::from_string(&ctx.trace_id),
-            metadata: sentinel_agent_protocol::RequestMetadata {
+            metadata: zentinel_agent_protocol::RequestMetadata {
                 correlation_id: ctx.trace_id.clone(),
                 request_id: Uuid::new_v4().to_string(),
                 client_ip: client_addr.to_string(),
@@ -585,13 +585,13 @@ impl SentinelProxy {
                 // Apply header modifications
                 for op in decision.request_headers {
                     match op {
-                        sentinel_agent_protocol::HeaderOp::Set { name, value } => {
+                        zentinel_agent_protocol::HeaderOp::Set { name, value } => {
                             req_header.insert_header(name, &value).ok();
                         }
-                        sentinel_agent_protocol::HeaderOp::Add { name, value } => {
+                        zentinel_agent_protocol::HeaderOp::Add { name, value } => {
                             req_header.append_header(name, &value).ok();
                         }
-                        sentinel_agent_protocol::HeaderOp::Remove { name } => {
+                        zentinel_agent_protocol::HeaderOp::Remove { name } => {
                             req_header.remove_header(&name);
                         }
                     }
@@ -609,7 +609,7 @@ impl SentinelProxy {
                     "Agent processing failed"
                 );
                 // Check failure mode from cached route config
-                if route_config.policies.failure_mode == sentinel_config::FailureMode::Closed {
+                if route_config.policies.failure_mode == zentinel_config::FailureMode::Closed {
                     return Err(Error::explain(
                         ErrorType::InternalError,
                         "Agent processing failed",

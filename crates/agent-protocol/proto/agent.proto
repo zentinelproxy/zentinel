@@ -1,10 +1,10 @@
-// Sentinel Agent Protocol - gRPC Definition
+// Zentinel Agent Protocol - gRPC Definition
 //
 // This protocol mirrors the existing JSON-over-Unix-socket protocol,
 // allowing agents to communicate via either transport.
 
 syntax = "proto3";
-package sentinel.agent.v1;
+package zentinel.agent.v1;
 
 // Event types for agent processing lifecycle
 enum EventType {

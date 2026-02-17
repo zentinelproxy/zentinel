@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use pingora::http::ResponseHeader;
 use pingora_proxy::Session;
-use sentinel_config::{
+use zentinel_config::{
     CompressFilter, Config, CorsFilter, Filter, FilterPhase, HeadersFilter, LogFilter,
     TimeoutFilter,
 };
@@ -442,7 +442,7 @@ mod tests {
     use std::collections::HashMap;
 
     use pingora::http::RequestHeader as PingoraRequestHeader;
-    use sentinel_config::{
+    use zentinel_config::{
         filters::FilterConfig, CompressFilter, CorsFilter, FilterPhase, HeadersFilter, LogFilter,
         TimeoutFilter,
     };
@@ -455,7 +455,7 @@ mod tests {
     fn test_config_with_filter(
         filter_id: &str,
         filter: Filter,
-    ) -> (Arc<Config>, Arc<sentinel_config::RouteConfig>) {
+    ) -> (Arc<Config>, Arc<zentinel_config::RouteConfig>) {
         let mut config = Config::default_for_testing();
         config
             .filters
@@ -465,7 +465,7 @@ mod tests {
         (Arc::new(config), route)
     }
 
-    fn new_ctx_with_route(route: &Arc<sentinel_config::RouteConfig>) -> RequestContext {
+    fn new_ctx_with_route(route: &Arc<zentinel_config::RouteConfig>) -> RequestContext {
         let mut ctx = RequestContext::new();
         ctx.trace_id = "test-trace-id".to_string();
         ctx.method = "GET".to_string();

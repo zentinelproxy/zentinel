@@ -1,9 +1,9 @@
-/// Sentinel Agent Protocol v2 - WebAssembly Interface
+/// Zentinel Agent Protocol v2 - WebAssembly Interface
 ///
-/// This interface defines how WASM agents interact with the Sentinel proxy.
+/// This interface defines how WASM agents interact with the Zentinel proxy.
 /// Agents implement these functions to process HTTP requests and responses.
 
-package sentinel:agent@2.0.0;
+package zentinel:agent@2.0.0;
 
 /// Core types used throughout the agent interface
 interface types {

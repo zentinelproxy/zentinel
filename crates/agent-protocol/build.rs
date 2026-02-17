@@ -1,4 +1,4 @@
-//! Build script for sentinel-agent-protocol
+//! Build script for zentinel-agent-protocol
 //!
 //! Compiles Protocol Buffer definitions for gRPC support.
 //! - v1: proto/agent.proto

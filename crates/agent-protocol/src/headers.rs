@@ -308,7 +308,7 @@ pub type CowHeaderName = Cow<'static, str>;
 /// # Example
 ///
 /// ```
-/// use sentinel_agent_protocol::headers::{CowHeaderMap, HeaderValues, intern_header_name};
+/// use zentinel_agent_protocol::headers::{CowHeaderMap, HeaderValues, intern_header_name};
 ///
 /// let mut headers = CowHeaderMap::new();
 /// headers.insert(
@@ -332,7 +332,7 @@ pub type CowHeaderMap = HashMap<CowHeaderName, HeaderValues>;
 /// # Example
 ///
 /// ```
-/// use sentinel_agent_protocol::headers::intern_header_name;
+/// use zentinel_agent_protocol::headers::intern_header_name;
 /// use std::borrow::Cow;
 ///
 /// // Known header - no allocation

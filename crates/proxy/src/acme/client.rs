@@ -17,7 +17,7 @@ use instant_acme::{
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
 
-use sentinel_config::server::AcmeConfig;
+use zentinel_config::server::AcmeConfig;
 
 use super::dns::challenge::{create_challenge_info, Dns01ChallengeInfo};
 use super::error::AcmeError;
@@ -35,7 +35,7 @@ const CHALLENGE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// ACME client for automatic certificate management
 ///
-/// Wraps the `instant-acme` library and provides Sentinel-specific functionality
+/// Wraps the `instant-acme` library and provides Zentinel-specific functionality
 /// for certificate ordering, challenge handling, and persistence.
 pub struct AcmeClient {
     /// ACME account (lazy initialized)

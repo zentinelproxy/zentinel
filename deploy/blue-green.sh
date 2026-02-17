@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# Sentinel Blue-Green Deployment Script
+# Zentinel Blue-Green Deployment Script
 # This script performs safe blue-green deployments with health checks and automatic rollback
 
 set -euo pipefail
 
 # Configuration
-NAMESPACE="${NAMESPACE:-sentinel}"
-SERVICE_NAME="${SERVICE_NAME:-sentinel}"
-BLUE_DEPLOYMENT="${BLUE_DEPLOYMENT:-sentinel-blue}"
-GREEN_DEPLOYMENT="${GREEN_DEPLOYMENT:-sentinel-green}"
-IMAGE="${IMAGE:-sentinel/proxy:latest}"
+NAMESPACE="${NAMESPACE:-zentinel}"
+SERVICE_NAME="${SERVICE_NAME:-zentinel}"
+BLUE_DEPLOYMENT="${BLUE_DEPLOYMENT:-zentinel-blue}"
+GREEN_DEPLOYMENT="${GREEN_DEPLOYMENT:-zentinel-green}"
+IMAGE="${IMAGE:-zentinel/proxy:latest}"
 HEALTH_CHECK_RETRIES="${HEALTH_CHECK_RETRIES:-30}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-10}"
 TRAFFIC_SWITCH_PERCENTAGE="${TRAFFIC_SWITCH_PERCENTAGE:-10}"
@@ -140,18 +140,18 @@ metadata:
   name: $target_deployment
   namespace: $NAMESPACE
   labels:
-    app: sentinel
+    app: zentinel
     deployment: $target_color
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: sentinel
+      app: zentinel
       deployment: $target_color
   template:
     metadata:
       labels:
-        app: sentinel
+        app: zentinel
         deployment: $target_color
       annotations:
         prometheus.io/scrape: "true"
@@ -173,7 +173,7 @@ spec:
         - name: DEPLOYMENT_COLOR
           value: $target_color
         - name: RUST_LOG
-          value: info,sentinel=debug
+          value: info,zentinel=debug
         livenessProbe:
           httpGet:
             path: /health
@@ -271,11 +271,11 @@ smoke_test() {
 apiVersion: v1
 kind: Service
 metadata:
-  name: sentinel-test
+  name: zentinel-test
   namespace: $NAMESPACE
 spec:
   selector:
-    app: sentinel
+    app: zentinel
     deployment: $color
   ports:
   - name: http
@@ -290,7 +290,7 @@ EOF
     sleep 5
 
     # Port-forward for testing
-    kubectl port-forward -n "$NAMESPACE" service/sentinel-proxy-test 18080:8080 &
+    kubectl port-forward -n "$NAMESPACE" service/zentinel-proxy-test 18080:8080 &
     local port_forward_pid=$!
     sleep 5
 
@@ -319,7 +319,7 @@ EOF
 
     # Test 3: Metrics endpoint
     log_info "Test 3: Metrics endpoint"
-    if curl -sf http://localhost:18080/../metrics | grep -q "sentinel_requests_total"; then
+    if curl -sf http://localhost:18080/../metrics | grep -q "zentinel_requests_total"; then
         log_success "Metrics endpoint working"
     else
         log_error "Metrics endpoint not working"
@@ -328,7 +328,7 @@ EOF
 
     # Cleanup
     kill $port_forward_pid 2>/dev/null || true
-    kubectl delete service sentinel-test -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete service zentinel-test -n "$NAMESPACE" 2>/dev/null || true
 
     if [[ "$test_passed" == "true" ]]; then
         log_success "All smoke tests passed"
@@ -364,7 +364,7 @@ switch_traffic() {
             local error_rate
             error_rate=$(kubectl exec -n "$NAMESPACE" deployment/"$target_deployment" -- \
                 curl -s http://localhost:9090/metrics | \
-                grep 'sentinel_requests_total{status="5' | \
+                grep 'zentinel_requests_total{status="5' | \
                 awk '{sum+=$2} END {print sum}' || echo "0")
 
             if [[ "$error_rate" -gt 100 ]]; then
@@ -398,7 +398,7 @@ monitor_deployment() {
         local current_errors
         current_errors=$(kubectl exec -n "$NAMESPACE" deployment/"$(get_active_deployment)" -- \
             curl -s http://localhost:9090/metrics 2>/dev/null | \
-            grep 'sentinel_requests_total{status="5' | \
+            grep 'zentinel_requests_total{status="5' | \
             awk '{sum+=$2} END {print sum}' || echo "0")
 
         if [[ "$current_errors" -gt "$error_count" ]]; then
@@ -532,7 +532,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --namespace NAMESPACE    Kubernetes namespace (default: sentinel)"
+            echo "  --namespace NAMESPACE    Kubernetes namespace (default: zentinel)"
             echo "  --image IMAGE           Docker image to deploy"
             echo "  --no-rollback          Disable automatic rollback on error"
             echo "  --rollback             Perform rollback to previous deployment"

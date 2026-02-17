@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sentinel_config::{SniCertificate, TlsConfig};
-use sentinel_proxy::tls::{
+use zentinel_config::{SniCertificate, TlsConfig};
+use zentinel_proxy::tls::{
     build_server_config, validate_tls_config, CertificateReloader, HotReloadableSniResolver,
     SniResolver, TlsError,
 };
@@ -31,7 +31,7 @@ fn minimal_tls_config() -> TlsConfig {
         key_file: Some(fixtures.join("server-default.key")),
         additional_certs: vec![],
         ca_file: None,
-        min_version: sentinel_common::types::TlsVersion::Tls12,
+        min_version: zentinel_common::types::TlsVersion::Tls12,
         max_version: None,
         cipher_suites: vec![],
         client_auth: false,
@@ -60,7 +60,7 @@ fn multi_sni_tls_config() -> TlsConfig {
             },
         ],
         ca_file: None,
-        min_version: sentinel_common::types::TlsVersion::Tls12,
+        min_version: zentinel_common::types::TlsVersion::Tls12,
         max_version: None,
         cipher_suites: vec![],
         client_auth: false,
@@ -82,7 +82,7 @@ fn wildcard_tls_config() -> TlsConfig {
             key_file: fixtures.join("server-wildcard.key"),
         }],
         ca_file: None,
-        min_version: sentinel_common::types::TlsVersion::Tls12,
+        min_version: zentinel_common::types::TlsVersion::Tls12,
         max_version: None,
         cipher_suites: vec![],
         client_auth: false,
@@ -100,7 +100,7 @@ fn mtls_tls_config() -> TlsConfig {
         key_file: Some(fixtures.join("server-default.key")),
         additional_certs: vec![],
         ca_file: Some(fixtures.join("ca.crt")),
-        min_version: sentinel_common::types::TlsVersion::Tls12,
+        min_version: zentinel_common::types::TlsVersion::Tls12,
         max_version: None,
         cipher_suites: vec![],
         client_auth: true,
@@ -275,7 +275,7 @@ mod sni_resolver {
                 },
             ],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -306,7 +306,7 @@ mod sni_resolver {
             key_file: Some(fixtures.join("server-default.key")),
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -331,7 +331,7 @@ mod sni_resolver {
             key_file: Some(fixtures.join("nonexistent.key")),
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -360,7 +360,7 @@ mod sni_resolver {
                 key_file: fixtures.join("server-api.key"),
             }],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -380,7 +380,7 @@ mod sni_resolver {
 
 mod acme_resolver {
     use super::*;
-    use sentinel_config::server::{AcmeChallengeType, AcmeConfig};
+    use zentinel_config::server::{AcmeChallengeType, AcmeConfig};
     use std::path::PathBuf;
 
     /// Build an AcmeConfig pointing at the given storage directory
@@ -403,7 +403,7 @@ mod acme_resolver {
             key_file: None,
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -473,7 +473,7 @@ mod acme_resolver {
             key_file: None,
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -642,7 +642,7 @@ mod hot_reload {
             key_file: Some(key_path.clone()),
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -695,7 +695,7 @@ mod hot_reload {
             key_file: Some(key_path.clone()),
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -741,7 +741,7 @@ mod hot_reload {
             key_file: Some(key_path.clone()),
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -861,7 +861,7 @@ mod certificate_reloader {
             key_file: Some(key_path.clone()),
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -961,7 +961,7 @@ mod validation {
             key_file: Some(fixtures.join("server-default.key")),
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -988,7 +988,7 @@ mod validation {
             key_file: Some(fixtures.join("nonexistent.key")),
             additional_certs: vec![],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -1019,7 +1019,7 @@ mod validation {
                 key_file: fixtures.join("server-api.key"),
             }],
             ca_file: None,
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: false,
@@ -1040,7 +1040,7 @@ mod validation {
             key_file: Some(fixtures.join("server-default.key")),
             additional_certs: vec![],
             ca_file: Some(fixtures.join("nonexistent-ca.crt")),
-            min_version: sentinel_common::types::TlsVersion::Tls12,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
             max_version: None,
             cipher_suites: vec![],
             client_auth: true,

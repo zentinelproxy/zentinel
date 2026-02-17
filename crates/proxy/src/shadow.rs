@@ -16,9 +16,9 @@ use pingora::http::RequestHeader;
 use pingora::proxy::Session;
 use rand::RngExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use sentinel_common::errors::{SentinelError, SentinelResult};
-use sentinel_common::observability::RequestMetrics;
-use sentinel_config::routes::ShadowConfig;
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
+use zentinel_common::observability::RequestMetrics;
+use zentinel_config::routes::ShadowConfig;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -234,7 +234,7 @@ impl ShadowManager {
         headers: RequestHeader,
         body: Option<Vec<u8>>,
         ctx: RequestContext,
-    ) -> SentinelResult<()> {
+    ) -> ZentinelResult<()> {
         // Select shadow target from upstream pool
         let target = upstream_pool.select_shadow_target(Some(&ctx)).await?;
 
@@ -296,7 +296,7 @@ impl ShadowManager {
 
         // Send the request and discard response
         let response = request_builder.send().await.map_err(|e| {
-            SentinelError::upstream(
+            ZentinelError::upstream(
                 upstream_pool.id().to_string(),
                 format!("Shadow request failed: {}", e),
             )
@@ -335,10 +335,10 @@ pub fn should_buffer_method(method: &str) -> bool {
 pub async fn buffer_request_body(
     session: &mut Session,
     max_bytes: usize,
-) -> SentinelResult<Vec<u8>> {
+) -> ZentinelResult<Vec<u8>> {
     if max_bytes == 0 {
-        return Err(SentinelError::LimitExceeded {
-            limit_type: sentinel_common::errors::LimitType::BodySize,
+        return Err(ZentinelError::LimitExceeded {
+            limit_type: zentinel_common::errors::LimitType::BodySize,
             message: "max_body_bytes must be > 0".to_string(),
             current_value: 0,
             limit: 0,
@@ -353,7 +353,7 @@ pub async fn buffer_request_body(
         let chunk = session
             .read_request_body()
             .await
-            .map_err(|e| SentinelError::Internal {
+            .map_err(|e| ZentinelError::Internal {
                 message: format!("Failed to read request body for shadow: {}", e),
                 correlation_id: None,
                 source: None,
@@ -365,8 +365,8 @@ pub async fn buffer_request_body(
 
                 // Check if this chunk would exceed the limit
                 if total_read + chunk_len > max_bytes {
-                    return Err(SentinelError::LimitExceeded {
-                        limit_type: sentinel_common::errors::LimitType::BodySize,
+                    return Err(ZentinelError::LimitExceeded {
+                        limit_type: zentinel_common::errors::LimitType::BodySize,
                         message: format!(
                             "Request body exceeds maximum shadow buffer size of {} bytes",
                             max_bytes

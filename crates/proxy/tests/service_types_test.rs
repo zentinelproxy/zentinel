@@ -5,10 +5,10 @@
 use anyhow::Result;
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use sentinel_config::{
+use zentinel_config::{
     ApiSchemaConfig, ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType, StaticFileConfig,
 };
-use sentinel_proxy::{ErrorHandler, SchemaValidator, StaticFileServer};
+use zentinel_proxy::{ErrorHandler, SchemaValidator, StaticFileServer};
 use serde_json::json;
 use std::collections::HashMap;
 use tempfile::TempDir;

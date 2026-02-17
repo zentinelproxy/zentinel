@@ -18,8 +18,8 @@ use tracing::{debug, info, trace, warn};
 use crate::grpc_health::GrpcHealthCheck;
 use crate::upstream::inference_health::InferenceHealthCheck;
 
-use sentinel_common::types::HealthCheckType;
-use sentinel_config::{HealthCheck as HealthCheckConfig, UpstreamConfig};
+use zentinel_common::types::HealthCheckType;
+use zentinel_config::{HealthCheck as HealthCheckConfig, UpstreamConfig};
 
 /// Active health checker for an upstream pool
 ///
@@ -375,8 +375,8 @@ impl Default for HealthCheckRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_common::types::LoadBalancingAlgorithm;
-    use sentinel_config::{
+    use zentinel_common::types::LoadBalancingAlgorithm;
+    use zentinel_config::{
         ConnectionPoolConfig, HttpVersionConfig, UpstreamTarget, UpstreamTimeouts,
     };
     use std::collections::HashMap;

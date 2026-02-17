@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# Sentinel Comprehensive Integration Test Suite
+# Zentinel Comprehensive Integration Test Suite
 #
-# This script tests the Sentinel reverse proxy with all agents in a Docker environment.
+# This script tests the Zentinel reverse proxy with all agents in a Docker environment.
 # It validates both engineering (source code) and configuration correctness.
 #
 # Prerequisites:
@@ -336,10 +336,10 @@ test_health_endpoints() {
 
     log_test "Proxy metrics endpoint"
     response=$(curl -sf "http://${PROXY_HOST}:${METRICS_PORT}/metrics" 2>/dev/null)
-    if echo "$response" | grep -q "sentinel_"; then
-        log_success "Proxy metrics endpoint returns sentinel metrics"
+    if echo "$response" | grep -q "zentinel_"; then
+        log_success "Proxy metrics endpoint returns zentinel metrics"
     else
-        log_failure "Proxy metrics endpoint missing sentinel metrics"
+        log_failure "Proxy metrics endpoint missing zentinel metrics"
     fi
 }
 
@@ -651,7 +651,7 @@ test_configuration() {
 ###############################################################################
 
 main() {
-    log_header "Sentinel Integration Test Suite"
+    log_header "Zentinel Integration Test Suite"
     echo ""
     echo -e "  ${BOLD}Test Configuration:${NC}"
     echo -e "    Proxy:       http://${PROXY_HOST}:${PROXY_PORT}"
@@ -665,7 +665,7 @@ main() {
     # Build and start containers
     if [[ "$SKIP_BUILD" != "true" ]]; then
         log_section "Building Docker Images"
-        log_info "Building Sentinel Docker images..."
+        log_info "Building Zentinel Docker images..."
 
         if ! docker compose -f docker-compose.yml build 2>&1 | tee /tmp/docker-build.log; then
             log_failure "Docker build failed. Check /tmp/docker-build.log for details"

@@ -100,7 +100,7 @@ jobs:
     with:
       profile: release
       upload-artifacts: true
-      artifact-prefix: sentinel-${{ needs.validate.outputs.calver }}
+      artifact-prefix: zentinel-${{ needs.validate.outputs.calver }}
       version: ${{ needs.validate.outputs.calver }}
       targets: |
         [
@@ -117,7 +117,7 @@ jobs:
     uses: ./.github/workflows/_docker.yml
     with:
       version: ${{ needs.validate.outputs.calver }}
-      artifact-prefix: sentinel-${{ needs.validate.outputs.calver }}
+      artifact-prefix: zentinel-${{ needs.validate.outputs.calver }}
       push: false  # Don't push yet - just validate it builds
       latest: false
     permissions:
@@ -147,9 +147,9 @@ jobs:
           VERSION="${{ needs.validate.outputs.calver }}"
           mkdir -p signed
 
-          for dir in artifacts/sentinel-${VERSION}-*/; do
+          for dir in artifacts/zentinel-${VERSION}-*/; do
             if [ -d "$dir" ]; then
-              SUFFIX=$(basename "$dir" | sed "s/sentinel-${VERSION}-//")
+              SUFFIX=$(basename "$dir" | sed "s/zentinel-${VERSION}-//")
 
               # Skip non-platform artifacts (e.g., sbom)
               case "$SUFFIX" in
@@ -157,7 +157,7 @@ jobs:
                 *) echo "Skipping non-platform artifact: $SUFFIX"; continue ;;
               esac
 
-              ARCHIVE_NAME="sentinel-${VERSION}-${SUFFIX}.tar.gz"
+              ARCHIVE_NAME="zentinel-${VERSION}-${SUFFIX}.tar.gz"
 
               tar -czvf "signed/$ARCHIVE_NAME" -C "$dir" .
 
@@ -254,10 +254,10 @@ jobs:
         run: |
           # Publish in dependency order with retry logic
           CRATES=(
-            "sentinel-common"
-            "sentinel-config"
-            "sentinel-agent-protocol"
-            "sentinel-proxy"
+            "zentinel-common"
+            "zentinel-config"
+            "zentinel-agent-protocol"
+            "zentinel-proxy"
           )
 
           NEW_SEMVER="${{ needs.validate.outputs.new-semver }}"
@@ -298,7 +298,7 @@ jobs:
     uses: ./.github/workflows/_docker.yml
     with:
       version: ${{ needs.validate.outputs.calver }}
-      artifact-prefix: sentinel-${{ needs.validate.outputs.calver }}
+      artifact-prefix: zentinel-${{ needs.validate.outputs.calver }}
       push: true
       latest: true
     permissions:
@@ -329,7 +329,7 @@ jobs:
       - name: Download SBOM artifact
         uses: actions/download-artifact@v7
         with:
-          name: sentinel-${{ needs.validate.outputs.calver }}-sbom
+          name: zentinel-${{ needs.validate.outputs.calver }}-sbom
           path: sbom
 
       - name: Prepare release assets
@@ -349,9 +349,9 @@ jobs:
           cd ..
 
           # Copy SBOM files
-          if [ -f "sbom/sentinel-sbom.cdx.json" ]; then
-            cp "sbom/sentinel-sbom.cdx.json" "release/sentinel-${VERSION}-sbom.cdx.json"
-            cp "sbom/sentinel-sbom.spdx.json" "release/sentinel-${VERSION}-sbom.spdx.json"
+          if [ -f "sbom/zentinel-sbom.cdx.json" ]; then
+            cp "sbom/zentinel-sbom.cdx.json" "release/zentinel-${VERSION}-sbom.cdx.json"
+            cp "sbom/zentinel-sbom.spdx.json" "release/zentinel-${VERSION}-sbom.spdx.json"
           fi
 
           echo "Release assets:"
@@ -373,7 +373,7 @@ jobs:
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
           cat << 'HEREDOC' > release_notes.md
-          ## Sentinel $CALVER
+          ## Zentinel $CALVER
 
           **Cargo version:** `$SEMVER`
 
@@ -381,14 +381,14 @@ jobs:
 
           #### From crates.io
           ```bash
-          cargo install sentinel-proxy
+          cargo install zentinel-proxy
           ```
 
           #### From binary
           Download the appropriate archive for your platform and extract:
           ```bash
-          tar -xzf sentinel-$CALVER-linux-amd64.tar.gz
-          sudo mv sentinel /usr/local/bin/
+          tar -xzf zentinel-$CALVER-linux-amd64.tar.gz
+          sudo mv zentinel /usr/local/bin/
           ```
 
           #### Docker
@@ -402,16 +402,16 @@ jobs:
 
           #### Verify a binary
           ```bash
-          cosign verify-blob --bundle sentinel-$CALVER-linux-amd64.tar.gz.bundle \
-            --certificate-identity-regexp "github.com/raskell-io/sentinel" \
+          cosign verify-blob --bundle zentinel-$CALVER-linux-amd64.tar.gz.bundle \
+            --certificate-identity-regexp "github.com/zentinelproxy/zentinel" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            sentinel-$CALVER-linux-amd64.tar.gz
+            zentinel-$CALVER-linux-amd64.tar.gz
           ```
 
           #### Verify the container image
           ```bash
           cosign verify ghcr.io/${{ github.repository }}:$CALVER \
-            --certificate-identity-regexp "github.com/raskell-io/sentinel" \
+            --certificate-identity-regexp "github.com/zentinelproxy/zentinel" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           ```
 
@@ -499,7 +499,7 @@ jobs:
             echo "Fix the build issues and push a new tag." >> $GITHUB_STEP_SUMMARY
           else
             echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
-            echo "- **crates.io**: [sentinel-proxy](https://crates.io/crates/sentinel-proxy)" >> $GITHUB_STEP_SUMMARY
+            echo "- **crates.io**: [zentinel-proxy](https://crates.io/crates/zentinel-proxy)" >> $GITHUB_STEP_SUMMARY
             echo "- **Container**: \`ghcr.io/${{ github.repository }}:${{ needs.validate.outputs.calver }}\`" >> $GITHUB_STEP_SUMMARY
             echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/${{ needs.validate.outputs.calver }}" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

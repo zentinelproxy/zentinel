@@ -1,6 +1,6 @@
 # KDL Configuration Format
 
-Sentinel uses [KDL](https://kdl.dev/) as its primary configuration format. KDL is a document language designed for human readability while being easy to parse.
+Zentinel uses [KDL](https://kdl.dev/) as its primary configuration format. KDL is a document language designed for human readability while being easy to parse.
 
 ## Why KDL?
 
@@ -18,7 +18,7 @@ Nodes are the basic building blocks:
 
 ```kdl
 // Simple node with a value
-server-name "sentinel"
+server-name "zentinel"
 
 // Node with multiple arguments
 target "127.0.0.1" 3000
@@ -67,7 +67,7 @@ server {
 }
 ```
 
-## Sentinel Configuration Structure
+## Zentinel Configuration Structure
 
 ### Top-Level Nodes
 
@@ -146,9 +146,9 @@ server {
     max-connections 10000
     graceful-shutdown-timeout-secs 30
     daemon false
-    pid-file "/var/run/sentinel.pid"
-    user "sentinel"
-    group "sentinel"
+    pid-file "/var/run/zentinel.pid"
+    user "zentinel"
+    group "zentinel"
     trace-id-format "tinyflake"  // or "uuid"
     auto-reload true
 }
@@ -389,7 +389,7 @@ filters {
     // GeoIP filter
     filter "geo-block" {
         type "geo"
-        database-path "/etc/sentinel/GeoLite2-Country.mmdb"
+        database-path "/etc/zentinel/GeoLite2-Country.mmdb"
         action "block"
         countries ["RU" "CN" "KP"]
         on-failure "open"
@@ -456,7 +456,7 @@ waf {
         crs-version "4.0"
         paranoia-level 1
         anomaly-threshold 5
-        custom-rules-dir "/etc/sentinel/waf-rules"
+        custom-rules-dir "/etc/zentinel/waf-rules"
 
         exclusions {
             exclusion {
@@ -499,7 +499,7 @@ observability {
 
         access-log {
             enabled true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             format "json"
             sample-rate 1.0
             include-trace-id true
@@ -507,13 +507,13 @@ observability {
 
         error-log {
             enabled true
-            file "/var/log/sentinel/error.log"
+            file "/var/log/zentinel/error.log"
             level "warn"
         }
 
         audit-log {
             enabled true
-            file "/var/log/sentinel/audit.log"
+            file "/var/log/zentinel/audit.log"
             log-blocked true
             log-waf-events true
         }
@@ -526,7 +526,7 @@ observability {
             }
         }
         sampling-rate 0.01
-        service-name "sentinel"
+        service-name "zentinel"
     }
 }
 ```
@@ -552,7 +552,7 @@ cache {
     lock-timeout-secs 10
 
     // For disk backend
-    disk-path "/var/cache/sentinel"
+    disk-path "/var/cache/zentinel"
     disk-shards 16
 }
 ```
@@ -608,7 +608,7 @@ custom-error-page r#"
 
 ## Including Other Files
 
-While KDL itself doesn't have includes, Sentinel's multi-file loader supports directory-based configuration:
+While KDL itself doesn't have includes, Zentinel's multi-file loader supports directory-based configuration:
 
 ```
 config/

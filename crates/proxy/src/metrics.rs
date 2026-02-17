@@ -1,4 +1,4 @@
-//! Prometheus metrics endpoint for Sentinel proxy.
+//! Prometheus metrics endpoint for Zentinel proxy.
 //!
 //! This module provides:
 //! - An HTTP endpoint for Prometheus to scrape metrics
@@ -7,7 +7,7 @@
 //! - Agent pool metrics from v2 agents
 
 use pingora_http::ResponseHeader;
-use sentinel_agent_protocol::v2::{MetricsCollector, UnifiedMetricsAggregator};
+use zentinel_agent_protocol::v2::{MetricsCollector, UnifiedMetricsAggregator};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -58,7 +58,7 @@ impl MetricsManager {
     /// The `address` field determines which listener serves the metrics
     /// endpoint but is handled at the listener level, not here.
     pub fn from_config(
-        config: &sentinel_config::MetricsConfig,
+        config: &zentinel_config::MetricsConfig,
         service_name: impl Into<String>,
         instance_id: impl Into<String>,
     ) -> Self {
@@ -174,7 +174,7 @@ impl MetricsManager {
         labels.insert("route".to_string(), route.to_string());
 
         self.aggregator.increment_counter(
-            "sentinel_requests_total",
+            "zentinel_requests_total",
             "Total HTTP requests handled by the proxy",
             labels,
             1,
@@ -193,7 +193,7 @@ impl MetricsManager {
         ];
 
         self.aggregator.observe_histogram(
-            "sentinel_request_duration_seconds",
+            "zentinel_request_duration_seconds",
             "HTTP request duration in seconds",
             labels,
             &buckets,
@@ -204,7 +204,7 @@ impl MetricsManager {
     /// Set active connections gauge.
     pub fn set_active_connections(&self, count: f64) {
         self.aggregator.set_gauge(
-            "sentinel_active_connections",
+            "zentinel_active_connections",
             "Number of active client connections",
             HashMap::new(),
             count,
@@ -214,7 +214,7 @@ impl MetricsManager {
     /// Set active requests gauge.
     pub fn set_active_requests(&self, count: f64) {
         self.aggregator.set_gauge(
-            "sentinel_active_requests",
+            "zentinel_active_requests",
             "Number of requests currently being processed",
             HashMap::new(),
             count,
@@ -229,7 +229,7 @@ impl MetricsManager {
         labels.insert("success".to_string(), success.to_string());
 
         self.aggregator.increment_counter(
-            "sentinel_upstream_requests_total",
+            "zentinel_upstream_requests_total",
             "Total requests to upstream servers",
             labels,
             1,
@@ -246,7 +246,7 @@ impl MetricsManager {
         ];
 
         self.aggregator.observe_histogram(
-            "sentinel_upstream_duration_seconds",
+            "zentinel_upstream_duration_seconds",
             "Time spent waiting for upstream response",
             labels,
             &buckets,
@@ -261,7 +261,7 @@ impl MetricsManager {
         labels.insert("decision".to_string(), decision.to_string());
 
         self.aggregator.increment_counter(
-            "sentinel_agent_requests_total",
+            "zentinel_agent_requests_total",
             "Total requests processed by agents",
             labels,
             1,
@@ -276,7 +276,7 @@ impl MetricsManager {
         let buckets = vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0];
 
         self.aggregator.observe_histogram(
-            "sentinel_agent_duration_seconds",
+            "zentinel_agent_duration_seconds",
             "Time spent processing request in agent",
             labels,
             &buckets,
@@ -290,7 +290,7 @@ impl MetricsManager {
         labels.insert("upstream".to_string(), upstream.to_string());
 
         self.aggregator.increment_counter(
-            "sentinel_circuit_breaker_trips_total",
+            "zentinel_circuit_breaker_trips_total",
             "Number of times circuit breaker has tripped",
             labels,
             1,
@@ -303,7 +303,7 @@ impl MetricsManager {
         labels.insert("upstream".to_string(), upstream.to_string());
 
         self.aggregator.set_gauge(
-            "sentinel_circuit_breaker_open",
+            "zentinel_circuit_breaker_open",
             "Whether circuit breaker is open (1) or closed (0)",
             labels,
             if open { 1.0 } else { 0.0 },
@@ -316,7 +316,7 @@ impl MetricsManager {
         labels.insert("route".to_string(), route.to_string());
 
         self.aggregator.increment_counter(
-            "sentinel_rate_limited_total",
+            "zentinel_rate_limited_total",
             "Total requests rate limited",
             labels,
             1,
@@ -332,7 +332,7 @@ impl MetricsManager {
         );
 
         self.aggregator.increment_counter(
-            "sentinel_cache_accesses_total",
+            "zentinel_cache_accesses_total",
             "Total cache accesses",
             labels,
             1,
@@ -342,7 +342,7 @@ impl MetricsManager {
     /// Set cache size.
     pub fn set_cache_size(&self, size_bytes: f64) {
         self.aggregator.set_gauge(
-            "sentinel_cache_size_bytes",
+            "zentinel_cache_size_bytes",
             "Current cache size in bytes",
             HashMap::new(),
             size_bytes,
@@ -402,34 +402,34 @@ impl MetricsResponse {
     }
 }
 
-/// Standard metric names for Sentinel proxy.
+/// Standard metric names for Zentinel proxy.
 pub mod standard {
     /// Total HTTP requests
-    pub const REQUESTS_TOTAL: &str = "sentinel_requests_total";
+    pub const REQUESTS_TOTAL: &str = "zentinel_requests_total";
     /// Request duration histogram
-    pub const REQUEST_DURATION: &str = "sentinel_request_duration_seconds";
+    pub const REQUEST_DURATION: &str = "zentinel_request_duration_seconds";
     /// Active connections gauge
-    pub const ACTIVE_CONNECTIONS: &str = "sentinel_active_connections";
+    pub const ACTIVE_CONNECTIONS: &str = "zentinel_active_connections";
     /// Active requests gauge
-    pub const ACTIVE_REQUESTS: &str = "sentinel_active_requests";
+    pub const ACTIVE_REQUESTS: &str = "zentinel_active_requests";
     /// Upstream requests total
-    pub const UPSTREAM_REQUESTS: &str = "sentinel_upstream_requests_total";
+    pub const UPSTREAM_REQUESTS: &str = "zentinel_upstream_requests_total";
     /// Upstream duration histogram
-    pub const UPSTREAM_DURATION: &str = "sentinel_upstream_duration_seconds";
+    pub const UPSTREAM_DURATION: &str = "zentinel_upstream_duration_seconds";
     /// Agent requests total
-    pub const AGENT_REQUESTS: &str = "sentinel_agent_requests_total";
+    pub const AGENT_REQUESTS: &str = "zentinel_agent_requests_total";
     /// Agent duration histogram
-    pub const AGENT_DURATION: &str = "sentinel_agent_duration_seconds";
+    pub const AGENT_DURATION: &str = "zentinel_agent_duration_seconds";
     /// Circuit breaker trips
-    pub const CIRCUIT_BREAKER_TRIPS: &str = "sentinel_circuit_breaker_trips_total";
+    pub const CIRCUIT_BREAKER_TRIPS: &str = "zentinel_circuit_breaker_trips_total";
     /// Circuit breaker state
-    pub const CIRCUIT_BREAKER_OPEN: &str = "sentinel_circuit_breaker_open";
+    pub const CIRCUIT_BREAKER_OPEN: &str = "zentinel_circuit_breaker_open";
     /// Rate limited requests
-    pub const RATE_LIMITED: &str = "sentinel_rate_limited_total";
+    pub const RATE_LIMITED: &str = "zentinel_rate_limited_total";
     /// Cache accesses
-    pub const CACHE_ACCESSES: &str = "sentinel_cache_accesses_total";
+    pub const CACHE_ACCESSES: &str = "zentinel_cache_accesses_total";
     /// Cache size
-    pub const CACHE_SIZE: &str = "sentinel_cache_size_bytes";
+    pub const CACHE_SIZE: &str = "zentinel_cache_size_bytes";
 }
 
 #[cfg(test)]
@@ -483,9 +483,9 @@ mod tests {
         let response = manager.handle_metrics_request();
         assert_eq!(response.status, 200);
         assert!(response.content_type.contains("text/plain"));
-        assert!(response.body.contains("sentinel_requests_total"));
-        assert!(response.body.contains("sentinel_active_connections"));
-        assert!(response.body.contains("sentinel_info"));
+        assert!(response.body.contains("zentinel_requests_total"));
+        assert!(response.body.contains("zentinel_active_connections"));
+        assert!(response.body.contains("zentinel_info"));
     }
 
     #[test]
@@ -499,13 +499,13 @@ mod tests {
         let response = manager.handle_metrics_request();
         assert!(response
             .body
-            .contains("sentinel_request_duration_seconds_bucket"));
+            .contains("zentinel_request_duration_seconds_bucket"));
         assert!(response
             .body
-            .contains("sentinel_request_duration_seconds_sum"));
+            .contains("zentinel_request_duration_seconds_sum"));
         assert!(response
             .body
-            .contains("sentinel_request_duration_seconds_count"));
+            .contains("zentinel_request_duration_seconds_count"));
         // Verify count is 3 (with labels, the format is {labels} 3)
         assert!(response.body.contains("} 3\n") || response.body.contains(" 3\n"));
     }
@@ -524,8 +524,8 @@ mod tests {
         manager.observe_upstream_duration("backend-1", 0.1);
 
         let response = manager.handle_metrics_request();
-        assert!(response.body.contains("sentinel_upstream_requests_total"));
-        assert!(response.body.contains("sentinel_upstream_duration_seconds"));
+        assert!(response.body.contains("zentinel_upstream_requests_total"));
+        assert!(response.body.contains("zentinel_upstream_duration_seconds"));
     }
 
     #[test]
@@ -536,7 +536,7 @@ mod tests {
         manager.observe_agent_duration("waf", 0.005);
 
         let response = manager.handle_metrics_request();
-        assert!(response.body.contains("sentinel_agent_requests_total"));
-        assert!(response.body.contains("sentinel_agent_duration_seconds"));
+        assert!(response.body.contains("zentinel_agent_requests_total"));
+        assert!(response.body.contains("zentinel_agent_duration_seconds"));
     }
 }

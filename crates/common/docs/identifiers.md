@@ -1,10 +1,10 @@
 # Identifiers & Scoping
 
-Type-safe identifiers and hierarchical scoping for Sentinel configuration.
+Type-safe identifiers and hierarchical scoping for Zentinel configuration.
 
 ## Overview
 
-Sentinel uses distinct types for different identifiers to prevent accidental confusion at compile time. The scoping system enables hierarchical configuration with inheritance.
+Zentinel uses distinct types for different identifiers to prevent accidental confusion at compile time. The scoping system enables hierarchical configuration with inheritance.
 
 ## Identifier Types
 
@@ -13,7 +13,7 @@ Sentinel uses distinct types for different identifiers to prevent accidental con
 Unique identifier for a route in the proxy configuration.
 
 ```rust
-use sentinel_common::RouteId;
+use zentinel_common::RouteId;
 
 let route = RouteId::new("api-v1");
 println!("{}", route.as_str()); // "api-v1"
@@ -24,7 +24,7 @@ println!("{}", route.as_str()); // "api-v1"
 Unique identifier for an upstream pool.
 
 ```rust
-use sentinel_common::UpstreamId;
+use zentinel_common::UpstreamId;
 
 let upstream = UpstreamId::new("backend-cluster");
 ```
@@ -34,7 +34,7 @@ let upstream = UpstreamId::new("backend-cluster");
 Unique identifier for an external processing agent.
 
 ```rust
-use sentinel_common::AgentId;
+use zentinel_common::AgentId;
 
 let agent = AgentId::new("waf-agent");
 ```
@@ -44,7 +44,7 @@ let agent = AgentId::new("waf-agent");
 Request correlation ID for end-to-end tracing (UUID-based).
 
 ```rust
-use sentinel_common::CorrelationId;
+use zentinel_common::CorrelationId;
 
 // Generate new
 let id = CorrelationId::new();
@@ -61,7 +61,7 @@ response.headers.insert("X-Correlation-Id", id.as_str());
 Internal request tracking ID for metrics and debugging.
 
 ```rust
-use sentinel_common::RequestId;
+use zentinel_common::RequestId;
 
 let id = RequestId::new();
 tracing::info!(request_id = %id.as_str(), "Processing request");
@@ -69,7 +69,7 @@ tracing::info!(request_id = %id.as_str(), "Processing request");
 
 ## Scope Hierarchy
 
-Sentinel supports three levels of scope:
+Zentinel supports three levels of scope:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -99,7 +99,7 @@ Sentinel supports three levels of scope:
 ### Scope Enum
 
 ```rust
-use sentinel_common::Scope;
+use zentinel_common::Scope;
 
 // Global scope (visible everywhere)
 let global = Scope::Global;
@@ -146,7 +146,7 @@ Combines a local name with a scope for fully-qualified identification.
 ### Creation
 
 ```rust
-use sentinel_common::{QualifiedId, Scope};
+use zentinel_common::{QualifiedId, Scope};
 
 // Global scope
 let global = QualifiedId::global("timeout-policy");
@@ -211,7 +211,7 @@ Resolution Order (most specific first):
 ### Example
 
 ```rust
-use sentinel_common::{Scope, ScopedRegistry, QualifiedId};
+use zentinel_common::{Scope, ScopedRegistry, QualifiedId};
 
 let registry: ScopedRegistry<Config> = ScopedRegistry::new();
 
@@ -336,7 +336,7 @@ limits.set(
 ### Scoped Metrics
 
 ```rust
-use sentinel_common::ScopedMetrics;
+use zentinel_common::ScopedMetrics;
 
 let metrics = ScopedMetrics::new();
 

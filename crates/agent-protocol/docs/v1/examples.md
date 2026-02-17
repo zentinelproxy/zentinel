@@ -9,7 +9,7 @@ This document provides practical examples and common patterns for implementing a
 A minimal agent that adds a header to all requests. Useful for testing connectivity.
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, HeaderOp, RequestHeadersEvent,
 };
 use async_trait::async_trait;
@@ -34,7 +34,7 @@ impl AgentHandler for EchoAgent {
 Blocks requests matching configured paths or client IPs.
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, AuditMetadata, RequestHeadersEvent,
 };
 use async_trait::async_trait;
@@ -93,7 +93,7 @@ impl AgentHandler for DenylistAgent {
 Validates JWT tokens and adds user identity headers.
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, HeaderOp, RequestHeadersEvent,
 };
 use async_trait::async_trait;
@@ -159,7 +159,7 @@ struct Claims {
 Simple in-memory rate limiter using token bucket.
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, HeaderOp, RequestHeadersEvent,
 };
 use async_trait::async_trait;
@@ -234,7 +234,7 @@ impl AgentHandler for RateLimitAgent {
 Inspects request bodies for sensitive patterns.
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, AuditMetadata, BodyMutation,
     RequestBodyChunkEvent, RequestHeadersEvent,
 };
@@ -331,7 +331,7 @@ impl AgentHandler for BodyInspectionAgent {
 Adds security headers to all responses.
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, HeaderOp, ResponseHeadersEvent,
 };
 use async_trait::async_trait;
@@ -389,7 +389,7 @@ impl AgentHandler for SecurityHeadersAgent {
 Comprehensive request/response logging.
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, RequestCompleteEvent, RequestHeadersEvent,
 };
 use async_trait::async_trait;
@@ -465,7 +465,7 @@ impl AgentHandler for LoggingAgent {
 Detects potential prompt injection attempts for LLM APIs.
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, DetectionSeverity, GuardrailDetection,
     GuardrailInspectEvent, GuardrailInspectionType, GuardrailResponse, TextSpan,
 };
@@ -535,7 +535,7 @@ impl AgentHandler for PromptGuardAgent {
 ### Binary Example
 
 ```rust
-use sentinel_agent_protocol::{AgentServer, DenylistAgent};
+use zentinel_agent_protocol::{AgentServer, DenylistAgent};
 use std::env;
 
 #[tokio::main]
@@ -578,7 +578,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Chain multiple agent behaviors in a single handler:
 
 ```rust
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, HeaderOp, RequestHeadersEvent,
 };
 use async_trait::async_trait;
@@ -623,11 +623,11 @@ For language-specific examples with idiomatic APIs, see the official SDKs:
 
 | Language | Examples |
 |----------|----------|
-| **Python** | [examples/](https://github.com/raskell-io/sentinel-agent-python-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
-| **TypeScript** | [examples/](https://github.com/raskell-io/sentinel-agent-typescript-sdk/tree/main/examples) - Simple agent, configurable agent |
-| **Go** | [examples/](https://github.com/raskell-io/sentinel-agent-go-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
-| **Rust** | [examples/](https://github.com/raskell-io/sentinel-agent-rust-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
-| **Elixir** | [examples/](https://github.com/raskell-io/sentinel-agent-elixir-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
+| **Python** | [examples/](https://github.com/zentinelproxy/zentinel-agent-python-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
+| **TypeScript** | [examples/](https://github.com/zentinelproxy/zentinel-agent-typescript-sdk/tree/main/examples) - Simple agent, configurable agent |
+| **Go** | [examples/](https://github.com/zentinelproxy/zentinel-agent-go-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
+| **Rust** | [examples/](https://github.com/zentinelproxy/zentinel-agent-rust-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
+| **Elixir** | [examples/](https://github.com/zentinelproxy/zentinel-agent-elixir-sdk/tree/main/examples) - Simple agent, configurable agent, body inspection |
 
 Each SDK provides comprehensive documentation at `docs/examples.md` with patterns for:
 - IP-based access control

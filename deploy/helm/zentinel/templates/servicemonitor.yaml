@@ -2,17 +2,17 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "sentinel.fullname" . }}
+  name: {{ include "zentinel.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "sentinel.labels" . | nindent 4 }}
+    {{- include "zentinel.labels" . | nindent 4 }}
     {{- with .Values.monitoring.serviceMonitor.additionalLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
   selector:
     matchLabels:
-      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      {{- include "zentinel.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: proxy
   namespaceSelector:
     matchNames:

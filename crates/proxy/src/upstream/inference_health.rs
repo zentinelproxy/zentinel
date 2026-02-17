@@ -97,7 +97,7 @@ impl InferenceHealthCheck {
         let request = format!(
             "GET {} HTTP/1.1\r\n\
              Host: {}\r\n\
-             User-Agent: Sentinel-HealthCheck/1.0\r\n\
+             User-Agent: Zentinel-HealthCheck/1.0\r\n\
              Accept: application/json\r\n\
              Connection: close\r\n\r\n",
             self.endpoint, addr

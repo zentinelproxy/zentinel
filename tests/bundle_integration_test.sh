@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Sentinel Bundle Integration Tests
+# Zentinel Bundle Integration Tests
 # Tests the bundle CLI commands and agent integration
 #
 # Prerequisites:
@@ -23,7 +23,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Test configuration
-TEST_DIR="/tmp/sentinel-bundle-test-$$"
+TEST_DIR="/tmp/zentinel-bundle-test-$$"
 PROXY_PORT=18080
 ECHO_SOCKET="$TEST_DIR/echo.sock"
 DATA_MASKING_SOCKET="$TEST_DIR/data-masking.sock"
@@ -34,8 +34,8 @@ DATA_MASKING_PID=""
 BACKEND_PID=""
 
 # Binaries
-SENTINEL_BIN="./target/release/sentinel"
-ECHO_AGENT_BIN="./target/release/sentinel-echo-agent"
+ZENTINEL_BIN="./target/release/zentinel"
+ECHO_AGENT_BIN="./target/release/zentinel-echo-agent"
 
 # Test counters
 TESTS_RUN=0
@@ -74,13 +74,13 @@ trap cleanup EXIT INT TERM
 check_prerequisites() {
     log_info "Checking prerequisites..."
 
-    if [[ ! -f "$SENTINEL_BIN" ]]; then
-        echo "Error: Sentinel binary not found. Run: cargo build --release -p sentinel-proxy"
+    if [[ ! -f "$ZENTINEL_BIN" ]]; then
+        echo "Error: Zentinel binary not found. Run: cargo build --release -p zentinel-proxy"
         exit 1
     fi
 
     if [[ ! -f "$ECHO_AGENT_BIN" ]]; then
-        echo "Error: Echo agent binary not found. Run: cargo build --release -p sentinel-echo-agent"
+        echo "Error: Echo agent binary not found. Run: cargo build --release -p zentinel-echo-agent"
         exit 1
     fi
 
@@ -99,9 +99,9 @@ check_prerequisites() {
 test_bundle_status() {
     log_test "bundle status command"
 
-    local output=$("$SENTINEL_BIN" bundle status 2>&1)
+    local output=$("$ZENTINEL_BIN" bundle status 2>&1)
 
-    if echo "$output" | grep -q "Sentinel Bundle Status"; then
+    if echo "$output" | grep -q "Zentinel Bundle Status"; then
         log_success "bundle status shows header"
     else
         log_failure "bundle status missing header"
@@ -137,7 +137,7 @@ test_bundle_status() {
 test_bundle_list() {
     log_test "bundle list command"
 
-    local output=$("$SENTINEL_BIN" bundle list 2>&1)
+    local output=$("$ZENTINEL_BIN" bundle list 2>&1)
 
     if echo "$output" | grep -q "waf"; then
         log_success "bundle list shows waf"
@@ -155,7 +155,7 @@ test_bundle_list() {
 test_bundle_list_verbose() {
     log_test "bundle list --verbose command"
 
-    local output=$("$SENTINEL_BIN" bundle list --verbose 2>&1)
+    local output=$("$ZENTINEL_BIN" bundle list --verbose 2>&1)
 
     if echo "$output" | grep -q "Repository:"; then
         log_success "bundle list --verbose shows repository"
@@ -175,7 +175,7 @@ test_bundle_list_verbose() {
         log_failure "bundle list --verbose missing download URL"
     fi
 
-    if echo "$output" | grep -q "github.com/raskell-io"; then
+    if echo "$output" | grep -q "github.com/zentinelproxy"; then
         log_success "bundle list --verbose has correct GitHub URLs"
     else
         log_failure "bundle list --verbose has incorrect URLs"
@@ -185,7 +185,7 @@ test_bundle_list_verbose() {
 test_bundle_install_dry_run() {
     log_test "bundle install --dry-run command"
 
-    local output=$("$SENTINEL_BIN" bundle install --dry-run 2>&1 || true)
+    local output=$("$ZENTINEL_BIN" bundle install --dry-run 2>&1 || true)
 
     if echo "$output" | grep -qi "dry.run\|would\|preview"; then
         log_success "bundle install --dry-run works"
@@ -339,9 +339,9 @@ start_echo_agent() {
 }
 
 start_proxy() {
-    log_info "Starting Sentinel proxy..."
+    log_info "Starting Zentinel proxy..."
 
-    RUST_LOG=info,sentinel=debug "$SENTINEL_BIN" \
+    RUST_LOG=info,zentinel=debug "$ZENTINEL_BIN" \
         --config "$PROXY_CONFIG" \
         > "$TEST_DIR/proxy.log" 2>&1 &
 
@@ -380,7 +380,7 @@ test_echo_agent_headers() {
 
     local headers=$(curl -sI "http://127.0.0.1:$PROXY_PORT/echo/test" 2>/dev/null)
 
-    # Check for proxy-added headers (Sentinel adds X-Correlation-Id)
+    # Check for proxy-added headers (Zentinel adds X-Correlation-Id)
     if echo "$headers" | grep -qi "X-Correlation-Id"; then
         log_success "Proxy/agent added correlation headers to response"
     else
@@ -462,7 +462,7 @@ test_agent_logs() {
 
 main() {
     echo ""
-    log_section "Sentinel Bundle Integration Tests"
+    log_section "Zentinel Bundle Integration Tests"
 
     check_prerequisites
 

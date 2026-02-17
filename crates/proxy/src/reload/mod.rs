@@ -1,4 +1,4 @@
-//! Configuration hot reload module for Sentinel proxy.
+//! Configuration hot reload module for Zentinel proxy.
 //!
 //! This module implements zero-downtime configuration reloading with validation,
 //! atomic swaps, and rollback support for production reliability.
@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, trace, warn};
 
-use sentinel_common::errors::{SentinelError, SentinelResult};
-use sentinel_config::Config;
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
+use zentinel_config::Config;
 
 use crate::logging::{AuditLogEntry, SharedLogManager};
 use crate::tls::CertificateReloader;
@@ -76,7 +76,7 @@ pub enum ReloadTrigger {
 #[async_trait::async_trait]
 pub trait ConfigValidator: Send + Sync {
     /// Validate configuration before applying
-    async fn validate(&self, config: &Config) -> SentinelResult<()>;
+    async fn validate(&self, config: &Config) -> ZentinelResult<()>;
 
     /// Validator name for logging
     fn name(&self) -> &str;
@@ -86,13 +86,13 @@ pub trait ConfigValidator: Send + Sync {
 #[async_trait::async_trait]
 pub trait ReloadHook: Send + Sync {
     /// Called before reload starts
-    async fn pre_reload(&self, old_config: &Config, new_config: &Config) -> SentinelResult<()>;
+    async fn pre_reload(&self, old_config: &Config, new_config: &Config) -> ZentinelResult<()>;
 
     /// Called after successful reload
     async fn post_reload(&self, old_config: &Config, new_config: &Config);
 
     /// Called on reload failure
-    async fn on_failure(&self, config: &Config, error: &SentinelError);
+    async fn on_failure(&self, config: &Config, error: &ZentinelError);
 
     /// Hook name for logging
     fn name(&self) -> &str;
@@ -154,7 +154,7 @@ impl ConfigManager {
     pub async fn new(
         config_path: impl AsRef<Path>,
         initial_config: Config,
-    ) -> SentinelResult<Self> {
+    ) -> ZentinelResult<Self> {
         let config_path = config_path.as_ref().to_path_buf();
         let (reload_tx, _) = broadcast::channel(100);
 
@@ -198,7 +198,7 @@ impl ConfigManager {
     ///
     /// When enabled, the proxy will automatically reload configuration
     /// when the config file is modified.
-    pub async fn start_watching(&self) -> SentinelResult<()> {
+    pub async fn start_watching(&self) -> ZentinelResult<()> {
         // Check if already watching
         if self.watcher.read().await.is_some() {
             warn!("File watcher already active, skipping");
@@ -216,7 +216,7 @@ impl ConfigManager {
                     let _ = tx.blocking_send(event);
                 }
             })
-            .map_err(|e| SentinelError::Config {
+            .map_err(|e| ZentinelError::Config {
                 message: format!("Failed to create file watcher: {}", e),
                 source: None,
             })?;
@@ -224,7 +224,7 @@ impl ConfigManager {
         // Watch config file
         watcher
             .watch(&config_path, RecursiveMode::NonRecursive)
-            .map_err(|e| SentinelError::Config {
+            .map_err(|e| ZentinelError::Config {
                 message: format!("Failed to watch config file: {}", e),
                 source: None,
             })?;
@@ -258,7 +258,7 @@ impl ConfigManager {
     }
 
     /// Reload configuration
-    pub async fn reload(&self, trigger: ReloadTrigger) -> SentinelResult<()> {
+    pub async fn reload(&self, trigger: ReloadTrigger) -> ZentinelResult<()> {
         let start = Instant::now();
         let reload_num = self
             .stats
@@ -312,7 +312,7 @@ impl ConfigManager {
                     error: error_msg.clone(),
                 });
 
-                return Err(SentinelError::Config {
+                return Err(ZentinelError::Config {
                     message: error_msg,
                     source: None,
                 });
@@ -446,7 +446,7 @@ impl ConfigManager {
     }
 
     /// Rollback to previous configuration
-    pub async fn rollback(&self, reason: String) -> SentinelResult<()> {
+    pub async fn rollback(&self, reason: String) -> ZentinelResult<()> {
         info!(
             reason = %reason,
             "Starting configuration rollback"
@@ -493,7 +493,7 @@ impl ConfigManager {
             Ok(())
         } else {
             warn!("No previous configuration available for rollback");
-            Err(SentinelError::Config {
+            Err(ZentinelError::Config {
                 message: "No previous configuration available".to_string(),
                 source: None,
             })
@@ -501,7 +501,7 @@ impl ConfigManager {
     }
 
     /// Validate configuration
-    async fn validate_config(&self, config: &Config) -> SentinelResult<()> {
+    async fn validate_config(&self, config: &Config) -> ZentinelResult<()> {
         trace!(
             route_count = config.routes.len(),
             upstream_count = config.upstreams.len(),
@@ -595,7 +595,7 @@ impl AuditReloadHook {
 
 #[async_trait::async_trait]
 impl ReloadHook for AuditReloadHook {
-    async fn pre_reload(&self, old_config: &Config, new_config: &Config) -> SentinelResult<()> {
+    async fn pre_reload(&self, old_config: &Config, new_config: &Config) -> ZentinelResult<()> {
         // Log that reload is starting
         let trace_id = uuid::Uuid::new_v4().to_string();
         let audit_entry = AuditLogEntry::config_change(
@@ -633,7 +633,7 @@ impl ReloadHook for AuditReloadHook {
         self.log_manager.log_audit(&audit_entry);
     }
 
-    async fn on_failure(&self, config: &Config, error: &SentinelError) {
+    async fn on_failure(&self, config: &Config, error: &ZentinelError) {
         // Log failed reload
         let trace_id = uuid::Uuid::new_v4().to_string();
         let audit_entry = AuditLogEntry::config_change(

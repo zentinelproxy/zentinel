@@ -23,7 +23,7 @@ use super::builder::{ConfigBuilder, PartialConfig};
 /// # Example
 ///
 /// ```ignore
-/// let mut loader = MultiFileLoader::new("/etc/sentinel/conf.d")
+/// let mut loader = MultiFileLoader::new("/etc/zentinel/conf.d")
 ///     .with_include("*.kdl")
 ///     .with_exclude("*.example.kdl")
 ///     .recursive(true);

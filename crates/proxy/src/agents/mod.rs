@@ -1,4 +1,4 @@
-//! Agent integration module for Sentinel proxy.
+//! Agent integration module for Zentinel proxy.
 //!
 //! This module provides integration with external processing agents for WAF,
 //! auth, rate limiting, and custom logic. It implements the SPOE-inspired
@@ -28,7 +28,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use sentinel_proxy::agents::{AgentManager, AgentCallContext};
+//! use zentinel_proxy::agents::{AgentManager, AgentCallContext};
 //!
 //! // Each agent manages its own concurrency limit (default: 100)
 //! let manager = AgentManager::new(agent_configs).await?;
@@ -59,9 +59,9 @@ pub use pool::AgentConnectionPool;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_agent_protocol::HeaderOp;
-    use sentinel_common::types::CircuitBreakerConfig;
-    use sentinel_common::CircuitBreaker;
+    use zentinel_agent_protocol::HeaderOp;
+    use zentinel_common::types::CircuitBreakerConfig;
+    use zentinel_common::CircuitBreaker;
     use std::time::Duration;
 
     #[tokio::test]
@@ -103,7 +103,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_per_agent_queue_isolation_config() {
-        use sentinel_config::{
+        use zentinel_config::{
             AgentConfig, AgentEvent, AgentProtocolVersion, AgentTransport, AgentType,
         };
         use std::path::PathBuf;
@@ -159,7 +159,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_v2_agent_config() {
-        use sentinel_config::{
+        use zentinel_config::{
             AgentConfig, AgentEvent, AgentPoolConfig, AgentProtocolVersion, AgentTransport,
             AgentType, LoadBalanceStrategy,
         };

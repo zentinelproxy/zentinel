@@ -20,9 +20,9 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tracing::{debug, trace, warn};
 
-use sentinel_common::ids::Scope;
-use sentinel_common::limits::Limits;
-use sentinel_config::FlattenedConfig;
+use zentinel_common::ids::Scope;
+use zentinel_common::limits::Limits;
+use zentinel_config::FlattenedConfig;
 
 use crate::rate_limit::{
     HeaderAccessor, RateLimitConfig, RateLimitManager, RateLimitResult, RateLimiterPool,

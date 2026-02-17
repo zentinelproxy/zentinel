@@ -1,10 +1,10 @@
 # WASM Runtime Documentation
 
-The `sentinel-wasm-runtime` crate provides a sandboxed WebAssembly runtime for executing agents in-process using the Wasmtime Component Model.
+The `zentinel-wasm-runtime` crate provides a sandboxed WebAssembly runtime for executing agents in-process using the Wasmtime Component Model.
 
 ## Overview
 
-WASM agents offer lower latency than external agents (~10-50μs vs ~40-50μs) while maintaining crash isolation through WebAssembly's sandboxing. They run in the same process as Sentinel but cannot access memory or resources outside their sandbox.
+WASM agents offer lower latency than external agents (~10-50μs vs ~40-50μs) while maintaining crash isolation through WebAssembly's sandboxing. They run in the same process as Zentinel but cannot access memory or resources outside their sandbox.
 
 ## When to Use WASM Agents
 
@@ -23,7 +23,7 @@ WASM agents offer lower latency than external agents (~10-50μs vs ~40-50μs) wh
 ## Quick Start
 
 ```rust
-use sentinel_wasm_runtime::{WasmAgentRuntime, WasmAgentConfig};
+use zentinel_wasm_runtime::{WasmAgentRuntime, WasmAgentConfig};
 
 // Create runtime with default configuration
 let config = WasmAgentConfig::default();

@@ -1,4 +1,4 @@
-//! Route matching and selection module for Sentinel proxy
+//! Route matching and selection module for Zentinel proxy
 //!
 //! This module implements the routing logic for matching incoming requests
 //! to configured routes based on various criteria (path, host, headers, etc.)
@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, trace, warn};
 
-use sentinel_common::types::Priority;
-use sentinel_common::RouteId;
-use sentinel_config::{MatchCondition, RouteConfig, RoutePolicies};
+use zentinel_common::types::Priority;
+use zentinel_common::RouteId;
+use zentinel_config::{MatchCondition, RouteConfig, RoutePolicies};
 
 /// Route matcher for efficient route selection
 pub struct RouteMatcher {
@@ -714,8 +714,8 @@ impl std::fmt::Debug for CompiledMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_common::types::Priority;
-    use sentinel_config::{MatchCondition, RouteConfig};
+    use zentinel_common::types::Priority;
+    use zentinel_config::{MatchCondition, RouteConfig};
 
     fn create_test_route(id: &str, matches: Vec<MatchCondition>) -> RouteConfig {
         RouteConfig {
@@ -723,7 +723,7 @@ mod tests {
             priority: Priority::Normal,
             matches,
             upstream: Some("test_upstream".to_string()),
-            service_type: sentinel_config::ServiceType::Web,
+            service_type: zentinel_config::ServiceType::Web,
             policies: Default::default(),
             filters: vec![],
             builtin_handler: None,

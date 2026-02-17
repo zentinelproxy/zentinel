@@ -4,7 +4,7 @@ Request rate limiting and failure isolation mechanisms.
 
 ## Rate Limiting Overview
 
-Sentinel provides multiple rate limiting backends:
+Zentinel provides multiple rate limiting backends:
 
 | Backend | Use Case | Consistency | Performance |
 |---------|----------|-------------|-------------|
@@ -413,30 +413,30 @@ Content-Type: application/json
 
 ```
 # Request counts
-sentinel_rate_limit_allowed_total{route="api", key="client-ip"} 100000
-sentinel_rate_limit_limited_total{route="api", key="client-ip"} 500
+zentinel_rate_limit_allowed_total{route="api", key="client-ip"} 100000
+zentinel_rate_limit_limited_total{route="api", key="client-ip"} 500
 
 # Current state
-sentinel_rate_limit_current_requests{route="api"} 75
+zentinel_rate_limit_current_requests{route="api"} 75
 
 # Backend health (for distributed)
-sentinel_rate_limit_backend_errors_total{backend="redis"} 5
-sentinel_rate_limit_backend_latency_ms{backend="redis", quantile="0.99"} 2.5
+zentinel_rate_limit_backend_errors_total{backend="redis"} 5
+zentinel_rate_limit_backend_latency_ms{backend="redis", quantile="0.99"} 2.5
 ```
 
 ### Circuit Breaker Metrics
 
 ```
 # State (0=closed, 1=open, 2=half-open)
-sentinel_circuit_breaker_state{upstream="backend", scope="production"} 0
+zentinel_circuit_breaker_state{upstream="backend", scope="production"} 0
 
 # Transitions
-sentinel_circuit_breaker_opens_total{upstream="backend"} 3
-sentinel_circuit_breaker_closes_total{upstream="backend"} 2
+zentinel_circuit_breaker_opens_total{upstream="backend"} 3
+zentinel_circuit_breaker_closes_total{upstream="backend"} 2
 
 # Current counts
-sentinel_circuit_breaker_failures{upstream="backend"} 2
-sentinel_circuit_breaker_successes{upstream="backend"} 5
+zentinel_circuit_breaker_failures{upstream="backend"} 2
+zentinel_circuit_breaker_successes{upstream="backend"} 5
 ```
 
 ## Best Practices
@@ -550,13 +550,13 @@ groups:
   - name: rate_limiting
     rules:
       - alert: HighRateLimitRejections
-        expr: rate(sentinel_rate_limit_limited_total[5m]) > 100
+        expr: rate(zentinel_rate_limit_limited_total[5m]) > 100
         for: 5m
         annotations:
           summary: "High rate limit rejections"
 
       - alert: CircuitBreakerOpen
-        expr: sentinel_circuit_breaker_state == 1
+        expr: zentinel_circuit_breaker_state == 1
         for: 1m
         annotations:
           summary: "Circuit breaker open"
@@ -564,7 +564,7 @@ groups:
 
 ## Comparison with Other Proxies
 
-| Feature | Sentinel | Nginx | Envoy | HAProxy |
+| Feature | Zentinel | Nginx | Envoy | HAProxy |
 |---------|----------|-------|-------|---------|
 | Local rate limit | Yes | Yes | Yes | Yes |
 | Distributed (Redis) | Yes | No | Yes | No |

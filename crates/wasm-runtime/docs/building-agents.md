@@ -1,12 +1,12 @@
 # Building WASM Agents
 
-This guide covers how to build WebAssembly agents for Sentinel.
+This guide covers how to build WebAssembly agents for Zentinel.
 
 ## Prerequisites
 
 - Rust 1.92+ with `wasm32-wasip2` target
 - `wasm-tools` for component creation
-- The Sentinel WIT interface file
+- The Zentinel WIT interface file
 
 ```bash
 # Add WASM target
@@ -21,15 +21,15 @@ cargo install wasm-tools
 ### 1. Create a New Crate
 
 ```bash
-cargo new --lib my-sentinel-agent
-cd my-sentinel-agent
+cargo new --lib my-zentinel-agent
+cd my-zentinel-agent
 ```
 
 ### 2. Configure Cargo.toml
 
 ```toml
 [package]
-name = "my-sentinel-agent"
+name = "my-zentinel-agent"
 version = "0.1.0"
 edition = "2021"
 
@@ -52,11 +52,11 @@ strip = true         # Strip symbols
 
 ### 3. Add the WIT File
 
-Copy `sentinel-agent.wit` to your project:
+Copy `zentinel-agent.wit` to your project:
 
 ```bash
 mkdir wit
-cp /path/to/sentinel/crates/wasm-runtime/wit/sentinel-agent.wit wit/
+cp /path/to/zentinel/crates/wasm-runtime/wit/zentinel-agent.wit wit/
 ```
 
 ### 4. Generate Bindings
@@ -65,7 +65,7 @@ In `src/lib.rs`:
 
 ```rust
 wit_bindgen::generate!({
-    path: "wit/sentinel-agent.wit",
+    path: "wit/zentinel-agent.wit",
     world: "agent",
 });
 ```
@@ -76,12 +76,12 @@ wit_bindgen::generate!({
 
 ```rust
 wit_bindgen::generate!({
-    path: "wit/sentinel-agent.wit",
+    path: "wit/zentinel-agent.wit",
     world: "agent",
 });
 
-use exports::sentinel::agent::{handler, lifecycle};
-use sentinel::agent::types::*;
+use exports::zentinel::agent::{handler, lifecycle};
+use zentinel::agent::types::*;
 
 struct MyAgent;
 
@@ -181,7 +181,7 @@ If your toolchain doesn't produce a component directly:
 
 ```bash
 wasm-tools component new \
-    target/wasm32-wasip2/release/my_sentinel_agent.wasm \
+    target/wasm32-wasip2/release/my_zentinel_agent.wasm \
     -o my-agent.wasm
 ```
 
@@ -315,10 +315,10 @@ mod tests {
 
 ### Integration Testing
 
-Use Sentinel's test harness:
+Use Zentinel's test harness:
 
 ```rust
-use sentinel_wasm_runtime::{WasmAgentRuntime, WasmAgentConfig};
+use zentinel_wasm_runtime::{WasmAgentRuntime, WasmAgentConfig};
 
 #[test]
 fn test_agent_integration() {
@@ -350,12 +350,12 @@ wasm-opt -Os my-agent.wasm -o my-agent.opt.wasm
 ls -lh my-agent.opt.wasm
 ```
 
-### 2. Deploy to Sentinel
+### 2. Deploy to Zentinel
 
 ```kdl
 agents {
     wasm-agent "my-agent" {
-        component "/opt/sentinel/agents/my-agent.opt.wasm"
+        component "/opt/zentinel/agents/my-agent.opt.wasm"
         config {
             allowed-ips "192.168.0.0/16" "10.0.0.0/8"
         }

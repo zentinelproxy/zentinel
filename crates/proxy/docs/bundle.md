@@ -1,6 +1,6 @@
 # Bundle Command
 
-The `sentinel bundle` command manages the installation of bundled agents - a curated set of agents that are tested to work together with a specific version of Sentinel.
+The `zentinel bundle` command manages the installation of bundled agents - a curated set of agents that are tested to work together with a specific version of Zentinel.
 
 ## Overview
 
@@ -14,43 +14,43 @@ Instead of manually downloading and configuring each agent, the bundle command:
 ## Quick Start
 
 ```bash
-# Install Sentinel first
-curl -fsSL https://getsentinel.raskell.io | sh
+# Install Zentinel first
+curl -fsSL https://getzentinelproxy.io | sh
 
 # Install all bundled agents
-sudo sentinel bundle install
+sudo zentinel bundle install
 
 # Check what's installed
-sentinel bundle status
+zentinel bundle status
 
 # Start everything
-sudo systemctl start sentinel.target
+sudo systemctl start zentinel.target
 ```
 
 ## Commands
 
-### `sentinel bundle install`
+### `zentinel bundle install`
 
 Downloads and installs bundled agents.
 
 ```bash
 # Install all agents
-sentinel bundle install
+zentinel bundle install
 
 # Install a specific agent
-sentinel bundle install waf
+zentinel bundle install waf
 
 # Preview without installing
-sentinel bundle install --dry-run
+zentinel bundle install --dry-run
 
 # Force reinstall
-sentinel bundle install --force
+zentinel bundle install --force
 
 # Include systemd services
-sentinel bundle install --systemd
+zentinel bundle install --systemd
 
 # Custom installation prefix
-sentinel bundle install --prefix /opt/sentinel
+zentinel bundle install --prefix /opt/zentinel
 ```
 
 **Options:**
@@ -63,18 +63,18 @@ sentinel bundle install --prefix /opt/sentinel
 | `--prefix PATH` | Custom installation prefix |
 | `--skip-verify` | Skip SHA256 checksum verification |
 
-### `sentinel bundle status`
+### `zentinel bundle status`
 
 Shows the installation status of all bundled agents.
 
 ```bash
-sentinel bundle status
+zentinel bundle status
 ```
 
 Example output:
 
 ```
-Sentinel Bundle Status
+Zentinel Bundle Status
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Bundle version: 26.01_1
 Install path:   /usr/local/bin
@@ -88,40 +88,40 @@ waf             -            0.2.0        ✗ not installed
 Total: 3 | Up to date: 2 | Outdated: 0 | Not installed: 1
 ```
 
-### `sentinel bundle list`
+### `zentinel bundle list`
 
 Lists available agents in the bundle.
 
 ```bash
-sentinel bundle list
-sentinel bundle list --verbose  # Show download URLs
+zentinel bundle list
+zentinel bundle list --verbose  # Show download URLs
 ```
 
-### `sentinel bundle uninstall`
+### `zentinel bundle uninstall`
 
 Removes installed agents.
 
 ```bash
 # Uninstall all agents
-sentinel bundle uninstall
+zentinel bundle uninstall
 
 # Uninstall a specific agent
-sentinel bundle uninstall waf
+zentinel bundle uninstall waf
 
 # Preview
-sentinel bundle uninstall --dry-run
+zentinel bundle uninstall --dry-run
 ```
 
-### `sentinel bundle update`
+### `zentinel bundle update`
 
 Checks for available updates.
 
 ```bash
 # Check for updates
-sentinel bundle update
+zentinel bundle update
 
 # Show and apply updates
-sentinel bundle update --apply
+zentinel bundle update --apply
 ```
 
 ## Bundled Agents
@@ -137,14 +137,14 @@ The bundle includes agents that cover ~80% of production use cases:
 ## Installation Paths
 
 **System-wide (requires root):**
-- Binaries: `/usr/local/bin/sentinel-{agent}-agent`
-- Configs: `/etc/sentinel/agents/{agent}.yaml`
-- Systemd: `/etc/systemd/system/sentinel-{agent}.service`
+- Binaries: `/usr/local/bin/zentinel-{agent}-agent`
+- Configs: `/etc/zentinel/agents/{agent}.yaml`
+- Systemd: `/etc/systemd/system/zentinel-{agent}.service`
 
 **User-local:**
-- Binaries: `~/.local/bin/sentinel-{agent}-agent`
-- Configs: `~/.config/sentinel/agents/{agent}.yaml`
-- Systemd: `~/.config/systemd/user/sentinel-{agent}.service`
+- Binaries: `~/.local/bin/zentinel-{agent}-agent`
+- Configs: `~/.config/zentinel/agents/{agent}.yaml`
+- Systemd: `~/.config/systemd/user/zentinel-{agent}.service`
 
 The command automatically detects whether to use system-wide or user-local paths based on permissions.
 
@@ -162,33 +162,33 @@ ratelimit = "0.2.0"
 denylist = "0.2.0"
 
 [repositories]
-waf = "raskell-io/sentinel-agent-waf"
-ratelimit = "raskell-io/sentinel-agent-ratelimit"
-denylist = "raskell-io/sentinel-agent-denylist"
+waf = "zentinelproxy/zentinel-agent-waf"
+ratelimit = "zentinelproxy/zentinel-agent-ratelimit"
+denylist = "zentinelproxy/zentinel-agent-denylist"
 ```
 
-The lock file is embedded in the Sentinel binary at build time, ensuring reproducible installations.
+The lock file is embedded in the Zentinel binary at build time, ensuring reproducible installations.
 
 ## Configuration
 
-After installation, configure agents in your `sentinel.kdl`:
+After installation, configure agents in your `zentinel.kdl`:
 
 ```kdl
 agents {
     agent "waf" {
-        endpoint "unix:///var/run/sentinel/waf.sock"
+        endpoint "unix:///var/run/zentinel/waf.sock"
         timeout-ms 100
         failure-mode "open"
     }
 
     agent "ratelimit" {
-        endpoint "unix:///var/run/sentinel/ratelimit.sock"
+        endpoint "unix:///var/run/zentinel/ratelimit.sock"
         timeout-ms 50
         failure-mode "open"
     }
 
     agent "denylist" {
-        endpoint "unix:///var/run/sentinel/denylist.sock"
+        endpoint "unix:///var/run/zentinel/denylist.sock"
         timeout-ms 20
         failure-mode "open"
     }
@@ -215,26 +215,26 @@ With `--systemd`, the command installs service files and a target:
 
 ```bash
 # Install with systemd
-sudo sentinel bundle install --systemd
+sudo zentinel bundle install --systemd
 
 # Reload systemd
 sudo systemctl daemon-reload
 
 # Enable and start all services
-sudo systemctl enable sentinel.target
-sudo systemctl start sentinel.target
+sudo systemctl enable zentinel.target
+sudo systemctl start zentinel.target
 
 # Check status
-sudo systemctl status sentinel.target
+sudo systemctl status zentinel.target
 ```
 
-The `sentinel.target` starts the proxy and all agent services together.
+The `zentinel.target` starts the proxy and all agent services together.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    sentinel bundle                       │
+│                    zentinel bundle                       │
 │                                                         │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐ │
 │  │   lock.rs   │───▶│  fetch.rs   │───▶│ install.rs  │ │
@@ -244,7 +244,7 @@ The `sentinel.target` starts the proxy and all agent services together.
 │         │                  │                  │         │
 │         ▼                  ▼                  ▼         │
 │  bundle-versions     GitHub Releases    /usr/local/bin  │
-│      .lock           (per agent)        /etc/sentinel   │
+│      .lock           (per agent)        /etc/zentinel   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -255,13 +255,13 @@ The `sentinel.target` starts the proxy and all agent services together.
 Run with `sudo` for system-wide installation:
 
 ```bash
-sudo sentinel bundle install
+sudo zentinel bundle install
 ```
 
 Or use user-local paths:
 
 ```bash
-sentinel bundle install --prefix ~/.local
+zentinel bundle install --prefix ~/.local
 ```
 
 ### Download failed
@@ -269,7 +269,7 @@ sentinel bundle install --prefix ~/.local
 Check network connectivity and verify the agent release exists:
 
 ```bash
-sentinel bundle list --verbose  # Shows download URLs
+zentinel bundle list --verbose  # Shows download URLs
 ```
 
 ### Agent won't start
@@ -277,13 +277,13 @@ sentinel bundle list --verbose  # Shows download URLs
 Check logs:
 
 ```bash
-journalctl -u sentinel-waf -f
+journalctl -u zentinel-waf -f
 ```
 
 Verify socket permissions:
 
 ```bash
-ls -la /var/run/sentinel/
+ls -la /var/run/zentinel/
 ```
 
 ### Version mismatch
@@ -291,11 +291,11 @@ ls -la /var/run/sentinel/
 Force reinstall:
 
 ```bash
-sudo sentinel bundle install --force
+sudo zentinel bundle install --force
 ```
 
 ## See Also
 
 - [Agent Protocol](agents.md) - How agents communicate with the proxy
 - [Configuration Reference](../../../config/docs/agents.md) - Agent configuration options
-- [Deployment Guide](https://sentinel.raskell.io/docs/deployment/sentinel-stack) - Full stack deployment
+- [Deployment Guide](https://zentinelproxy.io/docs/deployment/zentinel-stack) - Full stack deployment

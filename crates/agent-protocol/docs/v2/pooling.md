@@ -48,7 +48,7 @@ The `AgentPool` maintains multiple connections per agent for:
 ### Basic Setup
 
 ```rust
-use sentinel_agent_protocol::v2::{AgentPool, AgentPoolConfig, LoadBalanceStrategy};
+use zentinel_agent_protocol::v2::{AgentPool, AgentPoolConfig, LoadBalanceStrategy};
 use std::time::Duration;
 
 let config = AgentPoolConfig {
@@ -671,7 +671,7 @@ The pool supports configurable flow control behavior when an agent signals it ca
 ### Configuration
 
 ```rust
-use sentinel_agent_protocol::v2::{AgentPoolConfig, FlowControlMode};
+use zentinel_agent_protocol::v2::{AgentPoolConfig, FlowControlMode};
 
 let config = AgentPoolConfig {
     flow_control_mode: FlowControlMode::FailClosed, // Default

@@ -1,6 +1,6 @@
 //! TinyFlake: Operator-friendly Trace ID Generation
 //!
-//! TinyFlake is Sentinel's default trace ID format, designed for operators who need to
+//! TinyFlake is Zentinel's default trace ID format, designed for operators who need to
 //! copy, paste, and correlate request IDs across logs, dashboards, and support tickets.
 //!
 //! # Format
@@ -45,7 +45,7 @@
 //!
 //! # Configuration
 //!
-//! In `sentinel.kdl`:
+//! In `zentinel.kdl`:
 //!
 //! ```kdl
 //! server {
@@ -56,7 +56,7 @@
 //! # Examples
 //!
 //! ```
-//! use sentinel_proxy::trace_id::{generate_tinyflake, generate_uuid, generate_for_format, TraceIdFormat};
+//! use zentinel_proxy::trace_id::{generate_tinyflake, generate_uuid, generate_for_format, TraceIdFormat};
 //!
 //! // Generate TinyFlake (default)
 //! let id = generate_tinyflake();
@@ -82,8 +82,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Re-export TraceIdFormat from sentinel_common for convenience
-pub use sentinel_common::TraceIdFormat;
+// Re-export TraceIdFormat from zentinel_common for convenience
+pub use zentinel_common::TraceIdFormat;
 
 /// Generate a trace ID using the specified format
 #[inline]
@@ -126,7 +126,7 @@ const TIME_MODULO: u64 = 195_112;
 /// # Example
 ///
 /// ```
-/// use sentinel_proxy::trace_id::generate_tinyflake;
+/// use zentinel_proxy::trace_id::generate_tinyflake;
 ///
 /// let id = generate_tinyflake();
 /// assert_eq!(id.len(), 11);
@@ -189,7 +189,7 @@ fn encode_base58(mut value: usize, width: usize, output: &mut String) {
 /// # Example
 ///
 /// ```
-/// use sentinel_proxy::trace_id::generate_uuid;
+/// use zentinel_proxy::trace_id::generate_uuid;
 ///
 /// let id = generate_uuid();
 /// assert_eq!(id.len(), 36);

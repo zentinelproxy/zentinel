@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Sentinel Chaos Test Runner
+# Zentinel Chaos Test Runner
 #
-# Main orchestrator for running chaos tests against Sentinel.
+# Main orchestrator for running chaos tests against Zentinel.
 #
 # Usage:
 #   ./run-chaos-test.sh [options]
@@ -98,7 +98,7 @@ log_warn() {
 
 show_help() {
     cat << EOF
-Sentinel Chaos Test Runner
+Zentinel Chaos Test Runner
 
 Usage:
   ./run-chaos-test.sh [options]
@@ -395,7 +395,7 @@ main() {
         SCENARIOS_TO_RUN=("${QUICK_SCENARIOS[@]}")
     fi
 
-    log_info "Sentinel Chaos Test Runner"
+    log_info "Zentinel Chaos Test Runner"
     log_info "Scenarios to run: ${#SCENARIOS_TO_RUN[@]}"
     log_info "Output directory: ${OUTPUT_DIR}"
 

@@ -14,10 +14,10 @@ NC='\033[0m' # No Color
 PROXY_PORT=${PROXY_PORT:-8080}
 PROXY_HOST=${PROXY_HOST:-localhost}
 BACKEND_PORT=${BACKEND_PORT:-8081}
-WAF_CONFIG=${WAF_CONFIG:-/tmp/sentinel-test-waf.yaml}
-WAF_SOCKET=${WAF_SOCKET:-/tmp/sentinel-test-waf.sock}
+WAF_CONFIG=${WAF_CONFIG:-/tmp/zentinel-test-waf.yaml}
+WAF_SOCKET=${WAF_SOCKET:-/tmp/zentinel-test-waf.sock}
 WAF_METRICS_PORT=${WAF_METRICS_PORT:-9094}
-AUDIT_LOG_DIR=${AUDIT_LOG_DIR:-/tmp/sentinel-waf-audit}
+AUDIT_LOG_DIR=${AUDIT_LOG_DIR:-/tmp/zentinel-waf-audit}
 TEST_DURATION=${TEST_DURATION:-10}
 
 # Test counters
@@ -223,7 +223,7 @@ EOF
 
 # Create proxy configuration with WAF
 create_proxy_config() {
-    cat > /tmp/sentinel-test-config.kdl << EOF
+    cat > /tmp/zentinel-test-config.kdl << EOF
 listener "http" {
     address "0.0.0.0:$PROXY_PORT"
     protocol "http"
@@ -321,7 +321,7 @@ start_waf() {
     echo -e "${BLUE}Building WAF agent...${NC}"
 
     # Build in standalone mode for testing
-    if ! cargo build --release -p sentinel-waf-agent --features standalone 2>/dev/null; then
+    if ! cargo build --release -p zentinel-waf-agent --features standalone 2>/dev/null; then
         echo -e "${YELLOW}Warning: Failed to build WAF agent, using mock${NC}"
         # Create a mock WAF agent for testing
         cat > /tmp/mock-waf-agent.py << 'MOCK_EOF'
@@ -330,7 +330,7 @@ import os
 import json
 import struct
 
-socket_path = os.environ.get('WAF_SOCKET', '/tmp/sentinel-test-waf.sock')
+socket_path = os.environ.get('WAF_SOCKET', '/tmp/zentinel-test-waf.sock')
 
 if os.path.exists(socket_path):
     os.unlink(socket_path)
@@ -402,7 +402,7 @@ MOCK_EOF
     else
         echo -e "${BLUE}Starting WAF agent...${NC}"
 
-        WAF_CONFIG=$WAF_CONFIG target/release/sentinel-waf-agent &
+        WAF_CONFIG=$WAF_CONFIG target/release/zentinel-waf-agent &
         WAF_PID=$!
     fi
 
@@ -412,9 +412,9 @@ MOCK_EOF
 
 # Start proxy
 start_proxy() {
-    echo -e "${BLUE}Starting Sentinel proxy...${NC}"
+    echo -e "${BLUE}Starting Zentinel proxy...${NC}"
 
-    target/release/sentinel -c /tmp/sentinel-test-config.kdl &
+    target/release/zentinel -c /tmp/zentinel-test-config.kdl &
     PROXY_PID=$!
 
     wait_for_port $PROXY_PORT || return 1
@@ -783,11 +783,11 @@ test_waf_fail_open() {
 # Main test execution
 main() {
     echo -e "${BLUE}===========================================${NC}"
-    echo -e "${BLUE}Sentinel WAF Integration Tests${NC}"
+    echo -e "${BLUE}Zentinel WAF Integration Tests${NC}"
     echo -e "${BLUE}===========================================${NC}"
 
     # Build the project
-    echo -e "\n${BLUE}Building Sentinel...${NC}"
+    echo -e "\n${BLUE}Building Zentinel...${NC}"
     if ! cargo build --release 2>/dev/null; then
         echo -e "${RED}Failed to build project${NC}"
         exit 1

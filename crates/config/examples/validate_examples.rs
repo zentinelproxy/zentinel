@@ -1,8 +1,8 @@
 //! Validate all example KDL configuration files
 //!
-//! Run with: cargo run -p sentinel-config --example validate_examples
+//! Run with: cargo run -p zentinel-config --example validate_examples
 
-use sentinel_config::Config;
+use zentinel_config::Config;
 
 fn main() {
     let examples = [

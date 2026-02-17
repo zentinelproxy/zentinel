@@ -2,10 +2,10 @@
 # TLS SNI Integration Tests
 #
 # Tests Server Name Indication (SNI) certificate selection
-# using a running Sentinel instance with HTTPS configured.
+# using a running Zentinel instance with HTTPS configured.
 #
 # Prerequisites:
-# - Sentinel running with TLS configured
+# - Zentinel running with TLS configured
 # - Test certificates from tests/fixtures/tls/
 # - curl with SNI support
 #

@@ -36,10 +36,10 @@ test_baseline() {
 
     # Check healthy backends metric
     local healthy
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
     log_info "Healthy backends (primary): ${healthy:-unknown}"
 
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"with-failover\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"with-failover\"")
     log_info "Healthy backends (failover pool): ${healthy:-unknown}"
 }
 
@@ -89,7 +89,7 @@ test_health_metrics_update() {
 
     # Check that healthy count decreased
     local healthy
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
     if [[ -n "$healthy" && "$healthy" == "0" ]]; then
         log_pass "Primary upstream shows 0 healthy backends"
     else
@@ -97,7 +97,7 @@ test_health_metrics_update() {
     fi
 
     # Failover pool should show 1 healthy (secondary only)
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"with-failover\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"with-failover\"")
     if [[ -n "$healthy" && "$healthy" -ge 1 ]]; then
         log_pass "Failover pool still has $healthy healthy backend(s)"
     else
@@ -106,7 +106,7 @@ test_health_metrics_update() {
 
     # Check for health check failures
     local failures
-    failures=$(get_metric "sentinel_upstream_health_check_failures_total" "upstream=\"primary\"")
+    failures=$(get_metric "zentinel_upstream_health_check_failures_total" "upstream=\"primary\"")
     if [[ -n "$failures" && "$failures" -gt 0 ]]; then
         log_pass "Health check failures recorded: $failures"
     else
@@ -169,7 +169,7 @@ test_recovery_after_restart() {
 
     # Check healthy count restored
     local healthy
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
     if [[ -n "$healthy" && "$healthy" -ge 1 ]]; then
         log_pass "Primary upstream healthy: $healthy backend(s)"
     else
@@ -186,7 +186,7 @@ test_request_retries() {
 
     # Failover route has retry policy - check if retries work
     local retry_count
-    retry_count=$(get_metric "sentinel_upstream_retries_total" "upstream=\"with-failover\"")
+    retry_count=$(get_metric "zentinel_upstream_retries_total" "upstream=\"with-failover\"")
     log_info "Initial retry count: ${retry_count:-0}"
 
     # Make requests that would need retries
@@ -196,7 +196,7 @@ test_request_retries() {
 
     # Check retry count increased
     local new_retry_count
-    new_retry_count=$(get_metric "sentinel_upstream_retries_total" "upstream=\"with-failover\"")
+    new_retry_count=$(get_metric "zentinel_upstream_retries_total" "upstream=\"with-failover\"")
     log_info "Final retry count: ${new_retry_count:-0}"
 
     if [[ -n "$new_retry_count" && "${new_retry_count:-0}" -gt "${retry_count:-0}" ]]; then

@@ -1,7 +1,7 @@
 //! KDL configuration parsing.
 //!
 //! This module contains all functions for parsing KDL configuration files
-//! into Sentinel configuration structures. It is organized into submodules:
+//! into Zentinel configuration structures. It is organized into submodules:
 //!
 //! - `helpers`: Common parsing utility functions
 //! - `server`: Server and listener parsing
@@ -32,7 +32,7 @@ pub use upstreams::parse_upstreams;
 use anyhow::Result;
 use std::collections::HashMap;
 
-use sentinel_common::limits::Limits;
+use zentinel_common::limits::Limits;
 
 use crate::observability::ObservabilityConfig;
 use crate::waf::WafConfig;
@@ -200,7 +200,7 @@ use crate::agents::{
     AgentEvent, AgentProtocolVersion, AgentTlsConfig, AgentTransport, AgentType, BodyStreamingMode,
 };
 use crate::routes::FailureMode;
-use sentinel_common::types::CircuitBreakerConfig;
+use zentinel_common::types::CircuitBreakerConfig;
 use std::path::PathBuf;
 
 /// Parse agents configuration block
@@ -648,7 +648,7 @@ fn parse_circuit_breaker(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
 ///
 ///     ruleset {
 ///         crs-version "3.3.4"
-///         custom-rules-dir "/etc/sentinel/waf/rules"
+///         custom-rules-dir "/etc/zentinel/waf/rules"
 ///         paranoia-level 1          // 1-4
 ///         anomaly-threshold 5
 ///
@@ -946,7 +946,7 @@ use crate::routes::{CacheBackend, CacheStorageConfig};
 ///     max-size 104857600        // 100MB in bytes
 ///     eviction-limit 104857600  // When to start evicting
 ///     lock-timeout 10           // Seconds
-///     disk-path "/var/cache/sentinel"  // For disk backend
+///     disk-path "/var/cache/zentinel"  // For disk backend
 ///     disk-shards 16            // Parallelism for disk cache
 /// }
 /// ```
@@ -1106,17 +1106,17 @@ fn parse_rate_limit_key(key: &str) -> Result<RateLimitKey> {
 ///         format "json"
 ///         access-log {
 ///             enabled true
-///             file "/var/log/sentinel/access.log"
+///             file "/var/log/zentinel/access.log"
 ///             format "json"
 ///         }
 ///         error-log {
 ///             enabled true
-///             file "/var/log/sentinel/error.log"
+///             file "/var/log/zentinel/error.log"
 ///             level "warn"
 ///         }
 ///         audit-log {
 ///             enabled true
-///             file "/var/log/sentinel/audit.log"
+///             file "/var/log/zentinel/audit.log"
 ///             log-blocked true
 ///             log-agent-decisions true
 ///             log-waf-events true
@@ -1294,7 +1294,7 @@ fn parse_metrics_config(node: &kdl::KdlNode) -> Result<crate::observability::Met
 ///         endpoint "http://localhost:4317"
 ///     }
 ///     sampling-rate 0.1
-///     service-name "sentinel"
+///     service-name "zentinel"
 /// }
 /// ```
 fn parse_tracing_config(node: &kdl::KdlNode) -> Result<crate::observability::TracingConfig> {
@@ -1305,7 +1305,7 @@ fn parse_tracing_config(node: &kdl::KdlNode) -> Result<crate::observability::Tra
 
     let sampling_rate = get_float_entry(node, "sampling-rate").unwrap_or(0.01);
     let service_name =
-        get_string_entry(node, "service-name").unwrap_or_else(|| "sentinel".to_string());
+        get_string_entry(node, "service-name").unwrap_or_else(|| "zentinel".to_string());
 
     Ok(TracingConfig {
         backend,
@@ -1399,7 +1399,7 @@ mod tests {
 
         let config = parse_tracing_config(node).unwrap();
         assert_eq!(config.sampling_rate, 0.01); // default
-        assert_eq!(config.service_name, "sentinel"); // default
+        assert_eq!(config.service_name, "zentinel"); // default
     }
 
     #[test]
@@ -1601,7 +1601,7 @@ mod tests {
             filters {
                 filter "block-countries" {
                     type "geo"
-                    database-path "/etc/sentinel/GeoLite2-Country.mmdb"
+                    database-path "/etc/zentinel/GeoLite2-Country.mmdb"
                     action "block"
                     countries "RU,CN,KP,IR"
                     on-failure "closed"
@@ -1626,7 +1626,7 @@ mod tests {
         let filter = config.filters.get("block-countries").unwrap();
         match &filter.filter {
             crate::Filter::Geo(geo) => {
-                assert_eq!(geo.database_path, "/etc/sentinel/GeoLite2-Country.mmdb");
+                assert_eq!(geo.database_path, "/etc/zentinel/GeoLite2-Country.mmdb");
                 assert_eq!(geo.database_type, Some(crate::GeoDatabaseType::MaxMind));
                 assert_eq!(geo.action, crate::GeoFilterAction::Block);
                 assert_eq!(geo.countries, vec!["RU", "CN", "KP", "IR"]);
@@ -1661,7 +1661,7 @@ mod tests {
             filters {
                 filter "us-only" {
                     type "geo"
-                    database-path "/etc/sentinel/GeoLite2-Country.mmdb"
+                    database-path "/etc/zentinel/GeoLite2-Country.mmdb"
                     action "allow"
                     countries "US,CA"
                     on-failure "open"
@@ -1710,7 +1710,7 @@ mod tests {
             filters {
                 filter "geo-tagging" {
                     type "geo"
-                    database-path "/etc/sentinel/IP2LOCATION-LITE-DB1.BIN"
+                    database-path "/etc/zentinel/IP2LOCATION-LITE-DB1.BIN"
                     database-type "ip2location"
                     action "log-only"
                 }
@@ -1731,7 +1731,7 @@ mod tests {
         let filter = config.filters.get("geo-tagging").unwrap();
         match &filter.filter {
             crate::Filter::Geo(geo) => {
-                assert_eq!(geo.database_path, "/etc/sentinel/IP2LOCATION-LITE-DB1.BIN");
+                assert_eq!(geo.database_path, "/etc/zentinel/IP2LOCATION-LITE-DB1.BIN");
                 assert_eq!(geo.database_type, Some(crate::GeoDatabaseType::Ip2Location));
                 assert_eq!(geo.action, crate::GeoFilterAction::LogOnly);
                 assert!(geo.countries.is_empty());
@@ -1848,7 +1848,7 @@ mod tests {
                 enabled #true
                 backend "disk"
                 max-size 1073741824
-                disk-path "/var/cache/sentinel"
+                disk-path "/var/cache/zentinel"
                 disk-shards 32
             }
         "#;
@@ -1861,7 +1861,7 @@ mod tests {
         assert_eq!(config.max_size_bytes, 1073741824); // 1GB
         assert_eq!(
             config.disk_path,
-            Some(std::path::PathBuf::from("/var/cache/sentinel"))
+            Some(std::path::PathBuf::from("/var/cache/zentinel"))
         );
         assert_eq!(config.disk_shards, 32);
     }
@@ -1871,7 +1871,7 @@ mod tests {
         let kdl = r#"
             cache {
                 backend "hybrid"
-                disk-path "/var/cache/sentinel"
+                disk-path "/var/cache/zentinel"
             }
         "#;
         let doc: kdl::KdlDocument = kdl.parse().unwrap();
@@ -2047,7 +2047,7 @@ mod tests {
                     upstream "api-backend"
 
                     api-schema {
-                        schema-file "/etc/sentinel/schemas/api-v1.yaml"
+                        schema-file "/etc/zentinel/schemas/api-v1.yaml"
                         validate-requests #true
                         validate-responses #false
                         strict-mode #true
@@ -2066,7 +2066,7 @@ mod tests {
         let api_schema = route.api_schema.as_ref().unwrap();
         assert_eq!(
             api_schema.schema_file.as_ref().unwrap().to_str().unwrap(),
-            "/etc/sentinel/schemas/api-v1.yaml"
+            "/etc/zentinel/schemas/api-v1.yaml"
         );
         assert!(api_schema.validate_requests);
         assert!(!api_schema.validate_responses);
@@ -2230,7 +2230,7 @@ mod tests {
                     upstream "api-backend"
 
                     api-schema {
-                        schema-file "/etc/sentinel/api.yaml"
+                        schema-file "/etc/zentinel/api.yaml"
                         schema-content "openapi: 3.0.0"
                         validate-requests #true
                     }
@@ -2657,7 +2657,7 @@ mod tests {
 
             ruleset {
                 crs-version "3.3.4"
-                custom-rules-dir "/etc/sentinel/waf/rules"
+                custom-rules-dir "/etc/zentinel/waf/rules"
                 paranoia-level 2
                 anomaly-threshold 10
             }
@@ -2673,7 +2673,7 @@ mod tests {
         assert_eq!(waf.ruleset.crs_version, "3.3.4");
         assert_eq!(
             waf.ruleset.custom_rules_dir,
-            Some(std::path::PathBuf::from("/etc/sentinel/waf/rules"))
+            Some(std::path::PathBuf::from("/etc/zentinel/waf/rules"))
         );
         assert_eq!(waf.ruleset.paranoia_level, 2);
         assert_eq!(waf.ruleset.anomaly_threshold, 10);

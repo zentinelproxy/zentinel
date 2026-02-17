@@ -8,8 +8,8 @@ use http::HeaderMap;
 use std::sync::Arc;
 use tracing::{debug, info, trace};
 
-use sentinel_common::budget::{BudgetAlert, BudgetCheckResult, CostResult};
-use sentinel_config::{InferenceConfig, TokenEstimation};
+use zentinel_common::budget::{BudgetAlert, BudgetCheckResult, CostResult};
+use zentinel_config::{InferenceConfig, TokenEstimation};
 
 use super::budget::TokenBudgetTracker;
 use super::cost::CostCalculator;
@@ -222,7 +222,7 @@ impl InferenceRateLimitManager {
         &self,
         route_id: &str,
         tenant: &str,
-    ) -> Option<sentinel_common::budget::TenantBudgetStatus> {
+    ) -> Option<zentinel_common::budget::TenantBudgetStatus> {
         let state = self.routes.get(route_id)?;
         let budget_tracker = state.budget_tracker.as_ref()?;
         Some(budget_tracker.status(tenant))
@@ -377,7 +377,7 @@ pub struct InferenceRouteStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_config::{InferenceProvider, TokenRateLimit};
+    use zentinel_config::{InferenceProvider, TokenRateLimit};
 
     fn test_inference_config() -> InferenceConfig {
         InferenceConfig {
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_budget_only_config() {
-        use sentinel_common::budget::{BudgetPeriod, TokenBudgetConfig};
+        use zentinel_common::budget::{BudgetPeriod, TokenBudgetConfig};
 
         let manager = InferenceRateLimitManager::new();
 

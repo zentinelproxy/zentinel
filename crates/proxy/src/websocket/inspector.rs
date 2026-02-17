@@ -4,8 +4,8 @@
 //! their decisions (allow, drop, or close).
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use sentinel_agent_protocol::{WebSocketDecision, WebSocketFrameEvent};
-use sentinel_common::observability::RequestMetrics;
+use zentinel_agent_protocol::{WebSocketDecision, WebSocketFrameEvent};
+use zentinel_common::observability::RequestMetrics;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;

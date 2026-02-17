@@ -236,16 +236,16 @@ cookie-same-site "none"
 
 ```
 # Sticky session hits (cookie valid, target healthy)
-sentinel_sticky_session_hits_total{upstream="stateful-backend"} 95000
+zentinel_sticky_session_hits_total{upstream="stateful-backend"} 95000
 
 # Sticky session misses (no cookie or fallback used)
-sentinel_sticky_session_misses_total{upstream="stateful-backend"} 5000
+zentinel_sticky_session_misses_total{upstream="stateful-backend"} 5000
 
 # Failovers due to unhealthy target
-sentinel_sticky_session_failovers_total{upstream="stateful-backend"} 150
+zentinel_sticky_session_failovers_total{upstream="stateful-backend"} 150
 
 # Invalid cookie signatures (possible tampering attempts)
-sentinel_sticky_session_invalid_signature_total{upstream="stateful-backend"} 23
+zentinel_sticky_session_invalid_signature_total{upstream="stateful-backend"} 23
 ```
 
 ## Best Practices
@@ -333,13 +333,13 @@ groups:
   - name: sticky_sessions
     rules:
       - alert: HighStickyFailoverRate
-        expr: rate(sentinel_sticky_session_failovers_total[5m]) > 10
+        expr: rate(zentinel_sticky_session_failovers_total[5m]) > 10
         for: 5m
         annotations:
           summary: "High sticky session failover rate"
 
       - alert: StickySignatureTampering
-        expr: rate(sentinel_sticky_session_invalid_signature_total[5m]) > 1
+        expr: rate(zentinel_sticky_session_invalid_signature_total[5m]) > 1
         for: 1m
         annotations:
           summary: "Possible cookie tampering detected"
@@ -347,7 +347,7 @@ groups:
 
 ## Comparison with Other Proxies
 
-| Feature | Sentinel | Nginx | HAProxy | Envoy |
+| Feature | Zentinel | Nginx | HAProxy | Envoy |
 |---------|----------|-------|---------|-------|
 | Cookie-based | Yes | Yes | Yes | Yes |
 | HMAC signed | Yes | No | No | No |
@@ -379,7 +379,7 @@ WARN Invalid sticky cookie signature (possible tampering)
 This can occur when:
 - The proxy was restarted (new HMAC key generated)
 - Cookie was modified by client
-- Cookie from different Sentinel instance
+- Cookie from different Zentinel instance
 
 **Resolution:** These are typically benign after restarts. The fallback algorithm assigns a new backend and sets a fresh cookie.
 

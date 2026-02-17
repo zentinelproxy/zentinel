@@ -1,9 +1,9 @@
 <div align="center">
 
 <h1 align="center">
-  <img src=".github/static/sentinel-mascot.png" alt="sentinel mascot" width="96" />
+  <img src=".github/static/zentinel-mascot.png" alt="zentinel mascot" width="96" />
   <br>
-  Sentinel
+  Zentinel
 </h1>
 
 <p align="center">
@@ -24,10 +24,10 @@
 </p>
 
 <p align="center">
-  <a href="https://sentinel.raskell.io/docs/">Documentation</a> •
-  <a href="https://sentinel.raskell.io/playground/">Playground</a> •
-  <a href="https://sentinel.raskell.io/benchmarks/">Benchmarks</a> •
-  <a href="https://github.com/raskell-io/sentinel/discussions">Discussions</a> •
+  <a href="https://zentinelproxy.io/docs/">Documentation</a> •
+  <a href="https://zentinelproxy.io/playground/">Playground</a> •
+  <a href="https://zentinelproxy.io/benchmarks/">Benchmarks</a> •
+  <a href="https://github.com/zentinelproxy/zentinel/discussions">Discussions</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -35,29 +35,29 @@
 
 ---
 
-Sentinel is a high-performance reverse proxy built on [Cloudflare Pingora](https://github.com/cloudflare/pingora). It provides explicit limits, predictable behavior, and production-grade defaults for environments where operators need to sleep.
+Zentinel is a high-performance reverse proxy built on [Cloudflare Pingora](https://github.com/cloudflare/pingora). It provides explicit limits, predictable behavior, and production-grade defaults for environments where operators need to sleep.
 
-**Performance:** Lowest p99 latency in [benchmarks](https://sentinel.raskell.io/benchmarks/) against Envoy, HAProxy, Nginx, and Caddy. 1M-request soak tests with 99.95% success rate and zero memory leaks. Pure Rust WAF engine processes clean traffic at 912K req/s — 30x faster than the C++ ModSecurity reference.
+**Performance:** Lowest p99 latency in [benchmarks](https://zentinelproxy.io/benchmarks/) against Envoy, HAProxy, Nginx, and Caddy. 1M-request soak tests with 99.95% success rate and zero memory leaks. Pure Rust WAF engine processes clean traffic at 912K req/s — 30x faster than the C++ ModSecurity reference.
 
 ## Status
 
-Production-ready core (proxy, routing, TLS, caching, load balancing). Agents are individually versioned — WAF, Auth, and AI Gateway are stable; others are beta or alpha. See [sentinel.raskell.io/agents](https://sentinel.raskell.io/agents/) for per-agent status.
+Production-ready core (proxy, routing, TLS, caching, load balancing). Agents are individually versioned — WAF, Auth, and AI Gateway are stable; others are beta or alpha. See [zentinelproxy.io/agents](https://zentinelproxy.io/agents/) for per-agent status.
 
 ## Quick Start
 
 ```bash
 # Install
-curl -fsSL https://getsentinel.raskell.io | sh
+curl -fsSL https://getzentinelproxy.io | sh
 
 # Or via Cargo
-cargo install sentinel-proxy
+cargo install zentinel-proxy
 
 # Or via Docker
-docker run -v $(pwd)/sentinel.kdl:/etc/sentinel/sentinel.kdl \
-  ghcr.io/raskell-io/sentinel --config /etc/sentinel/sentinel.kdl
+docker run -v $(pwd)/zentinel.kdl:/etc/zentinel/zentinel.kdl \
+  ghcr.io/zentinelproxy/zentinel --config /etc/zentinel/zentinel.kdl
 ```
 
-Save this as `sentinel.kdl` — it proxies `localhost:8080` to a backend on port `8081`:
+Save this as `zentinel.kdl` — it proxies `localhost:8080` to a backend on port `8081`:
 
 ```kdl
 system {
@@ -89,13 +89,13 @@ upstreams {
 
 ```bash
 # Run
-sentinel --config sentinel.kdl
+zentinel --config zentinel.kdl
 
 # Validate config without starting
-sentinel test --config sentinel.kdl
+zentinel test --config zentinel.kdl
 ```
 
-More examples: [`config/examples/`](config/examples/) covers API gateways, load balancing, WebSocket, caching, inference routing, and more. Or use the [config builder](https://sentinel.raskell.io/customize/) to generate a config interactively.
+More examples: [`config/examples/`](config/examples/) covers API gateways, load balancing, WebSocket, caching, inference routing, and more. Or use the [config builder](https://zentinelproxy.io/customize/) to generate a config interactively.
 
 ## Features
 
@@ -110,7 +110,7 @@ More examples: [`config/examples/`](config/examples/) covers API gateways, load 
 | **Observability** | Prometheus metrics, structured logging, OpenTelemetry tracing |
 | **Hot Reload** | Zero-downtime config updates via SIGHUP with validation and atomic swap |
 
-See the full feature breakdown at [sentinel.raskell.io/features](https://sentinel.raskell.io/features/).
+See the full feature breakdown at [zentinelproxy.io/features](https://zentinelproxy.io/features/).
 
 ### Use Cases
 
@@ -123,9 +123,9 @@ See the full feature breakdown at [sentinel.raskell.io/features](https://sentine
 
 Example configs for each: [`config/examples/`](config/examples/)
 
-## Why Sentinel
+## Why Zentinel
 
-Modern proxies accumulate hidden behavior, unbounded complexity, and operational risk that surfaces under stress. Sentinel takes a different approach:
+Modern proxies accumulate hidden behavior, unbounded complexity, and operational risk that surfaces under stress. Zentinel takes a different approach:
 
 - **Bounded resources** — Memory limits, queue depths, deterministic timeouts. No surprise behavior.
 - **Explicit failure modes** — Fail-open or fail-closed per route, never ambiguous.
@@ -136,23 +136,23 @@ The goal is infrastructure that is **correct, calm, and trustworthy**. See [`MAN
 
 ## Agents
 
-Sentinel's security and extensibility lives in **agents** — external processes that hook into every request phase. Agents are crash-isolated from the proxy, independently deployable, and can be written in any language.
+Zentinel's security and extensibility lives in **agents** — external processes that hook into every request phase. Agents are crash-isolated from the proxy, independently deployable, and can be written in any language.
 
-Agent SDKs: [Rust](https://github.com/raskell-io/sentinel-agent-rust-sdk) · [Go](https://github.com/raskell-io/sentinel-agent-go-sdk) · [Python](https://github.com/raskell-io/sentinel-agent-python-sdk) · [TypeScript](https://github.com/raskell-io/sentinel-agent-typescript-sdk) · [Elixir](https://github.com/raskell-io/sentinel-agent-elixir-sdk) · [Kotlin](https://github.com/raskell-io/sentinel-agent-kotlin-sdk) · [Haskell](https://github.com/raskell-io/sentinel-agent-haskell-sdk)
+Agent SDKs: [Rust](https://github.com/zentinelproxy/zentinel-agent-rust-sdk) · [Go](https://github.com/zentinelproxy/zentinel-agent-go-sdk) · [Python](https://github.com/zentinelproxy/zentinel-agent-python-sdk) · [TypeScript](https://github.com/zentinelproxy/zentinel-agent-typescript-sdk) · [Elixir](https://github.com/zentinelproxy/zentinel-agent-elixir-sdk) · [Kotlin](https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk) · [Haskell](https://github.com/zentinelproxy/zentinel-agent-haskell-sdk)
 
 | Agent | Description |
 |-------|-------------|
-| [WAF](https://github.com/raskell-io/sentinel-agent-waf) | Pure Rust WAF — 200+ detection rules, ML-powered anomaly scoring, zero C dependencies |
-| [AI Gateway](https://github.com/raskell-io/sentinel-agent-ai-gateway) | Prompt injection detection, jailbreak prevention, PII filtering for LLM APIs |
-| [Policy](https://github.com/raskell-io/sentinel-agent-policy) | Multi-engine policy evaluation (Rego/OPA and Cedar) — written in Haskell |
-| [Auth](https://github.com/raskell-io/sentinel-agent-auth) | JWT, OIDC, SAML, mTLS, API keys with Cedar-based fine-grained authorization |
-| [Chaos](https://github.com/raskell-io/sentinel-agent-chaos) | Latency injection, error simulation, connection resets with safety guardrails |
-| [Lua](https://github.com/raskell-io/sentinel-agent-lua) | Sandboxed Lua scripting with VM pooling, hot-reload, and resource limits |
-| [SentinelSec](https://github.com/raskell-io/sentinel-agent-sentinelsec) | Pure Rust ModSecurity — OWASP CRS-compatible SecLang parser, zero C dependencies |
-| [WebSocket Inspector](https://github.com/raskell-io/sentinel-agent-websocket-inspector) | Content filtering, JSON/MessagePack validation, and rate limiting for WebSocket frames |
-| [MQTT Gateway](https://github.com/raskell-io/sentinel-agent-mqtt-gateway) | IoT protocol security with topic ACLs, auth, and payload inspection |
+| [WAF](https://github.com/zentinelproxy/zentinel-agent-waf) | Pure Rust WAF — 200+ detection rules, ML-powered anomaly scoring, zero C dependencies |
+| [AI Gateway](https://github.com/zentinelproxy/zentinel-agent-ai-gateway) | Prompt injection detection, jailbreak prevention, PII filtering for LLM APIs |
+| [Policy](https://github.com/zentinelproxy/zentinel-agent-policy) | Multi-engine policy evaluation (Rego/OPA and Cedar) — written in Haskell |
+| [Auth](https://github.com/zentinelproxy/zentinel-agent-auth) | JWT, OIDC, SAML, mTLS, API keys with Cedar-based fine-grained authorization |
+| [Chaos](https://github.com/zentinelproxy/zentinel-agent-chaos) | Latency injection, error simulation, connection resets with safety guardrails |
+| [Lua](https://github.com/zentinelproxy/zentinel-agent-lua) | Sandboxed Lua scripting with VM pooling, hot-reload, and resource limits |
+| [ZentinelSec](https://github.com/zentinelproxy/zentinel-agent-zentinelsec) | Pure Rust ModSecurity — OWASP CRS-compatible SecLang parser, zero C dependencies |
+| [WebSocket Inspector](https://github.com/zentinelproxy/zentinel-agent-websocket-inspector) | Content filtering, JSON/MessagePack validation, and rate limiting for WebSocket frames |
+| [MQTT Gateway](https://github.com/zentinelproxy/zentinel-agent-mqtt-gateway) | IoT protocol security with topic ACLs, auth, and payload inspection |
 
-Browse all 25+ agents at [sentinel.raskell.io/agents](https://sentinel.raskell.io/agents/).
+Browse all 25+ agents at [zentinelproxy.io/agents](https://zentinelproxy.io/agents/).
 
 <details>
 <summary><strong>Crates</strong></summary>
@@ -161,10 +161,10 @@ Each crate has its own `docs/` directory with detailed documentation.
 
 | Crate | Description |
 |-------|-------------|
-| [`sentinel-proxy`](crates/proxy/) | Core reverse proxy built on Pingora |
-| [`sentinel-config`](crates/config/) | KDL configuration parsing and validation |
-| [`sentinel-agent-protocol`](crates/agent-protocol/) | Agent protocol v1 (legacy) and v2 (current) |
-| [`sentinel-common`](crates/common/) | Shared types, errors, and utilities |
+| [`zentinel-proxy`](crates/proxy/) | Core reverse proxy built on Pingora |
+| [`zentinel-config`](crates/config/) | KDL configuration parsing and validation |
+| [`zentinel-agent-protocol`](crates/agent-protocol/) | Agent protocol v1 (legacy) and v2 (current) |
+| [`zentinel-common`](crates/common/) | Shared types, errors, and utilities |
 | [`wasm-runtime`](crates/wasm-runtime/) | WASM agent runtime using Wasmtime |
 | [`playground-wasm`](crates/playground-wasm/) | Browser bindings for the config playground |
 | [`sim`](crates/sim/) | WASM-compatible configuration simulator |
@@ -174,7 +174,7 @@ Each crate has its own `docs/` directory with detailed documentation.
 
 ## Control Plane
 
-[**sentinel-control-plane**](https://github.com/raskell-io/sentinel-control-plane) — Fleet management for Sentinel proxies, built with Elixir/Phoenix. Centralized configuration, rolling deploys, and real-time observability across your Sentinel instances.
+[**zentinel-control-plane**](https://github.com/zentinelproxy/zentinel-control-plane) — Fleet management for Zentinel proxies, built with Elixir/Phoenix. Centralized configuration, rolling deploys, and real-time observability across your Zentinel instances.
 
 ## Contributing
 
@@ -184,11 +184,11 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
 
 ## Community
 
-- 📖 [Documentation](https://sentinel.raskell.io/docs) — Guides, reference, and examples
-- 🎮 [Playground](https://sentinel.raskell.io/playground/) — Try the routing engine in your browser (WASM)
-- 📊 [Benchmarks](https://sentinel.raskell.io/benchmarks/) — Performance, soak testing, and Envoy comparison
-- 💬 [Discussions](https://github.com/raskell-io/sentinel/discussions) — Questions, ideas, show & tell
-- 🐛 [Issues](https://github.com/raskell-io/sentinel/issues) — Bug reports and feature requests
+- 📖 [Documentation](https://zentinelproxy.io/docs) — Guides, reference, and examples
+- 🎮 [Playground](https://zentinelproxy.io/playground/) — Try the routing engine in your browser (WASM)
+- 📊 [Benchmarks](https://zentinelproxy.io/benchmarks/) — Performance, soak testing, and Envoy comparison
+- 💬 [Discussions](https://github.com/zentinelproxy/zentinel/discussions) — Questions, ideas, show & tell
+- 🐛 [Issues](https://github.com/zentinelproxy/zentinel/issues) — Bug reports and feature requests
 
 ## License
 

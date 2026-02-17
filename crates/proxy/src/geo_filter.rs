@@ -1,4 +1,4 @@
-//! GeoIP filtering for Sentinel proxy
+//! GeoIP filtering for Zentinel proxy
 //!
 //! This module provides geolocation-based request filtering using MaxMind GeoLite2/GeoIP2
 //! and IP2Location databases. Filters can block, allow, or log requests based on country.
@@ -23,7 +23,7 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
-use sentinel_config::{GeoDatabaseType, GeoFailureMode, GeoFilter, GeoFilterAction};
+use zentinel_config::{GeoDatabaseType, GeoFailureMode, GeoFilter, GeoFilterAction};
 
 // =============================================================================
 // Error Types

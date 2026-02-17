@@ -1,10 +1,10 @@
-# Contributing to Sentinel
+# Contributing to Zentinel
 
-Thank you for considering contributing to Sentinel.
+Thank you for considering contributing to Zentinel.
 
-Sentinel is infrastructure that sits at the edge of the web. Changes here affect availability, security, and sleep schedules. Because of that, the bar for changes is intentionally high.
+Zentinel is infrastructure that sits at the edge of the web. Changes here affect availability, security, and sleep schedules. Because of that, the bar for changes is intentionally high.
 
-This document explains how to contribute in a way that aligns with Sentinel’s goals.
+This document explains how to contribute in a way that aligns with Zentinel’s goals.
 
 ---
 
@@ -13,7 +13,7 @@ This document explains how to contribute in a way that aligns with Sentinel’s 
 Before writing code, please read [`MANIFESTO.md`](MANIFESTO.md).
 
 In short:
-- Sentinel values predictability over flexibility,
+- Zentinel values predictability over flexibility,
 - explicit behavior over implicit magic,
 - and calm operation over feature breadth.
 
@@ -21,7 +21,7 @@ In short:
 
 ## AI-assisted development
 
-We believe that software in the future will be increasingly maintained with AI assistance. Sentinel embraces this transformation.
+We believe that software in the future will be increasingly maintained with AI assistance. Zentinel embraces this transformation.
 
 This is not a contradiction to our goal of building boring, stable infrastructure. It is an enabler. AI assistance allows us to:
 
@@ -41,7 +41,7 @@ The tools change. The principles do not.
 
 ---
 
-## What belongs in Sentinel
+## What belongs in Zentinel
 
 Changes that are generally welcome:
 - Improvements to correctness, safety, and clarity
@@ -61,7 +61,7 @@ Changes that require strong justification:
 
 ## What does *not* belong in the core
 
-Sentinel intentionally keeps the dataplane small.
+Zentinel intentionally keeps the dataplane small.
 
 The following generally do **not** belong in the core proxy:
 - complex policy engines,
@@ -94,7 +94,7 @@ If you are unsure whether something fits:
 
 Discussion is preferred over premature implementation.
 
-Sentinel will still be here tomorrow.
+Zentinel will still be here tomorrow.
 
 ---
 

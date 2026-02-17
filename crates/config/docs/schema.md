@@ -1,6 +1,6 @@
 # Configuration Schema Reference
 
-Complete reference for all Sentinel configuration options.
+Complete reference for all Zentinel configuration options.
 
 ## Table of Contents
 
@@ -78,7 +78,7 @@ Port binding configuration.
 | `email` | `string` | **required** | Contact email for Let's Encrypt account |
 | `domains` | `[string]` | **required** | Domains to include in certificate |
 | `staging` | `bool` | `false` | Use Let's Encrypt staging environment |
-| `storage` | `string` | `/var/lib/sentinel/acme` | Certificate storage directory |
+| `storage` | `string` | `/var/lib/zentinel/acme` | Certificate storage directory |
 | `renew-before-days` | `u32` | `30` | Days before expiry to trigger renewal |
 | `challenge-type` | `string` | `"http-01"` | Challenge type: `http-01` or `dns-01` |
 | `dns-provider` | `DnsProviderConfig` | - | DNS provider (required for dns-01) |
@@ -509,7 +509,7 @@ Metrics, logging, and tracing configuration.
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable access logging |
-| `file` | `string` | `/var/log/sentinel/access.log` | Log file path |
+| `file` | `string` | `/var/log/zentinel/access.log` | Log file path |
 | `format` | `string` | `"json"` | Log format |
 | `sample-rate` | `f64` | `1.0` | Sampling rate (0.0-1.0) |
 | `include-trace-id` | `bool` | `true` | Include trace ID |
@@ -520,7 +520,7 @@ Metrics, logging, and tracing configuration.
 |----------|------|---------|-------------|
 | `backend` | `TracingBackend` | **required** | Tracing backend |
 | `sampling-rate` | `f64` | `0.01` | Sampling rate |
-| `service-name` | `string` | `"sentinel"` | Service name |
+| `service-name` | `string` | `"zentinel"` | Service name |
 
 ### TracingBackend
 

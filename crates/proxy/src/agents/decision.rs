@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use sentinel_agent_protocol::{AgentResponse, AuditMetadata, BodyMutation, Decision, HeaderOp};
+use zentinel_agent_protocol::{AgentResponse, AuditMetadata, BodyMutation, Decision, HeaderOp};
 
 /// Agent decision combining all agent responses.
 #[derive(Debug, Clone)]

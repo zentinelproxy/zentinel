@@ -58,28 +58,28 @@ impl FallbackMetrics {
     /// Create new fallback metrics and register with Prometheus.
     pub fn new() -> Result<Self> {
         let fallback_attempts = register_int_counter_vec!(
-            "sentinel_fallback_attempts_total",
+            "zentinel_fallback_attempts_total",
             "Total number of fallback routing attempts",
             &["route", "from_upstream", "to_upstream", "reason"]
         )
         .context("Failed to register fallback_attempts metric")?;
 
         let fallback_success = register_int_counter_vec!(
-            "sentinel_fallback_success_total",
+            "zentinel_fallback_success_total",
             "Successful responses after fallback routing",
             &["route", "upstream"]
         )
         .context("Failed to register fallback_success metric")?;
 
         let fallback_exhausted = register_int_counter_vec!(
-            "sentinel_fallback_exhausted_total",
+            "zentinel_fallback_exhausted_total",
             "Number of requests where all fallback upstreams were exhausted",
             &["route"]
         )
         .context("Failed to register fallback_exhausted metric")?;
 
         let model_mapping_applied = register_int_counter_vec!(
-            "sentinel_fallback_model_mapping_total",
+            "zentinel_fallback_model_mapping_total",
             "Number of times model mapping was applied during fallback",
             &["route", "original_model", "mapped_model"]
         )

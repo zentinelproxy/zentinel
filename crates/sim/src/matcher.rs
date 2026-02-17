@@ -2,12 +2,12 @@
 //!
 //! This module implements route matching without any runtime dependencies,
 //! making it suitable for WASM compilation. The logic mirrors the actual
-//! proxy behavior in `sentinel-proxy::routing`.
+//! proxy behavior in `zentinel-proxy::routing`.
 
 use regex::Regex;
 
-use sentinel_common::types::Priority;
-use sentinel_config::{MatchCondition, RouteConfig};
+use zentinel_common::types::Priority;
+use zentinel_config::{MatchCondition, RouteConfig};
 
 use crate::trace::{ConditionDetail, MatchStep};
 use crate::types::{MatchedRoute, SimulatedRequest};
@@ -426,7 +426,7 @@ impl PriorityExt for Priority {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_config::{MatchCondition, RouteConfig, ServiceType};
+    use zentinel_config::{MatchCondition, RouteConfig, ServiceType};
 
     fn create_route(id: &str, matches: Vec<MatchCondition>) -> RouteConfig {
         RouteConfig {

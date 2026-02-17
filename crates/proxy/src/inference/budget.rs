@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, trace, warn};
 
-use sentinel_common::budget::{
+use zentinel_common::budget::{
     BudgetAlert, BudgetCheckResult, BudgetPeriod, TenantBudgetStatus, TokenBudgetConfig,
 };
 

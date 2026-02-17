@@ -1,6 +1,6 @@
 # Protocol Specification v2
 
-This document describes the v2 wire protocol for communication between the Sentinel proxy dataplane and external processing agents.
+This document describes the v2 wire protocol for communication between the Zentinel proxy dataplane and external processing agents.
 
 ## Protocol Constants
 
@@ -29,7 +29,7 @@ Protocol v2 supports three transport mechanisms:
 ```protobuf
 syntax = "proto3";
 
-package sentinel.agent.v2;
+package zentinel.agent.v2;
 
 service AgentProcessorV2 {
     // Bidirectional streaming for request/response lifecycle

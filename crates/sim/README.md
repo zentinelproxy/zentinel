@@ -1,10 +1,10 @@
-# Sentinel Sim
+# Zentinel Sim
 
-WASM-compatible simulation engine for Sentinel proxy configurations.
+WASM-compatible simulation engine for Zentinel proxy configurations.
 
 ## Overview
 
-The `sentinel-sim` crate enables in-browser configuration validation and route decision tracing without running the actual proxy. It powers the Sentinel playground and developer tools.
+The `zentinel-sim` crate enables in-browser configuration validation and route decision tracing without running the actual proxy. It powers the Zentinel playground and developer tools.
 
 **Key Features:**
 
@@ -16,7 +16,7 @@ The `sentinel-sim` crate enables in-browser configuration validation and route d
 ## Quick Start
 
 ```rust
-use sentinel_sim::{validate, simulate, SimulatedRequest};
+use zentinel_sim::{validate, simulate, SimulatedRequest};
 
 // Validate a configuration
 let kdl_config = r#"
@@ -164,7 +164,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 pub fn validate_config(kdl: &str) -> JsValue {
-    let result = sentinel_sim::validate(kdl);
+    let result = zentinel_sim::validate(kdl);
     serde_wasm_bindgen::to_value(&result).unwrap()
 }
 ```

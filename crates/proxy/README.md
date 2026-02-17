@@ -1,6 +1,6 @@
-# Sentinel Proxy
+# Zentinel Proxy
 
-The core dataplane for Sentinel reverse proxy, built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
+The core dataplane for Zentinel reverse proxy, built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
 
 ## Features
 
@@ -24,16 +24,16 @@ The core dataplane for Sentinel reverse proxy, built on [Cloudflare Pingora](htt
 ## Quick Start
 
 ```rust
-use sentinel_proxy::app::SentinelApp;
-use sentinel_config::Config;
+use zentinel_proxy::app::ZentinelApp;
+use zentinel_config::Config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load configuration
-    let config = Config::from_file("sentinel.kdl")?;
+    let config = Config::from_file("zentinel.kdl")?;
 
     // Create and run the proxy
-    let app = SentinelApp::new(config)?;
+    let app = ZentinelApp::new(config)?;
     app.run().await
 }
 ```
@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
 
 ```
                            ┌─────────────────────────────────────────────────┐
-                           │              Sentinel Proxy                      │
+                           │              Zentinel Proxy                      │
                            │                                                  │
   Client ──────────────────┼─▶ Listener ──▶ Route Matcher ──▶ Filters        │
   Request                  │        │              │              │           │

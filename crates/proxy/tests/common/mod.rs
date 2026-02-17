@@ -3,7 +3,7 @@
 //! This module provides common fixtures, helpers, and utilities
 //! used across multiple integration test files.
 
-use sentinel_config::{
+use zentinel_config::{
     Config, ListenerConfig, MatchCondition, RouteConfig, ServiceType, UpstreamConfig,
     UpstreamTarget,
 };

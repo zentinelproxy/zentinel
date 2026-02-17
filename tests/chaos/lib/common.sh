@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Sentinel Chaos Tests - Common Utilities
+# Zentinel Chaos Tests - Common Utilities
 #
 # Shared functions for chaos test scenarios.
 # Source this file at the start of each test script.
@@ -178,7 +178,7 @@ count_status() {
 
 # Get a metric value from Prometheus endpoint
 # Usage: get_metric <metric_name> [labels]
-# Example: get_metric "sentinel_agent_failures_total" "agent=\"echo\""
+# Example: get_metric "zentinel_agent_failures_total" "agent=\"echo\""
 # Note: Uses || true to avoid failing with set -o pipefail when grep finds no match
 get_metric() {
     local metric="$1"

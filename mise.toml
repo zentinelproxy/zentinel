@@ -1,12 +1,12 @@
-# Sentinel - mise configuration
+# Zentinel - mise configuration
 # Production-grade reverse proxy built on Pingora
 
 [env]
 RUST_BACKTRACE = "1"
 CARGO_TERM_COLOR = "always"
 RUST_LOG = "info"
-SENTINEL_CONFIG = "config/sentinel.kdl"
-SENTINEL_WORKERS = "0"
+ZENTINEL_CONFIG = "config/zentinel.kdl"
+ZENTINEL_WORKERS = "0"
 
 [tools]
 rust = "1.92.0"
@@ -26,8 +26,8 @@ run = "cargo build --workspace"
 description = "Build optimized release binary"
 run = """
 cargo build --release --workspace
-strip target/release/sentinel 2>/dev/null || true
-strip target/release/sentinel-echo-agent 2>/dev/null || true
+strip target/release/zentinel 2>/dev/null || true
+strip target/release/zentinel-echo-agent 2>/dev/null || true
 echo "Release build complete"
 """
 
@@ -35,8 +35,8 @@ echo "Release build complete"
 description = "Build and install release binaries"
 depends = ["release"]
 run = """
-sudo cp target/release/sentinel /usr/local/bin/
-sudo cp target/release/sentinel-echo-agent /usr/local/bin/ 2>/dev/null || true
+sudo cp target/release/zentinel /usr/local/bin/
+sudo cp target/release/zentinel-echo-agent /usr/local/bin/ 2>/dev/null || true
 echo "Installation complete"
 """
 
@@ -96,12 +96,12 @@ run = "cargo machete"
 [tasks.run]
 description = "Run proxy with debug build"
 depends = ["build"]
-run = "RUST_LOG=${RUST_LOG:-debug} ./target/debug/sentinel"
+run = "RUST_LOG=${RUST_LOG:-debug} ./target/debug/zentinel"
 
 [tasks.run-release]
 description = "Run proxy with release build"
 depends = ["release"]
-run = "./target/release/sentinel"
+run = "./target/release/zentinel"
 
 [tasks.watch]
 description = "Watch for changes and rebuild"
@@ -118,7 +118,7 @@ mise run build
 
 # Start echo agent in background
 echo "Starting echo agent..."
-./target/debug/sentinel-echo-agent --socket /tmp/sentinel-echo.sock &
+./target/debug/zentinel-echo-agent --socket /tmp/zentinel-echo.sock &
 ECHO_PID=$!
 
 # Trap to cleanup on exit
@@ -126,14 +126,14 @@ trap "kill $ECHO_PID 2>/dev/null || true" EXIT INT TERM
 
 # Start proxy in foreground
 echo "Starting proxy..."
-RUST_LOG=debug ./target/debug/sentinel
+RUST_LOG=debug ./target/debug/zentinel
 """
 
 # Agent tasks
 [tasks.agent-echo]
 description = "Run echo agent"
 depends = ["build"]
-run = "./target/debug/sentinel-echo-agent --socket /tmp/echo.sock --verbose"
+run = "./target/debug/zentinel-echo-agent --socket /tmp/echo.sock --verbose"
 
 [tasks.agent-test]
 description = "Test agent communication"
@@ -158,7 +158,7 @@ description = "Clean build artifacts"
 run = """
 cargo clean
 rm -rf target/coverage
-rm -f /tmp/sentinel*.sock
+rm -f /tmp/zentinel*.sock
 echo "Clean complete"
 """
 
@@ -166,8 +166,8 @@ echo "Clean complete"
 description = "Deep clean including installed binaries"
 depends = ["clean"]
 run = """
-sudo rm -f /usr/local/bin/sentinel
-sudo rm -f /usr/local/bin/sentinel-echo-agent
+sudo rm -f /usr/local/bin/zentinel
+sudo rm -f /usr/local/bin/zentinel-echo-agent
 echo "Deep clean complete"
 """
 
@@ -191,46 +191,46 @@ description = "Install systemd services"
 run = """
 sudo cp deploy/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable sentinel.service
+sudo systemctl enable zentinel.service
 echo "Systemd services installed"
 """
 
 [tasks.systemd-start]
 description = "Start all services"
 run = """
-sudo systemctl start sentinel.service
-sudo systemctl start sentinel-echo-agent.service || true
+sudo systemctl start zentinel.service
+sudo systemctl start zentinel-echo-agent.service || true
 """
 
 [tasks.systemd-stop]
 description = "Stop all services"
 run = """
-sudo systemctl stop sentinel-echo-agent.service || true
-sudo systemctl stop sentinel.service
+sudo systemctl stop zentinel-echo-agent.service || true
+sudo systemctl stop zentinel.service
 """
 
 [tasks.systemd-status]
 description = "Show service status"
 run = """
-systemctl status sentinel.service --no-pager || true
+systemctl status zentinel.service --no-pager || true
 echo ""
-systemctl status sentinel-echo-agent.service --no-pager || true
+systemctl status zentinel-echo-agent.service --no-pager || true
 """
 
 # Configuration tasks
 [tasks.config-validate]
 description = "Validate configuration"
-run = "./target/release/sentinel --validate --config ${SENTINEL_CONFIG}"
+run = "./target/release/zentinel --validate --config ${ZENTINEL_CONFIG}"
 
 [tasks.config-reload]
 description = "Reload configuration (hot reload)"
-run = "sudo kill -HUP $(cat /var/run/sentinel.pid)"
+run = "sudo kill -HUP $(cat /var/run/zentinel.pid)"
 
 [tasks.config-example]
 description = "Generate example configuration"
 run = """
 cat > config/example.kdl << 'EOF'
-// Example Sentinel Configuration
+// Example Zentinel Configuration
 system {
     worker-threads 4
     max-connections 10000
@@ -278,14 +278,14 @@ echo "Example configuration created: config/example.kdl"
 description = "Run with profiling"
 depends = ["release"]
 run = """
-RUST_LOG=debug perf record -g ./target/release/sentinel
+RUST_LOG=debug perf record -g ./target/release/zentinel
 perf report
 """
 
 [tasks.flamegraph]
 description = "Generate flamegraph"
 run = """
-cargo flamegraph --bin sentinel -- --help
+cargo flamegraph --bin zentinel -- --help
 echo "Flamegraph saved to flamegraph.svg"
 """
 
@@ -301,9 +301,9 @@ k6 run tests/load/basic.js || echo "Install k6 from https://k6.io"
 [tasks.version]
 description = "Show version information"
 run = """
-echo "Sentinel Version Information:"
+echo "Zentinel Version Information:"
 echo "=============================="
-./target/release/sentinel --version 2>/dev/null || echo "Not built yet"
+./target/release/zentinel --version 2>/dev/null || echo "Not built yet"
 echo ""
 echo "Git commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 echo "Build time: $(date)"
@@ -321,8 +321,8 @@ echo "Dependencies:"
 cargo tree | head -20
 echo ""
 echo "Binary sizes (if built):"
-ls -lh target/release/sentinel 2>/dev/null || echo "Not built yet"
-ls -lh target/release/sentinel-echo-agent 2>/dev/null || echo "Not built yet"
+ls -lh target/release/zentinel 2>/dev/null || echo "Not built yet"
+ls -lh target/release/zentinel-echo-agent 2>/dev/null || echo "Not built yet"
 """
 
 [tasks.ci]
@@ -333,7 +333,7 @@ run = "echo 'All CI checks passed!'"
 [tasks.setup]
 description = "Set up development environment"
 run = """
-echo "Setting up Sentinel development environment..."
+echo "Setting up Zentinel development environment..."
 rustup component add rustfmt clippy
 cargo install cargo-audit cargo-tarpaulin cargo-watch cargo-machete cargo-flamegraph
 echo "Creating directories..."

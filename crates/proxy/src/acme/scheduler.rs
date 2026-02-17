@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::time::{interval, Instant};
 use tracing::{debug, error, info, warn};
 
-use sentinel_config::server::AcmeChallengeType;
+use zentinel_config::server::AcmeChallengeType;
 
 use super::challenge::ChallengeManager;
 use super::client::AcmeClient;

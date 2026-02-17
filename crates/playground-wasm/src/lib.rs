@@ -1,13 +1,13 @@
-//! WebAssembly bindings for the Sentinel Config Playground
+//! WebAssembly bindings for the Zentinel Config Playground
 //!
-//! This crate provides JavaScript-friendly bindings for the Sentinel
+//! This crate provides JavaScript-friendly bindings for the Zentinel
 //! configuration simulator, enabling in-browser config validation and
 //! route decision tracing.
 //!
 //! # Usage from JavaScript
 //!
 //! ```javascript
-//! import init, { validate, simulate, get_version } from 'sentinel-playground-wasm';
+//! import init, { validate, simulate, get_version } from 'zentinel-playground-wasm';
 //!
 //! async function main() {
 //!     await init();
@@ -53,7 +53,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use sentinel_sim::{
+use zentinel_sim::{
     validate as sim_validate, simulate as sim_simulate, get_effective_config,
     simulate_sequence as sim_simulate_sequence, simulate_with_agents as sim_simulate_with_agents,
     MockAgentResponse, SimulatedRequest, TimestampedRequest,
@@ -435,7 +435,7 @@ mod tests {
         "#;
 
         // This test just verifies the function doesn't panic
-        // Full testing is done in sentinel-sim
+        // Full testing is done in zentinel-sim
         let _ = sim_validate(kdl);
     }
 }

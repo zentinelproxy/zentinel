@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.4
 
-# Sentinel Optimized Container Image
+# Zentinel Optimized Container Image
 #
 # Targets:
 #   - proxy (default): Distroless production image (~20-25MB)
@@ -9,8 +9,8 @@
 #   - echo-agent: Echo agent image
 #
 # Build examples:
-#   docker build -t sentinel:latest .
-#   docker build --target proxy-debug -t sentinel:debug .
+#   docker build -t zentinel:latest .
+#   docker build --target proxy-debug -t zentinel:debug .
 
 # Build arguments
 ARG RUST_VERSION=1.85
@@ -54,7 +54,7 @@ RUN mkdir -p crates/proxy/src && \
     mkdir -p agents/echo/src && echo "fn main() {}" > agents/echo/src/main.rs
 
 # Build dependencies only (this layer is cached)
-RUN cargo build --release --package sentinel-proxy
+RUN cargo build --release --package zentinel-proxy
 
 # Remove dummy source files
 RUN rm -rf crates/*/src agents/*/src
@@ -69,7 +69,7 @@ RUN find . -name "main.rs" -exec touch {} \; && \
 
 # Build release binaries with full optimizations
 # Binary is already stripped via Cargo.toml profile.release.strip = true
-RUN cargo build --release --package sentinel-proxy --package sentinel-echo-agent
+RUN cargo build --release --package zentinel-proxy --package zentinel-echo-agent
 
 ################################################################################
 # Production image: Distroless (smallest, most secure)
@@ -84,16 +84,16 @@ RUN cargo build --release --package sentinel-proxy --package sentinel-echo-agent
 FROM gcr.io/distroless/cc-debian12:nonroot AS proxy
 
 # Copy the binary
-COPY --from=builder /app/target/release/sentinel /sentinel
+COPY --from=builder /app/target/release/zentinel /zentinel
 
 # Copy default configuration
-COPY config/docker/default.kdl /etc/sentinel/config.kdl
+COPY config/docker/default.kdl /etc/zentinel/config.kdl
 
 # Labels for container metadata
-LABEL org.opencontainers.image.title="Sentinel" \
+LABEL org.opencontainers.image.title="Zentinel" \
       org.opencontainers.image.description="Security-first reverse proxy built on Pingora" \
       org.opencontainers.image.vendor="Raskell" \
-      org.opencontainers.image.source="https://github.com/raskell-io/sentinel"
+      org.opencontainers.image.source="https://github.com/zentinelproxy/zentinel"
 
 # Environment variables
 # - RUST_LOG: Logging configuration
@@ -101,7 +101,7 @@ LABEL org.opencontainers.image.title="Sentinel" \
 #   - background_thread: Offload memory purging from request threads
 #   - dirty_decay_ms: Return dirty pages to OS within 5s (container memory awareness)
 #   - muzzy_decay_ms: Same for muzzy pages
-ENV RUST_LOG=info,sentinel_proxy=info \
+ENV RUST_LOG=info,zentinel_proxy=info \
     MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
 
 # Expose ports:
@@ -117,12 +117,12 @@ USER nonroot:nonroot
 # Distroless has no shell, so HEALTHCHECK with curl/wget isn't possible.
 # Use one of these approaches:
 # 1. Kubernetes: Configure livenessProbe/readinessProbe with httpGet to /_builtin/health
-# 2. Docker Compose: Use `test: ["CMD", "/sentinel", "test", "-c", "/etc/sentinel/config.kdl"]`
+# 2. Docker Compose: Use `test: ["CMD", "/zentinel", "test", "-c", "/etc/zentinel/config.kdl"]`
 # 3. External monitoring: Poll http://container:8080/_builtin/health
 
-# Sentinel handles SIGTERM/SIGHUP natively via signal_hook - no tini needed
-ENTRYPOINT ["/sentinel"]
-CMD ["-c", "/etc/sentinel/config.kdl"]
+# Zentinel handles SIGTERM/SIGHUP natively via signal_hook - no tini needed
+ENTRYPOINT ["/zentinel"]
+CMD ["-c", "/etc/zentinel/config.kdl"]
 
 ################################################################################
 # Debug image: Alpine with shell for troubleshooting
@@ -134,85 +134,85 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     curl \
-    && adduser -D -u 65532 -g 65532 sentinel
+    && adduser -D -u 65532 -g 65532 zentinel
 
 # Copy the binary
-COPY --from=builder /app/target/release/sentinel /usr/local/bin/sentinel
+COPY --from=builder /app/target/release/zentinel /usr/local/bin/zentinel
 
 # Copy default configuration
-COPY config/docker/default.kdl /etc/sentinel/config.kdl
+COPY config/docker/default.kdl /etc/zentinel/config.kdl
 
 # Create directories with correct ownership
-RUN mkdir -p /var/lib/sentinel /var/log/sentinel && \
-    chown -R sentinel:sentinel /etc/sentinel /var/lib/sentinel /var/log/sentinel
+RUN mkdir -p /var/lib/zentinel /var/log/zentinel && \
+    chown -R zentinel:zentinel /etc/zentinel /var/lib/zentinel /var/log/zentinel
 
 # Environment variables
-ENV RUST_LOG=info,sentinel_proxy=info \
+ENV RUST_LOG=info,zentinel_proxy=info \
     MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
 
 EXPOSE 8080 8443 9090
 
-USER sentinel
+USER zentinel
 
 # Alpine has curl, so we can use HTTP health checks
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -sf http://localhost:8080/_builtin/health || exit 1
 
-ENTRYPOINT ["/usr/local/bin/sentinel"]
-CMD ["-c", "/etc/sentinel/config.kdl"]
+ENTRYPOINT ["/usr/local/bin/zentinel"]
+CMD ["-c", "/etc/zentinel/config.kdl"]
 
 ################################################################################
 # Pre-built binary stage (for CI multi-arch builds)
-# Usage: docker build --build-arg BINARY_PATH=./sentinel --target proxy-prebuilt .
+# Usage: docker build --build-arg BINARY_PATH=./zentinel --target proxy-prebuilt .
 ################################################################################
 FROM gcr.io/distroless/cc-debian12:nonroot AS proxy-prebuilt
 
 # Copy pre-built binary from build context
-COPY sentinel /sentinel
+COPY zentinel /zentinel
 
 # Copy default configuration
-COPY config/docker/default.kdl /etc/sentinel/config.kdl
+COPY config/docker/default.kdl /etc/zentinel/config.kdl
 
-LABEL org.opencontainers.image.title="Sentinel" \
+LABEL org.opencontainers.image.title="Zentinel" \
       org.opencontainers.image.description="Security-first reverse proxy built on Pingora"
 
-ENV RUST_LOG=info,sentinel_proxy=info \
+ENV RUST_LOG=info,zentinel_proxy=info \
     MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
 
 EXPOSE 8080 8443 9090
 
 USER nonroot:nonroot
 
-ENTRYPOINT ["/sentinel"]
-CMD ["-c", "/etc/sentinel/config.kdl"]
+ENTRYPOINT ["/zentinel"]
+CMD ["-c", "/etc/zentinel/config.kdl"]
 
 ################################################################################
 # Echo agent image (for testing agent functionality)
 ################################################################################
 FROM gcr.io/distroless/cc-debian12:nonroot AS echo-agent
 
-COPY --from=builder /app/target/release/sentinel-echo-agent /sentinel-echo-agent
+COPY --from=builder /app/target/release/zentinel-echo-agent /zentinel-echo-agent
 
-ENV RUST_LOG=info,sentinel_echo_agent=debug \
-    SOCKET_PATH=/var/run/sentinel/echo.sock
+ENV RUST_LOG=info,zentinel_echo_agent=debug \
+    SOCKET_PATH=/var/run/zentinel/echo.sock
 
 USER nonroot:nonroot
 
-CMD ["/sentinel-echo-agent"]
+CMD ["/zentinel-echo-agent"]
 
 ################################################################################
 # Echo agent pre-built stage (for CI multi-arch builds)
 ################################################################################
 FROM gcr.io/distroless/cc-debian12:nonroot AS echo-agent-prebuilt
 
-COPY sentinel-echo-agent /sentinel-echo-agent
+COPY zentinel-echo-agent /zentinel-echo-agent
 
-LABEL org.opencontainers.image.title="Sentinel Echo Agent" \
-      org.opencontainers.image.description="Echo agent for Sentinel proxy testing"
+LABEL org.opencontainers.image.title="Zentinel Echo Agent" \
+      org.opencontainers.image.description="Echo agent for Zentinel proxy testing"
 
-ENV RUST_LOG=info,sentinel_echo_agent=debug \
-    SOCKET_PATH=/var/run/sentinel/echo.sock
+ENV RUST_LOG=info,zentinel_echo_agent=debug \
+    SOCKET_PATH=/var/run/zentinel/echo.sock
 
 USER nonroot:nonroot
 
-ENTRYPOINT ["/sentinel-echo-agent"]
+ENTRYPOINT ["/zentinel-echo-agent"]

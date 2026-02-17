@@ -198,10 +198,10 @@ observability {
         address "0.0.0.0:9090"
         path "/metrics"
         // Key metrics:
-        // - sentinel_upstream_health (per target)
-        // - sentinel_upstream_requests_total
-        // - sentinel_upstream_latency_seconds
-        // - sentinel_circuit_breaker_state
+        // - zentinel_upstream_health (per target)
+        // - zentinel_upstream_requests_total
+        // - zentinel_upstream_latency_seconds
+        // - zentinel_circuit_breaker_state
     }
 
     logging {

@@ -1,4 +1,4 @@
-//! Configuration module for Sentinel proxy
+//! Configuration module for Zentinel proxy
 //!
 //! This module provides configuration parsing, validation, and hot-reload support
 //! with a focus on safety, security-first defaults, and operational clarity.
@@ -24,8 +24,8 @@ use std::path::Path;
 use tracing::{debug, info, trace, warn};
 use validator::Validate;
 
-use sentinel_common::{
-    errors::{SentinelError, SentinelResult},
+use zentinel_common::{
+    errors::{ZentinelError, ZentinelResult},
     limits::Limits,
     types::Priority,
 };
@@ -102,10 +102,10 @@ pub use routes::{
 pub use server::{ListenerConfig, ListenerProtocol, ServerConfig, SniCertificate, TlsConfig};
 
 // Re-export TraceIdFormat from common for convenience
-pub use sentinel_common::TraceIdFormat;
+pub use zentinel_common::TraceIdFormat;
 
 // Re-export budget types from common for convenience
-pub use sentinel_common::budget::{
+pub use zentinel_common::budget::{
     BudgetPeriod, CostAttributionConfig, ModelPricing, TokenBudgetConfig,
 };
 
@@ -124,7 +124,7 @@ pub use waf::{
 };
 
 // Common types re-exported for convenience
-pub use sentinel_common::types::LoadBalancingAlgorithm;
+pub use zentinel_common::types::LoadBalancingAlgorithm;
 
 // ============================================================================
 // Main Configuration Structure
@@ -136,7 +136,7 @@ pub const CURRENT_SCHEMA_VERSION: &str = "1.0";
 /// Minimum schema version supported by this build
 pub const MIN_SCHEMA_VERSION: &str = "1.0";
 
-/// Main configuration structure for Sentinel proxy
+/// Main configuration structure for Zentinel proxy
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[validate(schema(function = "validation::validate_config_semantics"))]
 pub struct Config {
@@ -470,7 +470,7 @@ impl Config {
     }
 
     /// Validate the configuration
-    pub fn validate(&self) -> SentinelResult<()> {
+    pub fn validate(&self) -> ZentinelResult<()> {
         trace!(
             routes = self.routes.len(),
             upstreams = self.upstreams.len(),
@@ -485,7 +485,7 @@ impl Config {
             warn!("{}", warning);
         }
         if !compat.is_loadable() {
-            return Err(SentinelError::Config {
+            return Err(ZentinelError::Config {
                 message: compat
                     .error()
                     .unwrap_or_else(|| "Unknown schema version error".to_string()),
@@ -498,7 +498,7 @@ impl Config {
             "Schema version check passed"
         );
 
-        Validate::validate(self).map_err(|e| SentinelError::Config {
+        Validate::validate(self).map_err(|e| ZentinelError::Config {
             message: format!("Configuration validation failed: {}", e),
             source: None,
         })?;
@@ -527,11 +527,11 @@ impl Config {
         Ok(())
     }
 
-    fn validate_routes(&self) -> SentinelResult<()> {
+    fn validate_routes(&self) -> ZentinelResult<()> {
         for route in &self.routes {
             if let Some(upstream) = &route.upstream {
                 if !self.upstreams.contains_key(upstream) {
-                    return Err(SentinelError::Config {
+                    return Err(ZentinelError::Config {
                         message: format!(
                             "Route '{}' references non-existent upstream '{}'",
                             route.id, upstream
@@ -543,7 +543,7 @@ impl Config {
 
             for filter_id in &route.filters {
                 if !self.filters.contains_key(filter_id) {
-                    return Err(SentinelError::Config {
+                    return Err(ZentinelError::Config {
                         message: format!(
                             "Route '{}' references non-existent filter '{}'",
                             route.id, filter_id
@@ -557,7 +557,7 @@ impl Config {
         for (filter_id, filter_config) in &self.filters {
             if let Filter::Agent(agent_filter) = &filter_config.filter {
                 if !self.agents.iter().any(|a| a.id == agent_filter.agent) {
-                    return Err(SentinelError::Config {
+                    return Err(ZentinelError::Config {
                         message: format!(
                             "Filter '{}' references non-existent agent '{}'",
                             filter_id, agent_filter.agent
@@ -571,10 +571,10 @@ impl Config {
         Ok(())
     }
 
-    fn validate_upstreams(&self) -> SentinelResult<()> {
+    fn validate_upstreams(&self) -> ZentinelResult<()> {
         for (id, upstream) in &self.upstreams {
             if upstream.targets.is_empty() {
-                return Err(SentinelError::Config {
+                return Err(ZentinelError::Config {
                     message: format!("Upstream '{}' has no targets", id),
                     source: None,
                 });
@@ -583,10 +583,10 @@ impl Config {
         Ok(())
     }
 
-    fn validate_agents(&self) -> SentinelResult<()> {
+    fn validate_agents(&self) -> ZentinelResult<()> {
         for agent in &self.agents {
             if agent.timeout_ms == 0 {
-                return Err(SentinelError::Config {
+                return Err(ZentinelError::Config {
                     message: format!("Agent '{}' has invalid timeout", agent.id),
                     source: None,
                 });
@@ -594,7 +594,7 @@ impl Config {
 
             if let AgentTransport::UnixSocket { path } = &agent.transport {
                 if !path.exists() && !path.parent().is_some_and(|p| p.exists()) {
-                    return Err(SentinelError::Config {
+                    return Err(ZentinelError::Config {
                         message: format!(
                             "Agent '{}' unix socket path parent directory doesn't exist: {:?}",
                             agent.id, path
@@ -609,7 +609,7 @@ impl Config {
 
     /// Create a default configuration for testing
     pub fn default_for_testing() -> Self {
-        use sentinel_common::types::LoadBalancingAlgorithm;
+        use zentinel_common::types::LoadBalancingAlgorithm;
 
         let mut upstreams = HashMap::new();
         upstreams.insert(
@@ -698,14 +698,14 @@ impl Config {
     }
 
     /// Reload configuration from the same file path
-    pub fn reload(&mut self, path: impl AsRef<Path>) -> SentinelResult<()> {
+    pub fn reload(&mut self, path: impl AsRef<Path>) -> ZentinelResult<()> {
         let path = path.as_ref();
         debug!(
             path = %path.display(),
             "Reloading configuration"
         );
 
-        let new_config = Self::from_file(path).map_err(|e| SentinelError::Config {
+        let new_config = Self::from_file(path).map_err(|e| ZentinelError::Config {
             message: format!("Failed to reload configuration: {}", e),
             source: None,
         })?;

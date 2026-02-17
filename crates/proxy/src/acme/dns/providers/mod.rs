@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sentinel_config::server::{DnsProviderConfig, DnsProviderType};
+use zentinel_config::server::{DnsProviderConfig, DnsProviderType};
 
 use super::credentials::{CredentialLoader, Credentials};
 use super::provider::{DnsProvider, DnsProviderError, DnsResult};

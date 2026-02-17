@@ -1,7 +1,7 @@
 //! WASM agent host bindings and instance management.
 //!
 //! This module provides the actual implementation of WASM agent execution using
-//! the Wasmtime Component Model. Agents implementing the `sentinel:agent` world
+//! the Wasmtime Component Model. Agents implementing the `zentinel:agent` world
 //! can be loaded and called through this interface.
 
 use crate::component::{
@@ -10,7 +10,7 @@ use crate::component::{
 use crate::config::WasmResourceLimits;
 use crate::error::WasmRuntimeError;
 use parking_lot::Mutex;
-use sentinel_agent_protocol::{AgentResponse, RequestMetadata};
+use zentinel_agent_protocol::{AgentResponse, RequestMetadata};
 use std::collections::HashMap;
 use tracing::{debug, instrument, warn};
 use wasmtime::component::{Component, Linker, ResourceTable};
@@ -127,7 +127,7 @@ impl WasmAgentInstance {
         store: &mut Store<AgentState>,
         agent: &Agent,
     ) -> Result<WasmAgentInfo, WasmRuntimeError> {
-        let handler = agent.sentinel_agent_handler();
+        let handler = agent.zentinel_agent_handler();
         let wit_info = handler
             .call_get_info(store)
             .map_err(|e| WasmRuntimeError::FunctionCall(format!("get_info failed: {}", e)))?;
@@ -143,7 +143,7 @@ impl WasmAgentInstance {
     ) -> Result<(), WasmRuntimeError> {
         debug!(config_len = config_json.len(), "configuring WASM agent");
 
-        let handler = agent.sentinel_agent_handler();
+        let handler = agent.zentinel_agent_handler();
         handler
             .call_configure(store, config_json)
             .map_err(|e| WasmRuntimeError::FunctionCall(format!("configure failed: {}", e)))?
@@ -188,7 +188,7 @@ impl WasmAgentInstance {
         let wit_headers = headers_to_wit(headers);
 
         // Call the WASM function
-        let handler = self.agent.sentinel_agent_handler();
+        let handler = self.agent.zentinel_agent_handler();
         let wit_response = handler
             .call_on_request_headers(&mut *store, &wit_metadata, method, uri, &wit_headers)
             .map_err(|e| {
@@ -225,7 +225,7 @@ impl WasmAgentInstance {
         );
 
         // Call the WASM function
-        let handler = self.agent.sentinel_agent_handler();
+        let handler = self.agent.zentinel_agent_handler();
         let wit_response = handler
             .call_on_request_body(&mut *store, correlation_id, data, chunk_index, is_last)
             .map_err(|e| {
@@ -262,7 +262,7 @@ impl WasmAgentInstance {
         let wit_headers = headers_to_wit(headers);
 
         // Call the WASM function
-        let handler = self.agent.sentinel_agent_handler();
+        let handler = self.agent.zentinel_agent_handler();
         let wit_response = handler
             .call_on_response_headers(&mut *store, correlation_id, status, &wit_headers)
             .map_err(|e| {
@@ -298,7 +298,7 @@ impl WasmAgentInstance {
         );
 
         // Call the WASM function
-        let handler = self.agent.sentinel_agent_handler();
+        let handler = self.agent.zentinel_agent_handler();
         let wit_response = handler
             .call_on_response_body(&mut *store, correlation_id, data, chunk_index, is_last)
             .map_err(|e| {
@@ -318,7 +318,7 @@ impl WasmAgentInstance {
         let mut store = self.store.lock();
         store.set_fuel(self.limits.max_fuel)?;
 
-        let lifecycle = self.agent.sentinel_agent_lifecycle();
+        let lifecycle = self.agent.zentinel_agent_lifecycle();
         lifecycle
             .call_health_check(&mut *store)
             .map_err(|e| WasmRuntimeError::FunctionCall(format!("health_check failed: {}", e)))?
@@ -335,7 +335,7 @@ impl WasmAgentInstance {
             return;
         }
 
-        let lifecycle = self.agent.sentinel_agent_lifecycle();
+        let lifecycle = self.agent.zentinel_agent_lifecycle();
         if let Err(e) = lifecycle.call_shutdown(&mut *store) {
             warn!(error = %e, "WASM agent shutdown failed");
         }

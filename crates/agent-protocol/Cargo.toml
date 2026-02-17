@@ -1,5 +1,5 @@
 [package]
-name = "sentinel-agent-protocol"
+name = "zentinel-agent-protocol"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
-description = "Agent protocol and IPC for Sentinel reverse proxy external processors"
+description = "Agent protocol and IPC for Zentinel reverse proxy external processors"
 keywords = ["proxy", "reverse-proxy", "agent", "protocol", "ipc"]
 categories = ["network-programming"]
 
@@ -20,7 +20,7 @@ mmap-buffers = ["memmap2", "dep:tempfile"]
 
 [dependencies]
 # Local crates
-sentinel-common = { path = "../common", version = "0.5.0" }
+zentinel-common = { path = "../common", version = "0.5.0" }
 
 # Protocol and serialization
 prost = { workspace = true }

@@ -1,4 +1,4 @@
-# Sentinel Test Makefile
+# Zentinel Test Makefile
 # Provides convenient targets for running various test scenarios
 
 .PHONY: all help up down build test test-quick test-echo test-ratelimit test-waf test-security test-performance test-soak test-soak-quick test-soak-extended analyze-soak logs clean test-first-time test-first-time-waf test-first-time-lua
@@ -11,7 +11,7 @@ all: test
 
 # Help
 help:
-	@echo "Sentinel Test Targets"
+	@echo "Zentinel Test Targets"
 	@echo "====================="
 	@echo ""
 	@echo "Environment:"
@@ -47,7 +47,7 @@ help:
 
 # Build Docker images
 build:
-	@echo "Building Sentinel Docker images..."
+	@echo "Building Zentinel Docker images..."
 	cd .. && $(DOCKER_COMPOSE) build
 
 # Start test environment
@@ -62,7 +62,7 @@ up:
 	@echo "  Proxy:      http://localhost:8080"
 	@echo "  Metrics:    http://localhost:9090"
 	@echo "  Prometheus: http://localhost:9091"
-	@echo "  Grafana:    http://localhost:3000 (admin/sentinel)"
+	@echo "  Grafana:    http://localhost:3000 (admin/zentinel)"
 	@echo "  Jaeger:     http://localhost:16686"
 
 # Start test environment with additional test services

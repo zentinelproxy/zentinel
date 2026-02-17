@@ -7,7 +7,7 @@ use std::time::Duration;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use sentinel_proxy::acme::dns::{
+use zentinel_proxy::acme::dns::{
     create_challenge_info, Dns01ChallengeManager, DnsProvider, DnsProviderError, WebhookProvider,
 };
 
@@ -327,7 +327,7 @@ mod challenge_info {
 // ============================================================================
 
 mod config_parsing {
-    use sentinel_config::server::{AcmeChallengeType, DnsProviderType, PropagationCheckConfig};
+    use zentinel_config::server::{AcmeChallengeType, DnsProviderType, PropagationCheckConfig};
 
     #[test]
     fn test_acme_challenge_type_default() {

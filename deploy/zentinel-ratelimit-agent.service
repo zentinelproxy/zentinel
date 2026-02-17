@@ -1,14 +1,14 @@
 [Unit]
-Description=Sentinel Rate Limit Agent - Token Bucket Rate Limiting
-Documentation=https://github.com/raskell-io/sentinel
-After=network.target sentinel.service
-PartOf=sentinel.service
+Description=Zentinel Rate Limit Agent - Token Bucket Rate Limiting
+Documentation=https://github.com/zentinelproxy/zentinel
+After=network.target zentinel.service
+PartOf=zentinel.service
 StartLimitIntervalSec=60
 StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ratelimit-agent --socket /var/run/sentinel/ratelimit.sock
+ExecStart=/usr/local/bin/ratelimit-agent --socket /var/run/zentinel/ratelimit.sock
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=10
@@ -17,25 +17,25 @@ KillMode=mixed
 KillSignal=SIGTERM
 
 # User and permissions
-User=sentinel
-Group=sentinel
+User=zentinel
+Group=zentinel
 UMask=0077
 
 # Environment
 Environment="RUST_LOG=info"
-Environment="RATELIMIT_AGENT_SOCKET=/var/run/sentinel/ratelimit.sock"
+Environment="RATELIMIT_AGENT_SOCKET=/var/run/zentinel/ratelimit.sock"
 Environment="RATELIMIT_AGENT_DEFAULT_RPS=100"
 Environment="RATELIMIT_AGENT_DEFAULT_BURST=200"
-EnvironmentFile=-/etc/sentinel/agents/ratelimit.env
+EnvironmentFile=-/etc/zentinel/agents/ratelimit.env
 
 # Configuration file
-Environment="RATELIMIT_AGENT_CONFIG=/etc/sentinel/agents/ratelimit.yaml"
+Environment="RATELIMIT_AGENT_CONFIG=/etc/zentinel/agents/ratelimit.yaml"
 
 # Working directory
-WorkingDirectory=/var/lib/sentinel
-RuntimeDirectory=sentinel
+WorkingDirectory=/var/lib/zentinel
+RuntimeDirectory=zentinel
 RuntimeDirectoryMode=0755
-StateDirectory=sentinel/ratelimit
+StateDirectory=zentinel/ratelimit
 StateDirectoryMode=0700
 
 # Security hardening
@@ -73,10 +73,10 @@ MemoryHigh=400M
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sentinel-ratelimit-agent
+SyslogIdentifier=zentinel-ratelimit-agent
 
 # Process management
 OOMScoreAdjust=-200
 
 [Install]
-WantedBy=sentinel.service
+WantedBy=zentinel.service

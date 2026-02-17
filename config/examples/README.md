@@ -1,6 +1,6 @@
 # Configuration Examples
 
-Example configurations demonstrating Sentinel features and patterns.
+Example configurations demonstrating Zentinel features and patterns.
 
 ## Getting Started
 
@@ -86,18 +86,18 @@ Copy an example as a starting point:
 
 ```bash
 cp config/examples/basic.kdl my-config.kdl
-sentinel --config my-config.kdl
+zentinel --config my-config.kdl
 ```
 
 Validate without starting:
 
 ```bash
-sentinel --config my-config.kdl --dry-run
+zentinel --config my-config.kdl --dry-run
 ```
 
 ## Related Documentation
 
-- [Main Configuration Reference](../sentinel.kdl) - Full configuration with all options
+- [Main Configuration Reference](../zentinel.kdl) - Full configuration with all options
 - [Multi-File Example](../example-multi-file/) - Splitting config across files
 - [Config Crate Docs](../../crates/config/) - Parser and schema details
 

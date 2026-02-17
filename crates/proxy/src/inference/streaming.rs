@@ -33,7 +33,7 @@ use serde_json::Value;
 use tracing::{trace, warn};
 
 use super::tiktoken::tiktoken_manager;
-use sentinel_config::InferenceProvider;
+use zentinel_config::InferenceProvider;
 
 /// Streaming token counter for SSE responses.
 ///

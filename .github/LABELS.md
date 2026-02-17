@@ -1,6 +1,6 @@
 # Issue Labels
 
-Sentinel uses a structured labeling system for issue triage and organization.
+Zentinel uses a structured labeling system for issue triage and organization.
 
 ## Label Categories
 
@@ -24,10 +24,10 @@ Which part of the codebase is affected?
 
 | Label | Description | Color |
 |-------|-------------|-------|
-| `area:proxy` | Core proxy (`sentinel-proxy`) | `#1d76db` |
-| `area:config` | Configuration (`sentinel-config`) | `#1d76db` |
-| `area:agent-protocol` | Agent protocol (`sentinel-agent-protocol`) | `#1d76db` |
-| `area:common` | Shared utilities (`sentinel-common`) | `#1d76db` |
+| `area:proxy` | Core proxy (`zentinel-proxy`) | `#1d76db` |
+| `area:config` | Configuration (`zentinel-config`) | `#1d76db` |
+| `area:agent-protocol` | Agent protocol (`zentinel-agent-protocol`) | `#1d76db` |
+| `area:common` | Shared utilities (`zentinel-common`) | `#1d76db` |
 | `area:wasm` | WASM runtime | `#1d76db` |
 | `area:agents` | External agents (not protocol) | `#1d76db` |
 | `area:ci` | CI/CD and workflows | `#1d76db` |
@@ -73,7 +73,7 @@ What's the current state?
 
 ### Manifesto (`manifesto:*`)
 
-Alignment with Sentinel's principles (for features/enhancements).
+Alignment with Zentinel's principles (for features/enhancements).
 
 | Label | Description | Color |
 |-------|-------------|-------|
@@ -155,10 +155,10 @@ gh label create "type:performance" --color "f9d0c4" --description "Performance i
 gh label create "type:security" --color "b60205" --description "Security-related issue"
 
 # Area labels
-gh label create "area:proxy" --color "1d76db" --description "Core proxy (sentinel-proxy)"
-gh label create "area:config" --color "1d76db" --description "Configuration (sentinel-config)"
-gh label create "area:agent-protocol" --color "1d76db" --description "Agent protocol (sentinel-agent-protocol)"
-gh label create "area:common" --color "1d76db" --description "Shared utilities (sentinel-common)"
+gh label create "area:proxy" --color "1d76db" --description "Core proxy (zentinel-proxy)"
+gh label create "area:config" --color "1d76db" --description "Configuration (zentinel-config)"
+gh label create "area:agent-protocol" --color "1d76db" --description "Agent protocol (zentinel-agent-protocol)"
+gh label create "area:common" --color "1d76db" --description "Shared utilities (zentinel-common)"
 gh label create "area:wasm" --color "1d76db" --description "WASM runtime"
 gh label create "area:agents" --color "1d76db" --description "External agents (not protocol)"
 gh label create "area:ci" --color "1d76db" --description "CI/CD and workflows"

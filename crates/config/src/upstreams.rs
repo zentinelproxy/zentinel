@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use validator::Validate;
 
-use sentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
+use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 
 // ============================================================================
 // Sticky Session Configuration

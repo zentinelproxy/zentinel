@@ -1,6 +1,6 @@
-# Sentinel Testing Guide
+# Zentinel Testing Guide
 
-This directory contains the integration test suite for Sentinel reverse proxy. The tests validate both the engineering (source code) and configuration correctness in a simulated production-like environment.
+This directory contains the integration test suite for Zentinel reverse proxy. The tests validate both the engineering (source code) and configuration correctness in a simulated production-like environment.
 
 ## Quick Start
 
@@ -22,14 +22,14 @@ The test environment consists of:
 
 | Component | Port | Description |
 |-----------|------|-------------|
-| Sentinel Proxy | 8080 (HTTP), 8443 (HTTPS) | Main reverse proxy |
+| Zentinel Proxy | 8080 (HTTP), 8443 (HTTPS) | Main reverse proxy |
 | Metrics | 9090 | Proxy health and Prometheus metrics |
 | Backend | 8081 | httpbin test service |
 | Rate Limit Agent | 9092 (metrics) | Token-bucket rate limiting |
 | WAF Agent | 9094 (metrics) | ModSecurity-based WAF |
 | Echo Agent | - | Header manipulation test agent |
 | Prometheus | 9091 | Metrics collection |
-| Grafana | 3000 | Visualization (admin/sentinel) |
+| Grafana | 3000 | Visualization (admin/zentinel) |
 | Jaeger | 16686 | Distributed tracing UI |
 
 ## Available Make Targets
@@ -141,8 +141,8 @@ cd tests
 # Start mock backend
 python3 fixtures/mock-backend.py &
 
-# Start Sentinel with inline OpenAPI config
-../target/release/sentinel -c test-inline-openapi.kdl &
+# Start Zentinel with inline OpenAPI config
+../target/release/zentinel -c test-inline-openapi.kdl &
 
 # Run validation tests
 ./test_inline_openapi.sh
@@ -179,7 +179,7 @@ The main integration test script (`integration_test.sh`) provides comprehensive 
 ### Start the Environment
 
 ```bash
-cd /path/to/sentinel
+cd /path/to/zentinel
 docker compose -f docker-compose.yml up -d
 
 # Wait for services
@@ -219,7 +219,7 @@ curl http://localhost:8080/protected/?id="' OR '1'='1" \
 
 ```bash
 # Proxy metrics
-curl http://localhost:9090/metrics | grep sentinel_
+curl http://localhost:9090/metrics | grep zentinel_
 
 # Rate limit agent metrics
 curl http://localhost:9092/metrics
@@ -231,7 +231,7 @@ curl http://localhost:9094/metrics
 ### View Observability Tools
 
 - **Prometheus**: http://localhost:9091
-- **Grafana**: http://localhost:3000 (admin/sentinel)
+- **Grafana**: http://localhost:3000 (admin/zentinel)
 - **Jaeger**: http://localhost:16686
 
 ## Test Configuration
@@ -284,7 +284,7 @@ docker compose build --no-cache
 curl -v http://localhost:9090/health
 
 # Check agent connectivity
-docker compose exec proxy ls -la /var/run/sentinel/
+docker compose exec proxy ls -la /var/run/zentinel/
 
 # View agent logs
 docker compose logs ratelimit
@@ -294,7 +294,7 @@ docker compose logs waf
 ### Rate Limiting Not Working
 
 The rate limit agent may not be connected. Check:
-1. Agent socket exists: `/var/run/sentinel/ratelimit.sock`
+1. Agent socket exists: `/var/run/zentinel/ratelimit.sock`
 2. Agent is running: `docker compose ps ratelimit`
 3. Agent logs: `docker compose logs ratelimit`
 

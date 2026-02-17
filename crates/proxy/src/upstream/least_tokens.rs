@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, trace};
 
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 
@@ -218,7 +218,7 @@ pub struct LeastTokensQueuedTargetStats {
 
 #[async_trait]
 impl LoadBalancer for LeastTokensQueuedBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             algorithm = "least_tokens_queued",
@@ -282,7 +282,7 @@ impl LoadBalancer for LeastTokensQueuedBalancer {
                     algorithm = "least_tokens_queued",
                     "No healthy upstream targets available"
                 );
-                Err(SentinelError::NoHealthyUpstream)
+                Err(ZentinelError::NoHealthyUpstream)
             }
         }
     }

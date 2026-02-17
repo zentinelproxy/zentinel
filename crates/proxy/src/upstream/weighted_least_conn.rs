@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
 
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 
@@ -125,7 +125,7 @@ impl WeightedLeastConnBalancer {
 
 #[async_trait]
 impl LoadBalancer for WeightedLeastConnBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.targets.len(),
             algorithm = "weighted_least_conn",
@@ -156,7 +156,7 @@ impl LoadBalancer for WeightedLeastConnBalancer {
                 algorithm = "weighted_least_conn",
                 "No healthy upstream targets available"
             );
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         // Find minimum score
@@ -174,7 +174,7 @@ impl LoadBalancer for WeightedLeastConnBalancer {
 
         let target = self
             .break_tie(&candidates)
-            .ok_or(SentinelError::NoHealthyUpstream)?;
+            .ok_or(ZentinelError::NoHealthyUpstream)?;
 
         // Increment connection count
         drop(conns);

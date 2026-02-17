@@ -1,4 +1,4 @@
-// Sentinel Configuration - Phase 1
+// Zentinel Configuration - Phase 1
 // KDL Format: https://kdl.dev
 
 // Server-wide configuration
@@ -7,7 +7,7 @@ system {
     max-connections 10000
     graceful-shutdown-timeout-secs 30
     daemon #false
-    pid-file "/var/run/sentinel.pid"
+    pid-file "/var/run/zentinel.pid"
 }
 
 // Listener configurations
@@ -28,8 +28,8 @@ listeners {
         keepalive-timeout-secs 75
 
         tls {
-            cert-file "/etc/sentinel/certs/server.crt"
-            key-file "/etc/sentinel/certs/server.key"
+            cert-file "/etc/zentinel/certs/server.crt"
+            key-file "/etc/zentinel/certs/server.key"
             min-version "TLS1.2"
             ocsp-stapling #true
             session-resumption #true
@@ -347,7 +347,7 @@ waf {
         crs-version "3.3.4"
         paranoia-level 1
         anomaly-threshold 5
-        custom-rules-dir "/etc/sentinel/waf/rules"
+        custom-rules-dir "/etc/zentinel/waf/rules"
 
         exclusions {
             exclusion {
@@ -429,7 +429,7 @@ observability {
         // Access log - all HTTP requests with trace_id for correlation
         access-log {
             enabled #true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             format "json"  // "json" or "combined"
             buffer-size 8192
             include-trace-id #true
@@ -438,7 +438,7 @@ observability {
         // Error log - warnings and errors
         error-log {
             enabled #true
-            file "/var/log/sentinel/error.log"
+            file "/var/log/zentinel/error.log"
             level "warn"  // minimum level: "warn" or "error"
             buffer-size 8192
         }
@@ -446,7 +446,7 @@ observability {
         // Audit log - security events (blocked requests, agent decisions, WAF)
         audit-log {
             enabled #true
-            file "/var/log/sentinel/audit.log"
+            file "/var/log/zentinel/audit.log"
             buffer-size 8192
             log-blocked #true
             log-agent-decisions #true
@@ -459,6 +459,6 @@ observability {
             endpoint "http://localhost:4317"
         }
         sampling-rate 0.01  // 1% sampling
-        service-name "sentinel"
+        service-name "zentinel"
     }
 }

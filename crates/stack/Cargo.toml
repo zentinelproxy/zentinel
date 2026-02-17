@@ -1,16 +1,16 @@
 [package]
-name = "sentinel-stack"
+name = "zentinel-stack"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "All-in-one launcher for Sentinel proxy and agents"
-keywords = ["sentinel", "proxy", "launcher", "process-manager"]
+description = "All-in-one launcher for Zentinel proxy and agents"
+keywords = ["zentinel", "proxy", "launcher", "process-manager"]
 categories = ["command-line-utilities", "network-programming"]
 
 [[bin]]
-name = "sentinel-stack"
+name = "zentinel-stack"
 path = "src/main.rs"
 
 [dependencies]

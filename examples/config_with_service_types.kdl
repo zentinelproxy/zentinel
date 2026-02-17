@@ -1,4 +1,4 @@
-// Sentinel Configuration Example with Service Types
+// Zentinel Configuration Example with Service Types
 // This example demonstrates web, API, and static file serving routes
 
 system {
@@ -19,8 +19,8 @@ listeners {
         address "0.0.0.0:8443"
         protocol "https"
         tls {
-            cert_file "/etc/sentinel/certs/server.crt"
-            key_file "/etc/sentinel/certs/server.key"
+            cert_file "/etc/zentinel/certs/server.crt"
+            key_file "/etc/zentinel/certs/server.key"
             min_version "TLSv1.2"
         }
     }
@@ -43,7 +43,7 @@ routes {
         // HTML error pages for web service
         error_pages {
             default_format "html"
-            template_dir "/etc/sentinel/error-templates"
+            template_dir "/etc/zentinel/error-templates"
 
             pages {
                 404 {
@@ -81,7 +81,7 @@ routes {
 
         // JSON Schema validation for API
         api_schema {
-            schema_file "/etc/sentinel/schemas/api-v1-openapi.yaml"
+            schema_file "/etc/zentinel/schemas/api-v1-openapi.yaml"
             validate_requests true
             validate_responses false  // Enable in development
             strict_mode false
@@ -453,7 +453,7 @@ observability {
 
         access_log {
             enabled true
-            file "/var/log/sentinel/access.log"
+            file "/var/log/zentinel/access.log"
             format "json"
             buffer_size 8192
         }
@@ -462,6 +462,6 @@ observability {
     tracing {
         backend { otlp { endpoint "http://localhost:4317" } }
         sampling_rate 0.01
-        service_name "sentinel-proxy"
+        service_name "zentinel-proxy"
     }
 }

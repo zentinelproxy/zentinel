@@ -11,7 +11,7 @@ The `AgentClient` is used by the proxy dataplane to communicate with external ag
 #### Unix Domain Socket
 
 ```rust
-use sentinel_agent_protocol::AgentClient;
+use zentinel_agent_protocol::AgentClient;
 use std::time::Duration;
 
 let client = AgentClient::unix_socket(
@@ -24,7 +24,7 @@ let client = AgentClient::unix_socket(
 #### gRPC
 
 ```rust
-use sentinel_agent_protocol::AgentClient;
+use zentinel_agent_protocol::AgentClient;
 use std::time::Duration;
 
 let client = AgentClient::grpc(
@@ -37,7 +37,7 @@ let client = AgentClient::grpc(
 ### Sending Events
 
 ```rust
-use sentinel_agent_protocol::{EventType, RequestHeadersEvent, RequestMetadata};
+use zentinel_agent_protocol::{EventType, RequestHeadersEvent, RequestMetadata};
 use std::collections::HashMap;
 
 // Build the event
@@ -106,7 +106,7 @@ The `AgentServer` runs an agent handler and accepts connections from the proxy.
 ### Creating a Server (Unix Socket)
 
 ```rust
-use sentinel_agent_protocol::{AgentServer, AgentHandler, AgentResponse, RequestHeadersEvent};
+use zentinel_agent_protocol::{AgentServer, AgentHandler, AgentResponse, RequestHeadersEvent};
 use async_trait::async_trait;
 
 struct MyAgent;
@@ -132,7 +132,7 @@ server.run().await?;
 ### Creating a gRPC Server
 
 ```rust
-use sentinel_agent_protocol::{GrpcAgentServer, AgentHandler};
+use zentinel_agent_protocol::{GrpcAgentServer, AgentHandler};
 
 struct MyAgent;
 // ... implement AgentHandler ...
@@ -160,7 +160,7 @@ The `AgentResponse` struct provides convenient builder methods:
 ### Creating Responses
 
 ```rust
-use sentinel_agent_protocol::{AgentResponse, Decision, HeaderOp, BodyMutation};
+use zentinel_agent_protocol::{AgentResponse, Decision, HeaderOp, BodyMutation};
 
 // Allow with no modifications
 let response = AgentResponse::default_allow();
@@ -201,7 +201,7 @@ let response = AgentResponse::needs_more_data();
 ## Header Operations
 
 ```rust
-use sentinel_agent_protocol::HeaderOp;
+use zentinel_agent_protocol::HeaderOp;
 
 // Set or overwrite a header
 let op = HeaderOp::Set {
@@ -224,7 +224,7 @@ let op = HeaderOp::Remove {
 ## Body Mutations
 
 ```rust
-use sentinel_agent_protocol::BodyMutation;
+use zentinel_agent_protocol::BodyMutation;
 
 // Pass chunk through unchanged
 let mutation = BodyMutation::pass_through(chunk_index);
@@ -245,7 +245,7 @@ assert!(mutation.is_drop());
 Add structured audit data for logging and metrics:
 
 ```rust
-use sentinel_agent_protocol::AuditMetadata;
+use zentinel_agent_protocol::AuditMetadata;
 use std::collections::HashMap;
 
 let audit = AuditMetadata {

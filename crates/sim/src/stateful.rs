@@ -1,4 +1,4 @@
-//! Stateful policy simulation for Sentinel configurations
+//! Stateful policy simulation for Zentinel configurations
 //!
 //! This module enables simulation of multiple requests with state tracking for:
 //! - Rate limiting (token bucket)
@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use crate::matcher::RouteMatcher;
 use crate::trace::MatchStep;
 use crate::types::{MatchedRoute, SimulatedRequest};
-use sentinel_config::Config;
+use zentinel_config::Config;
 
 // ============================================================================
 // Input Types
@@ -701,7 +701,7 @@ impl LoadBalancerState {
 ///
 /// # Arguments
 ///
-/// * `config` - The parsed Sentinel configuration
+/// * `config` - The parsed Zentinel configuration
 /// * `requests` - Sequence of timestamped requests to simulate
 ///
 /// # Returns
@@ -1027,7 +1027,7 @@ mod tests {
             }
         "#;
 
-        let config = sentinel_config::Config::from_kdl(config_kdl).unwrap();
+        let config = zentinel_config::Config::from_kdl(config_kdl).unwrap();
 
         // Should cycle through targets
         let (t1, _) = lb.select_target(&config, "backend", 0, 0.0);

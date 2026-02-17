@@ -34,7 +34,7 @@ SUCCESS_THRESHOLD=2
 get_cb_state() {
     # Get circuit breaker state from metrics
     # States: 0=closed, 1=open, 2=half-open
-    get_metric "sentinel_agent_circuit_breaker_state" "agent=\"echo\""
+    get_metric "zentinel_agent_circuit_breaker_state" "agent=\"echo\""
 }
 
 get_cb_state_name() {
@@ -228,7 +228,7 @@ test_circuit_breaker_metrics() {
 
     # Check for circuit breaker opens
     local opens
-    opens=$(get_metric "sentinel_agent_circuit_breaker_opens_total" "agent=\"echo\"")
+    opens=$(get_metric "zentinel_agent_circuit_breaker_opens_total" "agent=\"echo\"")
     if [[ -n "$opens" && "$opens" -gt 0 ]]; then
         log_pass "Circuit breaker open events recorded: $opens"
     else
@@ -237,7 +237,7 @@ test_circuit_breaker_metrics() {
 
     # Check for state changes
     local state_changes
-    state_changes=$(get_metrics_matching "sentinel_agent_circuit_breaker")
+    state_changes=$(get_metrics_matching "zentinel_agent_circuit_breaker")
     if [[ -n "$state_changes" ]]; then
         log_info "Circuit breaker metrics:"
         echo "$state_changes" | while read -r line; do

@@ -1,10 +1,10 @@
 //! Configuration validators for hot reload.
 //!
 //! These validators perform runtime-specific validation that complements
-//! the schema-level validation in sentinel-config.
+//! the schema-level validation in zentinel-config.
 
-use sentinel_common::errors::{SentinelError, SentinelResult};
-use sentinel_config::Config;
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
+use zentinel_config::Config;
 use tracing::{debug, trace, warn};
 
 use super::ConfigValidator;
@@ -12,13 +12,13 @@ use super::ConfigValidator;
 /// Route configuration validator
 ///
 /// Performs runtime-specific route validation that complements the schema-level
-/// validation in sentinel-config. This validator focuses on aspects that may
+/// validation in zentinel-config. This validator focuses on aspects that may
 /// change during hot reload.
 pub struct RouteValidator;
 
 #[async_trait::async_trait]
 impl ConfigValidator for RouteValidator {
-    async fn validate(&self, config: &Config) -> SentinelResult<()> {
+    async fn validate(&self, config: &Config) -> ZentinelResult<()> {
         trace!(route_count = config.routes.len(), "Running route validator");
 
         // Most validation is now handled by Config's validate_config_semantics
@@ -33,7 +33,7 @@ impl ConfigValidator for RouteValidator {
                     route_id = %route.id,
                     "Route has both upstream and static-files configured"
                 );
-                return Err(SentinelError::Config {
+                return Err(ZentinelError::Config {
                     message: format!(
                         "Route '{}' has both 'upstream' and 'static-files' configured.\n\
                          A route can only be one type. Choose either:\n\
@@ -61,7 +61,7 @@ impl ConfigValidator for RouteValidator {
                         root = %static_config.root.display(),
                         "Static files root directory does not exist"
                     );
-                    return Err(SentinelError::Config {
+                    return Err(ZentinelError::Config {
                         message: format!(
                             "Route '{}' static files root directory '{}' does not exist.\n\
                              Hint: Create the directory or update the path:\n\
@@ -86,7 +86,7 @@ impl ConfigValidator for RouteValidator {
                         root = %static_config.root.display(),
                         "Static files root is not a directory"
                     );
-                    return Err(SentinelError::Config {
+                    return Err(ZentinelError::Config {
                         message: format!(
                             "Route '{}' static files root '{}' is not a directory.\n\
                              The 'root' must be a directory path, not a file.",
@@ -111,13 +111,13 @@ impl ConfigValidator for RouteValidator {
 /// Upstream configuration validator
 ///
 /// Performs runtime-specific upstream validation. The schema-level validation
-/// in sentinel-config handles most checks; this focuses on network reachability
+/// in zentinel-config handles most checks; this focuses on network reachability
 /// and runtime concerns.
 pub struct UpstreamValidator;
 
 #[async_trait::async_trait]
 impl ConfigValidator for UpstreamValidator {
-    async fn validate(&self, config: &Config) -> SentinelResult<()> {
+    async fn validate(&self, config: &Config) -> ZentinelResult<()> {
         trace!(
             upstream_count = config.upstreams.len(),
             "Running upstream validator"
@@ -164,7 +164,7 @@ impl ConfigValidator for UpstreamValidator {
                     "Invalid target address format"
                 );
 
-                return Err(SentinelError::Config {
+                return Err(ZentinelError::Config {
                     message: format!(
                         "Upstream '{}' target #{} has invalid address '{}'.\n\
                          \n\

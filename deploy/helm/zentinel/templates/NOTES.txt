@@ -1,25 +1,25 @@
 
-Sentinel has been deployed successfully!
+Zentinel has been deployed successfully!
 
 {{- if .Values.proxy.enabled }}
 ================================================================================
-                              SENTINEL PROXY
+                              ZENTINEL PROXY
 ================================================================================
 
 {{- if contains "NodePort" .Values.proxy.service.type }}
   Get the proxy URL by running:
-    export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "sentinel.fullname" . }}-proxy)
+    export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "zentinel.fullname" . }}-proxy)
     export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
-    echo "Sentinel Proxy: http://$NODE_IP:$NODE_PORT"
+    echo "Zentinel Proxy: http://$NODE_IP:$NODE_PORT"
 {{- else if contains "LoadBalancer" .Values.proxy.service.type }}
   Get the proxy URL by running:
     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-    kubectl get svc --namespace {{ .Release.Namespace }} {{ include "sentinel.fullname" . }}-proxy -w
+    kubectl get svc --namespace {{ .Release.Namespace }} {{ include "zentinel.fullname" . }}-proxy -w
 {{- else if contains "ClusterIP" .Values.proxy.service.type }}
   Get the proxy URL by running:
-    export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "sentinel.name" . }},app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=proxy" -o jsonpath="{.items[0].metadata.name}")
+    export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "zentinel.name" . }},app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=proxy" -o jsonpath="{.items[0].metadata.name}")
     kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:{{ .Values.proxy.service.httpTargetPort }}
-    echo "Sentinel Proxy: http://127.0.0.1:8080"
+    echo "Zentinel Proxy: http://127.0.0.1:8080"
 {{- end }}
 
   Metrics endpoint: http://<proxy-ip>:{{ .Values.proxy.service.metricsPort }}/metrics
@@ -28,7 +28,7 @@ Sentinel has been deployed successfully!
 
 {{- if .Values.proxy.ingress.enabled }}
 
-  Ingress has been configured. Access Sentinel at:
+  Ingress has been configured. Access Zentinel at:
 {{- range $host := .Values.proxy.ingress.hosts }}
   {{- range .paths }}
     http{{ if $.Values.proxy.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
@@ -50,10 +50,10 @@ Sentinel has been deployed successfully!
 {{- if .Values.monitoring.grafana.enabled }}
   Grafana dashboards have been provisioned:
   {{- if .Values.monitoring.grafana.dashboards.proxy }}
-  - Sentinel Proxy Overview
+  - Zentinel Proxy Overview
   {{- end }}
   {{- if .Values.monitoring.grafana.dashboards.waf }}
-  - Sentinel WAF
+  - Zentinel WAF
   {{- end }}
 {{- end }}
 {{- end }}
@@ -84,15 +84,15 @@ Sentinel has been deployed successfully!
 ================================================================================
 
   # View proxy logs
-  kubectl logs -f -l app.kubernetes.io/name={{ include "sentinel.name" . }},app.kubernetes.io/component=proxy -n {{ .Release.Namespace }}
+  kubectl logs -f -l app.kubernetes.io/name={{ include "zentinel.name" . }},app.kubernetes.io/component=proxy -n {{ .Release.Namespace }}
 
   # View configuration
-  kubectl get configmap {{ include "sentinel.fullname" . }}-proxy-config -n {{ .Release.Namespace }} -o yaml
+  kubectl get configmap {{ include "zentinel.fullname" . }}-proxy-config -n {{ .Release.Namespace }} -o yaml
 
   # Check pod status
   kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
 
   # Validate configuration
-  kubectl exec -it deploy/{{ include "sentinel.fullname" . }}-proxy -n {{ .Release.Namespace }} -- sentinel --config /etc/sentinel/config.kdl --dry-run
+  kubectl exec -it deploy/{{ include "zentinel.fullname" . }}-proxy -n {{ .Release.Namespace }} -- zentinel --config /etc/zentinel/config.kdl --dry-run
 
-For more information, visit: https://sentinel.raskell.io/docs/
+For more information, visit: https://zentinelproxy.io/docs/

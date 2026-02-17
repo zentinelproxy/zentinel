@@ -1,10 +1,10 @@
-// Sentinel Agent Protocol v2 - gRPC Definition
+// Zentinel Agent Protocol v2 - gRPC Definition
 //
 // Protocol v2 adds bidirectional streaming, health reporting, capability
 // negotiation, flow control, and metrics export.
 
 syntax = "proto3";
-package sentinel.agent.v2;
+package zentinel.agent.v2;
 
 // =============================================================================
 // Core Enums

@@ -1,6 +1,6 @@
 # Module Reference
 
-Comprehensive documentation for all modules in the Sentinel proxy crate.
+Comprehensive documentation for all modules in the Zentinel proxy crate.
 
 ## Core Modules
 
@@ -15,10 +15,10 @@ The main proxy implementation using Pingora's `ProxyHttp` trait.
 - `http_trait` - `ProxyHttp` trait implementation
 - `model_routing` - Model-based routing for inference
 
-**Key Struct:** `SentinelProxy`
+**Key Struct:** `ZentinelProxy`
 
 ```rust
-pub struct SentinelProxy {
+pub struct ZentinelProxy {
     config_manager: Arc<ConfigManager>,
     route_matcher: Arc<RouteMatcher>,
     upstream_pool: Arc<UpstreamPool>,
@@ -34,10 +34,10 @@ pub struct SentinelProxy {
 
 Application entry point and server lifecycle management.
 
-**Key Struct:** `SentinelApp`
+**Key Struct:** `ZentinelApp`
 
 ```rust
-impl SentinelApp {
+impl ZentinelApp {
     pub fn new(config: Config) -> Result<Self, Error>;
     pub async fn run(self) -> Result<(), Error>;
     pub fn shutdown(&self);

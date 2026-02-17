@@ -1,4 +1,4 @@
-# Sentinel Chaos Tests Makefile
+# Zentinel Chaos Tests Makefile
 #
 # Quick reference:
 #   make test          - Run all chaos tests
@@ -14,7 +14,7 @@
 
 # Default target
 help:
-	@echo "Sentinel Chaos Tests"
+	@echo "Zentinel Chaos Tests"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make test              Run all chaos tests"
@@ -152,4 +152,4 @@ health:
 
 # Fetch metrics
 metrics:
-	@curl -sf http://localhost:9090/metrics | grep -E "^sentinel_" | head -20
+	@curl -sf http://localhost:9090/metrics | grep -E "^zentinel_" | head -20

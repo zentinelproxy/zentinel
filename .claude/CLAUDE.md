@@ -1,8 +1,8 @@
-# Sentinel
+# Zentinel
 
 > **Security-first reverse proxy built to guard the free web.**
 
-Sentinel is an open-source, high-performance reverse proxy built on Cloudflare's Pingora framework. It emphasizes **predictability**, **transparency**, and **operational simplicity**—infrastructure that lets operators sleep.
+Zentinel is an open-source, high-performance reverse proxy built on Cloudflare's Pingora framework. It emphasizes **predictability**, **transparency**, and **operational simplicity**—infrastructure that lets operators sleep.
 
 ## Philosophy (North Star)
 
@@ -26,7 +26,7 @@ Every contribution must align with the [Manifesto](../MANIFESTO.md):
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         Sentinel Proxy                               │
+│                         Zentinel Proxy                               │
 │  ┌─────────────────────────────────────────────────────────────────┐│
 │  │                    Pingora Foundation                            ││
 │  │  (async I/O, connection pooling, TLS, HTTP/1.1 & HTTP/2)        ││
@@ -56,22 +56,22 @@ Each crate has its own `docs/` directory with detailed documentation. **When mak
 
 ### Core Crates
 
-#### `sentinel-proxy` (`crates/proxy/`)
+#### `zentinel-proxy` (`crates/proxy/`)
 Main binary and Pingora integration. Implements HTTP handling, routing, filtering, and upstream communication.
-- **Key types:** `SentinelProxy`, `ProxyApp`
+- **Key types:** `ZentinelProxy`, `ProxyApp`
 - **Docs:** `crates/proxy/docs/` — architecture, agents, rate-limiting, inference routing, modules
 
-#### `sentinel-config` (`crates/config/`)
+#### `zentinel-config` (`crates/config/`)
 KDL configuration parsing, validation, and schema. Handles all configuration file processing.
 - **Key types:** `Config`, `RouteConfig`, `UpstreamConfig`, `ListenerConfig`
 - **Docs:** `crates/config/docs/` — KDL format, schema reference, validation rules, examples
 
-#### `sentinel-agent-protocol` (`crates/agent-protocol/`)
+#### `zentinel-agent-protocol` (`crates/agent-protocol/`)
 Agent communication protocols (v1 legacy and v2 current). Handles UDS, gRPC, and reverse connections.
 - **Key types:** `AgentPool`, `AgentClientV2`, `Decision`, `ReverseConnectionListener`
 - **Docs:** `crates/agent-protocol/docs/` — v1/ and v2/ protocol specs, API reference, transport options
 
-#### `sentinel-common` (`crates/common/`)
+#### `zentinel-common` (`crates/common/`)
 Shared types, utilities, and error handling used across all crates.
 - **Key types:** `RequestId`, `Limits`, error types, identifiers
 - **Docs:** `crates/common/docs/` — errors, identifiers, limits, observability, patterns
@@ -88,17 +88,17 @@ Shared types, utilities, and error handling used across all crates.
 ### Crate Dependencies
 
 ```
-sentinel-proxy
-├── sentinel-config
-├── sentinel-agent-protocol
-├── sentinel-common
+zentinel-proxy
+├── zentinel-config
+├── zentinel-agent-protocol
+├── zentinel-common
 └── pingora (external)
 
-sentinel-config
-└── sentinel-common
+zentinel-config
+└── zentinel-common
 
-sentinel-agent-protocol
-└── sentinel-common
+zentinel-agent-protocol
+└── zentinel-common
 ```
 
 **Dependency rules:**
@@ -144,7 +144,7 @@ Human-readable configuration language. Key blocks:
 | File | Purpose |
 |------|---------|
 | [rust-standards.md](rules/rust-standards.md) | Rust coding standards (APIs, error handling, async) |
-| [project.md](rules/project.md) | Sentinel-specific context and architecture |
+| [project.md](rules/project.md) | Zentinel-specific context and architecture |
 | [patterns.md](rules/patterns.md) | Code patterns (Pingora, agents, config) |
 | [workflow.md](rules/workflow.md) | Commands, testing, releases |
 
@@ -161,14 +161,14 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 
 # Run locally
-cargo run --bin sentinel -- --config config/sentinel.kdl
+cargo run --bin zentinel -- --config config/zentinel.kdl
 
 # Run specific tests
-cargo test -p sentinel-proxy test_name
-cargo test -p sentinel-config --lib
+cargo test -p zentinel-proxy test_name
+cargo test -p zentinel-config --lib
 
 # Benchmarks
-cargo bench -p sentinel-proxy
+cargo bench -p zentinel-proxy
 ```
 
 ### Key Files
@@ -178,7 +178,7 @@ cargo bench -p sentinel-proxy
 | `crates/proxy/src/lib.rs` | Main proxy implementation |
 | `crates/config/src/lib.rs` | Configuration parsing entry |
 | `crates/agent-protocol/src/v2/` | Agent protocol v2 implementation |
-| `config/sentinel.kdl` | Default configuration |
+| `config/zentinel.kdl` | Default configuration |
 | `tests/` | Integration tests |
 
 ### Documentation
@@ -197,8 +197,8 @@ crates/common/docs/          # Shared types, errors, patterns
 **Update when:** Changing APIs, adding features, modifying behavior.
 
 #### 2. Documentation site (separate repo)
-**Repo:** `github.com/raskell-io/sentinel.raskell.io-docs`
-**Live:** https://sentinel.raskell.io/docs
+**Repo:** `github.com/zentinelproxy/zentinelproxy.io-docs`
+**Live:** https://zentinelproxy.io/docs
 
 Contains user-facing documentation: getting started, configuration guides, examples, operations, deployment.
 
@@ -225,8 +225,8 @@ content/
 - [AGENT_PROTOCOL_2.0.md](AGENT_PROTOCOL_2.0.md) — Agent protocol design and roadmap
 
 #### External Links
-- **Marketing site:** https://sentinel.raskell.io
-- **Documentation:** https://sentinel.raskell.io/docs
+- **Marketing site:** https://zentinelproxy.io
+- **Documentation:** https://zentinelproxy.io/docs
 
 ---
 
@@ -245,6 +245,6 @@ Before submitting code:
 
 **Documentation:**
 - [ ] Crate `docs/` updated if API or behavior changed
-- [ ] Docs site (`sentinel.raskell.io-docs`) updated if user-visible changes
+- [ ] Docs site (`zentinelproxy.io-docs`) updated if user-visible changes
 - [ ] Code comments for non-obvious logic
 - [ ] Public API has doc comments with `# Errors` section

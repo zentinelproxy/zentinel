@@ -1,9 +1,9 @@
 apiVersion: 1
 
 providers:
-  - name: 'Sentinel Dashboards'
+  - name: 'Zentinel Dashboards'
     orgId: 1
-    folder: 'Sentinel'
+    folder: 'Zentinel'
     type: file
     disableDeletion: false
     editable: true

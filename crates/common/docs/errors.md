@@ -2,16 +2,16 @@
 
 Comprehensive error types with HTTP status mapping and observability.
 
-## SentinelError
+## ZentinelError
 
-The main error type used throughout Sentinel.
+The main error type used throughout Zentinel.
 
 ```rust
-use sentinel_common::{SentinelError, SentinelResult};
+use zentinel_common::{ZentinelError, ZentinelResult};
 
-fn process_request() -> SentinelResult<Response> {
+fn process_request() -> ZentinelResult<Response> {
     // Return typed errors
-    Err(SentinelError::RateLimit {
+    Err(ZentinelError::RateLimit {
         message: "Too many requests".to_string(),
         retry_after_secs: Some(60),
     })
@@ -23,7 +23,7 @@ fn process_request() -> SentinelResult<Response> {
 ### Configuration Errors
 
 ```rust
-SentinelError::Config {
+ZentinelError::Config {
     message: String,
     source: Option<Box<dyn Error>>,
 }
@@ -34,7 +34,7 @@ Configuration parsing or validation failures.
 ### Upstream Errors
 
 ```rust
-SentinelError::Upstream {
+ZentinelError::Upstream {
     upstream: String,
     message: String,
     retryable: bool,
@@ -47,7 +47,7 @@ Backend connection or communication failures.
 ### Agent Errors
 
 ```rust
-SentinelError::Agent {
+ZentinelError::Agent {
     agent: String,
     message: String,
     event: Option<String>,
@@ -60,12 +60,12 @@ External processing agent failures.
 ### Validation Errors
 
 ```rust
-SentinelError::RequestValidation {
+ZentinelError::RequestValidation {
     message: String,
     field: Option<String>,
 }
 
-SentinelError::ResponseValidation {
+ZentinelError::ResponseValidation {
     message: String,
     field: Option<String>,
 }
@@ -76,14 +76,14 @@ Request or response schema validation failures.
 ### Limit Errors
 
 ```rust
-SentinelError::LimitExceeded {
+ZentinelError::LimitExceeded {
     limit_type: LimitType,
     message: String,
     current_value: u64,
     limit: u64,
 }
 
-SentinelError::RateLimit {
+ZentinelError::RateLimit {
     message: String,
     retry_after_secs: Option<u64>,
 }
@@ -94,7 +94,7 @@ Resource limit or rate limit violations.
 ### Timeout Errors
 
 ```rust
-SentinelError::Timeout {
+ZentinelError::Timeout {
     operation: String,
     duration_ms: u64,
     correlation_id: Option<String>,
@@ -106,7 +106,7 @@ Operation timeout exceeded.
 ### Circuit Breaker Errors
 
 ```rust
-SentinelError::CircuitBreakerOpen {
+ZentinelError::CircuitBreakerOpen {
     component: String,
     consecutive_failures: u32,
     last_error: Option<String>,
@@ -118,18 +118,18 @@ Circuit breaker rejected the request.
 ### Security Errors
 
 ```rust
-SentinelError::WafBlocked {
+ZentinelError::WafBlocked {
     reason: String,
     rule_ids: Vec<String>,
     confidence: Option<f64>,
     correlation_id: Option<String>,
 }
 
-SentinelError::AuthenticationFailed {
+ZentinelError::AuthenticationFailed {
     message: String,
 }
 
-SentinelError::AuthorizationFailed {
+ZentinelError::AuthorizationFailed {
     message: String,
     required_permission: Option<String>,
 }
@@ -140,31 +140,31 @@ Security policy violations.
 ### Infrastructure Errors
 
 ```rust
-SentinelError::Tls {
+ZentinelError::Tls {
     message: String,
     source: Option<Box<dyn Error>>,
 }
 
-SentinelError::Io {
+ZentinelError::Io {
     message: String,
     source: Option<Box<dyn Error>>,
 }
 
-SentinelError::Parse {
+ZentinelError::Parse {
     message: String,
     input: Option<String>,
 }
 
-SentinelError::Internal {
+ZentinelError::Internal {
     message: String,
 }
 
-SentinelError::ServiceUnavailable {
+ZentinelError::ServiceUnavailable {
     message: String,
     retry_after_secs: Option<u64>,
 }
 
-SentinelError::NoHealthyUpstream {
+ZentinelError::NoHealthyUpstream {
     upstream: String,
 }
 ```
@@ -174,7 +174,7 @@ SentinelError::NoHealthyUpstream {
 Categories of resource limits.
 
 ```rust
-use sentinel_common::LimitType;
+use zentinel_common::LimitType;
 
 let limit_type = LimitType::BodySize;
 ```
@@ -195,7 +195,7 @@ let limit_type = LimitType::BodySize;
 Errors automatically map to appropriate HTTP status codes:
 
 ```rust
-let error = SentinelError::RateLimit { ... };
+let error = ZentinelError::RateLimit { ... };
 let status = error.to_http_status(); // 429
 ```
 
@@ -215,7 +215,7 @@ let status = error.to_http_status(); // 429
 Get messages safe to return to clients (no internal details):
 
 ```rust
-let error = SentinelError::Internal {
+let error = ZentinelError::Internal {
     message: "Database connection failed: password incorrect".to_string(),
 };
 
@@ -264,7 +264,7 @@ Eligible errors:
 Attach correlation ID for tracing:
 
 ```rust
-let error = SentinelError::Timeout {
+let error = ZentinelError::Timeout {
     operation: "upstream_request".to_string(),
     duration_ms: 30000,
     correlation_id: None,
@@ -279,7 +279,7 @@ let error = error.with_correlation_id("abc-123-def".to_string());
 ### Converting to HTTP Response
 
 ```rust
-fn handle_error(error: SentinelError) -> Response {
+fn handle_error(error: ZentinelError) -> Response {
     let status = error.to_http_status();
     let message = error.client_message();
 
@@ -298,9 +298,9 @@ fn handle_error(error: SentinelError) -> Response {
 ### Propagating with Context
 
 ```rust
-fn process() -> SentinelResult<()> {
+fn process() -> ZentinelResult<()> {
     let config = load_config()
-        .map_err(|e| SentinelError::Config {
+        .map_err(|e| ZentinelError::Config {
             message: "Failed to load config".to_string(),
             source: Some(Box::new(e)),
         })?;
@@ -312,15 +312,15 @@ fn process() -> SentinelResult<()> {
 ### Metrics Integration
 
 ```rust
-fn record_error(error: &SentinelError, metrics: &RequestMetrics) {
+fn record_error(error: &ZentinelError, metrics: &RequestMetrics) {
     match error {
-        SentinelError::WafBlocked { reason, .. } => {
+        ZentinelError::WafBlocked { reason, .. } => {
             metrics.record_blocked_request(reason);
         }
-        SentinelError::RateLimit { .. } => {
+        ZentinelError::RateLimit { .. } => {
             metrics.record_blocked_request("rate_limit");
         }
-        SentinelError::CircuitBreakerOpen { component, .. } => {
+        ZentinelError::CircuitBreakerOpen { component, .. } => {
             metrics.set_circuit_breaker_state(component, "default", true);
         }
         _ => {}
@@ -328,20 +328,20 @@ fn record_error(error: &SentinelError, metrics: &RequestMetrics) {
 }
 ```
 
-## SentinelResult
+## ZentinelResult
 
 Convenience type alias:
 
 ```rust
-pub type SentinelResult<T> = Result<T, SentinelError>;
+pub type ZentinelResult<T> = Result<T, ZentinelError>;
 ```
 
 Usage:
 
 ```rust
-use sentinel_common::SentinelResult;
+use zentinel_common::ZentinelResult;
 
-fn process() -> SentinelResult<Response> {
+fn process() -> ZentinelResult<Response> {
     // ...
 }
 ```

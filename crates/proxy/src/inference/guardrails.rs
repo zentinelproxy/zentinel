@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pingora_timeout::timeout;
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     Decision, GuardrailDetection, GuardrailInspectEvent, GuardrailInspectionType, GuardrailResponse,
 };
-use sentinel_config::{
+use zentinel_config::{
     GuardrailAction, GuardrailFailureMode, PiiDetectionConfig, PromptInjectionConfig,
 };
 use tracing::{debug, trace, warn};
@@ -121,7 +121,7 @@ impl GuardrailAgentCaller for AgentManagerCaller {
                         description: body
                             .clone()
                             .unwrap_or_else(|| "Blocked by guardrail agent".to_string()),
-                        severity: sentinel_agent_protocol::DetectionSeverity::High,
+                        severity: zentinel_agent_protocol::DetectionSeverity::High,
                         confidence: Some(1.0),
                         span: None,
                     }],
@@ -404,7 +404,7 @@ pub fn extract_inference_content(body: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentinel_agent_protocol::{DetectionSeverity, TextSpan};
+    use zentinel_agent_protocol::{DetectionSeverity, TextSpan};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Mutex;
 
@@ -474,7 +474,7 @@ mod tests {
         PiiDetectionConfig {
             enabled: true,
             agent: "pii-scanner".to_string(),
-            action: sentinel_config::PiiAction::Log,
+            action: zentinel_config::PiiAction::Log,
             categories: vec!["ssn".to_string(), "email".to_string()],
             timeout_ms: 5000,
             failure_mode: GuardrailFailureMode::Open,

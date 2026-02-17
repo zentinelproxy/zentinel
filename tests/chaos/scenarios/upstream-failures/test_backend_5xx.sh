@@ -62,7 +62,7 @@ test_retry_on_backend_error() {
 
     # Get initial retry count
     local initial_retries
-    initial_retries=$(get_metric "sentinel_upstream_retries_total" || echo "0")
+    initial_retries=$(get_metric "zentinel_upstream_retries_total" || echo "0")
 
     # Kill primary - failover route should retry and hit secondary
     inject_backend_crash "backend-primary"
@@ -75,7 +75,7 @@ test_retry_on_backend_error() {
 
     # Check if retries increased
     local final_retries
-    final_retries=$(get_metric "sentinel_upstream_retries_total" || echo "0")
+    final_retries=$(get_metric "zentinel_upstream_retries_total" || echo "0")
 
     if [[ "${final_retries:-0}" -gt "${initial_retries:-0}" ]]; then
         log_pass "Retries recorded: ${initial_retries:-0} -> ${final_retries:-0}"
@@ -93,7 +93,7 @@ test_error_metrics_exist() {
 
     # Check for upstream error metrics
     local errors
-    errors=$(get_metric "sentinel_upstream_connection_errors_total")
+    errors=$(get_metric "zentinel_upstream_connection_errors_total")
     if [[ -n "$errors" ]]; then
         log_pass "Connection error metric exists: $errors"
     else
@@ -102,7 +102,7 @@ test_error_metrics_exist() {
 
     # Check for response metrics
     local responses
-    responses=$(get_metrics_matching "sentinel_upstream_responses_total")
+    responses=$(get_metrics_matching "zentinel_upstream_responses_total")
     if [[ -n "$responses" ]]; then
         log_pass "Response metrics exist"
         echo "$responses" | head -3 | while read -r line; do
@@ -118,7 +118,7 @@ test_health_check_independent() {
 
     # Verify health endpoint still works
     local healthy
-    healthy=$(get_metric "sentinel_upstream_healthy_backends" "upstream=\"primary\"")
+    healthy=$(get_metric "zentinel_upstream_healthy_backends" "upstream=\"primary\"")
 
     if [[ -n "$healthy" && "$healthy" -ge 1 ]]; then
         log_pass "Backend marked healthy: $healthy backend(s)"

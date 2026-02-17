@@ -108,7 +108,7 @@ test_timeout_metrics() {
 
     # Record initial timeout count
     local initial_timeouts
-    initial_timeouts=$(get_metric "sentinel_agent_timeouts_total" "agent=\"echo\"" || echo "0")
+    initial_timeouts=$(get_metric "zentinel_agent_timeouts_total" "agent=\"echo\"" || echo "0")
 
     # Make a few more requests to accumulate timeouts
     for i in {1..3}; do
@@ -117,7 +117,7 @@ test_timeout_metrics() {
 
     # Check timeout count increased
     local final_timeouts
-    final_timeouts=$(get_metric "sentinel_agent_timeouts_total" "agent=\"echo\"" || echo "0")
+    final_timeouts=$(get_metric "zentinel_agent_timeouts_total" "agent=\"echo\"" || echo "0")
 
     if [[ -n "$final_timeouts" && "${final_timeouts:-0}" -gt "${initial_timeouts:-0}" ]]; then
         log_pass "Timeout metrics increased: $initial_timeouts -> $final_timeouts"

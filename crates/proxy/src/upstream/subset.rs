@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 use xxhash_rust::xxh3::xxh3_64;
 
-use sentinel_common::errors::{SentinelError, SentinelResult};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 
@@ -239,7 +239,7 @@ impl SubsetBalancer {
 
 #[async_trait]
 impl LoadBalancer for SubsetBalancer {
-    async fn select(&self, _context: Option<&RequestContext>) -> SentinelResult<TargetSelection> {
+    async fn select(&self, _context: Option<&RequestContext>) -> ZentinelResult<TargetSelection> {
         trace!(
             total_targets = self.all_targets.len(),
             algorithm = "deterministic_subset",
@@ -269,13 +269,13 @@ impl LoadBalancer for SubsetBalancer {
                 "No healthy targets in subset"
             );
             drop(subset);
-            return Err(SentinelError::NoHealthyUpstream);
+            return Err(ZentinelError::NoHealthyUpstream);
         }
 
         let target = self
             .select_from_subset(&healthy_subset)
             .await
-            .ok_or(SentinelError::NoHealthyUpstream)?;
+            .ok_or(ZentinelError::NoHealthyUpstream)?;
 
         // Track connections if using least connections
         if matches!(

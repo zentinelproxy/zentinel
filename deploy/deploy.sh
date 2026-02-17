@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# Sentinel Deployment Script
-# Deploy Sentinel proxy and agents to production
+# Zentinel Deployment Script
+# Deploy Zentinel proxy and agents to production
 #
 # Usage: ./deploy.sh [options]
 #
 # Options:
-#   install       Install Sentinel and agents
+#   install       Install Zentinel and agents
 #   upgrade       Upgrade existing installation
-#   uninstall     Remove Sentinel and agents
+#   uninstall     Remove Zentinel and agents
 #   start         Start all services
 #   stop          Stop all services
 #   restart       Restart all services
@@ -28,27 +28,27 @@ NC='\033[0m' # No Color
 
 # Configuration
 INSTALL_PREFIX="/usr/local"
-CONFIG_DIR="/etc/sentinel"
-DATA_DIR="/var/lib/sentinel"
-LOG_DIR="/var/log/sentinel"
-RUN_DIR="/var/run/sentinel"
-BACKUP_DIR="/var/backups/sentinel"
-SERVICE_USER="sentinel"
-SERVICE_GROUP="sentinel"
+CONFIG_DIR="/etc/zentinel"
+DATA_DIR="/var/lib/zentinel"
+LOG_DIR="/var/log/zentinel"
+RUN_DIR="/var/run/zentinel"
+BACKUP_DIR="/var/backups/zentinel"
+SERVICE_USER="zentinel"
+SERVICE_GROUP="zentinel"
 
 # Binary names
-PROXY_BIN="sentinel"
-ECHO_AGENT_BIN="sentinel-echo-agent"
-RATELIMIT_AGENT_BIN="sentinel-ratelimit-agent"
-DENYLIST_AGENT_BIN="sentinel-denylist-agent"
-WAF_AGENT_BIN="sentinel-waf-agent"
+PROXY_BIN="zentinel"
+ECHO_AGENT_BIN="zentinel-echo-agent"
+RATELIMIT_AGENT_BIN="zentinel-ratelimit-agent"
+DENYLIST_AGENT_BIN="zentinel-denylist-agent"
+WAF_AGENT_BIN="zentinel-waf-agent"
 
 # Service names
-PROXY_SERVICE="sentinel.service"
-ECHO_SERVICE="sentinel-echo-agent.service"
-RATELIMIT_SERVICE="sentinel-ratelimit-agent.service"
-DENYLIST_SERVICE="sentinel-denylist-agent.service"
-WAF_SERVICE="sentinel-waf-agent.service"
+PROXY_SERVICE="zentinel.service"
+ECHO_SERVICE="zentinel-echo-agent.service"
+RATELIMIT_SERVICE="zentinel-ratelimit-agent.service"
+DENYLIST_SERVICE="zentinel-denylist-agent.service"
+WAF_SERVICE="zentinel-waf-agent.service"
 
 # Logging functions
 log_info() {
@@ -79,7 +79,7 @@ create_user() {
                 --user-group \
                 --home-dir "$DATA_DIR" \
                 --shell /usr/sbin/nologin \
-                --comment "Sentinel Proxy Service Account" \
+                --comment "Zentinel Proxy Service Account" \
                 "$SERVICE_USER"
     else
         log_info "User $SERVICE_USER already exists"
@@ -111,7 +111,7 @@ create_directories() {
 
 # Build binaries
 build_binaries() {
-    log_info "Building Sentinel binaries..."
+    log_info "Building Zentinel binaries..."
 
     # Check if Rust is installed
     if ! command -v cargo &> /dev/null; then
@@ -183,8 +183,8 @@ deploy_config() {
     log_info "Deploying configuration..."
 
     # Deploy main config
-    if [ -f "config/sentinel.kdl" ]; then
-        cp "config/sentinel.kdl" "$CONFIG_DIR/config.kdl"
+    if [ -f "config/zentinel.kdl" ]; then
+        cp "config/zentinel.kdl" "$CONFIG_DIR/config.kdl"
         chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_DIR/config.kdl"
         chmod 644 "$CONFIG_DIR/config.kdl"
         log_info "Deployed main configuration"
@@ -201,10 +201,10 @@ deploy_config() {
 
     # Create environment files
     cat > "$CONFIG_DIR/env" <<EOF
-# Sentinel Proxy Environment Variables
+# Zentinel Proxy Environment Variables
 RUST_LOG=info
-SENTINEL_CONFIG=$CONFIG_DIR/config.kdl
-SENTINEL_WORKERS=0
+ZENTINEL_CONFIG=$CONFIG_DIR/config.kdl
+ZENTINEL_WORKERS=0
 EOF
 
     chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_DIR/env"
@@ -213,7 +213,7 @@ EOF
 
 # Backup current installation
 backup_installation() {
-    local backup_name="sentinel-backup-$(date +%Y%m%d-%H%M%S)"
+    local backup_name="zentinel-backup-$(date +%Y%m%d-%H%M%S)"
     local backup_path="$BACKUP_DIR/$backup_name"
 
     log_info "Creating backup: $backup_name"
@@ -246,7 +246,7 @@ EOF
 
 # Start services
 start_services() {
-    log_info "Starting Sentinel services..."
+    log_info "Starting Zentinel services..."
 
     # Start main proxy
     systemctl start "$PROXY_SERVICE"
@@ -263,7 +263,7 @@ start_services() {
 
 # Stop services
 stop_services() {
-    log_info "Stopping Sentinel services..."
+    log_info "Stopping Zentinel services..."
 
     # Stop agents first
     for service in "$ECHO_SERVICE" "$RATELIMIT_SERVICE" "$DENYLIST_SERVICE"; do
@@ -280,7 +280,7 @@ stop_services() {
 
 # Restart services
 restart_services() {
-    log_info "Restarting Sentinel services..."
+    log_info "Restarting Zentinel services..."
     stop_services
     sleep 2
     start_services
@@ -288,7 +288,7 @@ restart_services() {
 
 # Show service status
 show_status() {
-    echo "=== Sentinel Service Status ==="
+    echo "=== Zentinel Service Status ==="
     echo
 
     # Check main proxy
@@ -337,9 +337,9 @@ validate_config() {
     fi
 }
 
-# Install Sentinel
+# Install Zentinel
 install() {
-    log_info "Installing Sentinel..."
+    log_info "Installing Zentinel..."
 
     check_root
     create_user
@@ -355,9 +355,9 @@ install() {
     log_info "Start services with: systemctl start $PROXY_SERVICE"
 }
 
-# Upgrade Sentinel
+# Upgrade Zentinel
 upgrade() {
-    log_info "Upgrading Sentinel..."
+    log_info "Upgrading Zentinel..."
 
     check_root
     backup_installation
@@ -371,9 +371,9 @@ upgrade() {
     log_info "Upgrade completed successfully!"
 }
 
-# Uninstall Sentinel
+# Uninstall Zentinel
 uninstall() {
-    log_warn "Uninstalling Sentinel..."
+    log_warn "Uninstalling Zentinel..."
 
     check_root
 
@@ -382,7 +382,7 @@ uninstall() {
     systemctl disable "$PROXY_SERVICE" 2>/dev/null || true
 
     # Remove service files
-    rm -f /etc/systemd/system/sentinel*.service
+    rm -f /etc/systemd/system/zentinel*.service
     systemctl daemon-reload
 
     # Remove binaries
@@ -411,7 +411,7 @@ rollback() {
     check_root
 
     # Find latest backup
-    local latest_backup=$(ls -t "$BACKUP_DIR"/sentinel-backup-*.tar.gz 2>/dev/null | head -1)
+    local latest_backup=$(ls -t "$BACKUP_DIR"/zentinel-backup-*.tar.gz 2>/dev/null | head -1)
 
     if [ -z "$latest_backup" ]; then
         log_error "No backup found to rollback to"
@@ -435,8 +435,8 @@ rollback() {
     fi
 
     # Restore configuration
-    if [ -d "$backup_dir/sentinel" ]; then
-        cp -r "$backup_dir/sentinel"/* "$CONFIG_DIR/"
+    if [ -d "$backup_dir/zentinel" ]; then
+        cp -r "$backup_dir/zentinel"/* "$CONFIG_DIR/"
         chown -R "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_DIR"
     fi
 

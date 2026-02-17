@@ -1,6 +1,6 @@
 //! Namespace and service configuration for hierarchical organization.
 //!
-//! This module provides configuration types for organizing Sentinel resources
+//! This module provides configuration types for organizing Zentinel resources
 //! into logical groups using namespaces and services.
 //!
 //! # Hierarchy
@@ -26,7 +26,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use sentinel_common::limits::Limits;
+use zentinel_common::limits::Limits;
 
 use crate::{AgentConfig, FilterConfig, ListenerConfig, RouteConfig, UpstreamConfig};
 
@@ -319,7 +319,7 @@ impl ExportConfig {
 mod tests {
     use super::*;
     use crate::{ConnectionPoolConfig, HttpVersionConfig, UpstreamTarget, UpstreamTimeouts};
-    use sentinel_common::types::LoadBalancingAlgorithm;
+    use zentinel_common::types::LoadBalancingAlgorithm;
 
     /// Create a minimal upstream config for testing
     fn test_upstream() -> UpstreamConfig {
