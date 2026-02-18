@@ -1,6 +1,6 @@
 #!/bin/sh
 # Zentinel Install Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/zentinelproxy/zentinel/main/install.sh | sh
+# Usage: curl -fsSL https://get.zentinelproxy.io | sh
 #
 # This script detects your OS and architecture, downloads the appropriate
 # pre-built binary, and installs it to /usr/local/bin (or ~/.local/bin if

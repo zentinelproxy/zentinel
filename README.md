@@ -47,7 +47,7 @@ Production-ready core (proxy, routing, TLS, caching, load balancing). Agents are
 
 ```bash
 # Install
-curl -fsSL https://getzentinelproxy.io | sh
+curl -fsSL https://get.zentinelproxy.io | sh
 
 # Or via Cargo
 cargo install zentinel-proxy

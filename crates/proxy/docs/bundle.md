@@ -15,7 +15,7 @@ Instead of manually downloading and configuring each agent, the bundle command:
 
 ```bash
 # Install Zentinel first
-curl -fsSL https://getzentinelproxy.io | sh
+curl -fsSL https://get.zentinelproxy.io | sh
 
 # Install all bundled agents
 sudo zentinel bundle install
