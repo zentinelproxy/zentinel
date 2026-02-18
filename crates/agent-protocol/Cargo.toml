@@ -20,7 +20,7 @@ mmap-buffers = ["memmap2", "dep:tempfile"]
 
 [dependencies]
 # Local crates
-zentinel-common = { path = "../common", version = "0.5.0" }
+zentinel-common = { path = "../common", version = "0.5.1" }
 
 # Protocol and serialization
 prost = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "zentinel-sim"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
@@ -13,8 +13,8 @@ categories = ["simulation", "wasm", "network-programming"]
 
 [dependencies]
 # Local crates (WASM-compatible - disable runtime features)
-zentinel-config = { path = "../config", version = "0.5.0", default-features = false }
-zentinel-common = { path = "../common", version = "0.5.0", default-features = false }
+zentinel-config = { path = "../config", version = "0.5.1", default-features = false }
+zentinel-common = { path = "../common", version = "0.5.1", default-features = false }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
