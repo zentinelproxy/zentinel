@@ -138,8 +138,8 @@ use crate::{
     BuiltinHandler, Config, GlobalRateLimitConfig, ListenerConfig, ListenerProtocol,
     MatchCondition, ObservabilityConfig, RouteConfig, RoutePolicies, ServerConfig, ServiceType,
 };
-use zentinel_common::{limits::Limits, types::Priority};
 use std::collections::HashMap;
+use zentinel_common::{limits::Limits, types::Priority};
 
 /// Create the default embedded configuration programmatically.
 /// This serves as a fallback if KDL parsing fails for any reason.

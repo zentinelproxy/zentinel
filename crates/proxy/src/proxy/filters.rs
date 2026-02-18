@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use pingora::http::ResponseHeader;
 use pingora_proxy::Session;
+use tracing::{debug, trace};
 use zentinel_config::{
     CompressFilter, Config, CorsFilter, Filter, FilterPhase, HeadersFilter, LogFilter,
     TimeoutFilter,
 };
-use tracing::{debug, trace};
 
 use super::context::RequestContext;
 

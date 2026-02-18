@@ -862,8 +862,8 @@ pub type SharedLogManager = Arc<LogManager>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zentinel_config::{AccessLogConfig, ErrorLogConfig};
     use tempfile::tempdir;
+    use zentinel_config::{AccessLogConfig, ErrorLogConfig};
 
     #[test]
     fn test_access_log_entry_serialization() {

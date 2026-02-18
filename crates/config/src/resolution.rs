@@ -394,8 +394,8 @@ mod tests {
         namespace::{ExportConfig, NamespaceConfig, ServiceConfig},
         ConnectionPoolConfig, HttpVersionConfig, UpstreamTarget, UpstreamTimeouts,
     };
-    use zentinel_common::types::LoadBalancingAlgorithm;
     use std::collections::HashMap;
+    use zentinel_common::types::LoadBalancingAlgorithm;
 
     fn test_upstream(id: &str) -> UpstreamConfig {
         UpstreamConfig {

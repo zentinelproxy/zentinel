@@ -380,8 +380,8 @@ mod sni_resolver {
 
 mod acme_resolver {
     use super::*;
-    use zentinel_config::server::{AcmeChallengeType, AcmeConfig};
     use std::path::PathBuf;
+    use zentinel_config::server::{AcmeChallengeType, AcmeConfig};
 
     /// Build an AcmeConfig pointing at the given storage directory
     fn acme_config(storage: PathBuf) -> AcmeConfig {

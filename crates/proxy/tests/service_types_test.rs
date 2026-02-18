@@ -5,14 +5,14 @@
 use anyhow::Result;
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use zentinel_config::{
-    ApiSchemaConfig, ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType, StaticFileConfig,
-};
-use zentinel_proxy::{ErrorHandler, SchemaValidator, StaticFileServer};
 use serde_json::json;
 use std::collections::HashMap;
 use tempfile::TempDir;
 use tokio::fs;
+use zentinel_config::{
+    ApiSchemaConfig, ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType, StaticFileConfig,
+};
+use zentinel_proxy::{ErrorHandler, SchemaValidator, StaticFileServer};
 
 #[cfg(test)]
 mod tests {

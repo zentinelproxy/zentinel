@@ -375,12 +375,12 @@ impl Default for HealthCheckRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Once;
     use zentinel_common::types::LoadBalancingAlgorithm;
     use zentinel_config::{
         ConnectionPoolConfig, HttpVersionConfig, UpstreamTarget, UpstreamTimeouts,
     };
-    use std::collections::HashMap;
-    use std::sync::Once;
 
     static INIT: Once = Once::new();
 

@@ -203,8 +203,8 @@ mod tests {
     use crate::agents::{AgentConfig, AgentEvent, AgentType};
     use crate::filters::{AgentFilter, FilterConfig};
     use crate::{MatchCondition, RouteConfig, RoutePolicies, ServiceType};
-    use zentinel_common::types::Priority;
     use std::path::PathBuf;
+    use zentinel_common::types::Priority;
 
     fn test_route_with_filter(filter: &str) -> RouteConfig {
         RouteConfig {

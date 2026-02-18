@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tracing::{debug, error, info, trace, warn};
 use zentinel_agent_protocol::v2::{
     AgentCapabilities, AgentPool, AgentPoolConfig as ProtocolPoolConfig, AgentPoolStats,
     CancelReason, ConfigPusher, ConfigUpdateType, LoadBalanceStrategy as ProtocolLBStrategy,
@@ -21,7 +22,6 @@ use zentinel_common::{
     CircuitBreaker,
 };
 use zentinel_config::{AgentConfig, AgentEvent, FailureMode, LoadBalanceStrategy};
-use tracing::{debug, error, info, trace, warn};
 
 use super::metrics::AgentMetrics;
 

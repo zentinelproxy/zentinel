@@ -170,9 +170,9 @@ mod tests {
         ConnectionPoolConfig, HttpVersionConfig, ListenerConfig, MatchCondition, RouteConfig,
         RoutePolicies, ServiceType, TlsConfig, UpstreamConfig, UpstreamTarget, UpstreamTimeouts,
     };
-    use zentinel_common::types::{LoadBalancingAlgorithm, Priority, TlsVersion};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use zentinel_common::types::{LoadBalancingAlgorithm, Priority, TlsVersion};
 
     fn test_route_config() -> RouteConfig {
         RouteConfig {

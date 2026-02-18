@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::future::join_all;
 use pingora_timeout::timeout;
+use tokio::sync::{RwLock, Semaphore};
+use tracing::{debug, error, info, trace, warn};
 use zentinel_agent_protocol::{
     v2::MetricsCollector, AgentResponse, EventType, GuardrailInspectEvent, RequestBodyChunkEvent,
     RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketFrameEvent,
@@ -17,8 +19,6 @@ use zentinel_common::{
     CircuitBreaker,
 };
 use zentinel_config::{AgentConfig, AgentProtocolVersion, FailureMode};
-use tokio::sync::{RwLock, Semaphore};
-use tracing::{debug, error, info, trace, warn};
 
 use super::agent::Agent;
 use super::agent_v2::AgentV2;

@@ -200,8 +200,8 @@ use crate::agents::{
     AgentEvent, AgentProtocolVersion, AgentTlsConfig, AgentTransport, AgentType, BodyStreamingMode,
 };
 use crate::routes::FailureMode;
-use zentinel_common::types::CircuitBreakerConfig;
 use std::path::PathBuf;
+use zentinel_common::types::CircuitBreakerConfig;
 
 /// Parse agents configuration block
 ///

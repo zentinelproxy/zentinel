@@ -7,14 +7,14 @@ use crate::store::MemoryTokenStore;
 use async_trait::async_trait;
 use base64::Engine as _;
 use dashmap::DashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
 use zentinel_agent_protocol::{
     AgentHandler, AgentResponse, AuditMetadata, BodyMutation, ConfigureEvent, HeaderOp,
     RequestBodyChunkEvent, RequestCompleteEvent, RequestHeadersEvent, ResponseBodyChunkEvent,
     ResponseHeadersEvent,
 };
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
 
 /// Per-request state.
 struct RequestState {

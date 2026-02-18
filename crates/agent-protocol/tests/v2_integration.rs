@@ -8,6 +8,7 @@
 //! - Streaming protocol types
 
 use bytes::{BufMut, Bytes};
+use std::collections::HashMap;
 use zentinel_agent_protocol::binary::{
     BinaryAgentResponse, BinaryBodyChunk, BinaryFrame, BinaryRequestHeaders, MessageType,
 };
@@ -18,7 +19,6 @@ use zentinel_agent_protocol::v2::{
     LoadMetrics, ResourceMetrics, PROTOCOL_VERSION_2,
 };
 use zentinel_agent_protocol::{Decision, EventType, HeaderOp};
-use std::collections::HashMap;
 
 // =============================================================================
 // Binary Protocol Integration Tests

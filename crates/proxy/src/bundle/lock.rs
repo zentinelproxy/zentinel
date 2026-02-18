@@ -89,7 +89,8 @@ impl BundleLock {
 
     /// Fetch the latest lock file from the repository
     pub async fn fetch_latest() -> Result<Self, LockError> {
-        let url = "https://raw.githubusercontent.com/zentinelproxy/zentinel/main/bundle-versions.lock";
+        let url =
+            "https://raw.githubusercontent.com/zentinelproxy/zentinel/main/bundle-versions.lock";
 
         let client = reqwest::Client::new();
         let response = client

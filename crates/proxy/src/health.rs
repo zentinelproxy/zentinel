@@ -1246,8 +1246,8 @@ impl PassiveHealthChecker {
 // ============================================================================
 
 use dashmap::DashMap;
-use zentinel_common::{ColdModelAction, WarmthDetectionConfig};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use zentinel_common::{ColdModelAction, WarmthDetectionConfig};
 
 /// Warmth tracker for detecting cold models after idle periods
 ///

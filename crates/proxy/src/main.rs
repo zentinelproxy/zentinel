@@ -27,7 +27,7 @@ use zentinel_proxy::acme::{
 };
 use zentinel_proxy::bundle::{run_bundle_command, BundleArgs};
 use zentinel_proxy::tls::HotReloadableSniResolver;
-use zentinel_proxy::{ReloadTrigger, ZentinelProxy, SignalManager, SignalType};
+use zentinel_proxy::{ReloadTrigger, SignalManager, SignalType, ZentinelProxy};
 
 /// Version string combining Cargo semver and CalVer release tag
 const VERSION: &str = concat!(
@@ -908,8 +908,8 @@ fn setup_signal_handlers(
 ///
 /// Creates parent directories if needed and writes the embedded default config.
 fn create_default_config_file(path: &std::path::Path) -> Result<()> {
-    use zentinel_config::DEFAULT_CONFIG_KDL;
     use std::fs;
+    use zentinel_config::DEFAULT_CONFIG_KDL;
 
     // Create parent directories if they don't exist
     if let Some(parent) = path.parent() {

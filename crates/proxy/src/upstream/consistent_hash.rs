@@ -9,8 +9,8 @@ use xxhash_rust::xxh3::Xxh3;
 
 use super::{LoadBalancer, RequestContext, TargetSelection, UpstreamTarget};
 use async_trait::async_trait;
-use zentinel_common::errors::{ZentinelError, ZentinelResult};
 use tracing::{debug, info, trace, warn};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
 /// Hash function types supported by the consistent hash balancer
 #[derive(Debug, Clone, Copy)]

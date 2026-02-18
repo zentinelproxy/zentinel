@@ -13,9 +13,9 @@
 //! 2. Collects scope-specific limits for runtime isolation
 //! 3. Enables O(1) lookups via HashMap
 
+use std::collections::HashMap;
 use zentinel_common::ids::{QualifiedId, Scope};
 use zentinel_common::limits::Limits;
-use std::collections::HashMap;
 
 use crate::{AgentConfig, Config, FilterConfig, ListenerConfig, RouteConfig, UpstreamConfig};
 

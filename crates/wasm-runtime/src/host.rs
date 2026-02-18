@@ -10,12 +10,12 @@ use crate::component::{
 use crate::config::WasmResourceLimits;
 use crate::error::WasmRuntimeError;
 use parking_lot::Mutex;
-use zentinel_agent_protocol::{AgentResponse, RequestMetadata};
 use std::collections::HashMap;
 use tracing::{debug, instrument, warn};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use zentinel_agent_protocol::{AgentResponse, RequestMetadata};
 
 /// Information about a loaded WASM agent.
 #[derive(Debug, Clone)]

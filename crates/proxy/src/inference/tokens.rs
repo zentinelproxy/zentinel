@@ -4,8 +4,8 @@
 //! tokens from requests for rate limiting purposes.
 
 use http::HeaderMap;
-use zentinel_config::TokenEstimation;
 use tracing::{debug, trace};
+use zentinel_config::TokenEstimation;
 
 use super::providers::InferenceProviderAdapter;
 

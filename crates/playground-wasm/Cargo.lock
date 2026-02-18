@@ -839,66 +839,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "zentinel-common"
-version = "0.4.9"
-dependencies = [
- "anyhow",
- "chrono",
- "http",
- "parking_lot",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "zentinel-config"
-version = "0.4.9"
-dependencies = [
- "anyhow",
- "arc-swap",
- "kdl",
- "miette",
- "once_cell",
- "parking_lot",
- "zentinel-common",
- "serde",
- "serde_json",
- "thiserror",
- "toml",
- "tracing",
- "url",
- "validator",
-]
-
-[[package]]
-name = "zentinel-playground-wasm"
-version = "0.4.3"
-dependencies = [
- "console_error_panic_hook",
- "zentinel-sim",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-test",
-]
-
-[[package]]
-name = "zentinel-sim"
-version = "0.4.3"
-dependencies = [
- "regex",
- "zentinel-common",
- "zentinel-config",
- "serde",
- "serde_json",
- "thiserror",
- "xxhash-rust",
-]
-
-[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1086,9 +1026,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.9.11+spec-1.1.0"
+version = "1.0.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3afc9a848309fe1aaffaed6e1546a7a14de1f935dc9d89d32afd9a44bab7c46"
+checksum = "d1dfefef6a142e93f346b64c160934eb13b5594b84ab378133ac6815cb2bd57f"
 dependencies = [
  "indexmap",
  "serde_core",
@@ -1101,18 +1041,18 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "0.7.5+spec-1.1.0"
+version = "1.0.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+checksum = "32c2555c699578a4f59f0cc68e5116c8d7cabbd45e1409b989d4be085b53f13e"
 dependencies = [
  "serde_core",
 ]
 
 [[package]]
 name = "toml_parser"
-version = "1.0.6+spec-1.1.0"
+version = "1.0.9+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3198b4b0a8e11f09dd03e133c0280504d0801269e9afa46362ffde1cbeebf44"
+checksum = "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4"
 dependencies = [
  "winnow 0.7.14",
 ]
@@ -1543,6 +1483,66 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
+]
+
+[[package]]
+name = "zentinel-common"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "http",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "zentinel-config"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "kdl",
+ "miette",
+ "once_cell",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "tracing",
+ "url",
+ "validator",
+ "zentinel-common",
+]
+
+[[package]]
+name = "zentinel-playground-wasm"
+version = "0.5.0"
+dependencies = [
+ "console_error_panic_hook",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+ "zentinel-sim",
+]
+
+[[package]]
+name = "zentinel-sim"
+version = "0.5.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "xxhash-rust",
+ "zentinel-common",
+ "zentinel-config",
 ]
 
 [[package]]

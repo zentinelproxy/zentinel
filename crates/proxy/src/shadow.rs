@@ -16,15 +16,15 @@ use pingora::http::RequestHeader;
 use pingora::proxy::Session;
 use rand::RngExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use zentinel_common::errors::{ZentinelError, ZentinelResult};
-use zentinel_common::observability::RequestMetrics;
-use zentinel_config::routes::ShadowConfig;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::Duration;
 use tracing::{debug, error, trace, warn};
+use zentinel_common::errors::{ZentinelError, ZentinelResult};
+use zentinel_common::observability::RequestMetrics;
+use zentinel_config::routes::ShadowConfig;
 
 use crate::{RequestContext, UpstreamPool};
 

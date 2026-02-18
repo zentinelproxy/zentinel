@@ -298,8 +298,8 @@ fn glob_match_recursive(pattern: &[char], text: &[char], p_idx: usize, t_idx: us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zentinel_config::{FallbackTriggers, InferenceProvider};
     use std::collections::HashMap;
+    use zentinel_config::{FallbackTriggers, InferenceProvider};
 
     fn create_test_config() -> FallbackConfig {
         FallbackConfig {

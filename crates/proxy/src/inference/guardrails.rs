@@ -10,13 +10,13 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pingora_timeout::timeout;
+use tracing::{debug, trace, warn};
 use zentinel_agent_protocol::{
     Decision, GuardrailDetection, GuardrailInspectEvent, GuardrailInspectionType, GuardrailResponse,
 };
 use zentinel_config::{
     GuardrailAction, GuardrailFailureMode, PiiDetectionConfig, PromptInjectionConfig,
 };
-use tracing::{debug, trace, warn};
 
 use crate::agents::AgentManager;
 
@@ -404,9 +404,9 @@ pub fn extract_inference_content(body: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zentinel_agent_protocol::{DetectionSeverity, TextSpan};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Mutex;
+    use zentinel_agent_protocol::{DetectionSeverity, TextSpan};
 
     // ==================== Mock Agent Caller ====================
 

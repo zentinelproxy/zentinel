@@ -7,10 +7,10 @@
 //! - Agent pool metrics from v2 agents
 
 use pingora_http::ResponseHeader;
-use zentinel_agent_protocol::v2::{MetricsCollector, UnifiedMetricsAggregator};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use zentinel_agent_protocol::v2::{MetricsCollector, UnifiedMetricsAggregator};
 
 /// Metrics manager for the proxy.
 ///

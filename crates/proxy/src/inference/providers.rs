@@ -6,9 +6,9 @@
 //! - Generic: `x-tokens-used` header, estimation fallback
 
 use http::HeaderMap;
-use zentinel_config::{InferenceProvider, TokenEstimation};
 use serde_json::Value;
 use tracing::trace;
+use zentinel_config::{InferenceProvider, TokenEstimation};
 
 use super::tiktoken::tiktoken_manager;
 

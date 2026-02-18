@@ -4,13 +4,13 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, trace, warn};
 use zentinel_agent_protocol::{
     AgentClient, AgentResponse, ConfigureEvent, Decision, EventType, GrpcTlsConfig, HttpTlsConfig,
 };
 use zentinel_common::{errors::ZentinelError, errors::ZentinelResult, CircuitBreaker};
 use zentinel_config::{AgentConfig, AgentEvent, AgentTransport};
-use tokio::sync::RwLock;
-use tracing::{debug, error, info, trace, warn};
 
 use super::metrics::AgentMetrics;
 use super::pool::AgentConnectionPool;

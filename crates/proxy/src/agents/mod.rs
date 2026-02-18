@@ -59,10 +59,10 @@ pub use pool::AgentConnectionPool;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use zentinel_agent_protocol::HeaderOp;
     use zentinel_common::types::CircuitBreakerConfig;
     use zentinel_common::CircuitBreaker;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn test_agent_decision_merge() {
@@ -103,10 +103,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_per_agent_queue_isolation_config() {
+        use std::path::PathBuf;
         use zentinel_config::{
             AgentConfig, AgentEvent, AgentProtocolVersion, AgentTransport, AgentType,
         };
-        use std::path::PathBuf;
 
         // Verify the max_concurrent_calls field works in AgentConfig
         let config = AgentConfig {

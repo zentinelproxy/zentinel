@@ -145,10 +145,10 @@ mod storage_resolver_integration {
 
 mod challenge_server {
     use super::*;
-    use zentinel_proxy::acme::challenge_server::run_challenge_server;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::watch;
+    use zentinel_proxy::acme::challenge_server::run_challenge_server;
 
     /// Helper to start a challenge server on a random port and return the address
     async fn start_server(

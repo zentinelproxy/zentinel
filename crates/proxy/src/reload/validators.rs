@@ -3,9 +3,9 @@
 //! These validators perform runtime-specific validation that complements
 //! the schema-level validation in zentinel-config.
 
+use tracing::{debug, trace, warn};
 use zentinel_common::errors::{ZentinelError, ZentinelResult};
 use zentinel_config::Config;
-use tracing::{debug, trace, warn};
 
 use super::ConfigValidator;
 
