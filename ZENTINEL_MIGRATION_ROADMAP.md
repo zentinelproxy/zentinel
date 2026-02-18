@@ -233,11 +233,11 @@ Individual agent crates will be published automatically by their release workflo
   - GitHub redirects (raskell-io → zentinelproxy) ✅
   - crates.io: new zentinel crates published, old sentinel crates deprecated ✅
 
-### Phase 16: Announcement & Launch
+### Phase 16: Announcement & Launch ✅
 
-- [ ] Publish blog post on zentinelproxy.io explaining the rebrand
-- [ ] GitHub Discussion announcement on zentinel repo
-- [ ] Update social media profiles/links
+- [x] Published blog post: [zentinelproxy.io/blog/sentinel-is-now-zentinel/](https://zentinelproxy.io/blog/sentinel-is-now-zentinel/)
+- [x] GitHub Discussion: [zentinelproxy/zentinel#86](https://github.com/zentinelproxy/zentinel/discussions/86)
+- [ ] Update social media profiles/links (manual task)
 
 ### Phase 17: Long-Term Maintenance
 
