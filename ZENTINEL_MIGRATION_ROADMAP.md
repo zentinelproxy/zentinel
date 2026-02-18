@@ -175,7 +175,7 @@ Individual agent crates will be published automatically by their release workflo
 - [x] SSL certificates provisioned automatically by Cloudflare
 - [x] Removed stale `themes/tanuki` submodule from main site repo (was causing clone failures)
 - [x] Sites verified live: all three domains returning HTTP 200
-- [ ] Set up old-domain redirect: `sentinel.raskell.io` → `zentinelproxy.io` (301)
+- [x] Set up old-domain redirect: `sentinel.raskell.io` → `zentinelproxy.io` (301) via Cloudflare Redirect Rule
 
 ---
 
