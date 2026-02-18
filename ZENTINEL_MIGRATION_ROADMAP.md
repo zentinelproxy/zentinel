@@ -220,19 +220,26 @@ Individual agent crates will be published automatically by their release workflo
 - [x] Updated `getsentinel.raskell.io` to chain through `get.zentinelproxy.io`
 - [x] Updated all `getzentinelproxy.io` references to `get.zentinelproxy.io` across 3 repos (16 files)
 
-### Phase 15: Announcement & Launch
+### Phase 15: End-to-End Verification & Install Script Fixes ✅
+
+- [x] Comprehensive end-to-end testing of all user-facing paths
+- [x] Fixed install script: added fallback for pre-rename `sentinel-*` asset names in releases
+- [x] Fixed install script: added fallback for `sentinel` binary name inside tarballs
+- [x] Verified all paths work:
+  - `zentinelproxy.io` ✅, `www.zentinelproxy.io` ✅, `docs.zentinelproxy.io` ✅
+  - `sentinel.raskell.io` → 301 → `zentinelproxy.io` ✅ (with path preservation)
+  - `get.zentinelproxy.io` → install script ✅
+  - `getsentinel.raskell.io` → chains through new URL ✅
+  - GitHub redirects (raskell-io → zentinelproxy) ✅
+  - crates.io: new zentinel crates published, old sentinel crates deprecated ✅
+
+### Phase 16: Announcement & Launch
 
 - [ ] Publish blog post on zentinelproxy.io explaining the rebrand
 - [ ] GitHub Discussion announcement on zentinel repo
 - [ ] Update social media profiles/links
-- [ ] Verify end-to-end:
-  - `zentinelproxy.io` loads correctly ✅
-  - `docs.zentinelproxy.io` loads correctly ✅
-  - `sentinel.raskell.io` redirects to `zentinelproxy.io`
-  - `cargo install zentinel-proxy` works
-  - `docker pull ghcr.io/zentinelproxy/zentinel:latest` works
 
-### Phase 16: Long-Term Maintenance
+### Phase 17: Long-Term Maintenance
 
 - [ ] Keep `sentinel.raskell.io` redirect active: minimum 12 months
 - [ ] GitHub redirects: permanent (handled automatically by GitHub)
