@@ -234,6 +234,7 @@ jobs:
 
       - name: Create PR for version bump if push was blocked
         if: steps.push.outcome == 'failure'
+        continue-on-error: true  # Don't block crates.io publish if PR creation fails
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
