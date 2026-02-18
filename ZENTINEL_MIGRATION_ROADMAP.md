@@ -239,6 +239,13 @@ Individual agent crates will be published automatically by their release workflo
 - [x] GitHub Discussion: [zentinelproxy/zentinel#86](https://github.com/zentinelproxy/zentinel/discussions/86)
 - [ ] Update social media profiles/links (manual task)
 
+### Phase 17a: Website Link Audit ✅
+
+- [x] Fixed `getzentinelproxy.io` → `get.zentinelproxy.io` in 5 places across main site templates
+- [x] Fixed 24+ broken `/docs/...` links → `https://docs.zentinelproxy.io/...` across 14 files (templates, content, redirects, blog)
+- [x] Updated Zola redirect template to support external URLs
+- [x] Full e2e re-test: 18/18 pages 200 OK, 4/4 redirects working, install script correct, latest release (26.02_7) live with 14 assets
+
 ### Phase 17: Long-Term Maintenance
 
 - [ ] Keep `sentinel.raskell.io` redirect active: minimum 12 months
@@ -257,7 +264,7 @@ Individual agent crates will be published automatically by their release workflo
 | SEO loss from domain change | Traffic loss | 301 redirects, keep old domain 12+ months | Pending |
 | crates.io name conflicts | Can't publish | Checked and claimed all zentinel-* names | ✅ Resolved |
 | npm/PyPI name conflicts | Can't publish | Check availability before publishing | Pending |
-| WASM recompilation needed | Website features broken | Rebuild after full rename | Pending |
+| WASM recompilation needed | Website features broken | Rebuild after full rename | ✅ Resolved |
 | GitHub org permissions | Can't push | SSH key works, all pushes successful | ✅ Resolved |
 | Old raskell-io references in code | Broken links | Grep sweep found and fixed all refs | ✅ Resolved |
 | crates.io rate limiting | Delayed publishing | Published with delays between crates | ✅ Resolved |
