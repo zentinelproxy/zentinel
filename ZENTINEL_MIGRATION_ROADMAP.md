@@ -7,7 +7,7 @@
 > **Local workspace:** `/Users/zara/Development/github.com/zentinelproxy/`
 > **Created:** 2026-02-17
 > **Last updated:** 2026-02-18
-> **Status:** Code migration COMPLETE — DNS/deployment and old-crate deprecation remaining
+> **Status:** Sites deployed on Cloudflare Pages — old-crate deprecation and branding remaining
 
 ---
 
@@ -162,23 +162,24 @@ Published core crates to claim the names:
 
 Individual agent crates will be published automatically by their release workflows when version tags are pushed.
 
+### Phase 9: DNS & Cloudflare Pages Deployment ✅
+
+- [x] Domain `zentinelproxy.io` added to Cloudflare (zone active, nameservers configured)
+- [x] Cloudflare Pages projects created via dashboard with GitHub integration:
+  - `zentinelproxy-io` → `zentinelproxy/zentinelproxy.io` (auto-deploys on push)
+  - `zentinelproxy-io-docs` → `zentinelproxy/zentinelproxy.io-docs` (auto-deploys on push)
+- [x] Custom domains configured and active:
+  - `zentinelproxy.io` → main site
+  - `www.zentinelproxy.io` → main site
+  - `docs.zentinelproxy.io` → docs site
+- [x] SSL certificates provisioned automatically by Cloudflare
+- [x] Removed stale `themes/tanuki` submodule from main site repo (was causing clone failures)
+- [x] Sites verified live: all three domains returning HTTP 200
+- [ ] Set up old-domain redirect: `sentinel.raskell.io` → `zentinelproxy.io` (301)
+
 ---
 
 ## Remaining Work
-
-### Phase 9: DNS & Cloudflare Pages Deployment
-
-- [ ] Configure DNS for `zentinelproxy.io` at registrar
-- [ ] Add domain to Cloudflare account
-- [ ] Create Cloudflare Pages projects:
-  - `zentinelproxy-io` (marketing site)
-  - `zentinelproxy-io-docs` (documentation site)
-- [ ] Configure custom domains:
-  - `zentinelproxy.io` → marketing site
-  - `zentinelproxy.io/docs` → docs site (or `docs.zentinelproxy.io`)
-- [ ] SSL certificates (Cloudflare handles automatically)
-- [ ] Set up old-domain redirect: `sentinel.raskell.io` → `zentinelproxy.io` (301)
-- [ ] Verify sites load correctly at new domain
 
 ### Phase 10: Branding Assets
 
@@ -220,8 +221,8 @@ Individual agent crates will be published automatically by their release workflo
 - [ ] GitHub Discussion announcement on zentinel repo
 - [ ] Update social media profiles/links
 - [ ] Verify end-to-end:
-  - `zentinelproxy.io` loads correctly
-  - `zentinelproxy.io/docs` loads correctly
+  - `zentinelproxy.io` loads correctly ✅
+  - `docs.zentinelproxy.io` loads correctly ✅
   - `sentinel.raskell.io` redirects to `zentinelproxy.io`
   - `cargo install zentinel-proxy` works
   - `docker pull ghcr.io/zentinelproxy/zentinel:latest` works
