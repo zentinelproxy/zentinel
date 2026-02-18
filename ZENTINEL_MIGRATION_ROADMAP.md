@@ -209,11 +209,14 @@ Individual agent crates will be published automatically by their release workflo
 - [ ] Hex.pm: Deprecate old `sentinel_agent_sdk`
 - [ ] Docker: Tag old `ghcr.io/raskell-io/sentinel` images with deprecation notice
 
-### Phase 14: GitHub Org Housekeeping
+### Phase 14: GitHub Org Housekeeping ✅
 
-- [ ] Update zentinelproxy org profile/description/avatar
-- [ ] Pin key repos (zentinel, zentinel-control-plane, zentinelproxy.io)
-- [ ] Archive old repos on raskell-io with pointers to new org (if any remain)
+- [x] Updated zentinelproxy org description and blog URL
+- [x] Pinned key repos: zentinel, zentinel-control-plane, zentinel-agent-rust-sdk, zentinelproxy.io, zentinelproxy.io-docs, zentinel-helm
+- [x] No old sentinel repos remain on raskell-io — all 32 remaining repos are other projects
+- [x] Set up `get.zentinelproxy.io` install script redirect (302 → raw GitHub)
+- [x] Updated `getsentinel.raskell.io` to chain through `get.zentinelproxy.io`
+- [x] Updated all `getzentinelproxy.io` references to `get.zentinelproxy.io` across 3 repos (16 files)
 
 ### Phase 15: Announcement & Launch
 
