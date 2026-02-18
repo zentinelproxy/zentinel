@@ -201,13 +201,15 @@ Individual agent crates will be published automatically by their release workflo
 - [ ] Hex.pm: Publish `zentinel_agent_sdk` (Elixir SDK)
 - [ ] Helm: Publish `zentinel` chart
 
-### Phase 13: Old Package Deprecation
+### Phase 13: Old Package Deprecation ✅
 
-- [ ] crates.io: Add deprecation notices to old `sentinel-*` crates
-- [ ] npm: Deprecate old `sentinel-agent-sdk` with pointer to new package
-- [ ] PyPI: Deprecate old `sentinel-agent-sdk`
-- [ ] Hex.pm: Deprecate old `sentinel_agent_sdk`
-- [ ] Docker: Tag old `ghcr.io/raskell-io/sentinel` images with deprecation notice
+- [x] crates.io: Published deprecation releases for all 7 old `sentinel-*` crates with pointers to `zentinel-*` replacements:
+  - `sentinel-common` v0.4.15, `sentinel-config` v0.4.15, `sentinel-agent-protocol` v0.4.15, `sentinel-proxy` v0.4.15
+  - `sentinel-modsec` v0.1.1, `sentinel-agent-sdk-macros` v0.1.1, `sentinel-agent-sdk` v0.1.1
+- [x] npm: No old `sentinel-agent-sdk` package exists — nothing to deprecate
+- [x] PyPI: No old `sentinel-agent-sdk` package exists — nothing to deprecate
+- [x] Hex.pm: No old `sentinel_agent_sdk` package exists — nothing to deprecate
+- [ ] Docker: Check `ghcr.io/raskell-io/sentinel` images (requires `read:packages` scope)
 
 ### Phase 14: GitHub Org Housekeeping ✅
 
