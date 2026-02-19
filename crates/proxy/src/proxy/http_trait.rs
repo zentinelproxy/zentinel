@@ -1745,6 +1745,20 @@ impl ProxyHttp for ZentinelProxy {
         // Apply route-specific response header modifications (policies)
         if let Some(ref route_config) = ctx.route_config {
             let mods = &route_config.policies.response_headers;
+            // Rename runs before set/add/remove
+            for (old_name, new_name) in &mods.rename {
+                if let Some(value) = upstream_response
+                    .headers
+                    .get(old_name)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    let owned = value.to_string();
+                    upstream_response
+                        .insert_header(new_name.clone(), &owned)
+                        .ok();
+                    upstream_response.remove_header(old_name);
+                }
+            }
             for (name, value) in &mods.set {
                 upstream_response
                     .insert_header(name.clone(), value.as_str())
@@ -1757,6 +1771,37 @@ impl ProxyHttp for ZentinelProxy {
             }
             for name in &mods.remove {
                 upstream_response.remove_header(name);
+            }
+        }
+
+        // Inject Cache-Status header (RFC 9211) if enabled
+        if let Some(ref cache_status) = ctx.cache_status {
+            let status_header_enabled = ctx
+                .config
+                .as_ref()
+                .and_then(|c| c.cache.as_ref())
+                .map(|c| c.status_header)
+                .unwrap_or(false);
+
+            if status_header_enabled {
+                let value = match cache_status {
+                    super::context::CacheStatus::Hit => "zentinel; hit",
+                    super::context::CacheStatus::HitStale => "zentinel; fwd=stale",
+                    super::context::CacheStatus::Miss => "zentinel; fwd=miss",
+                    super::context::CacheStatus::Bypass(reason) => {
+                        // Leak a static string for the formatted bypass value
+                        // This is fine since there are only a few fixed reason strings
+                        match *reason {
+                            "method" => "zentinel; fwd=bypass; detail=method",
+                            "disabled" => "zentinel; fwd=bypass; detail=disabled",
+                            "no-route" => "zentinel; fwd=bypass; detail=no-route",
+                            _ => "zentinel; fwd=bypass",
+                        }
+                    }
+                };
+                upstream_response
+                    .insert_header("Cache-Status", value)
+                    .ok();
             }
         }
 
@@ -2018,6 +2063,21 @@ impl ProxyHttp for ZentinelProxy {
         // so we clone names but pass values by reference to avoid cloning both.
         if let Some(ref route_config) = ctx.route_config {
             let mods = &route_config.policies.request_headers;
+
+            // Rename runs before set/add/remove
+            for (old_name, new_name) in &mods.rename {
+                if let Some(value) = upstream_request
+                    .headers
+                    .get(old_name)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    let owned = value.to_string();
+                    upstream_request
+                        .insert_header(new_name.clone(), &owned)
+                        .ok();
+                    upstream_request.remove_header(old_name);
+                }
+            }
 
             // Set headers (overwrite existing)
             for (name, value) in &mods.set {
@@ -2323,6 +2383,7 @@ impl ProxyHttp for ZentinelProxy {
 
         // Check if caching is enabled for this route
         if !self.cache_manager.is_enabled(route_id) {
+            ctx.cache_status = Some(super::context::CacheStatus::Bypass("disabled"));
             trace!(
                 correlation_id = %ctx.trace_id,
                 route_id = %route_id,
@@ -2336,6 +2397,7 @@ impl ProxyHttp for ZentinelProxy {
             .cache_manager
             .is_method_cacheable(route_id, &ctx.method)
         {
+            ctx.cache_status = Some(super::context::CacheStatus::Bypass("method"));
             trace!(
                 correlation_id = %ctx.trace_id,
                 route_id = %route_id,
@@ -2414,6 +2476,8 @@ impl ProxyHttp for ZentinelProxy {
         // Let Pingora handle the cache miss
         session.cache.cache_miss();
 
+        ctx.cache_status = Some(super::context::CacheStatus::Miss);
+
         // Track statistics
         if let Some(route_id) = ctx.route_id.as_deref() {
             self.cache_manager.stats().record_miss();
@@ -2467,6 +2531,7 @@ impl ProxyHttp for ZentinelProxy {
 
         // Track cache hit statistics
         if is_fresh {
+            ctx.cache_status = Some(super::context::CacheStatus::Hit);
             self.cache_manager.stats().record_hit();
 
             debug!(
@@ -2476,6 +2541,8 @@ impl ProxyHttp for ZentinelProxy {
                 "Cache hit (fresh)"
             );
         } else {
+            ctx.cache_status = Some(super::context::CacheStatus::HitStale);
+
             trace!(
                 correlation_id = %ctx.trace_id,
                 route_id = ctx.route_id.as_deref().unwrap_or("unknown"),

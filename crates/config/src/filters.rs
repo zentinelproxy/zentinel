@@ -460,6 +460,10 @@ pub struct HeadersFilter {
     #[serde(default)]
     pub phase: FilterPhase,
 
+    /// Headers to rename (old_name -> new_name, applied before set/add/remove)
+    #[serde(default)]
+    pub rename: HashMap<String, String>,
+
     /// Headers to set (overwrites existing values)
     #[serde(default)]
     pub set: HashMap<String, String>,

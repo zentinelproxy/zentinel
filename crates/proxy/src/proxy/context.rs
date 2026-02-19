@@ -45,6 +45,19 @@ impl std::fmt::Display for FallbackReason {
     }
 }
 
+/// Cache status for the Cache-Status response header (RFC 9211)
+#[derive(Debug, Clone)]
+pub(crate) enum CacheStatus {
+    /// Cache hit (fresh response served from cache)
+    Hit,
+    /// Cache hit but response was stale (revalidation needed)
+    HitStale,
+    /// Cache miss (response fetched from upstream)
+    Miss,
+    /// Cache bypassed (not eligible for caching)
+    Bypass(&'static str),
+}
+
 /// Rate limit header information for response headers
 #[derive(Debug, Clone)]
 pub struct RateLimitHeaderInfo {
@@ -134,6 +147,8 @@ pub struct RequestContext {
     // === Caching ===
     /// Whether this request is eligible for caching
     pub(crate) cache_eligible: bool,
+    /// Cache status for Cache-Status response header (RFC 9211)
+    pub(crate) cache_status: Option<CacheStatus>,
 
     // === Body Inspection ===
     /// Whether body inspection is enabled for this request
@@ -329,6 +344,7 @@ impl RequestContext {
             websocket_inspection_agents: Vec::new(),
             websocket_handler: None,
             cache_eligible: false,
+            cache_status: None,
             body_inspection_enabled: false,
             body_bytes_inspected: 0,
             body_buffer: Vec::new(),

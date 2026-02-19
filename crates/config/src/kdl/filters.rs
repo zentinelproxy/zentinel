@@ -204,11 +204,22 @@ fn parse_agent_filter(node: &kdl::KdlNode) -> Result<Filter> {
 }
 
 fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
+    let mut rename = HashMap::new();
     let mut set = HashMap::new();
     let mut add = HashMap::new();
     let mut remove = Vec::new();
 
     if let Some(node_children) = node.children() {
+        if let Some(rename_node) = node_children.get("rename") {
+            if let Some(rename_children) = rename_node.children() {
+                for entry_node in rename_children.nodes() {
+                    let old_name = entry_node.name().value().to_string();
+                    if let Some(new_name) = get_first_arg_string(entry_node) {
+                        rename.insert(old_name, new_name);
+                    }
+                }
+            }
+        }
         if let Some(set_node) = node_children.get("set") {
             if let Some(set_children) = set_node.children() {
                 for entry_node in set_children.nodes() {
@@ -249,6 +260,7 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
 
     Ok(Filter::Headers(HeadersFilter {
         phase,
+        rename,
         set,
         add,
         remove,

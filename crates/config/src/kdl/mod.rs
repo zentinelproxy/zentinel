@@ -994,6 +994,11 @@ pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
         config.disk_shards = v as u32;
     }
 
+    // Parse status-header flag (Cache-Status response header, RFC 9211)
+    if let Some(v) = get_bool_entry(node, "status-header") {
+        config.status_header = v;
+    }
+
     // Validate disk backend has a path
     if matches!(config.backend, CacheBackend::Disk | CacheBackend::Hybrid)
         && config.disk_path.is_none()

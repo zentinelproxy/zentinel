@@ -125,6 +125,14 @@ fn apply_headers_to_request(
     filter: &HeadersFilter,
     trace_id: &str,
 ) {
+    // Rename runs before set/add/remove
+    for (old_name, new_name) in &filter.rename {
+        if let Some(value) = req.headers.get(old_name).and_then(|v| v.to_str().ok()) {
+            let owned = value.to_string();
+            req.insert_header(new_name.clone(), &owned).ok();
+            req.remove_header(old_name);
+        }
+    }
     for (name, value) in &filter.set {
         req.insert_header(name.clone(), value.as_str()).ok();
     }
@@ -137,6 +145,7 @@ fn apply_headers_to_request(
 
     trace!(
         correlation_id = %trace_id,
+        rename_count = filter.rename.len(),
         set_count = filter.set.len(),
         add_count = filter.add.len(),
         remove_count = filter.remove.len(),
@@ -145,6 +154,14 @@ fn apply_headers_to_request(
 }
 
 fn apply_headers_to_response(resp: &mut ResponseHeader, filter: &HeadersFilter, trace_id: &str) {
+    // Rename runs before set/add/remove
+    for (old_name, new_name) in &filter.rename {
+        if let Some(value) = resp.headers.get(old_name).and_then(|v| v.to_str().ok()) {
+            let owned = value.to_string();
+            resp.insert_header(new_name.clone(), &owned).ok();
+            resp.remove_header(old_name);
+        }
+    }
     for (name, value) in &filter.set {
         resp.insert_header(name.clone(), value.as_str()).ok();
     }
@@ -157,6 +174,7 @@ fn apply_headers_to_response(resp: &mut ResponseHeader, filter: &HeadersFilter, 
 
     trace!(
         correlation_id = %trace_id,
+        rename_count = filter.rename.len(),
         set_count = filter.set.len(),
         add_count = filter.add.len(),
         remove_count = filter.remove.len(),
@@ -491,6 +509,7 @@ mod tests {
             set,
             add,
             remove: vec!["X-Remove-Me".to_string()],
+            ..Default::default()
         };
 
         let (config, route) = test_config_with_filter("hdr", Filter::Headers(headers_filter));
@@ -522,6 +541,7 @@ mod tests {
             set,
             add: HashMap::new(),
             remove: vec!["Server".to_string()],
+            ..Default::default()
         };
 
         let (config, route) = test_config_with_filter("hdr", Filter::Headers(headers_filter));
@@ -549,6 +569,7 @@ mod tests {
             set,
             add: HashMap::new(),
             remove: vec![],
+            ..Default::default()
         };
 
         let (config, route) = test_config_with_filter("hdr", Filter::Headers(headers_filter));

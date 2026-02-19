@@ -1614,11 +1614,13 @@ mod tests {
             service_type: ServiceType::Web,
             policies: RoutePolicies {
                 request_headers: HeaderModifications {
+                    rename: HashMap::new(),
                     set: HashMap::new(),
                     add: HashMap::new(),
                     remove: vec![],
                 },
                 response_headers: HeaderModifications {
+                    rename: HashMap::new(),
                     set: HashMap::new(),
                     add: HashMap::new(),
                     remove: vec![],
@@ -1667,6 +1669,7 @@ mod tests {
         // --- Filter types ---
         let _headers = HeadersFilter {
             phase: FilterPhase::Request,
+            rename: HashMap::new(),
             set: HashMap::new(),
             add: HashMap::new(),
             remove: vec![],
@@ -1768,6 +1771,7 @@ mod tests {
             lock_timeout_secs: 10,
             disk_path: None,
             disk_shards: 16,
+            status_header: false,
         };
 
         // --- GlobalRateLimitConfig ---

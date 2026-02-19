@@ -345,6 +345,10 @@ pub struct CacheStorageConfig {
     /// Number of shards for disk cache (improves concurrent access)
     #[serde(default = "default_disk_shards")]
     pub disk_shards: u32,
+
+    /// Add Cache-Status response header (RFC 9211) for cache observability
+    #[serde(default)]
+    pub status_header: bool,
 }
 
 impl Default for CacheStorageConfig {
@@ -357,6 +361,7 @@ impl Default for CacheStorageConfig {
             lock_timeout_secs: default_cache_lock_timeout(),
             disk_path: None,
             disk_shards: default_disk_shards(),
+            status_header: false,
         }
     }
 }
@@ -393,6 +398,10 @@ fn default_disk_shards() -> u32 {
 /// Header modification rules
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HeaderModifications {
+    /// Headers to rename (old_name -> new_name, applied before set/add/remove)
+    #[serde(default)]
+    pub rename: HashMap<String, String>,
+
     /// Headers to add/set
     #[serde(default)]
     pub set: HashMap<String, String>,

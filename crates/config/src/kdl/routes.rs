@@ -92,8 +92,14 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     "Parsed route"
                 );
 
+                // Parse policies block (request-headers, response-headers, etc.)
+                let (request_headers, response_headers) =
+                    parse_route_header_policies(child)?;
+
                 // Build route policies with optional cache config
                 let policies = RoutePolicies {
+                    request_headers,
+                    response_headers,
                     cache: cache_config,
                     ..RoutePolicies::default()
                 };
@@ -204,6 +210,107 @@ fn parse_route_filter_refs(node: &kdl::KdlNode) -> Result<Vec<String>> {
     }
 
     Ok(filter_ids)
+}
+
+/// Parse route-level header policies from the `policies` block.
+///
+/// Example KDL:
+/// ```kdl
+/// policies {
+///     request-headers {
+///         rename {
+///             X-Old-Name "X-New-Name"
+///         }
+///         set {
+///             X-Custom "value"
+///         }
+///         add {
+///             X-Extra "extra"
+///         }
+///         remove "X-Internal"
+///     }
+///     response-headers {
+///         set {
+///             X-Powered-By "Zentinel"
+///         }
+///     }
+/// }
+/// ```
+fn parse_route_header_policies(
+    node: &kdl::KdlNode,
+) -> Result<(HeaderModifications, HeaderModifications)> {
+    let mut request_headers = HeaderModifications::default();
+    let mut response_headers = HeaderModifications::default();
+
+    if let Some(route_children) = node.children() {
+        if let Some(policies_node) = route_children.get("policies") {
+            if let Some(policy_children) = policies_node.children() {
+                if let Some(req_node) = policy_children.get("request-headers") {
+                    request_headers = parse_header_modifications(req_node)?;
+                }
+                if let Some(resp_node) = policy_children.get("response-headers") {
+                    response_headers = parse_header_modifications(resp_node)?;
+                }
+            }
+        }
+    }
+
+    Ok((request_headers, response_headers))
+}
+
+/// Parse a header modifications block (rename, set, add, remove).
+fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications> {
+    let mut rename = HashMap::new();
+    let mut set = HashMap::new();
+    let mut add = HashMap::new();
+    let mut remove = Vec::new();
+
+    if let Some(children) = node.children() {
+        if let Some(rename_node) = children.get("rename") {
+            if let Some(rename_children) = rename_node.children() {
+                for entry_node in rename_children.nodes() {
+                    let old_name = entry_node.name().value().to_string();
+                    if let Some(new_name) = get_first_arg_string(entry_node) {
+                        rename.insert(old_name, new_name);
+                    }
+                }
+            }
+        }
+        if let Some(set_node) = children.get("set") {
+            if let Some(set_children) = set_node.children() {
+                for entry_node in set_children.nodes() {
+                    let name = entry_node.name().value().to_string();
+                    if let Some(value) = get_first_arg_string(entry_node) {
+                        set.insert(name, value);
+                    }
+                }
+            }
+        }
+        if let Some(add_node) = children.get("add") {
+            if let Some(add_children) = add_node.children() {
+                for entry_node in add_children.nodes() {
+                    let name = entry_node.name().value().to_string();
+                    if let Some(value) = get_first_arg_string(entry_node) {
+                        add.insert(name, value);
+                    }
+                }
+            }
+        }
+        if let Some(remove_node) = children.get("remove") {
+            for entry in remove_node.entries() {
+                if let Some(name) = entry.value().as_string() {
+                    remove.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(HeaderModifications {
+        rename,
+        set,
+        add,
+        remove,
+    })
 }
 
 /// Parse static file configuration block
