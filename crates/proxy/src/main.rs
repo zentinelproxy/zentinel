@@ -765,31 +765,35 @@ fn run_server(
                         // here to apply cipher_suites, min/max_version, and session_resumption.
                         // Currently Pingora's TlsSettings::build() creates its own ServerConfig
                         // with hardcoded defaults, ignoring our TLS hardening settings.
-                        match proxy_service.add_tls(
-                            &listener.address,
+                        let mut tls_settings = match pingora::listeners::tls::TlsSettings::intermediate(
                             &cert_path_str,
                             &key_path_str,
                         ) {
-                            Ok(()) => {
-                                info!(
-                                    listener_id = %listener.id,
-                                    address = %listener.address,
-                                    cert_file = %cert_path_str,
-                                    min_tls_version = ?tls_config.min_version,
-                                    client_auth = tls_config.client_auth,
-                                    acme_enabled = tls_config.acme.is_some(),
-                                    "HTTPS listening on: {}", listener.address
-                                );
-                            }
+                            Ok(s) => s,
                             Err(e) => {
                                 error!(
                                     listener_id = %listener.id,
-                                    address = %listener.address,
                                     error = %e,
-                                    "Failed to configure TLS listener"
+                                    "Failed to create TLS settings"
                                 );
+                                continue;
                             }
-                        }
+                        };
+                        tls_settings.enable_h2();
+                        proxy_service.add_tls_with_settings(
+                            &listener.address,
+                            None,
+                            tls_settings,
+                        );
+                        info!(
+                            listener_id = %listener.id,
+                            address = %listener.address,
+                            cert_file = %cert_path_str,
+                            min_tls_version = ?tls_config.min_version,
+                            client_auth = tls_config.client_auth,
+                            acme_enabled = tls_config.acme.is_some(),
+                            "HTTPS (h2+http/1.1) listening on: {}", listener.address
+                        );
                     }
                     None => {
                         error!(
