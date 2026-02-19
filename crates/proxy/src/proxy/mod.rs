@@ -152,6 +152,7 @@ impl ZentinelProxy {
                 "Configuring HTTP cache storage"
             );
             crate::cache::configure_cache(cache_config.clone());
+            crate::cache::init_disk_cache_state().await;
         }
 
         // Create configuration manager

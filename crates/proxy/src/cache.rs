@@ -19,6 +19,7 @@
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::RwLock;
 use pingora_cache::eviction::simple_lru::Manager as LruEvictionManager;
+use pingora_cache::eviction::EvictionManager;
 use pingora_cache::lock::CacheLock;
 use pingora_cache::storage::Storage;
 use pingora_cache::MemCache;
@@ -26,9 +27,10 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
-use zentinel_config::CacheStorageConfig;
+use crate::disk_cache::DiskCacheStorage;
+use zentinel_config::{CacheBackend, CacheStorageConfig};
 
 // ============================================================================
 // Cache Configuration
@@ -93,20 +95,35 @@ pub fn is_cache_enabled() -> bool {
 // Static Cache Storage
 // ============================================================================
 
-/// Static in-memory cache storage instance
+/// Static cache storage instance with dynamic backend dispatch.
 ///
-/// This provides a `&'static` reference required by Pingora's cache API.
-/// Note: MemCache is marked "for testing only" in pingora-cache. For production
-/// deployments with large cache requirements, consider implementing a disk-based
-/// storage backend.
-static HTTP_CACHE_STORAGE: Lazy<MemCache> = Lazy::new(|| {
+/// Uses `Box::leak` to obtain a `&'static` reference required by Pingora's
+/// cache API. The backend is selected based on the `CacheBackend` config value.
+static HTTP_CACHE_STORAGE: Lazy<&'static (dyn Storage + Sync)> = Lazy::new(|| {
     let config = get_cache_config();
     info!(
         cache_size_mb = config.max_size_bytes / 1024 / 1024,
         backend = ?config.backend,
         "Initializing HTTP cache storage"
     );
-    MemCache::new()
+    match config.backend {
+        CacheBackend::Memory => Box::leak(Box::new(MemCache::new())),
+        CacheBackend::Disk => {
+            let path = config
+                .disk_path
+                .as_ref()
+                .expect("disk-path is required for disk backend (validated by config parser)");
+            Box::leak(Box::new(DiskCacheStorage::new(
+                path,
+                config.disk_shards,
+                config.max_size_bytes,
+            )))
+        }
+        CacheBackend::Hybrid => {
+            warn!("Hybrid cache backend not yet implemented, falling back to memory");
+            Box::leak(Box::new(MemCache::new()))
+        }
+    }
 });
 
 /// Static LRU eviction manager for cache entries
@@ -134,7 +151,7 @@ static HTTP_CACHE_LOCK: Lazy<CacheLock> = Lazy::new(|| {
 ///
 /// This is used by the ProxyHttp implementation to enable caching.
 pub fn get_cache_storage() -> &'static (dyn Storage + Sync) {
-    &*HTTP_CACHE_STORAGE
+    *HTTP_CACHE_STORAGE
 }
 
 /// Get a static reference to the cache eviction manager
@@ -145,6 +162,56 @@ pub fn get_cache_eviction() -> &'static LruEvictionManager {
 /// Get a static reference to the cache lock
 pub fn get_cache_lock() -> &'static CacheLock {
     &HTTP_CACHE_LOCK
+}
+
+/// Initialize disk cache eviction state at startup.
+///
+/// Loads saved eviction state if available, then scans disk entries to
+/// register them with the eviction manager. No-op for non-disk backends.
+pub async fn init_disk_cache_state() {
+    let config = get_cache_config();
+    if config.backend == CacheBackend::Disk {
+        let path = config.disk_path.as_ref().unwrap();
+        let eviction = get_cache_eviction();
+
+        // Try loading saved eviction state
+        let eviction_dir = path.join("eviction");
+        if eviction_dir.exists() {
+            if let Err(e) = eviction
+                .load(eviction_dir.to_str().unwrap_or_default())
+                .await
+            {
+                warn!(error = %e, "Failed to load saved eviction state, rebuilding from disk");
+            } else {
+                info!("Loaded saved eviction state");
+            }
+        }
+
+        // Scan disk entries and register with eviction manager
+        crate::disk_cache::rebuild_eviction_state(path, config.disk_shards, eviction).await;
+    }
+}
+
+/// Save disk cache eviction state for faster recovery on next startup.
+///
+/// No-op for non-disk backends.
+pub async fn save_disk_cache_state() {
+    let config = get_cache_config();
+    if config.backend == CacheBackend::Disk {
+        let eviction_path = config.disk_path.as_ref().unwrap().join("eviction");
+        if let Err(e) = std::fs::create_dir_all(&eviction_path) {
+            error!(error = %e, "Failed to create eviction state directory");
+            return;
+        }
+        if let Err(e) = get_cache_eviction()
+            .save(eviction_path.to_str().unwrap_or_default())
+            .await
+        {
+            error!(error = %e, "Failed to save eviction state");
+        } else {
+            info!("Saved disk cache eviction state");
+        }
+    }
 }
 
 /// Cache configuration for a route

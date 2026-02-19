@@ -995,7 +995,7 @@ pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
     }
 
     // Validate disk backend has a path
-    if config.backend == CacheBackend::Disk && config.disk_path.is_none() {
+    if matches!(config.backend, CacheBackend::Disk | CacheBackend::Hybrid) && config.disk_path.is_none() {
         return Err(anyhow::anyhow!(
             "Disk cache backend requires 'disk-path' to be specified"
         ));
