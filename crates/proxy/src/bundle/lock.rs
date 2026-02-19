@@ -36,6 +36,11 @@ pub struct BundleLock {
     /// Agent repositories (agent name -> "owner/repo")
     pub repositories: HashMap<String, String>,
 
+    /// Optional binary name overrides (agent name -> asset prefix)
+    /// When present, used instead of the default "zentinel-{name}-agent" pattern.
+    #[serde(default)]
+    pub binary_names: HashMap<String, String>,
+
     /// Optional checksums for verification
     #[serde(default)]
     pub checksums: HashMap<String, String>,
@@ -122,11 +127,16 @@ impl BundleLock {
             .iter()
             .filter_map(|(name, version)| {
                 let repository = self.repositories.get(name)?;
+                let binary_name = self
+                    .binary_names
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| format!("zentinel-{}-agent", name));
                 Some(AgentInfo {
                     name: name.clone(),
                     version: version.clone(),
                     repository: repository.clone(),
-                    binary_name: format!("zentinel-{}-agent", name),
+                    binary_name,
                 })
             })
             .collect()
@@ -136,11 +146,16 @@ impl BundleLock {
     pub fn agent(&self, name: &str) -> Option<AgentInfo> {
         let version = self.agents.get(name)?;
         let repository = self.repositories.get(name)?;
+        let binary_name = self
+            .binary_names
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| format!("zentinel-{}-agent", name));
         Some(AgentInfo {
             name: name.to_string(),
             version: version.clone(),
             repository: repository.clone(),
-            binary_name: format!("zentinel-{}-agent", name),
+            binary_name,
         })
     }
 

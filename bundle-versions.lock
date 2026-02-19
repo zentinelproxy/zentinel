@@ -8,7 +8,7 @@
 
 [bundle]
 # Bundle version (CalVer: YY.MM_PATCH)
-version = "26.01_1"
+version = "26.02_9"
 
 [agents]
 # Core agents (included in default bundle install)
@@ -17,35 +17,35 @@ ratelimit = "0.2.0"
 denylist = "0.2.0"
 
 # Security agents
-zentinelsec = "0.1.0"
-modsec = "0.1.0"
-ip-reputation = "0.1.0"
-bot-management = "0.1.0"
-content-scanner = "0.1.0"
+zentinelsec = "0.2.0"
+modsec = "0.2.0"
+ip-reputation = "0.2.0"
+bot-management = "0.2.0"
+content-scanner = "0.2.0"
 
 # API security agents
-graphql-security = "0.1.0"
-grpc-inspector = "0.1.0"
-soap = "0.1.0"
-api-deprecation = "0.1.0"
+graphql-security = "0.2.0"
+grpc-inspector = "0.2.0"
+soap = "0.2.0"
+api-deprecation = "0.2.0"
 
 # Protocol agents
-websocket-inspector = "0.1.0"
-mqtt-gateway = "0.1.0"
+websocket-inspector = "0.2.0"
+mqtt-gateway = "0.2.0"
 
 # Scripting agents
-lua = "0.1.0"
-js = "0.1.0"
-wasm = "0.1.0"
+lua = "0.2.0"
+js = "0.2.0"
+wasm = "0.2.0"
 
 # Utility agents
-transform = "0.1.0"
-audit-logger = "0.1.0"
-mock-server = "0.1.0"
-chaos = "0.1.0"
+transform = "0.2.0"
+audit-logger = "0.2.0"
+mock-server = "0.2.0"
+chaos = "0.2.0"
 
 # Identity agents
-spiffe = "0.1.0"
+spiffe = "0.2.0"
 
 [repositories]
 # Core agents
@@ -83,6 +83,47 @@ chaos = "zentinelproxy/zentinel-agent-chaos"
 
 # Identity agents
 spiffe = "zentinelproxy/zentinel-agent-spiffe"
+
+[binary_names]
+# Asset name prefixes for release artifacts.
+# These map to the actual tarball/binary names on GitHub Releases.
+# Needed because v0.2.0 releases still use pre-rename "sentinel-*" names.
+
+# Core agents
+waf = "sentinel-waf-agent"
+ratelimit = "sentinel-ratelimit-agent"
+denylist = "sentinel-denylist-agent"
+
+# Security agents
+zentinelsec = "sentinel-sentinelsec-agent"
+modsec = "sentinel-modsec-agent"
+ip-reputation = "sentinel-agent-ip-reputation"
+bot-management = "sentinel-agent-bot-management"
+content-scanner = "sentinel-agent-content-scanner"
+
+# API security agents
+graphql-security = "sentinel-agent-graphql-security"
+grpc-inspector = "sentinel-agent-grpc-inspector"
+soap = "sentinel-agent-soap"
+api-deprecation = "sentinel-agent-api-deprecation"
+
+# Protocol agents
+websocket-inspector = "sentinel-ws-agent"
+mqtt-gateway = "sentinel-mqtt-agent"
+
+# Scripting agents
+lua = "sentinel-lua-agent"
+js = "sentinel-js-agent"
+wasm = "sentinel-wasm-agent"
+
+# Utility agents
+transform = "sentinel-agent-transform"
+audit-logger = "sentinel-agent-audit-logger"
+mock-server = "sentinel-agent-mock-server"
+chaos = "sentinel-agent-chaos"
+
+# Identity agents
+spiffe = "sentinel-spiffe-agent"
 
 [checksums]
 # SHA256 checksums for verification (optional, updated by release CI)
