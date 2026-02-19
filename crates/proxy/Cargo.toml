@@ -33,9 +33,9 @@ pingora-cache = { workspace = true }
 pingora-memory-cache = { workspace = true }
 
 # Local crates
-zentinel-config = { path = "../config", version = "0.5.3", features = ["validation"] }
-zentinel-common = { path = "../common", version = "0.5.3" }
-zentinel-agent-protocol = { path = "../agent-protocol", version = "0.5.3" }
+zentinel-config = { path = "../config", version = "0.5.4", features = ["validation"] }
+zentinel-common = { path = "../common", version = "0.5.4" }
+zentinel-agent-protocol = { path = "../agent-protocol", version = "0.5.4" }
 
 # Async runtime
 tokio = { workspace = true }
