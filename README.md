@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://zentinelproxy.io/docs/">Documentation</a> •
+  <a href="https://docs.zentinelproxy.io/">Documentation</a> •
   <a href="https://zentinelproxy.io/playground/">Playground</a> •
   <a href="https://zentinelproxy.io/benchmarks/">Benchmarks</a> •
   <a href="https://github.com/zentinelproxy/zentinel/discussions">Discussions</a> •
@@ -94,6 +94,21 @@ zentinel --config zentinel.kdl
 # Validate config without starting
 zentinel test --config zentinel.kdl
 ```
+
+**Proxying to an HTTPS backend?** Add a `tls` block to the upstream:
+
+```kdl
+upstreams {
+    upstream "backend" {
+        target "api.example.com:443"
+        tls {
+            sni "api.example.com"
+        }
+    }
+}
+```
+
+Without the `tls` block, Zentinel connects with plaintext HTTP regardless of the port.
 
 More examples: [`config/examples/`](config/examples/) covers API gateways, load balancing, WebSocket, caching, inference routing, and more. Or use the [config builder](https://zentinelproxy.io/customize/) to generate a config interactively.
 
@@ -184,7 +199,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
 
 ## Community
 
-- 📖 [Documentation](https://zentinelproxy.io/docs) — Guides, reference, and examples
+- 📖 [Documentation](https://docs.zentinelproxy.io/) — Guides, reference, and examples
 - 🎮 [Playground](https://zentinelproxy.io/playground/) — Try the routing engine in your browser (WASM)
 - 📊 [Benchmarks](https://zentinelproxy.io/benchmarks/) — Performance, soak testing, and Envoy comparison
 - 💬 [Discussions](https://github.com/zentinelproxy/zentinel/discussions) — Questions, ideas, show & tell

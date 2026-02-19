@@ -7,6 +7,7 @@ Example configurations demonstrating Zentinel features and patterns.
 | Example | Description |
 |---------|-------------|
 | [basic.kdl](basic.kdl) | Minimal configuration for getting started |
+| [https-upstream.kdl](https-upstream.kdl) | Proxying to an HTTPS backend with upstream TLS |
 
 ## API Features
 

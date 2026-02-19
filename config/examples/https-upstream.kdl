@@ -1,0 +1,77 @@
+// Zentinel HTTPS Upstream Example
+// Proxying to a backend that serves HTTPS (e.g., an external API)
+//
+// Key point: When your backend expects HTTPS, you MUST add a `tls` block
+// to the upstream. Without it, Zentinel connects with plaintext HTTP,
+// which causes 502 errors or redirect loops.
+
+system {
+    worker-threads 0
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+    }
+}
+
+routes {
+    route "api" {
+        matches {
+            path-prefix "/api/"
+        }
+        upstream "external-api"
+        policies {
+            request-headers {
+                set {
+                    "Host" "api.example.com"
+                }
+            }
+        }
+    }
+}
+
+upstreams {
+    // Basic TLS upstream
+    upstream "external-api" {
+        target "api.example.com:443" weight=1
+
+        // Required: tells Zentinel to connect over TLS
+        tls {
+            sni "api.example.com"
+        }
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+        }
+    }
+
+    // mTLS upstream (client certificate authentication)
+    // upstream "internal-service" {
+    //     target "secure.internal:443" weight=1
+    //
+    //     tls {
+    //         sni "secure.internal"
+    //         client-cert "/etc/zentinel/certs/client.crt"
+    //         client-key "/etc/zentinel/certs/client.key"
+    //         ca-cert "/etc/zentinel/certs/backend-ca.crt"
+    //     }
+    // }
+}
+
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+    }
+    logging {
+        level "info"
+        format "json"
+    }
+}
