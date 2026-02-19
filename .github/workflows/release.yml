@@ -394,7 +394,7 @@ jobs:
 
           #### Docker
           ```bash
-          docker pull ghcr.io/${{ github.repository }}:$CALVER
+          docker pull ghcr.io/zentinelproxy/zentinel:$CALVER
           ```
 
           ### Supply Chain Security
@@ -411,7 +411,7 @@ jobs:
 
           #### Verify the container image
           ```bash
-          cosign verify ghcr.io/${{ github.repository }}:$CALVER \
+          cosign verify ghcr.io/zentinelproxy/zentinel:$CALVER \
             --certificate-identity-regexp "github.com/zentinelproxy/zentinel" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           ```
@@ -501,7 +501,7 @@ jobs:
           else
             echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
             echo "- **crates.io**: [zentinel-proxy](https://crates.io/crates/zentinel-proxy)" >> $GITHUB_STEP_SUMMARY
-            echo "- **Container**: \`ghcr.io/${{ github.repository }}:${{ needs.validate.outputs.calver }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Container**: \`ghcr.io/zentinelproxy/zentinel:${{ needs.validate.outputs.calver }}\`" >> $GITHUB_STEP_SUMMARY
             echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/${{ needs.validate.outputs.calver }}" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Supply Chain" >> $GITHUB_STEP_SUMMARY

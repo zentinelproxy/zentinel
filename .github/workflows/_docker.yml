@@ -32,8 +32,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-  ECHO_IMAGE_NAME: ${{ github.repository }}-echo
+  # Hardcoded to avoid github.repository returning stale pre-transfer name (raskell-io/sentinel)
+  IMAGE_NAME: zentinelproxy/zentinel
+  ECHO_IMAGE_NAME: zentinelproxy/zentinel-echo
 
 jobs:
   build-and-push:
