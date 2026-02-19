@@ -48,8 +48,8 @@ pub mod app;
 pub mod builtin_handlers;
 pub mod cache;
 pub mod decompression;
-pub mod disk_cache;
 pub mod discovery;
+pub mod disk_cache;
 pub mod distributed_rate_limit;
 pub mod errors;
 pub mod memcached_rate_limit;
@@ -198,9 +198,8 @@ pub use memcached_rate_limit::{
 
 // HTTP caching
 pub use cache::{
-    configure_cache, get_cache_eviction, get_cache_lock, get_cache_storage,
-    init_disk_cache_state, is_cache_enabled, save_disk_cache_state, CacheConfig, CacheManager,
-    HttpCacheStats,
+    configure_cache, get_cache_eviction, get_cache_lock, get_cache_storage, init_disk_cache_state,
+    is_cache_enabled, save_disk_cache_state, CacheConfig, CacheManager, HttpCacheStats,
 };
 
 // Memory caching

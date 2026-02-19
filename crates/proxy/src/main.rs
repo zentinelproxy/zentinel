@@ -765,26 +765,23 @@ fn run_server(
                         // here to apply cipher_suites, min/max_version, and session_resumption.
                         // Currently Pingora's TlsSettings::build() creates its own ServerConfig
                         // with hardcoded defaults, ignoring our TLS hardening settings.
-                        let mut tls_settings = match pingora::listeners::tls::TlsSettings::intermediate(
-                            &cert_path_str,
-                            &key_path_str,
-                        ) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                error!(
-                                    listener_id = %listener.id,
-                                    error = %e,
-                                    "Failed to create TLS settings"
-                                );
-                                continue;
-                            }
-                        };
+                        let mut tls_settings =
+                            match pingora::listeners::tls::TlsSettings::intermediate(
+                                &cert_path_str,
+                                &key_path_str,
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    error!(
+                                        listener_id = %listener.id,
+                                        error = %e,
+                                        "Failed to create TLS settings"
+                                    );
+                                    continue;
+                                }
+                            };
                         tls_settings.enable_h2();
-                        proxy_service.add_tls_with_settings(
-                            &listener.address,
-                            None,
-                            tls_settings,
-                        );
+                        proxy_service.add_tls_with_settings(&listener.address, None, tls_settings);
                         info!(
                             listener_id = %listener.id,
                             address = %listener.address,

@@ -241,11 +241,7 @@ impl HandleHit for DiskHitHandler {
         if start >= self.body.len() {
             return Error::e_explain(
                 ErrorType::InternalError,
-                format!(
-                    "seek start out of range {} >= {}",
-                    start,
-                    self.body.len()
-                ),
+                format!("seek start out of range {} >= {}", start, self.body.len()),
             );
         }
         self.range_start = start;
@@ -413,8 +409,8 @@ impl Storage for DiskCacheStorage {
         let meta_path = self.meta_path(&combined);
         let body_path = self.body_path(&combined);
 
-        let result = tokio::task::spawn_blocking(
-            move || -> Result<Option<(CacheMeta, HitHandler)>> {
+        let result =
+            tokio::task::spawn_blocking(move || -> Result<Option<(CacheMeta, HitHandler)>> {
                 let meta_data = match std::fs::read(&meta_path) {
                     Ok(d) => d,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -453,15 +449,14 @@ impl Storage for DiskCacheStorage {
                 };
 
                 Ok(Some((meta, Box::new(hit_handler) as HitHandler)))
-            },
-        )
-        .await
-        .map_err(|e| {
-            Error::explain(
-                ErrorType::InternalError,
-                format!("spawn_blocking join error: {}", e),
-            )
-        })??;
+            })
+            .await
+            .map_err(|e| {
+                Error::explain(
+                    ErrorType::InternalError,
+                    format!("spawn_blocking join error: {}", e),
+                )
+            })??;
 
         Ok(result)
     }
@@ -902,8 +897,7 @@ mod tests {
 
         // Create miss handler and write some data but don't finish
         {
-            let mut miss_handler =
-                STORAGE.get_miss_handler(&key, &meta, trace).await.unwrap();
+            let mut miss_handler = STORAGE.get_miss_handler(&key, &meta, trace).await.unwrap();
             miss_handler
                 .write_body(b"incomplete"[..].into(), false)
                 .await
