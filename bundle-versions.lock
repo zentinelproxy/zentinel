@@ -8,7 +8,7 @@
 
 [bundle]
 # Bundle version (CalVer: YY.MM_PATCH)
-version = "26.02_10"
+version = "26.02_11"
 
 [agents]
 # Core agents (included in default bundle install)
@@ -19,19 +19,19 @@ denylist = "0.3.0"
 # Security agents
 zentinelsec = "0.3.0"
 modsec = "0.3.0"
-ip-reputation = "0.3.0"
-bot-management = "0.3.0"
-content-scanner = "0.3.0"
+ip-reputation = "0.4.0"
+bot-management = "0.4.0"
+content-scanner = "0.4.0"
 
 # API security agents
-graphql-security = "0.3.0"
-grpc-inspector = "0.3.0"
-soap = "0.3.0"
-api-deprecation = "0.3.0"
+graphql-security = "0.4.0"
+grpc-inspector = "0.4.0"
+soap = "0.4.0"
+api-deprecation = "0.4.0"
 
 # Protocol agents
-websocket-inspector = "0.3.0"
-mqtt-gateway = "0.3.0"
+websocket-inspector = "0.4.0"
+mqtt-gateway = "0.4.0"
 
 # Scripting agents
 lua = "0.3.0"
@@ -39,10 +39,10 @@ js = "0.3.0"
 wasm = "0.3.0"
 
 # Utility agents
-transform = "0.3.0"
-audit-logger = "0.3.0"
-mock-server = "0.3.0"
-chaos = "0.3.0"
+transform = "0.4.0"
+audit-logger = "0.4.0"
+mock-server = "0.4.0"
+chaos = "0.4.0"
 
 # Identity agents
 spiffe = "0.3.0"
@@ -83,23 +83,6 @@ chaos = "zentinelproxy/zentinel-agent-chaos"
 
 # Identity agents
 spiffe = "zentinelproxy/zentinel-agent-spiffe"
-
-[binary_names]
-# Overrides for agents whose binary name doesn't match "zentinel-{name}-agent".
-# Only needed for agents with non-standard naming conventions.
-ip-reputation = "zentinel-agent-ip-reputation"
-bot-management = "zentinel-agent-bot-management"
-content-scanner = "zentinel-agent-content-scanner"
-graphql-security = "zentinel-agent-graphql-security"
-grpc-inspector = "zentinel-agent-grpc-inspector"
-soap = "zentinel-agent-soap"
-api-deprecation = "zentinel-agent-api-deprecation"
-websocket-inspector = "zentinel-ws-agent"
-mqtt-gateway = "zentinel-mqtt-agent"
-transform = "zentinel-agent-transform"
-audit-logger = "zentinel-agent-audit-logger"
-mock-server = "zentinel-agent-mock-server"
-chaos = "zentinel-agent-chaos"
 
 [checksums]
 # SHA256 checksums for verification (optional, updated by release CI)
