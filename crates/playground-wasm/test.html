@@ -63,6 +63,19 @@
         .status.loading { background: #1e3a5f; }
         .status.ready { background: #166534; }
         .status.failed { background: #991b1b; }
+        .tab-bar {
+            margin-bottom: 10px;
+        }
+        .tab {
+            background: #1e3a5f;
+            color: #aaa;
+            font-weight: normal;
+        }
+        .tab:hover { background: #2a4a6f; color: #eee; }
+        .tab.active { background: #00d9ff; color: #000; font-weight: bold; }
+        .warn-badge { color: #fbbf24; }
+        .err-badge { color: #f87171; }
+        .info-badge { color: #60a5fa; }
     </style>
 </head>
 <body>
@@ -100,7 +113,7 @@ routes {
         }
     }
     route "static" {
-        priority "medium"
+        priority "normal"
         matches {
             path-prefix "/static"
         }
@@ -117,17 +130,11 @@ routes {
 
 upstreams {
     upstream "backend" {
-        targets {
-            target {
-                address "127.0.0.1:8081"
-                weight 1
-            }
-            target {
-                address "127.0.0.1:8082"
-                weight 2
-            }
-        }
+        target "127.0.0.1:8081" weight=1
+        target "127.0.0.1:8082" weight=2
+
         load-balancing "round_robin"
+
         health-check {
             type "http" {
                 path "/health"
@@ -174,19 +181,59 @@ limits {
         <pre id="normalized-result">Click to see config with defaults applied</pre>
     </div>
 
-    <h2>4. Module Info</h2>
+    <h2>4. Topology Inspector</h2>
+    <div class="section">
+        <div class="tab-bar">
+            <button class="tab active" onclick="switchTopologyTab('text', this)">Text</button>
+            <button class="tab" onclick="switchTopologyTab('mermaid', this)">Mermaid</button>
+            <button class="tab" onclick="switchTopologyTab('dot', this)">DOT</button>
+            <button class="tab" onclick="switchTopologyTab('json', this)">JSON</button>
+            <button class="tab" onclick="switchTopologyTab('graph', this)">Graph (raw)</button>
+            <span style="margin-left: 20px;"></span>
+            <button onclick="runLint()">Lint Only</button>
+        </div>
+        <div id="mermaid-container" style="display: none;">
+            <div id="mermaid-diagram" style="background: #fff; border-radius: 4px; padding: 20px; overflow-x: auto; min-height: 100px;"></div>
+            <details style="margin-top: 8px;">
+                <summary style="cursor: pointer; color: #888; font-size: 12px;">Show source</summary>
+                <pre id="mermaid-source" style="margin-top: 4px;"></pre>
+            </details>
+        </div>
+        <pre id="topology-result">Select a format and the topology will render from the config above</pre>
+    </div>
+
+    <h2>5. Module Info</h2>
     <div class="section">
         <pre id="info">Loading...</pre>
     </div>
 
     <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+
+        let mermaidRenderCounter = 0;
+
+        async function renderMermaidDiagram(source) {
+            const container = document.getElementById('mermaid-diagram');
+            try {
+                const id = `mermaid-svg-${++mermaidRenderCounter}`;
+                const { svg } = await mermaid.render(id, source);
+                container.innerHTML = svg;
+            } catch (e) {
+                container.innerHTML = `<pre style="color: #f87171; background: none;">Mermaid render error: ${e.message}</pre>`;
+            }
+        }
+
         import init, {
             validate,
             simulate,
             get_normalized_config,
             create_sample_request,
             get_version,
-            init_panic_hook
+            init_panic_hook,
+            inspect_topology,
+            render_topology,
+            lint_config
         } from './pkg/zentinel_playground_wasm.js';
 
         let wasmReady = false;
@@ -209,6 +256,8 @@ limits {
                 window.runSimulate = runSimulate;
                 window.runSimulateNoMatch = runSimulateNoMatch;
                 window.runNormalized = runNormalized;
+                window.switchTopologyTab = switchTopologyTab;
+                window.runLint = runLint;
 
             } catch (e) {
                 document.getElementById('status').className = 'status failed';
@@ -273,6 +322,102 @@ limits {
             } catch (e) {
                 document.getElementById('normalized-result').textContent = 'Error: ' + e.message;
                 document.getElementById('normalized-result').className = 'error';
+            }
+        }
+
+        let currentTopologyTab = 'text';
+
+        function switchTopologyTab(format, btn) {
+            if (!wasmReady) return;
+            currentTopologyTab = format;
+
+            // Update active tab
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            if (btn) btn.classList.add('active');
+
+            const config = document.getElementById('config').value;
+            const el = document.getElementById('topology-result');
+            const mermaidContainer = document.getElementById('mermaid-container');
+
+            // Toggle mermaid visual container vs text pre
+            if (format === 'mermaid') {
+                mermaidContainer.style.display = 'block';
+                el.style.display = 'none';
+            } else {
+                mermaidContainer.style.display = 'none';
+                el.style.display = 'block';
+            }
+
+            try {
+                if (format === 'graph') {
+                    const result = inspect_topology(config);
+                    if (result.error) {
+                        el.textContent = `Error: ${result.error}\n${result.details.join('\n')}`;
+                        el.className = 'error';
+                    } else {
+                        el.textContent = JSON.stringify(result, null, 2);
+                        el.className = '';
+                    }
+                } else if (format === 'mermaid') {
+                    const result = render_topology(config, format);
+                    if (result.error) {
+                        mermaidContainer.style.display = 'none';
+                        el.style.display = 'block';
+                        el.textContent = `Error: ${result.error}\n${result.details.join('\n')}`;
+                        el.className = 'error';
+                    } else {
+                        document.getElementById('mermaid-source').textContent = result.output;
+                        renderMermaidDiagram(result.output);
+                    }
+                } else {
+                    const result = render_topology(config, format);
+                    if (result.error) {
+                        el.textContent = `Error: ${result.error}\n${result.details.join('\n')}`;
+                        el.className = 'error';
+                    } else {
+                        el.textContent = result.output;
+                        el.className = '';
+                    }
+                }
+            } catch (e) {
+                mermaidContainer.style.display = 'none';
+                el.style.display = 'block';
+                el.textContent = 'Error: ' + e.message;
+                el.className = 'error';
+            }
+        }
+
+        function runLint() {
+            if (!wasmReady) return;
+            document.getElementById('mermaid-container').style.display = 'none';
+            const el = document.getElementById('topology-result');
+            el.style.display = 'block';
+            // Deactivate all tabs since lint is a separate action
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            const config = document.getElementById('config').value;
+
+            try {
+                const result = lint_config(config);
+                if (result.error) {
+                    el.textContent = `Error: ${result.error}\n${result.details.join('\n')}`;
+                    el.className = 'error';
+                    return;
+                }
+                if (result.warnings.length === 0) {
+                    el.innerHTML = '<span class="success">No warnings found.</span>';
+                    return;
+                }
+                const lines = result.warnings.map(w => {
+                    const icon = w.severity === 'Error' ? 'x' : w.severity === 'Warn' ? '!' : 'i';
+                    return `[${icon}] ${w.code}: ${w.message}`;
+                });
+                const summary = result.has_errors
+                    ? `<span class="err-badge">${result.warnings.length} warning(s), has errors</span>`
+                    : `<span class="warn-badge">${result.warnings.length} warning(s)</span>`;
+                el.innerHTML = summary + '\n\n' + lines.join('\n');
+            } catch (e) {
+                el.textContent = 'Error: ' + e.message;
+                el.className = 'error';
             }
         }
 
