@@ -161,21 +161,20 @@ impl Storage for HybridCacheStorage {
     ) -> Result<bool> {
         // MemCache::update_meta panics if the key is not in its cache map.
         // The entry may only exist on disk, so we catch the panic.
-        let mem_updated =
-            match AssertUnwindSafe(self.memory.update_meta(key, meta, trace))
-                .catch_unwind()
-                .await
-            {
-                Ok(Ok(v)) => v,
-                Ok(Err(e)) => {
-                    warn!(error = %e, "hybrid cache: memory update_meta error");
-                    false
-                }
-                Err(_) => {
-                    debug!("hybrid cache: key not in memory tier, skipping memory update_meta");
-                    false
-                }
-            };
+        let mem_updated = match AssertUnwindSafe(self.memory.update_meta(key, meta, trace))
+            .catch_unwind()
+            .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                warn!(error = %e, "hybrid cache: memory update_meta error");
+                false
+            }
+            Err(_) => {
+                debug!("hybrid cache: key not in memory tier, skipping memory update_meta");
+                false
+            }
+        };
 
         let disk_updated = self.disk.update_meta(key, meta, trace).await?;
         Ok(mem_updated || disk_updated)
@@ -524,10 +523,7 @@ mod tests {
         );
 
         // Update meta via hybrid
-        let updated = HYBRID_4
-            .update_meta(&key, &new_meta, trace)
-            .await
-            .unwrap();
+        let updated = HYBRID_4.update_meta(&key, &new_meta, trace).await.unwrap();
         assert!(updated);
 
         // Verify lookup returns updated headers
@@ -727,7 +723,10 @@ mod tests {
 
         // Memory should now have the entry again
         let mem_result = HYBRID_9_MEM.lookup(&key, trace).await.unwrap();
-        assert!(mem_result.is_some(), "entry should be re-promoted to memory");
+        assert!(
+            mem_result.is_some(),
+            "entry should be re-promoted to memory"
+        );
 
         cleanup_disk("evict-then-hit");
     }
@@ -735,8 +734,7 @@ mod tests {
     // ---------- test 10: invalidation clears both ----------
 
     static HYBRID_10_MEM: Lazy<MemCache> = Lazy::new(MemCache::new);
-    static HYBRID_10_DISK: Lazy<DiskCacheStorage> =
-        Lazy::new(|| test_disk("invalidation-both"));
+    static HYBRID_10_DISK: Lazy<DiskCacheStorage> = Lazy::new(|| test_disk("invalidation-both"));
     static HYBRID_10: Lazy<HybridCacheStorage> =
         Lazy::new(|| HybridCacheStorage::new(&HYBRID_10_MEM, &HYBRID_10_DISK));
 

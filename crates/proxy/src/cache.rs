@@ -341,8 +341,7 @@ impl HttpCacheStats {
 
     /// Get current memory-tier hit count
     pub fn memory_hits(&self) -> u64 {
-        self.memory_hits
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.memory_hits.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get current disk-tier hit count
