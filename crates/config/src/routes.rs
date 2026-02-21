@@ -346,6 +346,10 @@ pub struct CacheStorageConfig {
     #[serde(default = "default_disk_shards")]
     pub disk_shards: u32,
 
+    /// Maximum size for the disk tier in hybrid mode (defaults to max_size_bytes)
+    #[serde(default)]
+    pub disk_max_size_bytes: Option<usize>,
+
     /// Add Cache-Status response header (RFC 9211) for cache observability
     #[serde(default)]
     pub status_header: bool,
@@ -361,6 +365,7 @@ impl Default for CacheStorageConfig {
             lock_timeout_secs: default_cache_lock_timeout(),
             disk_path: None,
             disk_shards: default_disk_shards(),
+            disk_max_size_bytes: None,
             status_header: false,
         }
     }

@@ -560,3 +560,4 @@ HTTP response caching configuration.
 | `lock-timeout-secs` | `u64` | `10` | Cache lock timeout |
 | `disk-path` | `string` | - | Disk cache path |
 | `disk-shards` | `u32` | `16` | Number of disk shards |
+| `disk-max-size` | `u64` | - | Disk tier max size (hybrid only) |

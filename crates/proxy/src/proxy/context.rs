@@ -48,7 +48,11 @@ impl std::fmt::Display for FallbackReason {
 /// Cache status for the Cache-Status response header (RFC 9211)
 #[derive(Debug, Clone)]
 pub(crate) enum CacheStatus {
-    /// Cache hit (fresh response served from cache)
+    /// Cache hit from memory tier (hybrid cache)
+    HitMemory,
+    /// Cache hit from disk tier, promoted to memory (hybrid cache)
+    HitDisk,
+    /// Cache hit (non-hybrid / tier unknown)
     Hit,
     /// Cache hit but response was stale (revalidation needed)
     HitStale,

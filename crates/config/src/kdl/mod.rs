@@ -993,6 +993,9 @@ pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
     if let Some(v) = get_int_entry(node, "disk-shards") {
         config.disk_shards = v as u32;
     }
+    if let Some(v) = get_int_entry(node, "disk-max-size") {
+        config.disk_max_size_bytes = Some(v as usize);
+    }
 
     // Parse status-header flag (Cache-Status response header, RFC 9211)
     if let Some(v) = get_bool_entry(node, "status-header") {

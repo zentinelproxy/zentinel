@@ -19,6 +19,8 @@ use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::cache::{get_cache_eviction, get_cache_lock, get_cache_storage};
+use crate::disk_cache::DiskHitHandler;
+use crate::hybrid_cache::HybridHitHandler;
 use crate::inference::{
     extract_inference_content, is_sse_response, PromptInjectionResult, StreamingTokenCounter,
 };
@@ -1785,6 +1787,8 @@ impl ProxyHttp for ZentinelProxy {
 
             if status_header_enabled {
                 let value = match cache_status {
+                    super::context::CacheStatus::HitMemory => "zentinel; hit; detail=memory",
+                    super::context::CacheStatus::HitDisk => "zentinel; hit; detail=disk",
                     super::context::CacheStatus::Hit => "zentinel; hit",
                     super::context::CacheStatus::HitStale => "zentinel; fwd=stale",
                     super::context::CacheStatus::Miss => "zentinel; fwd=miss",
@@ -2498,7 +2502,7 @@ impl ProxyHttp for ZentinelProxy {
         &self,
         session: &mut Session,
         meta: &CacheMeta,
-        _hit_handler: &mut HitHandler,
+        hit_handler: &mut HitHandler,
         is_fresh: bool,
         ctx: &mut Self::CTX,
     ) -> Result<Option<ForcedFreshness>>
@@ -2529,13 +2533,31 @@ impl ProxyHttp for ZentinelProxy {
 
         // Track cache hit statistics
         if is_fresh {
-            ctx.cache_status = Some(super::context::CacheStatus::Hit);
-            self.cache_manager.stats().record_hit();
+            // Detect which tier served the hit via downcast
+            let is_disk_hit = hit_handler
+                .as_any()
+                .downcast_ref::<HybridHitHandler>()
+                .is_some()
+                || hit_handler
+                    .as_any()
+                    .downcast_ref::<DiskHitHandler>()
+                    .is_some();
+
+            let stats = self.cache_manager.stats();
+            if is_disk_hit {
+                ctx.cache_status = Some(super::context::CacheStatus::HitDisk);
+                stats.record_disk_hit();
+            } else {
+                ctx.cache_status = Some(super::context::CacheStatus::HitMemory);
+                stats.record_memory_hit();
+            }
+            stats.record_hit();
 
             debug!(
                 correlation_id = %ctx.trace_id,
                 route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                 is_fresh = is_fresh,
+                tier = if is_disk_hit { "disk" } else { "memory" },
                 "Cache hit (fresh)"
             );
         } else {

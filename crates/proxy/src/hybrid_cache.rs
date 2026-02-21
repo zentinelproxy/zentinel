@@ -139,9 +139,18 @@ impl Storage for HybridCacheStorage {
         purge_type: PurgeType,
         trace: &SpanHandle,
     ) -> Result<bool> {
-        let mem_result = self.memory.purge(key, purge_type, trace).await?;
-        let disk_result = self.disk.purge(key, purge_type, trace).await?;
-        Ok(mem_result || disk_result)
+        match purge_type {
+            PurgeType::Eviction => {
+                // Capacity demotion: remove from memory only, disk copy stays.
+                debug!("hybrid cache: eviction demotion, keeping disk copy");
+                self.memory.purge(key, purge_type, trace).await
+            }
+            PurgeType::Invalidation => {
+                let mem = self.memory.purge(key, purge_type, trace).await?;
+                let disk = self.disk.purge(key, purge_type, trace).await?;
+                Ok(mem || disk)
+            }
+        }
     }
 
     async fn update_meta(
@@ -186,7 +195,7 @@ impl Storage for HybridCacheStorage {
 // HybridHitHandler — wraps an already-read body from a disk-promoted hit
 // ============================================================================
 
-struct HybridHitHandler {
+pub struct HybridHitHandler {
     body: Bytes,
     done: bool,
     range_start: usize,
@@ -635,5 +644,135 @@ mod tests {
         assert!(hit.seek(100, None).is_err());
 
         cleanup_disk("seek");
+    }
+
+    // ---------- test 8: eviction demotion ----------
+
+    static HYBRID_8_MEM: Lazy<MemCache> = Lazy::new(MemCache::new);
+    static HYBRID_8_DISK: Lazy<DiskCacheStorage> = Lazy::new(|| test_disk("eviction-demotion"));
+    static HYBRID_8: Lazy<HybridCacheStorage> =
+        Lazy::new(|| HybridCacheStorage::new(&HYBRID_8_MEM, &HYBRID_8_DISK));
+
+    #[tokio::test]
+    async fn test_hybrid_eviction_demotion() {
+        let trace = &span();
+        let key = CacheKey::new("", "hybrid-evict-demote", "1");
+        let meta = create_test_meta();
+
+        // Write via hybrid (goes to both tiers)
+        let mut handler = HYBRID_8.get_miss_handler(&key, &meta, trace).await.unwrap();
+        handler
+            .write_body(Bytes::from_static(b"demote me"), true)
+            .await
+            .unwrap();
+        handler.finish().await.unwrap();
+
+        // Verify both tiers have it
+        assert!(HYBRID_8_MEM.lookup(&key, trace).await.unwrap().is_some());
+        assert!(HYBRID_8_DISK.lookup(&key, trace).await.unwrap().is_some());
+
+        // Eviction purge — should only remove from memory
+        let compact = key.to_compact();
+        let purged = HYBRID_8
+            .purge(&compact, PurgeType::Eviction, trace)
+            .await
+            .unwrap();
+        assert!(purged);
+
+        // Memory should be empty, disk should still have it
+        assert!(HYBRID_8_MEM.lookup(&key, trace).await.unwrap().is_none());
+        assert!(HYBRID_8_DISK.lookup(&key, trace).await.unwrap().is_some());
+
+        cleanup_disk("eviction-demotion");
+    }
+
+    // ---------- test 9: eviction then disk hit ----------
+
+    static HYBRID_9_MEM: Lazy<MemCache> = Lazy::new(MemCache::new);
+    static HYBRID_9_DISK: Lazy<DiskCacheStorage> = Lazy::new(|| test_disk("evict-then-hit"));
+    static HYBRID_9: Lazy<HybridCacheStorage> =
+        Lazy::new(|| HybridCacheStorage::new(&HYBRID_9_MEM, &HYBRID_9_DISK));
+
+    #[tokio::test]
+    async fn test_hybrid_eviction_then_disk_hit() {
+        let trace = &span();
+        let key = CacheKey::new("", "hybrid-evict-hit", "1");
+        let meta = create_test_meta();
+
+        // Write via hybrid (goes to both tiers)
+        let mut handler = HYBRID_9.get_miss_handler(&key, &meta, trace).await.unwrap();
+        handler
+            .write_body(Bytes::from_static(b"evict and find"), true)
+            .await
+            .unwrap();
+        handler.finish().await.unwrap();
+
+        // Evict from memory
+        let compact = key.to_compact();
+        HYBRID_9
+            .purge(&compact, PurgeType::Eviction, trace)
+            .await
+            .unwrap();
+
+        // Memory empty
+        assert!(HYBRID_9_MEM.lookup(&key, trace).await.unwrap().is_none());
+
+        // Hybrid lookup should find it on disk and promote
+        let (_meta, mut hit) = HYBRID_9.lookup(&key, trace).await.unwrap().unwrap();
+        let body = hit.read_body().await.unwrap().unwrap();
+        assert_eq!(body.as_ref(), b"evict and find");
+
+        // Give background promotion time to complete
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Memory should now have the entry again
+        let mem_result = HYBRID_9_MEM.lookup(&key, trace).await.unwrap();
+        assert!(mem_result.is_some(), "entry should be re-promoted to memory");
+
+        cleanup_disk("evict-then-hit");
+    }
+
+    // ---------- test 10: invalidation clears both ----------
+
+    static HYBRID_10_MEM: Lazy<MemCache> = Lazy::new(MemCache::new);
+    static HYBRID_10_DISK: Lazy<DiskCacheStorage> =
+        Lazy::new(|| test_disk("invalidation-both"));
+    static HYBRID_10: Lazy<HybridCacheStorage> =
+        Lazy::new(|| HybridCacheStorage::new(&HYBRID_10_MEM, &HYBRID_10_DISK));
+
+    #[tokio::test]
+    async fn test_hybrid_invalidation_clears_both() {
+        let trace = &span();
+        let key = CacheKey::new("", "hybrid-invalidate", "1");
+        let meta = create_test_meta();
+
+        // Write via hybrid (goes to both tiers)
+        let mut handler = HYBRID_10
+            .get_miss_handler(&key, &meta, trace)
+            .await
+            .unwrap();
+        handler
+            .write_body(Bytes::from_static(b"invalidate me"), true)
+            .await
+            .unwrap();
+        handler.finish().await.unwrap();
+
+        // Verify both tiers have it
+        assert!(HYBRID_10_MEM.lookup(&key, trace).await.unwrap().is_some());
+        assert!(HYBRID_10_DISK.lookup(&key, trace).await.unwrap().is_some());
+
+        // Invalidation purge — should remove from both tiers
+        let compact = key.to_compact();
+        let purged = HYBRID_10
+            .purge(&compact, PurgeType::Invalidation, trace)
+            .await
+            .unwrap();
+        assert!(purged);
+
+        // Both tiers should be empty
+        assert!(HYBRID_10_MEM.lookup(&key, trace).await.unwrap().is_none());
+        assert!(HYBRID_10_DISK.lookup(&key, trace).await.unwrap().is_none());
+
+        cleanup_disk("invalidation-both");
     }
 }

@@ -1771,6 +1771,7 @@ mod tests {
             lock_timeout_secs: 10,
             disk_path: None,
             disk_shards: 16,
+            disk_max_size_bytes: None,
             status_header: false,
         };
 

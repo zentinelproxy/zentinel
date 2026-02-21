@@ -125,11 +125,12 @@ static HTTP_CACHE_STORAGE: Lazy<&'static (dyn Storage + Sync)> = Lazy::new(|| {
                 .disk_path
                 .as_ref()
                 .expect("disk-path is required for hybrid backend (validated by config parser)");
+            let disk_max = config.disk_max_size_bytes.unwrap_or(config.max_size_bytes);
             let memory: &'static MemCache = Box::leak(Box::new(MemCache::new()));
             let disk: &'static DiskCacheStorage = Box::leak(Box::new(DiskCacheStorage::new(
                 path,
                 config.disk_shards,
-                config.max_size_bytes,
+                disk_max,
             )));
             Box::leak(Box::new(HybridCacheStorage::new(memory, disk)))
         }
@@ -267,6 +268,8 @@ pub struct HttpCacheStats {
     misses: std::sync::atomic::AtomicU64,
     stores: std::sync::atomic::AtomicU64,
     evictions: std::sync::atomic::AtomicU64,
+    memory_hits: std::sync::atomic::AtomicU64,
+    disk_hits: std::sync::atomic::AtomicU64,
 }
 
 impl HttpCacheStats {
@@ -322,6 +325,29 @@ impl HttpCacheStats {
     /// Get current eviction count
     pub fn evictions(&self) -> u64 {
         self.evictions.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Record a memory-tier cache hit
+    pub fn record_memory_hit(&self) {
+        self.memory_hits
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record a disk-tier cache hit
+    pub fn record_disk_hit(&self) {
+        self.disk_hits
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Get current memory-tier hit count
+    pub fn memory_hits(&self) -> u64 {
+        self.memory_hits
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Get current disk-tier hit count
+    pub fn disk_hits(&self) -> u64 {
+        self.disk_hits.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 

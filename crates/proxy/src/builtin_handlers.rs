@@ -272,11 +272,19 @@ fn metrics_handler(
                      zentinel_cache_stores_total {}\n\
                      # HELP zentinel_cache_hit_ratio Cache hit ratio (0.0 to 1.0)\n\
                      # TYPE zentinel_cache_hit_ratio gauge\n\
-                     zentinel_cache_hit_ratio {:.4}\n",
+                     zentinel_cache_hit_ratio {:.4}\n\
+                     # HELP zentinel_cache_memory_hits_total Cache hits from memory tier\n\
+                     # TYPE zentinel_cache_memory_hits_total counter\n\
+                     zentinel_cache_memory_hits_total {}\n\
+                     # HELP zentinel_cache_disk_hits_total Cache hits from disk tier\n\
+                     # TYPE zentinel_cache_disk_hits_total counter\n\
+                     zentinel_cache_disk_hits_total {}\n",
                     stats.hits(),
                     stats.misses(),
                     stats.stores(),
-                    stats.hit_ratio()
+                    stats.hit_ratio(),
+                    stats.memory_hits(),
+                    stats.disk_hits()
                 );
                 buffer.extend_from_slice(cache_metrics.as_bytes());
             }
@@ -614,6 +622,10 @@ struct CacheStatsResponse {
     evictions: u64,
     /// Cache hit ratio (0.0 to 1.0)
     hit_ratio: f64,
+    /// Memory-tier hits (hybrid cache)
+    memory_hits: u64,
+    /// Disk-tier hits (hybrid cache)
+    disk_hits: u64,
     /// Request ID
     request_id: String,
     /// Timestamp
@@ -635,6 +647,8 @@ fn cache_stats_handler(
                 stores: stats.stores(),
                 evictions: stats.evictions(),
                 hit_ratio: stats.hit_ratio(),
+                memory_hits: stats.memory_hits(),
+                disk_hits: stats.disk_hits(),
                 request_id: request_id.to_string(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
             };
@@ -648,6 +662,8 @@ fn cache_stats_handler(
             "stores": 0,
             "evictions": 0,
             "hit_ratio": 0.0,
+            "memory_hits": 0,
+            "disk_hits": 0,
             "message": "Cache statistics not available",
             "request_id": request_id,
             "timestamp": chrono::Utc::now().to_rfc3339(),

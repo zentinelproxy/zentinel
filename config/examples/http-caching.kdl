@@ -70,6 +70,7 @@ cache {
     // Disk cache settings (only used with "disk" or "hybrid" backend)
     // disk-path "/var/cache/zentinel"
     // disk-shards 16
+    // disk-max-size 1073741824
 }
 
 routes {
