@@ -1,6 +1,6 @@
 [package]
 name = "zentinel-data-masking-agent"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
 authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
@@ -16,8 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Local dependencies
-zentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.5.3" }
-zentinel-common = { path = "../../crates/common", version = "0.5.3" }
+zentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.5.4" }
+zentinel-common = { path = "../../crates/common", version = "0.5.4" }
 
 # Async runtime
 tokio = { version = "1.49", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }

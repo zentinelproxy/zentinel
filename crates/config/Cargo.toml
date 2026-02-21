@@ -13,7 +13,7 @@ categories = ["config", "network-programming"]
 
 [dependencies]
 # Local crates
-zentinel-common = { path = "../common", version = "0.5.3", default-features = false }
+zentinel-common = { path = "../common", version = "0.5.4", default-features = false }
 
 # Configuration formats
 kdl = { workspace = true }
