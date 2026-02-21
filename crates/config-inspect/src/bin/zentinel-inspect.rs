@@ -4,6 +4,7 @@
 //!   zentinel-inspect config.kdl                 # Text summary (default)
 //!   zentinel-inspect config.kdl --format mermaid # Mermaid flowchart
 //!   zentinel-inspect config.kdl --format json    # JSON graph
+//!   zentinel-inspect config.kdl --format dot     # Graphviz DOT graph
 //!   zentinel-inspect config.kdl --lint           # Warnings only
 
 use std::process;
@@ -63,12 +64,13 @@ fn main() {
     }
 
     match format {
+        "dot" => print!("{}", render::dot::render(&topology)),
         "mermaid" => print!("{}", render::mermaid::render(&topology)),
         "json" => println!("{}", render::json::render(&topology)),
         "text" => print!("{}", render::text::render(&topology)),
         other => {
             eprintln!("Unknown format: {}", other);
-            eprintln!("Valid formats: text, mermaid, json");
+            eprintln!("Valid formats: text, mermaid, json, dot");
             process::exit(1);
         }
     }
@@ -78,7 +80,7 @@ fn print_usage(program: &str) {
     eprintln!("zentinel-inspect — Static config topology analysis for Zentinel proxy\n");
     eprintln!("Usage: {} <config.kdl> [OPTIONS]\n", program);
     eprintln!("Options:");
-    eprintln!("  -f, --format <FORMAT>  Output format: text (default), mermaid, json");
+    eprintln!("  -f, --format <FORMAT>  Output format: text (default), mermaid, json, dot");
     eprintln!("  --lint                 Show only heuristic warnings (no topology)");
     eprintln!("  -h, --help             Show this help message");
 }
