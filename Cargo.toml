@@ -13,6 +13,7 @@ exclude = [
     # WASM crates are built separately with wasm-pack
     "crates/sim",
     "crates/playground-wasm",
+    "crates/config-inspect",
     "agents/wasm-allowlist",
 ]
 resolver = "2"

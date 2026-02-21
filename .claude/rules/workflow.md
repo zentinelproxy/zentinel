@@ -213,21 +213,15 @@ Add comprehensive documentation for token bucket and
 sliding window rate limiting configuration.
 ```
 
-### Pre-commit Checklist
+### Before Pushing
+
+Always run `mise run pre-push` before pushing to avoid wasting GHA minutes on lint failures:
 
 ```bash
-# 1. Format
-cargo fmt --all
-
-# 2. Lint
-cargo clippy --workspace --all-targets -- -D warnings
-
-# 3. Test
-cargo test --workspace
-
-# 4. Check docs compile
-cargo doc --workspace --no-deps
+mise run pre-push
 ```
+
+This runs `fmt-check` + `lint` (clippy) + `docs-check` — the fast CI jobs that catch formatting and linting issues without the slow test/audit steps.
 
 ---
 
@@ -400,9 +394,9 @@ Workflows in `.github/workflows/`:
 ### Local CI Simulation
 
 ```bash
-# Run what CI runs
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo doc --workspace --no-deps
+# Quick check (fmt + clippy + docs — matches fast CI jobs)
+mise run pre-push
+
+# Full CI (fmt + clippy + tests + audit — matches all CI jobs)
+mise run ci
 ```

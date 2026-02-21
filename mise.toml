@@ -84,6 +84,15 @@ run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 description = "Run security audit"
 run = "cargo audit"
 
+[tasks.docs-check]
+description = "Check documentation builds without warnings"
+run = "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps"
+
+[tasks.pre-push]
+description = "Fast CI checks before pushing (saves GHA minutes)"
+depends = ["fmt-check", "lint", "docs-check"]
+run = "echo 'Pre-push checks passed — safe to push!'"
+
 [tasks.check]
 description = "Run fmt, lint, and test"
 depends = ["fmt", "lint", "test"]

@@ -1,0 +1,36 @@
+[package]
+name = "zentinel-config-inspect"
+version = "0.5.4"
+edition = "2021"
+authors = ["Zentinel Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zentinelproxy/zentinel"
+homepage = "https://github.com/zentinelproxy/zentinel"
+rust-version = "1.85"
+description = "Static config topology analysis and visualization for Zentinel reverse proxy"
+keywords = ["proxy", "reverse-proxy", "config", "visualization", "lint"]
+categories = ["development-tools", "visualization", "network-programming"]
+
+[[bin]]
+name = "zentinel-inspect"
+path = "src/bin/zentinel-inspect.rs"
+
+[dependencies]
+# Local crates (WASM-compatible - disable runtime features)
+zentinel-config = { path = "../config", version = "0.5.4", default-features = false }
+zentinel-common = { path = "../common", version = "0.5.4", default-features = false }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+[dev-dependencies]
+insta = "1.46"
+
+[features]
+default = ["cli"]
+cli = []
