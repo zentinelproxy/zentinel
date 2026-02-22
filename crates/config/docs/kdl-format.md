@@ -557,6 +557,35 @@ cache {
 }
 ```
 
+#### Per-Route Cache Configuration
+
+Cache can be configured per-route inside the `policies` block:
+
+```kdl
+route "api" {
+    matches {
+        path-prefix "/api"
+    }
+    upstream "api-backend"
+    policies {
+        cache {
+            enabled true
+            default-ttl-secs 300
+            vary-headers "Accept" "Accept-Encoding"
+            stale-while-revalidate-secs 60
+
+            // Exclude specific file extensions from caching
+            exclude-extensions "php" "html" "asp"
+
+            // Exclude paths using glob patterns (*, **, ?)
+            exclude-paths "/wp-admin/**" "/login" "/api/auth/**"
+        }
+    }
+}
+```
+
+The `exclude-extensions` and `exclude-paths` options are useful when a broad route pattern (e.g., `path-prefix "/"`) should cache most content but skip certain dynamic paths or file types.
+
 ## Property Naming
 
 KDL properties use `kebab-case`:

@@ -279,6 +279,7 @@ HTTP response caching using Pingora's cache infrastructure.
 impl CacheManager {
     pub fn configure_cache(&self, config: &CacheConfig);
     pub fn is_cache_enabled(&self, route_id: &str) -> bool;
+    pub fn is_path_cacheable(&self, route_id: &str, path: &str) -> bool;
     pub fn register_route(&self, route_id: &str, config: &RouteCacheConfig);
 }
 ```
@@ -289,6 +290,7 @@ impl CacheManager {
 - TTL calculation with defaults
 - Stale-while-revalidate support
 - Stale-if-error support
+- Path and extension-based cache exclusions (`exclude-extensions`, `exclude-paths`)
 
 ### `memory_cache`
 

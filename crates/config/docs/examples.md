@@ -600,6 +600,37 @@ routes {
 }
 ```
 
+### Cache Exclusion Rules
+
+For broad routes that should cache most content but skip certain paths or file types, use `exclude-extensions` and `exclude-paths`:
+
+```kdl
+routes {
+    route "site" {
+        matches {
+            path-prefix "/"
+        }
+        upstream "origin"
+        policies {
+            cache {
+                enabled true
+                default-ttl-secs 3600
+
+                // Don't cache dynamic file types
+                exclude-extensions "php" "html" "asp"
+
+                // Don't cache admin or auth paths (glob patterns)
+                exclude-paths "/wp-admin/**" "/login" "/api/auth/**"
+
+                vary-headers "Accept-Encoding"
+            }
+        }
+    }
+}
+```
+
+Requests matching an excluded extension or path receive a `Bypass("excluded")` cache status and are forwarded directly to the upstream.
+
 ## WebSocket Support
 
 ```kdl

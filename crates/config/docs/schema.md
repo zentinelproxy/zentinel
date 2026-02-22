@@ -190,7 +190,27 @@ Request routing configuration.
 | `failure-mode` | `string` | `"closed"` | Failure mode: `open` or `closed` |
 | `buffer-requests` | `bool` | `false` | Buffer request body |
 | `buffer-responses` | `bool` | `false` | Buffer response body |
-| `cache` | `RouteCacheConfig` | - | HTTP caching config |
+| `cache` | `RouteCacheConfig` | - | HTTP caching config (see [Cache](#routecacheconfig)) |
+
+### RouteCacheConfig
+
+Per-route cache configuration, nested under `policies.cache`.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `enabled` | `bool` | `true` | Enable caching for this route |
+| `default-ttl-secs` | `u64` | `300` | Default TTL in seconds |
+| `max-size-bytes` | `u64` | - | Max cached response size |
+| `cacheable-methods` | `[string]` | `["GET", "HEAD"]` | HTTP methods to cache |
+| `cacheable-status-codes` | `[u16]` | `[200, 203, 204, 206, 300, 301]` | Status codes to cache |
+| `stale-while-revalidate-secs` | `u64` | - | Serve stale while refreshing |
+| `stale-if-error-secs` | `u64` | - | Serve stale on upstream error |
+| `vary-headers` | `[string]` | `[]` | Headers to vary cache key by |
+| `ignore-query-params` | `[string]` | `[]` | Query params to exclude from cache key |
+| `exclude-extensions` | `[string]` | `[]` | File extensions to exclude from caching (without dot, e.g., `"php"`, `"html"`) |
+| `exclude-paths` | `[string]` | `[]` | Path patterns to exclude from caching (glob: `*`, `**`, `?`) |
+| `respect-cache-control` | `bool` | `true` | Honor upstream Cache-Control headers |
+| `ignore-no-cache` | `bool` | `false` | Cache even if upstream returns no-cache |
 
 ### InferenceConfig
 
