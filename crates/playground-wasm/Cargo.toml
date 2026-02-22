@@ -1,6 +1,6 @@
 [package]
 name = "zentinel-playground-wasm"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2021"
 authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
@@ -16,9 +16,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Local crates
-zentinel-sim = { path = "../sim", version = "0.5.4" }
-zentinel-config = { path = "../config", version = "0.5.4", default-features = false }
-zentinel-config-inspect = { path = "../config-inspect", version = "0.5.4" }
+zentinel-sim = { path = "../sim", version = "0.5.5" }
+zentinel-config = { path = "../config", version = "0.5.5", default-features = false }
+zentinel-config-inspect = { path = "../config-inspect", version = "0.5.5" }
 
 # WASM bindings
 wasm-bindgen = "0.2"
