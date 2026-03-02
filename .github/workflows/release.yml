@@ -170,7 +170,7 @@ jobs:
           ls -la signed/
 
       - name: Upload signed archives
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: signed-archives
           path: signed/

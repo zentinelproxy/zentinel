@@ -173,7 +173,7 @@ jobs:
 
       - name: Upload artifacts
         if: inputs.upload-artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact-prefix }}-${{ matrix.config.suffix }}
           path: artifacts/
@@ -181,7 +181,7 @@ jobs:
 
       - name: Upload SBOM
         if: inputs.upload-artifacts && matrix.config.suffix == 'linux-amd64'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact-prefix }}-sbom
           path: |
