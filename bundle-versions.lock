@@ -47,7 +47,15 @@ chaos = "0.4.0"
 image-optimization = "0.2.0"
 
 # Identity agents
+auth = "0.2.0"
 spiffe = "0.3.0"
+policy = "0.1.0"
+
+# AI agents
+ai-gateway = "0.2.0"
+
+# Privacy agents
+data-masking = "0.5.0"
 
 [repositories]
 # Core agents
@@ -85,7 +93,15 @@ chaos = "zentinelproxy/zentinel-agent-chaos"
 image-optimization = "zentinelproxy/zentinel-agent-image-optimization"
 
 # Identity agents
+auth = "zentinelproxy/zentinel-agent-auth"
 spiffe = "zentinelproxy/zentinel-agent-spiffe"
+policy = "zentinelproxy/zentinel-agent-policy"
+
+# AI agents
+ai-gateway = "zentinelproxy/zentinel-agent-ai-gateway"
+
+# Privacy agents
+data-masking = "zentinelproxy/zentinel-agent-data-masking"
 
 [checksums]
 # SHA256 checksums for verification (optional, updated by release CI)
