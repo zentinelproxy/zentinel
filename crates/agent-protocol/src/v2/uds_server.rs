@@ -242,10 +242,10 @@ fn negotiate_encoding(proxy_encodings: &[UdsEncoding]) -> UdsEncoding {
     for enc in proxy_encodings {
         match enc {
             UdsEncoding::Json => return UdsEncoding::Json,
-            #[cfg(feature = "binary-uds")]
-            UdsEncoding::MessagePack => return UdsEncoding::MessagePack,
-            #[cfg(not(feature = "binary-uds"))]
-            UdsEncoding::MessagePack => { /* skip, not compiled in */ }
+            UdsEncoding::MessagePack if cfg!(feature = "binary-uds") => {
+                return UdsEncoding::MessagePack;
+            }
+            _ => continue,
         }
     }
     UdsEncoding::Json
