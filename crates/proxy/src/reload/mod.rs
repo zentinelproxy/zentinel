@@ -225,8 +225,7 @@ impl ConfigManager {
                         if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                             // Check if the event is for a .kdl file or our config file
                             let dominated = event.paths.iter().any(|p| {
-                                p == &watched_path
-                                    || p.extension().is_some_and(|ext| ext == "kdl")
+                                p == &watched_path || p.extension().is_some_and(|ext| ext == "kdl")
                             });
                             if dominated {
                                 notify_sender.notify_one();
@@ -284,22 +283,11 @@ impl ConfigManager {
                 // Debounce: wait for changes to settle. If more notifications
                 // arrive during this window, we consume them and keep waiting
                 // until no new changes arrive for 200ms.
-                loop {
-                    match tokio::time::timeout(
-                        Duration::from_millis(200),
-                        notify.notified(),
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            // Another change arrived within the window, keep waiting
-                            trace!("Debounce: additional file change, resetting timer");
-                        }
-                        Err(_) => {
-                            // 200ms of quiet — time to reload
-                            break;
-                        }
-                    }
+                while let Ok(()) =
+                    tokio::time::timeout(Duration::from_millis(200), notify.notified()).await
+                {
+                    // Another change arrived within the window, keep waiting
+                    trace!("Debounce: additional file change, resetting timer");
                 }
 
                 info!("Configuration file changed, triggering reload");

@@ -885,7 +885,7 @@ fn send_ocsp_request_sync(url: &str, request: &[u8]) -> Result<Vec<u8>, TlsError
 
     // Parse HTTP response - find body after headers
     let headers_end = response
-        .array_windows()
+        .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| TlsError::OcspFetch("Invalid HTTP response: no headers end".to_string()))?;
 

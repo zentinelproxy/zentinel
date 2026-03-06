@@ -138,8 +138,7 @@ pub(super) fn parse_listener(node: &KdlNode) -> Result<ListenerConfig> {
         max_concurrent_streams: get_int_entry(node, "max-concurrent-streams")
             .map(|v| v as u32)
             .unwrap_or(100),
-        keepalive_max_requests: get_int_entry(node, "keepalive-max-requests")
-            .map(|v| v as u32),
+        keepalive_max_requests: get_int_entry(node, "keepalive-max-requests").map(|v| v as u32),
     })
 }
 

@@ -3492,8 +3492,8 @@ impl ProxyHttp for ZentinelProxy {
                     let (actual_tokens, source_info) = if let Some(ref streaming) = streaming_result
                     {
                         // Prefer API-provided counts from streaming, otherwise use tiktoken count
-                        if streaming.total_tokens.is_some() {
-                            (streaming.total_tokens.unwrap(), "streaming_api")
+                        if let Some(total_tokens) = streaming.total_tokens {
+                            (total_tokens, "streaming_api")
                         } else if actual_estimate.source == crate::inference::TokenSource::Estimated
                         {
                             // Header extraction failed, use streaming tiktoken count
