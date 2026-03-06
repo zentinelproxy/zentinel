@@ -543,14 +543,22 @@ fn parse_propagation_config(node: &kdl::KdlNode) -> PropagationCheckConfig {
 ///
 /// Example KDL:
 /// ```kdl
+/// // With explicit hostnames
 /// sni {
 ///     hostnames "example.com" "www.example.com"
 ///     cert-file "/etc/certs/example.crt"
 ///     key-file "/etc/certs/example.key"
 /// }
+///
+/// // Without hostnames (auto-extracted from certificate CN/SAN at load time)
+/// sni {
+///     cert-file "/etc/certs/example.crt"
+///     key-file "/etc/certs/example.key"
+/// }
 /// ```
 fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCertificate> {
-    // Parse hostnames - can be multiple arguments or a single "hostnames" entry
+    // Parse hostnames - can be multiple arguments or a single "hostnames" entry.
+    // If omitted, hostnames will be auto-extracted from the certificate CN/SAN at load time.
     let hostnames: Vec<String> = if let Some(children) = node.children() {
         children
             .nodes()
@@ -565,13 +573,6 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
     } else {
         Vec::new()
     };
-
-    if hostnames.is_empty() {
-        return Err(anyhow::anyhow!(
-            "SNI certificate for listener '{}' requires at least one hostname",
-            listener_id
-        ));
-    }
 
     let cert_file = get_string_entry(node, "cert-file")
         .map(PathBuf::from)
@@ -591,12 +592,20 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
             )
         })?;
 
-    debug!(
-        listener_id = %listener_id,
-        hostnames = ?hostnames,
-        cert_file = %cert_file.display(),
-        "Parsed SNI certificate"
-    );
+    if hostnames.is_empty() {
+        debug!(
+            listener_id = %listener_id,
+            cert_file = %cert_file.display(),
+            "Parsed SNI certificate (hostnames will be auto-extracted from CN/SAN)"
+        );
+    } else {
+        debug!(
+            listener_id = %listener_id,
+            hostnames = ?hostnames,
+            cert_file = %cert_file.display(),
+            "Parsed SNI certificate"
+        );
+    }
 
     Ok(SniCertificate {
         hostnames,

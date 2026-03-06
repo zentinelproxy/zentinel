@@ -7,6 +7,7 @@
 //!
 //! - SNI-based certificate selection
 //! - Wildcard certificate matching (e.g., `*.example.com`)
+//! - Automatic CN/SAN extraction when hostnames are omitted
 //! - Default certificate fallback
 //! - Certificate validation at startup
 //! - mTLS client certificate verification
@@ -23,7 +24,7 @@
 //!         cert-file "/etc/certs/default.crt"
 //!         key-file "/etc/certs/default.key"
 //!
-//!         // SNI certificates
+//!         // SNI certificates with explicit hostnames
 //!         sni {
 //!             hostnames "example.com" "www.example.com"
 //!             cert-file "/etc/certs/example.crt"
@@ -33,6 +34,12 @@
 //!             hostnames "*.api.example.com"
 //!             cert-file "/etc/certs/api-wildcard.crt"
 //!             key-file "/etc/certs/api-wildcard.key"
+//!         }
+//!
+//!         // SNI certificate with auto-extracted hostnames from CN/SAN
+//!         sni {
+//!             cert-file "/etc/certs/premium.crt"
+//!             key-file "/etc/certs/premium.key"
 //!         }
 //!
 //!         // mTLS configuration
@@ -153,12 +160,47 @@ impl SniResolver {
             let cert = load_certified_key(&sni_config.cert_file, &sni_config.key_file)?;
             let cert = Arc::new(cert);
 
-            for hostname in &sni_config.hostnames {
+            // Determine hostnames: use explicit config or auto-extract from certificate
+            let hostnames = if sni_config.hostnames.is_empty() {
+                let extracted = extract_hostnames_from_cert(cert.cert.first().ok_or_else(
+                    || {
+                        TlsError::InvalidCertificate(format!(
+                            "No certificates in chain for {:?}",
+                            sni_config.cert_file
+                        ))
+                    },
+                )?)?;
+
+                info!(
+                    cert_file = %sni_config.cert_file.display(),
+                    hostnames = ?extracted,
+                    "Auto-extracted hostnames from certificate CN/SAN"
+                );
+
+                extracted
+            } else {
+                sni_config.hostnames.clone()
+            };
+
+            for hostname in &hostnames {
                 let hostname_lower = hostname.to_lowercase();
 
                 if hostname_lower.starts_with("*.") {
                     // Wildcard certificate
                     let domain = hostname_lower.strip_prefix("*.").unwrap().to_string();
+
+                    if let Some(existing) = wildcard_certs.get(&domain) {
+                        // Check for ambiguity: two certs for the same wildcard domain
+                        if !Arc::ptr_eq(existing, &cert) {
+                            return Err(TlsError::ConfigBuild(format!(
+                                "Ambiguous SNI configuration: wildcard '*.{}' matches multiple certificates (including {:?}). \
+                                 Use explicit 'hostnames' to resolve the conflict.",
+                                domain,
+                                sni_config.cert_file
+                            )));
+                        }
+                    }
+
                     wildcard_certs.insert(domain.clone(), cert.clone());
                     debug!(
                         pattern = %hostname,
@@ -168,6 +210,17 @@ impl SniResolver {
                     );
                 } else {
                     // Exact hostname match
+                    if let Some(existing) = sni_certs.get(&hostname_lower) {
+                        if !Arc::ptr_eq(existing, &cert) {
+                            return Err(TlsError::ConfigBuild(format!(
+                                "Ambiguous SNI configuration: hostname '{}' matches multiple certificates (including {:?}). \
+                                 Use explicit 'hostnames' to resolve the conflict.",
+                                hostname_lower,
+                                sni_config.cert_file
+                            )));
+                        }
+                    }
+
                     sni_certs.insert(hostname_lower.clone(), cert.clone());
                     debug!(
                         hostname = %hostname_lower,
@@ -1134,6 +1187,49 @@ fn load_certified_key(cert_path: &Path, key_path: &Path) -> Result<CertifiedKey,
         .map_err(|e| TlsError::CertKeyMismatch(format!("Failed to load private key: {:?}", e)))?;
 
     Ok(CertifiedKey::new(certs, signing_key))
+}
+
+/// Extract DNS hostnames from a certificate's CN and Subject Alternative Names.
+///
+/// Returns a list of DNS names (e.g., "example.com", "*.example.com") found in:
+/// 1. Subject Alternative Name (SAN) DNS entries (preferred)
+/// 2. Common Name (CN) as fallback if no SAN DNS entries exist
+///
+/// IP addresses in SANs are ignored since SNI operates on hostnames only.
+fn extract_hostnames_from_cert(cert_der: &CertificateDer<'_>) -> Result<Vec<String>, TlsError> {
+    use x509_parser::prelude::*;
+
+    let (_, cert) = X509Certificate::from_der(cert_der).map_err(|e| {
+        TlsError::InvalidCertificate(format!("Failed to parse X.509 certificate: {}", e))
+    })?;
+
+    let mut hostnames = Vec::new();
+
+    // Try SAN extension first (RFC 6125: SAN takes precedence over CN)
+    if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
+        for name in &san_ext.value.general_names {
+            if let GeneralName::DNSName(dns) = name {
+                hostnames.push(dns.to_lowercase());
+            }
+        }
+    }
+
+    // Fall back to CN only if no SAN DNS names were found
+    if hostnames.is_empty() {
+        for attr in cert.subject().iter_common_name() {
+            if let Ok(cn) = attr.as_str() {
+                hostnames.push(cn.to_lowercase());
+            }
+        }
+    }
+
+    if hostnames.is_empty() {
+        return Err(TlsError::InvalidCertificate(
+            "Certificate has no DNS names in SAN or CN".to_string(),
+        ));
+    }
+
+    Ok(hostnames)
 }
 
 /// Load CA certificates for client verification (mTLS)

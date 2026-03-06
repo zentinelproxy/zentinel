@@ -375,6 +375,226 @@ mod sni_resolver {
 }
 
 // ============================================================================
+// SNI Auto-Extraction Tests (CN/SAN)
+// ============================================================================
+
+mod sni_auto_extraction {
+    use super::*;
+
+    /// Create a TLS config with an SNI cert that has no explicit hostnames,
+    /// relying on CN/SAN auto-extraction from the certificate.
+    fn auto_extract_tls_config() -> TlsConfig {
+        let fixtures = fixtures_path();
+        TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![SniCertificate {
+                hostnames: vec![], // Empty: auto-extract from cert
+                cert_file: fixtures.join("server-api.crt"),
+                key_file: fixtures.join("server-api.key"),
+            }],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        }
+    }
+
+    #[test]
+    fn test_auto_extract_resolves_san_hostname() {
+        // server-api.crt has SAN: DNS:api.example.com, DNS:localhost
+        let config = auto_extract_tls_config();
+        let resolver = SniResolver::from_config(&config).unwrap();
+
+        let api_cert = resolver.resolve(Some("api.example.com"));
+        let default_cert = resolver.resolve(Some("unknown.example.com"));
+
+        // api.example.com should match the auto-extracted cert, not the default
+        assert!(
+            !Arc::ptr_eq(&api_cert, &default_cert),
+            "Auto-extracted SAN hostname should resolve to the SNI cert"
+        );
+    }
+
+    #[test]
+    fn test_auto_extract_resolves_all_san_entries() {
+        // server-api.crt has SAN: DNS:api.example.com, DNS:localhost
+        let config = auto_extract_tls_config();
+        let resolver = SniResolver::from_config(&config).unwrap();
+
+        let api_cert = resolver.resolve(Some("api.example.com"));
+        let localhost_cert = resolver.resolve(Some("localhost"));
+
+        // Both SAN entries should resolve to the same cert
+        assert!(
+            Arc::ptr_eq(&api_cert, &localhost_cert),
+            "All SAN DNS entries should resolve to the same cert"
+        );
+    }
+
+    #[test]
+    fn test_auto_extract_wildcard_from_san() {
+        // server-wildcard.crt has SAN: DNS:*.example.com, DNS:example.com, DNS:localhost
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![SniCertificate {
+                hostnames: vec![], // Auto-extract
+                cert_file: fixtures.join("server-wildcard.crt"),
+                key_file: fixtures.join("server-wildcard.key"),
+            }],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config).unwrap();
+
+        // *.example.com wildcard should match subdomains
+        let sub_cert = resolver.resolve(Some("foo.example.com"));
+        // example.com exact match from SAN
+        let exact_cert = resolver.resolve(Some("example.com"));
+
+        // Both should resolve to the wildcard cert (same Arc)
+        assert!(
+            Arc::ptr_eq(&sub_cert, &exact_cert),
+            "Wildcard and exact SAN entries should resolve to the same cert"
+        );
+    }
+
+    #[test]
+    fn test_auto_extract_mixed_with_explicit() {
+        // Mix of explicit hostnames and auto-extracted
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![
+                SniCertificate {
+                    hostnames: vec!["secure.example.com".to_string()], // Explicit
+                    cert_file: fixtures.join("server-secure.crt"),
+                    key_file: fixtures.join("server-secure.key"),
+                },
+                SniCertificate {
+                    hostnames: vec![], // Auto-extract from server-api.crt
+                    cert_file: fixtures.join("server-api.crt"),
+                    key_file: fixtures.join("server-api.key"),
+                },
+            ],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config).unwrap();
+
+        let secure_cert = resolver.resolve(Some("secure.example.com"));
+        let api_cert = resolver.resolve(Some("api.example.com"));
+
+        // Should be different certs
+        assert!(
+            !Arc::ptr_eq(&secure_cert, &api_cert),
+            "Explicit and auto-extracted certs should be different"
+        );
+    }
+
+    #[test]
+    fn test_auto_extract_ambiguity_errors() {
+        // Two certs with overlapping SAN entries should error
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![
+                SniCertificate {
+                    hostnames: vec![], // Auto-extract: SAN includes "localhost"
+                    cert_file: fixtures.join("server-api.crt"),
+                    key_file: fixtures.join("server-api.key"),
+                },
+                SniCertificate {
+                    hostnames: vec![], // Auto-extract: SAN also includes "localhost"
+                    cert_file: fixtures.join("server-secure.crt"),
+                    key_file: fixtures.join("server-secure.key"),
+                },
+            ],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let result = SniResolver::from_config(&config);
+        assert!(result.is_err(), "Overlapping auto-extracted hostnames should error");
+
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("Ambiguous SNI configuration"),
+            "Error should mention ambiguity, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_explicit_hostnames_skip_auto_extraction() {
+        // When hostnames are explicitly set, CN/SAN should not be used
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![SniCertificate {
+                hostnames: vec!["custom.example.com".to_string()], // Explicit, not in cert
+                cert_file: fixtures.join("server-api.crt"),
+                key_file: fixtures.join("server-api.key"),
+            }],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config).unwrap();
+
+        // Should match the explicit hostname
+        let custom_cert = resolver.resolve(Some("custom.example.com"));
+        let default_cert = resolver.resolve(Some("unknown.example.com"));
+        assert!(
+            !Arc::ptr_eq(&custom_cert, &default_cert),
+            "Explicit hostname should resolve to the SNI cert"
+        );
+
+        // The cert's actual SAN (api.example.com) should NOT be registered
+        let api_cert = resolver.resolve(Some("api.example.com"));
+        assert!(
+            Arc::ptr_eq(&api_cert, &default_cert),
+            "Certificate's SAN should not be registered when explicit hostnames are set"
+        );
+    }
+}
+
+// ============================================================================
 // ACME Resolver Tests
 // ============================================================================
 
