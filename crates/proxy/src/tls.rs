@@ -162,14 +162,13 @@ impl SniResolver {
 
             // Determine hostnames: use explicit config or auto-extract from certificate
             let hostnames = if sni_config.hostnames.is_empty() {
-                let extracted = extract_hostnames_from_cert(cert.cert.first().ok_or_else(
-                    || {
+                let extracted =
+                    extract_hostnames_from_cert(cert.cert.first().ok_or_else(|| {
                         TlsError::InvalidCertificate(format!(
                             "No certificates in chain for {:?}",
                             sni_config.cert_file
                         ))
-                    },
-                )?)?;
+                    })?)?;
 
                 info!(
                     cert_file = %sni_config.cert_file.display(),

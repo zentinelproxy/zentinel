@@ -543,7 +543,10 @@ mod sni_auto_extraction {
         };
 
         let result = SniResolver::from_config(&config);
-        assert!(result.is_err(), "Overlapping auto-extracted hostnames should error");
+        assert!(
+            result.is_err(),
+            "Overlapping auto-extracted hostnames should error"
+        );
 
         let err = format!("{}", result.unwrap_err());
         assert!(
