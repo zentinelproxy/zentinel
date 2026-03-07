@@ -1,0 +1,107 @@
+// Example: Rate Limiting Per Route
+//
+// Configure different rate limits for different routes:
+// - Strict limits for /api endpoints
+// - Relaxed limits for /static content
+// - No limits for health checks
+// - Custom rate limit responses
+
+system {
+    worker-threads 0
+    max-connections 10000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+    }
+}
+
+upstreams {
+    upstream "api" {
+        endpoint "api-1" {
+            address "localhost:3000"
+        }
+    }
+
+    upstream "static" {
+        endpoint "static-1" {
+            address "localhost:4000"
+        }
+    }
+}
+
+routes {
+    // API routes: 100 requests per minute per IP
+    route "api" {
+        priority "high"
+        matches {
+            path-prefix "/api"
+        }
+        upstream "api"
+        rate-limit {
+            enabled true
+            requests-per-minute 100
+            burst-size 20  // Allow temporary bursts
+            key-source "ip"  // Rate limit per IP address
+
+            // Custom response when rate limited
+            response {
+                status-code 429
+                content-type "application/json"
+                body '{"error": "rate_limit_exceeded", "message": "Too many requests"}'
+            }
+        }
+    }
+
+    // Login/Auth routes: Very strict limits (10 per minute)
+    route "auth" {
+        priority "critical"
+        matches {
+            path-prefix "/api/auth"
+        }
+        upstream "api"
+        rate-limit {
+            enabled true
+            requests-per-minute 10
+            burst-size 3
+            key-source "ip"
+
+            response {
+                status-code 429
+                content-type "application/json"
+                body '{"error": "too_many_attempts", "retry_after": 60}'
+            }
+        }
+    }
+
+    // Static content: Generous limits (1000 per minute)
+    route "static" {
+        priority "low"
+        matches {
+            path-prefix "/static"
+        }
+        upstream "static"
+        rate-limit {
+            enabled true
+            requests-per-minute 1000
+            burst-size 200
+            key-source "ip"
+        }
+    }
+
+    // Health check: No rate limiting
+    route "health" {
+        priority "critical"
+        matches {
+            exact-path "/health"
+        }
+        upstream "api"
+        rate-limit {
+            enabled false
+        }
+    }
+}
