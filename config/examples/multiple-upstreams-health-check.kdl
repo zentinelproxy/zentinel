@@ -1,0 +1,116 @@
+// Example: Multiple Upstreams with Health Checks
+//
+// Load balance across multiple backend servers with:
+// - Active health checks (HTTP probes)
+// - Passive health checks (connection failures)
+// - Automatic failover
+// - Weighted load balancing
+
+system {
+    worker-threads 0
+    max-connections 10000
+    graceful-shutdown-timeout-secs 30
+}
+
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+        request-timeout-secs 60
+    }
+}
+
+upstreams {
+    upstream "backend" {
+        // Load balancing strategy: round-robin (default), least-connections, ip-hash
+        strategy "least-connections"
+
+        // Health check configuration
+        health-check {
+            enabled true
+            interval-secs 10         // Check every 10 seconds
+            timeout-secs 5           // Health check timeout
+            unhealthy-threshold 3    // Mark unhealthy after 3 failures
+            healthy-threshold 2      // Mark healthy after 2 successes
+
+            // HTTP health check endpoint
+            http {
+                path "/health"
+                expected-status 200
+            }
+        }
+
+        // Backend servers
+        endpoint "backend-1" {
+            address "10.0.1.10:3000"
+            weight 100
+        }
+
+        endpoint "backend-2" {
+            address "10.0.1.11:3000"
+            weight 100
+        }
+
+        endpoint "backend-3" {
+            address "10.0.1.12:3000"
+            weight 50  // Lower weight = less traffic
+        }
+    }
+
+    // Secondary upstream with different health check
+    upstream "api" {
+        strategy "round-robin"
+
+        health-check {
+            enabled true
+            interval-secs 5
+            timeout-secs 2
+            unhealthy-threshold 2
+            healthy-threshold 1
+
+            http {
+                path "/api/health"
+                expected-status 200
+                // Optional: check response body
+                expected-body "OK"
+            }
+        }
+
+        endpoint "api-1" {
+            address "10.0.2.10:4000"
+        }
+
+        endpoint "api-2" {
+            address "10.0.2.11:4000"
+        }
+    }
+}
+
+routes {
+    // Route to backend upstream
+    route "backend-route" {
+        priority "high"
+        matches {
+            path-prefix "/app"
+        }
+        upstream "backend"
+        policies {
+            timeout-secs 30
+            retry-attempts 2
+            failure-mode "open"  // Open circuit breaker on failure
+        }
+    }
+
+    // Route to API upstream
+    route "api-route" {
+        priority "high"
+        matches {
+            path-prefix "/api"
+        }
+        upstream "api"
+        policies {
+            timeout-secs 15
+            retry-attempts 3
+        }
+    }
+}
