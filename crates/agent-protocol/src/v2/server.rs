@@ -24,9 +24,6 @@ use crate::{
     WebSocketFrameEvent,
 };
 
-/// v2 agent handler trait.
-///
-/// Implement this trait to create a v2 agent. The v2 handler adds:
 /// Trait for implementing agent handlers in Protocol v2.
 ///
 /// `AgentHandlerV2` defines the interface that agent implementations must provide
@@ -57,28 +54,21 @@ use crate::{
 /// ```rust
 /// use async_trait::async_trait;
 /// use zentinel_agent_protocol::v2::{AgentHandlerV2, AgentCapabilities, AgentResponse};
-/// use zentinel_agent_protocol::{RequestHeadersEvent, Decision};
+/// use zentinel_agent_protocol::{EventType, RequestHeadersEvent};
 ///
 /// pub struct MyWafAgent;
 ///
 /// #[async_trait]
 /// impl AgentHandlerV2 for MyWafAgent {
 ///     fn capabilities(&self) -> AgentCapabilities {
-///         AgentCapabilities {
-///             agent_id: "my-waf".to_string(),
-///             events: vec!["request_headers".to_string()],
-///             version: "1.0.0".to_string(),
-///         }
+///         AgentCapabilities::new("my-waf", "My WAF Agent", "1.0.0")
+///             .with_event(EventType::RequestHeaders)
 ///     }
 ///
 ///     async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
 ///         // Inspect headers for malicious patterns
 ///         if event.headers.contains_key("x-malicious") {
-///             AgentResponse::new(Decision::Block {
-///                 status: 403,
-///                 body: Some("Blocked by WAF".to_string()),
-///                 headers: None,
-///             })
+///             AgentResponse::block(403, Some("Blocked by WAF".to_string()))
 ///         } else {
 ///             AgentResponse::default_allow()
 ///         }
@@ -204,7 +194,7 @@ pub enum DrainReason {
 ///
 /// // Serve on a specific address
 /// let addr = "127.0.0.1:8080".parse()?;
-/// server.serve(addr).await?;
+/// server.run(addr).await?;
 /// ```
 ///
 /// # Transport Details

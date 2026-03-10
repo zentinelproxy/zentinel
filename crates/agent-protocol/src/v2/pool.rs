@@ -552,19 +552,18 @@ impl AgentEntry {
 ///
 /// // Create pool with custom config
 /// let config = AgentPoolConfig {
-///     max_connections_per_agent: 4,
+///     connections_per_agent: 4,
 ///     load_balance_strategy: LoadBalanceStrategy::LeastConnections,
 ///     health_check_interval: Duration::from_secs(30),
 ///     ..Default::default()
 /// };
 /// let pool = AgentPool::with_config(config);
 ///
-/// // Add agent connections
-/// pool.add_grpc_agent("waf", "127.0.0.1:8080").await?;
-/// pool.add_uds_agent("auth", "/var/run/auth.sock").await?;
+/// // Add agent connections (generic method for any transport)
+/// pool.add_agent("waf", agent_connection).await?;
 ///
-/// // Process requests
-/// let response = pool.process_request("waf", request).await?;
+/// // Send request headers to an agent
+/// let response = pool.send_request_headers("waf", headers).await?;
 /// ```
 pub struct AgentPool {
     config: AgentPoolConfig,

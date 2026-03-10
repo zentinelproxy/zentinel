@@ -50,7 +50,8 @@ pub enum EventType {
 /// # Examples
 ///
 /// ```rust
-/// use zentinel_agent_protocol::{Decision, HashMap};
+/// use std::collections::HashMap;
+/// use zentinel_agent_protocol::Decision;
 ///
 /// // Allow request to proceed normally
 /// let allow = Decision::Allow;

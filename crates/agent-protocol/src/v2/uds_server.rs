@@ -37,7 +37,7 @@ use crate::{
 /// - **High performance**: Minimal overhead for local communication
 /// - **Binary protocol**: Efficient binary encoding for reduced CPU usage
 /// - **File system permissions**: Uses Unix socket permissions for access control
-/// - **Hot reload**: Supports graceful restart without losing connections
+/// - **Socket cleanup**: Removes stale socket files on startup
 ///
 /// # Example
 ///
@@ -54,7 +54,7 @@ use crate::{
 /// );
 ///
 /// // Start listening
-/// server.serve().await?;
+/// server.run().await?;
 /// ```
 ///
 /// # Socket Management
@@ -62,7 +62,6 @@ use crate::{
 /// The server automatically:
 /// - Creates the socket file with appropriate permissions
 /// - Removes stale socket files on startup
-/// - Cleans up the socket file on graceful shutdown
 /// - Handles multiple concurrent proxy connections
 ///
 /// # Errors
