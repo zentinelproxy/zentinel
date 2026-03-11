@@ -519,21 +519,17 @@ impl AgentEntry {
     }
 }
 
-/// Agent connection pool.
+/// Agent connection pool for managing agent connections with load balancing and health monitoring.
 ///
-/// Manages multiple connections to multiple agents with load balancing,
-/// health tracking, automatic reconnection, and metrics collection.
+/// `AgentPool` provides a production-ready connection pool that manages multiple connections
+/// to external processing agents. It handles connection pooling, load balancing, health
+/// tracking, automatic reconnection, and metrics collection for robust agent communication.
 ///
 /// # Performance
 ///
 /// Uses `DashMap` for lock-free reads in the hot path. Agent lookup is O(1)
 /// without contention. Connection selection uses cached health state to avoid
 /// async I/O per request.
-/// Connection pool for managing agent connections with load balancing and health monitoring.
-///
-/// `AgentPool` provides a production-ready connection pool that manages multiple connections
-/// to external processing agents. It handles connection pooling, load balancing, health
-/// tracking, and automatic reconnection for robust agent communication.
 ///
 /// # Features
 ///
@@ -560,10 +556,11 @@ impl AgentEntry {
 /// let pool = AgentPool::with_config(config);
 ///
 /// // Add agent connections (generic method for any transport)
-/// pool.add_agent("waf", agent_connection).await?;
+/// pool.add_agent("waf", "unix:/tmp/waf.sock").await?;
 ///
 /// // Send request headers to an agent
-/// let response = pool.send_request_headers("waf", headers).await?;
+/// let headers = RequestHeadersEvent { /* ... */ };
+/// let response = pool.send_request_headers("waf", "correlation-123", &headers).await?;
 /// ```
 pub struct AgentPool {
     config: AgentPoolConfig,
