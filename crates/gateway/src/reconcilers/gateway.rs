@@ -48,18 +48,31 @@ impl GatewayReconciler {
             return Ok(Action::await_change());
         }
 
+        let generation = gateway.metadata.generation.unwrap_or(0);
+
+        // Skip if we've already programmed this generation
+        if is_already_programmed(&gateway, generation) {
+            debug!(
+                name = %name,
+                namespace = %namespace,
+                generation,
+                "Gateway already programmed at this generation"
+            );
+            return Ok(Action::await_change());
+        }
+
         info!(
             name = %name,
             namespace = %namespace,
             listeners = gateway.spec.listeners.len(),
+            generation,
             "Reconciling Gateway"
         );
 
         // Update Gateway status
         self.update_status(&gateway, &namespace).await?;
 
-        // Requeue to pick up changes from HTTPRoute attachments
-        Ok(Action::requeue(std::time::Duration::from_secs(60)))
+        Ok(Action::await_change())
     }
 
     /// Check if a GatewayClass name belongs to our controller.
@@ -155,6 +168,28 @@ impl GatewayReconciler {
         warn!(error = %error, "Gateway reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(30))
     }
+}
+
+/// Check if the Gateway status already has Accepted=True and Programmed=True
+/// for the current generation.
+fn is_already_programmed(gw: &Gateway, generation: i64) -> bool {
+    let Some(ref status) = gw.status else {
+        return false;
+    };
+    let Some(ref conditions) = status.conditions else {
+        return false;
+    };
+    let has_accepted = conditions.iter().any(|c| {
+        c.type_ == "Accepted"
+            && c.status == "True"
+            && c.observed_generation == Some(generation)
+    });
+    let has_programmed = conditions.iter().any(|c| {
+        c.type_ == "Programmed"
+            && c.status == "True"
+            && c.observed_generation == Some(generation)
+    });
+    has_accepted && has_programmed
 }
 
 /// Return the supported route kinds for a given listener protocol.

@@ -30,7 +30,9 @@ impl GatewayClassReconciler {
     /// Reconcile a GatewayClass resource.
     ///
     /// If the GatewayClass references our controller name, we accept it
-    /// by setting the `Accepted` status condition.
+    /// by setting the `Accepted` status condition. Skips the status update
+    /// if we've already accepted the current generation to avoid a
+    /// reconciliation loop.
     pub async fn reconcile(
         &self,
         gateway_class: Arc<GatewayClass>,
@@ -47,7 +49,15 @@ impl GatewayClassReconciler {
             return Ok(Action::await_change());
         }
 
-        info!(name = %name, "Accepting GatewayClass");
+        let generation = gateway_class.metadata.generation.unwrap_or(0);
+
+        // Check if we've already accepted this generation
+        if is_already_accepted(&gateway_class, generation) {
+            debug!(name = %name, generation, "GatewayClass already accepted at this generation");
+            return Ok(Action::await_change());
+        }
+
+        info!(name = %name, generation, "Accepting GatewayClass");
 
         let api: Api<GatewayClass> = Api::all(self.client.clone());
         let now = chrono::Utc::now().to_rfc3339();
@@ -58,7 +68,7 @@ impl GatewayClassReconciler {
                     "status": "True",
                     "reason": "Accepted",
                     "message": "GatewayClass accepted by Zentinel controller",
-                    "observedGeneration": gateway_class.metadata.generation.unwrap_or(0),
+                    "observedGeneration": generation,
                     "lastTransitionTime": now,
                 }]
             }
@@ -83,4 +93,20 @@ impl GatewayClassReconciler {
         warn!(error = %error, "GatewayClass reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(30))
     }
+}
+
+/// Check if the GatewayClass status already has an Accepted=True condition
+/// for the current generation.
+fn is_already_accepted(gc: &GatewayClass, generation: i64) -> bool {
+    let Some(ref status) = gc.status else {
+        return false;
+    };
+    let Some(ref conditions) = status.conditions else {
+        return false;
+    };
+    conditions.iter().any(|c| {
+        c.type_ == "Accepted"
+            && c.status == "True"
+            && c.observed_generation == Some(generation)
+    })
 }
