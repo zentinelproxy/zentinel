@@ -333,8 +333,14 @@ impl Default for PropagationCheckConfig {
 /// SNI certificate configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SniCertificate {
-    /// Hostname patterns to match (e.g., "example.com", "*.example.com")
+    /// Hostname patterns to match (e.g., "example.com", "*.example.com").
+    /// When set, only these hostnames are registered and SAN auto-extraction is skipped.
     pub hostnames: Vec<String>,
+
+    /// Priority hostnames for tie-breaking when multiple certs match the same SNI.
+    /// When set, all SANs are still auto-extracted, but these hostnames win if
+    /// another cert also claims them. Mutually exclusive with `hostnames`.
+    pub priority_hostnames: Vec<String>,
 
     /// Certificate file path
     pub cert_file: PathBuf,

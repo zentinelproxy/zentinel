@@ -50,11 +50,13 @@ fn multi_sni_tls_config() -> TlsConfig {
         additional_certs: vec![
             SniCertificate {
                 hostnames: vec!["api.example.com".to_string()],
+                priority_hostnames: vec![],
                 cert_file: fixtures.join("server-api.crt"),
                 key_file: fixtures.join("server-api.key"),
             },
             SniCertificate {
                 hostnames: vec!["secure.example.com".to_string()],
+                priority_hostnames: vec![],
                 cert_file: fixtures.join("server-secure.crt"),
                 key_file: fixtures.join("server-secure.key"),
             },
@@ -78,6 +80,7 @@ fn wildcard_tls_config() -> TlsConfig {
         key_file: Some(fixtures.join("server-default.key")),
         additional_certs: vec![SniCertificate {
             hostnames: vec!["*.example.com".to_string()],
+            priority_hostnames: vec![],
             cert_file: fixtures.join("server-wildcard.crt"),
             key_file: fixtures.join("server-wildcard.key"),
         }],
@@ -265,11 +268,13 @@ mod sni_resolver {
             additional_certs: vec![
                 SniCertificate {
                     hostnames: vec!["*.example.com".to_string()],
+                    priority_hostnames: vec![],
                     cert_file: fixtures.join("server-wildcard.crt"),
                     key_file: fixtures.join("server-wildcard.key"),
                 },
                 SniCertificate {
                     hostnames: vec!["api.example.com".to_string()],
+                    priority_hostnames: vec![],
                     cert_file: fixtures.join("server-api.crt"),
                     key_file: fixtures.join("server-api.key"),
                 },
@@ -356,6 +361,7 @@ mod sni_resolver {
             key_file: Some(fixtures.join("server-default.key")),
             additional_certs: vec![SniCertificate {
                 hostnames: vec!["api.example.com".to_string()],
+                priority_hostnames: vec![],
                 cert_file: fixtures.join("nonexistent.crt"),
                 key_file: fixtures.join("server-api.key"),
             }],
@@ -390,6 +396,7 @@ mod sni_auto_extraction {
             key_file: Some(fixtures.join("server-default.key")),
             additional_certs: vec![SniCertificate {
                 hostnames: vec![], // Empty: auto-extract from cert
+                priority_hostnames: vec![],
                 cert_file: fixtures.join("server-api.crt"),
                 key_file: fixtures.join("server-api.key"),
             }],
@@ -445,6 +452,7 @@ mod sni_auto_extraction {
             key_file: Some(fixtures.join("server-default.key")),
             additional_certs: vec![SniCertificate {
                 hostnames: vec![], // Auto-extract
+                priority_hostnames: vec![],
                 cert_file: fixtures.join("server-wildcard.crt"),
                 key_file: fixtures.join("server-wildcard.key"),
             }],
@@ -482,11 +490,13 @@ mod sni_auto_extraction {
             additional_certs: vec![
                 SniCertificate {
                     hostnames: vec!["secure.example.com".to_string()], // Explicit
+                    priority_hostnames: vec![],
                     cert_file: fixtures.join("server-secure.crt"),
                     key_file: fixtures.join("server-secure.key"),
                 },
                 SniCertificate {
                     hostnames: vec![], // Auto-extract from server-api.crt
+                    priority_hostnames: vec![],
                     cert_file: fixtures.join("server-api.crt"),
                     key_file: fixtures.join("server-api.key"),
                 },
@@ -523,11 +533,13 @@ mod sni_auto_extraction {
             additional_certs: vec![
                 SniCertificate {
                     hostnames: vec![], // Auto-extract: SAN includes "localhost"
+                    priority_hostnames: vec![],
                     cert_file: fixtures.join("server-api.crt"),
                     key_file: fixtures.join("server-api.key"),
                 },
                 SniCertificate {
                     hostnames: vec![], // Auto-extract: SAN also includes "localhost"
+                    priority_hostnames: vec![],
                     cert_file: fixtures.join("server-secure.crt"),
                     key_file: fixtures.join("server-secure.key"),
                 },
@@ -565,6 +577,7 @@ mod sni_auto_extraction {
             key_file: Some(fixtures.join("server-default.key")),
             additional_certs: vec![SniCertificate {
                 hostnames: vec!["custom.example.com".to_string()], // Explicit, not in cert
+                priority_hostnames: vec![],
                 cert_file: fixtures.join("server-api.crt"),
                 key_file: fixtures.join("server-api.key"),
             }],
@@ -1238,6 +1251,7 @@ mod validation {
             key_file: Some(fixtures.join("server-default.key")),
             additional_certs: vec![SniCertificate {
                 hostnames: vec!["test.example.com".to_string()],
+                priority_hostnames: vec![],
                 cert_file: fixtures.join("nonexistent.crt"),
                 key_file: fixtures.join("server-api.key"),
             }],
@@ -1343,6 +1357,242 @@ mod server_config {
             result.is_ok(),
             "Failed to build wildcard server config: {:?}",
             result.err()
+        );
+    }
+
+    // =========================================================================
+    // Priority Hostnames Tests
+    // =========================================================================
+
+    #[test]
+    fn priority_hostnames_wins_over_auto_extracted() {
+        // server-api.crt SAN: api.example.com, localhost, 127.0.0.1
+        // server-secure.crt SAN: secure.example.com, localhost, 127.0.0.1
+        // Both have "localhost" in SAN. Without priority, this would be ambiguous.
+        // With priority-hostnames on server-api.crt, it wins for "localhost".
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![
+                SniCertificate {
+                    hostnames: vec![],
+                    priority_hostnames: vec!["localhost".to_string()],
+                    cert_file: fixtures.join("server-api.crt"),
+                    key_file: fixtures.join("server-api.key"),
+                },
+                SniCertificate {
+                    hostnames: vec![],
+                    priority_hostnames: vec![],
+                    cert_file: fixtures.join("server-secure.crt"),
+                    key_file: fixtures.join("server-secure.key"),
+                },
+            ],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config).unwrap();
+
+        // "localhost" should resolve to server-api.crt (the priority cert)
+        let localhost_cert = resolver.resolve(Some("localhost"));
+        let api_cert = resolver.resolve(Some("api.example.com"));
+        assert!(
+            Arc::ptr_eq(&localhost_cert, &api_cert),
+            "Priority cert should win for 'localhost'"
+        );
+
+        // "secure.example.com" should still resolve to server-secure.crt
+        let secure_cert = resolver.resolve(Some("secure.example.com"));
+        assert!(
+            !Arc::ptr_eq(&secure_cert, &api_cert),
+            "secure.example.com should resolve to a different cert than api.example.com"
+        );
+    }
+
+    #[test]
+    fn priority_hostnames_still_registers_all_sans() {
+        // server-api.crt SAN: api.example.com, localhost, 127.0.0.1
+        // priority-hostnames only lists "localhost", but all SANs should be registered.
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![SniCertificate {
+                hostnames: vec![],
+                priority_hostnames: vec!["localhost".to_string()],
+                cert_file: fixtures.join("server-api.crt"),
+                key_file: fixtures.join("server-api.key"),
+            }],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config).unwrap();
+        let default_cert = resolver.resolve(Some("unknown.example.com"));
+
+        // All SANs should be registered, not just the priority one
+        let api_cert = resolver.resolve(Some("api.example.com"));
+        let localhost_cert = resolver.resolve(Some("localhost"));
+        assert!(
+            !Arc::ptr_eq(&api_cert, &default_cert),
+            "api.example.com (non-priority SAN) should still be registered"
+        );
+        assert!(
+            Arc::ptr_eq(&api_cert, &localhost_cert),
+            "Both SANs should resolve to the same cert"
+        );
+    }
+
+    #[test]
+    fn conflicting_priority_hostnames_errors() {
+        // Both certs claim priority for "localhost"
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![
+                SniCertificate {
+                    hostnames: vec![],
+                    priority_hostnames: vec!["localhost".to_string()],
+                    cert_file: fixtures.join("server-api.crt"),
+                    key_file: fixtures.join("server-api.key"),
+                },
+                SniCertificate {
+                    hostnames: vec![],
+                    priority_hostnames: vec!["localhost".to_string()],
+                    cert_file: fixtures.join("server-secure.crt"),
+                    key_file: fixtures.join("server-secure.key"),
+                },
+            ],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let result = SniResolver::from_config(&config);
+        assert!(
+            result.is_err(),
+            "Conflicting priority-hostnames should error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Conflicting priority-hostnames"),
+            "Error should mention conflicting priority: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn priority_hostnames_with_wildcard() {
+        // server-wildcard.crt SAN: *.example.com, example.com, localhost, 127.0.0.1
+        // server-api.crt SAN: api.example.com, localhost, 127.0.0.1
+        // Both have "localhost". Priority on wildcard cert wins.
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![
+                SniCertificate {
+                    hostnames: vec![],
+                    priority_hostnames: vec!["localhost".to_string()],
+                    cert_file: fixtures.join("server-wildcard.crt"),
+                    key_file: fixtures.join("server-wildcard.key"),
+                },
+                SniCertificate {
+                    hostnames: vec![],
+                    priority_hostnames: vec![],
+                    cert_file: fixtures.join("server-api.crt"),
+                    key_file: fixtures.join("server-api.key"),
+                },
+            ],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config).unwrap();
+
+        // "localhost" should resolve to server-wildcard.crt
+        let localhost_cert = resolver.resolve(Some("localhost"));
+        let example_cert = resolver.resolve(Some("example.com"));
+        assert!(
+            Arc::ptr_eq(&localhost_cert, &example_cert),
+            "Priority cert (wildcard) should win for 'localhost'"
+        );
+
+        // "api.example.com" should still resolve to server-api.crt
+        let api_cert = resolver.resolve(Some("api.example.com"));
+        assert!(
+            !Arc::ptr_eq(&api_cert, &example_cert),
+            "api.example.com should resolve to server-api.crt, not wildcard"
+        );
+    }
+
+    #[test]
+    fn non_priority_cert_does_not_overwrite_priority() {
+        // Order reversed: non-priority cert registered first, then priority cert,
+        // then another non-priority cert with the same hostname.
+        // The priority cert should still win.
+        let fixtures = fixtures_path();
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![
+                SniCertificate {
+                    hostnames: vec![],
+                    priority_hostnames: vec![],
+                    cert_file: fixtures.join("server-secure.crt"),
+                    key_file: fixtures.join("server-secure.key"),
+                },
+                SniCertificate {
+                    hostnames: vec![],
+                    priority_hostnames: vec!["localhost".to_string()],
+                    cert_file: fixtures.join("server-api.crt"),
+                    key_file: fixtures.join("server-api.key"),
+                },
+            ],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config).unwrap();
+
+        // "localhost" should resolve to server-api.crt (priority), even though
+        // server-secure.crt was registered first and also has "localhost" in SAN
+        let localhost_cert = resolver.resolve(Some("localhost"));
+        let api_cert = resolver.resolve(Some("api.example.com"));
+        assert!(
+            Arc::ptr_eq(&localhost_cert, &api_cert),
+            "Priority cert should win regardless of registration order"
         );
     }
 }

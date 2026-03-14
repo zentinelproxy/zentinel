@@ -87,7 +87,7 @@ maxminddb = "0.27"
 ip2location = "0.6"
 
 # Schema validation
-jsonschema = "0.44"
+jsonschema = "0.45"
 serde_yaml = "0.9"
 
 # Static file serving
@@ -107,7 +107,7 @@ tar = "0.4"
 toml = "1.0"
 
 # Temporary files (for bundle downloads)
-tempfile = "3.25"
+tempfile = "3.26"
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -191,7 +191,7 @@ tiktoken = ["tiktoken-rs"]
 criterion = { workspace = true }
 proptest = { workspace = true }
 insta = { workspace = true }
-tempfile = "3.25"
+tempfile = "3.26"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 tokio-tungstenite = "0.28"
 futures-util = "0.3"

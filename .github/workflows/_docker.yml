@@ -90,14 +90,14 @@ jobs:
           fi
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to Container Registry
         if: inputs.push
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -105,7 +105,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -115,7 +115,7 @@ jobs:
       # Build and push AMD64 image
       - name: Build and push AMD64 image
         if: steps.check-artifacts.outputs.amd64 == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: artifacts/linux-amd64
           file: ./Dockerfile
@@ -129,7 +129,7 @@ jobs:
       # Build and push ARM64 image
       - name: Build and push ARM64 image
         if: steps.check-artifacts.outputs.arm64 == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: artifacts/linux-arm64
           file: ./Dockerfile
@@ -217,7 +217,7 @@ jobs:
       # Build and push Echo Agent AMD64 image
       - name: Build and push Echo Agent AMD64 image
         if: steps.check-echo-artifacts.outputs.echo-amd64 == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: artifacts/linux-amd64
           file: ./Dockerfile
@@ -230,7 +230,7 @@ jobs:
       # Build and push Echo Agent ARM64 image
       - name: Build and push Echo Agent ARM64 image
         if: steps.check-echo-artifacts.outputs.echo-arm64 == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: artifacts/linux-arm64
           file: ./Dockerfile

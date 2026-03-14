@@ -543,7 +543,7 @@ fn parse_propagation_config(node: &kdl::KdlNode) -> PropagationCheckConfig {
 ///
 /// Example KDL:
 /// ```kdl
-/// // With explicit hostnames
+/// // With explicit hostnames (no SAN auto-extraction)
 /// sni {
 ///     hostnames "example.com" "www.example.com"
 ///     cert-file "/etc/certs/example.crt"
@@ -555,11 +555,19 @@ fn parse_propagation_config(node: &kdl::KdlNode) -> PropagationCheckConfig {
 ///     cert-file "/etc/certs/example.crt"
 ///     key-file "/etc/certs/example.key"
 /// }
+///
+/// // With priority hostnames (auto-extract all SANs, but this cert wins for listed hostnames)
+/// sni {
+///     priority-hostnames "example.com"
+///     cert-file "/etc/certs/example.crt"
+///     key-file "/etc/certs/example.key"
+/// }
 /// ```
 fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCertificate> {
-    // Parse hostnames - can be multiple arguments or a single "hostnames" entry.
-    // If omitted, hostnames will be auto-extracted from the certificate CN/SAN at load time.
-    let hostnames: Vec<String> = if let Some(children) = node.children() {
+    let children = node.children();
+
+    // Parse hostnames - explicit override, disables SAN auto-extraction.
+    let hostnames: Vec<String> = if let Some(children) = children {
         children
             .nodes()
             .iter()
@@ -573,6 +581,32 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
     } else {
         Vec::new()
     };
+
+    // Parse priority-hostnames - tie-breaking with full SAN auto-extraction.
+    let priority_hostnames: Vec<String> = if let Some(children) = children {
+        children
+            .nodes()
+            .iter()
+            .filter(|n| n.name().value() == "priority-hostnames")
+            .flat_map(|n| {
+                n.entries()
+                    .iter()
+                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Validate mutual exclusion
+    if !hostnames.is_empty() && !priority_hostnames.is_empty() {
+        return Err(anyhow::anyhow!(
+            "SNI certificate for listener '{}' cannot specify both 'hostnames' and 'priority-hostnames'. \
+             Use 'hostnames' for an explicit hostname list (no auto-extraction), or \
+             'priority-hostnames' for priority tie-breaking with full SAN auto-extraction.",
+            listener_id
+        ));
+    }
 
     let cert_file = get_string_entry(node, "cert-file")
         .map(PathBuf::from)
@@ -592,7 +626,14 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
             )
         })?;
 
-    if hostnames.is_empty() {
+    if !priority_hostnames.is_empty() {
+        debug!(
+            listener_id = %listener_id,
+            priority_hostnames = ?priority_hostnames,
+            cert_file = %cert_file.display(),
+            "Parsed SNI certificate (SAN auto-extraction with priority tie-breaking)"
+        );
+    } else if hostnames.is_empty() {
         debug!(
             listener_id = %listener_id,
             cert_file = %cert_file.display(),
@@ -609,6 +650,7 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
 
     Ok(SniCertificate {
         hostnames,
+        priority_hostnames,
         cert_file,
         key_file,
     })

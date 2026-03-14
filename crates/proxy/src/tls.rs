@@ -42,6 +42,14 @@
 //!             key-file "/etc/certs/premium.key"
 //!         }
 //!
+//!         // SNI certificate with priority tie-breaking (auto-extracts all SANs,
+//!         // but this cert wins for "shared.example.com" if contested)
+//!         sni {
+//!             priority-hostnames "shared.example.com"
+//!             cert-file "/etc/certs/shared.crt"
+//!             key-file "/etc/certs/shared.key"
+//!         }
+//!
 //!         // mTLS configuration
 //!         ca-file "/etc/certs/ca.crt"
 //!         client-auth true
@@ -52,7 +60,7 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -155,12 +163,28 @@ impl SniResolver {
         let mut sni_certs = HashMap::new();
         let mut wildcard_certs = HashMap::new();
 
+        // Track which hostnames were registered with priority, so we can resolve
+        // conflicts during build. These sets are not stored in the final resolver
+        // because priority is a build-time concept only.
+        let mut priority_exact: HashSet<String> = HashSet::new();
+        let mut priority_wildcard: HashSet<String> = HashSet::new();
+
         // Load SNI certificates
         for sni_config in &config.additional_certs {
             let cert = load_certified_key(&sni_config.cert_file, &sni_config.key_file)?;
             let cert = Arc::new(cert);
 
-            // Determine hostnames: use explicit config or auto-extract from certificate
+            // Build priority set for this cert (lowercased for consistent matching)
+            let priority_set: HashSet<String> = sni_config
+                .priority_hostnames
+                .iter()
+                .map(|h| h.to_lowercase())
+                .collect();
+            let has_priority = !priority_set.is_empty();
+
+            // Determine hostnames: use explicit config or auto-extract from certificate.
+            // When priority_hostnames is set, we always auto-extract (hostnames will be
+            // empty due to mutual exclusion validation in the config parser).
             let hostnames = if sni_config.hostnames.is_empty() {
                 let extracted =
                     extract_hostnames_from_cert(cert.cert.first().ok_or_else(|| {
@@ -170,11 +194,20 @@ impl SniResolver {
                         ))
                     })?)?;
 
-                info!(
-                    cert_file = %sni_config.cert_file.display(),
-                    hostnames = ?extracted,
-                    "Auto-extracted hostnames from certificate CN/SAN"
-                );
+                if has_priority {
+                    info!(
+                        cert_file = %sni_config.cert_file.display(),
+                        hostnames = ?extracted,
+                        priority_hostnames = ?sni_config.priority_hostnames,
+                        "Auto-extracted hostnames from certificate CN/SAN (with priority tie-breaking)"
+                    );
+                } else {
+                    info!(
+                        cert_file = %sni_config.cert_file.display(),
+                        hostnames = ?extracted,
+                        "Auto-extracted hostnames from certificate CN/SAN"
+                    );
+                }
 
                 extracted
             } else {
@@ -183,27 +216,60 @@ impl SniResolver {
 
             for hostname in &hostnames {
                 let hostname_lower = hostname.to_lowercase();
+                let is_priority = priority_set.contains(&hostname_lower);
 
                 if hostname_lower.starts_with("*.") {
                     // Wildcard certificate
                     let domain = hostname_lower.strip_prefix("*.").unwrap().to_string();
 
                     if let Some(existing) = wildcard_certs.get(&domain) {
-                        // Check for ambiguity: two certs for the same wildcard domain
                         if !Arc::ptr_eq(existing, &cert) {
-                            return Err(TlsError::ConfigBuild(format!(
-                                "Ambiguous SNI configuration: wildcard '*.{}' matches multiple certificates (including {:?}). \
-                                 Use explicit 'hostnames' to resolve the conflict.",
-                                domain,
-                                sni_config.cert_file
-                            )));
+                            let existing_has_priority = priority_wildcard.contains(&domain);
+
+                            if is_priority && existing_has_priority {
+                                // Both certs claim priority for the same wildcard
+                                return Err(TlsError::ConfigBuild(format!(
+                                    "Conflicting priority-hostnames: wildcard '*.{}' is claimed as priority by multiple certificates (including {:?}).",
+                                    domain,
+                                    sni_config.cert_file
+                                )));
+                            } else if is_priority {
+                                // New cert has priority, overwrite the existing one
+                                debug!(
+                                    pattern = %hostname,
+                                    domain = %domain,
+                                    cert_file = %sni_config.cert_file.display(),
+                                    "Priority wildcard SNI certificate overwrites previous registration"
+                                );
+                            } else if existing_has_priority {
+                                // Existing cert has priority, skip the new one
+                                debug!(
+                                    pattern = %hostname,
+                                    domain = %domain,
+                                    cert_file = %sni_config.cert_file.display(),
+                                    "Skipping wildcard SNI registration, existing cert has priority"
+                                );
+                                continue;
+                            } else {
+                                // Neither has priority, ambiguity error
+                                return Err(TlsError::ConfigBuild(format!(
+                                    "Ambiguous SNI configuration: wildcard '*.{}' matches multiple certificates (including {:?}). \
+                                     Use explicit 'hostnames' or 'priority-hostnames' to resolve the conflict.",
+                                    domain,
+                                    sni_config.cert_file
+                                )));
+                            }
                         }
                     }
 
                     wildcard_certs.insert(domain.clone(), cert.clone());
+                    if is_priority {
+                        priority_wildcard.insert(domain.clone());
+                    }
                     debug!(
                         pattern = %hostname,
                         domain = %domain,
+                        priority = is_priority,
                         cert_file = %sni_config.cert_file.display(),
                         "Registered wildcard SNI certificate"
                     );
@@ -211,18 +277,49 @@ impl SniResolver {
                     // Exact hostname match
                     if let Some(existing) = sni_certs.get(&hostname_lower) {
                         if !Arc::ptr_eq(existing, &cert) {
-                            return Err(TlsError::ConfigBuild(format!(
-                                "Ambiguous SNI configuration: hostname '{}' matches multiple certificates (including {:?}). \
-                                 Use explicit 'hostnames' to resolve the conflict.",
-                                hostname_lower,
-                                sni_config.cert_file
-                            )));
+                            let existing_has_priority = priority_exact.contains(&hostname_lower);
+
+                            if is_priority && existing_has_priority {
+                                // Both certs claim priority for the same hostname
+                                return Err(TlsError::ConfigBuild(format!(
+                                    "Conflicting priority-hostnames: hostname '{}' is claimed as priority by multiple certificates (including {:?}).",
+                                    hostname_lower,
+                                    sni_config.cert_file
+                                )));
+                            } else if is_priority {
+                                // New cert has priority, overwrite
+                                debug!(
+                                    hostname = %hostname_lower,
+                                    cert_file = %sni_config.cert_file.display(),
+                                    "Priority SNI certificate overwrites previous registration"
+                                );
+                            } else if existing_has_priority {
+                                // Existing cert has priority, skip
+                                debug!(
+                                    hostname = %hostname_lower,
+                                    cert_file = %sni_config.cert_file.display(),
+                                    "Skipping SNI registration, existing cert has priority"
+                                );
+                                continue;
+                            } else {
+                                // Neither has priority, ambiguity error
+                                return Err(TlsError::ConfigBuild(format!(
+                                    "Ambiguous SNI configuration: hostname '{}' matches multiple certificates (including {:?}). \
+                                     Use explicit 'hostnames' or 'priority-hostnames' to resolve the conflict.",
+                                    hostname_lower,
+                                    sni_config.cert_file
+                                )));
+                            }
                         }
                     }
 
                     sni_certs.insert(hostname_lower.clone(), cert.clone());
+                    if is_priority {
+                        priority_exact.insert(hostname_lower.clone());
+                    }
                     debug!(
                         hostname = %hostname_lower,
+                        priority = is_priority,
                         cert_file = %sni_config.cert_file.display(),
                         "Registered SNI certificate"
                     );

@@ -41,7 +41,7 @@ pingora-memory-cache = { version = "0.8.0", git = "https://github.com/raskell-io
 
 # Async runtime
 # Minimal feature set for proxy workloads (trimmed from "full" for smaller binary)
-tokio = { version = "1.49", features = [
+tokio = { version = "1.50", features = [
     "rt-multi-thread",  # Multi-threaded runtime
     "net",              # TCP/UDP networking
     "io-util",          # AsyncRead/AsyncWrite utilities
@@ -92,7 +92,7 @@ hyper = "1.5"
 tower = "0.5"
 
 # Utilities
-uuid = { version = "1.21", features = ["v4", "serde"] }
+uuid = { version = "1.22", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6.1"
 parking_lot = "0.12"

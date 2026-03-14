@@ -20,7 +20,7 @@ zentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.6
 zentinel-common = { path = "../../crates/common", version = "0.6.1" }
 
 # Async runtime
-tokio = { version = "1.49", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio = { version = "1.50", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 async-trait = "0.1"
 
 # Serialization
@@ -42,7 +42,7 @@ sha2 = "0.10"
 
 # Token storage
 dashmap = "6.1"
-uuid = { version = "1.21", features = ["v4", "serde"] }
+uuid = { version = "1.22", features = ["v4", "serde"] }
 
 # Base64 encoding for body chunks
 base64 = "0.22"
@@ -62,5 +62,5 @@ clap = { version = "4.5", features = ["derive", "env"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-tempfile = "3.25"
+tempfile = "3.26"
 tokio-test = "0.4"

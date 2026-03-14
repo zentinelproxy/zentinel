@@ -1092,4 +1092,218 @@ mod tests {
             AccessLogFormat::Json
         ); // Default to JSON
     }
+
+    // =========================================================================
+    // Field Filtering Tests
+    // =========================================================================
+
+    fn test_entry() -> AccessLogEntry {
+        AccessLogEntry {
+            timestamp: "2026-03-01T12:00:00Z".to_string(),
+            trace_id: "trace-xyz".to_string(),
+            method: "POST".to_string(),
+            path: "/api/submit".to_string(),
+            query: Some("v=2".to_string()),
+            protocol: "HTTP/2.0".to_string(),
+            status: 201,
+            body_bytes: 512,
+            duration_ms: 25,
+            client_ip: "10.0.0.1".to_string(),
+            user_agent: Some("curl/8.0".to_string()),
+            referer: Some("https://example.com".to_string()),
+            host: Some("api.example.com".to_string()),
+            route_id: Some("submit-route".to_string()),
+            upstream: Some("backend-2".to_string()),
+            upstream_attempts: 1,
+            instance_id: "inst-1".to_string(),
+            namespace: None,
+            service: None,
+            body_bytes_sent: 100,
+            upstream_addr: Some("10.1.0.5:9090".to_string()),
+            connection_reused: false,
+            rate_limit_hit: true,
+            geo_country: Some("DE".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_json_format_with_all_fields_enabled() {
+        let entry = test_entry();
+        let fields = zentinel_config::AccessLogFields::default(); // All true
+
+        let json_str = entry.format(AccessLogFormat::Json, Some(&fields));
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["method"], "POST");
+        assert_eq!(parsed["status"], 201);
+        assert_eq!(parsed["client_ip"], "10.0.0.1");
+        assert_eq!(parsed["duration_ms"], 25);
+        assert_eq!(parsed["upstream_addr"], "10.1.0.5:9090");
+        assert_eq!(parsed["rate_limit_hit"], true);
+    }
+
+    #[test]
+    fn test_json_format_with_fields_disabled() {
+        let entry = test_entry();
+        let fields = zentinel_config::AccessLogFields {
+            timestamp: true,
+            method: true,
+            path: true,
+            status: true,
+            // Disable everything else
+            trace_id: false,
+            query: false,
+            latency_ms: false,
+            body_bytes_sent: false,
+            upstream_addr: false,
+            connection_reused: false,
+            rate_limit_hit: false,
+            geo_country: false,
+            user_agent: false,
+            referer: false,
+            client_ip: false,
+        };
+
+        let json_str = entry.format(AccessLogFormat::Json, Some(&fields));
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // Enabled fields present
+        assert!(parsed.get("timestamp").is_some());
+        assert!(parsed.get("method").is_some());
+        assert!(parsed.get("path").is_some());
+        assert!(parsed.get("status").is_some());
+
+        // Disabled fields absent
+        assert!(
+            parsed.get("trace_id").is_none(),
+            "trace_id should be filtered out"
+        );
+        assert!(
+            parsed.get("query").is_none(),
+            "query should be filtered out"
+        );
+        assert!(
+            parsed.get("duration_ms").is_none(),
+            "duration_ms should be filtered out"
+        );
+        assert!(
+            parsed.get("client_ip").is_none(),
+            "client_ip should be filtered out"
+        );
+        assert!(
+            parsed.get("user_agent").is_none(),
+            "user_agent should be filtered out"
+        );
+        assert!(
+            parsed.get("referer").is_none(),
+            "referer should be filtered out"
+        );
+        assert!(
+            parsed.get("upstream_addr").is_none(),
+            "upstream_addr should be filtered out"
+        );
+        assert!(
+            parsed.get("rate_limit_hit").is_none(),
+            "rate_limit_hit should be filtered out"
+        );
+    }
+
+    #[test]
+    fn test_json_format_without_field_filter() {
+        let entry = test_entry();
+
+        // When no field filter provided, full serialization is used
+        let json_str = entry.format(AccessLogFormat::Json, None);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // Full serialization includes all fields
+        assert!(parsed.get("timestamp").is_some());
+        assert!(parsed.get("trace_id").is_some());
+        assert!(parsed.get("method").is_some());
+        assert!(parsed.get("status").is_some());
+        assert!(parsed.get("duration_ms").is_some());
+    }
+
+    #[test]
+    fn test_combined_format_with_missing_optional_fields() {
+        let entry = AccessLogEntry {
+            timestamp: "2026-03-01T12:00:00Z".to_string(),
+            trace_id: "trace-001".to_string(),
+            method: "GET".to_string(),
+            path: "/health".to_string(),
+            query: None,
+            protocol: "HTTP/1.1".to_string(),
+            status: 200,
+            body_bytes: 0,
+            duration_ms: 1,
+            client_ip: "127.0.0.1".to_string(),
+            user_agent: None,
+            referer: None,
+            host: None,
+            route_id: None,
+            upstream: None,
+            upstream_attempts: 0,
+            instance_id: "inst-1".to_string(),
+            namespace: None,
+            service: None,
+            body_bytes_sent: 0,
+            upstream_addr: None,
+            connection_reused: false,
+            rate_limit_hit: false,
+            geo_country: None,
+        };
+
+        let combined = entry.format(AccessLogFormat::Combined, None);
+
+        assert!(combined.starts_with("127.0.0.1 - - ["));
+        assert!(combined.contains("\"GET /health HTTP/1.1\""));
+        assert!(combined.contains(" 200 0 "));
+        // Missing user-agent and referer should show as "-"
+        assert!(combined.contains("\"-\""));
+    }
+
+    #[test]
+    fn test_json_skips_none_optional_fields() {
+        let entry = AccessLogEntry {
+            timestamp: "2026-03-01T12:00:00Z".to_string(),
+            trace_id: "trace-002".to_string(),
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            query: None,
+            protocol: "HTTP/1.1".to_string(),
+            status: 200,
+            body_bytes: 0,
+            duration_ms: 0,
+            client_ip: "127.0.0.1".to_string(),
+            user_agent: None,
+            referer: None,
+            host: None,
+            route_id: None,
+            upstream: None,
+            upstream_attempts: 0,
+            instance_id: "inst-1".to_string(),
+            namespace: None,
+            service: None,
+            body_bytes_sent: 0,
+            upstream_addr: None,
+            connection_reused: false,
+            rate_limit_hit: false,
+            geo_country: None,
+        };
+
+        // Full serialization (no field filter) uses skip_serializing_if
+        let json_str = entry.format(AccessLogFormat::Json, None);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // None fields should be absent (skip_serializing_if)
+        assert!(parsed.get("query").is_none());
+        assert!(parsed.get("user_agent").is_none());
+        assert!(parsed.get("referer").is_none());
+        assert!(parsed.get("host").is_none());
+        assert!(parsed.get("route_id").is_none());
+        assert!(parsed.get("upstream").is_none());
+        assert!(parsed.get("namespace").is_none());
+        assert!(parsed.get("service").is_none());
+        assert!(parsed.get("upstream_addr").is_none());
+    }
 }
