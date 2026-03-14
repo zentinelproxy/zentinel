@@ -26,6 +26,7 @@ use crate::reconcilers::{
     GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler, HttpRouteReconciler,
     IngressReconciler, ReferenceGrantIndex, TlsRouteReconciler,
 };
+use crate::config_writer::{write_bootstrap_config, ConfigWriter};
 use crate::tls::SecretCertificateManager;
 use crate::translator::ConfigTranslator;
 
@@ -42,6 +43,7 @@ pub struct GatewayController {
     config: Arc<ArcSwap<Config>>,
     reference_grants: Arc<ReferenceGrantIndex>,
     cert_manager: Arc<SecretCertificateManager>,
+    config_output_path: Option<PathBuf>,
 }
 
 impl GatewayController {
@@ -65,6 +67,7 @@ impl GatewayController {
             config,
             reference_grants,
             cert_manager,
+            config_output_path: None,
         })
     }
 
@@ -81,7 +84,22 @@ impl GatewayController {
             config,
             reference_grants,
             cert_manager,
+            config_output_path: None,
         }
+    }
+
+    /// Set the output path for writing translated config as KDL.
+    ///
+    /// When set, the controller writes a KDL config file after each
+    /// reconciliation cycle. A Zentinel proxy sidecar reads this file
+    /// with `auto-reload: true` to serve traffic.
+    pub fn with_config_output(mut self, path: PathBuf) -> Self {
+        // Write bootstrap config so the proxy can start immediately
+        if let Err(e) = write_bootstrap_config(&path) {
+            error!(error = %e, path = %path.display(), "Failed to write bootstrap config");
+        }
+        self.config_output_path = Some(path);
+        self
     }
 
     /// Get a handle to the shared config (for the data plane to read).
@@ -95,11 +113,18 @@ impl GatewayController {
     /// all of them. Cancellation is handled via tokio's cooperative
     /// cancellation (dropping the future).
     pub async fn run(self) -> Result<(), GatewayError> {
-        let translator = Arc::new(ConfigTranslator::new(
+        let mut translator = ConfigTranslator::new(
             Arc::clone(&self.config),
             Arc::clone(&self.reference_grants),
             Arc::clone(&self.cert_manager),
-        ));
+        );
+
+        if let Some(ref path) = self.config_output_path {
+            translator = translator.with_config_writer(ConfigWriter::new(path.clone()));
+            info!(path = %path.display(), "Config output enabled for proxy sidecar");
+        }
+
+        let translator = Arc::new(translator);
 
         info!("Starting Gateway API controller");
 

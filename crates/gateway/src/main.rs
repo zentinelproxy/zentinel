@@ -67,7 +67,13 @@ async fn main() -> Result<()> {
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
-    let controller = GatewayController::new().await?;
+    let mut controller = GatewayController::new().await?;
+
+    // Enable config file output for proxy sidecar
+    if let Ok(config_path) = std::env::var("CONFIG_OUTPUT_PATH") {
+        info!(path = %config_path, "Config output to file enabled");
+        controller = controller.with_config_output(std::path::PathBuf::from(config_path));
+    }
 
     // Install signal handler for graceful shutdown
     let ctrl_c = tokio::signal::ctrl_c();

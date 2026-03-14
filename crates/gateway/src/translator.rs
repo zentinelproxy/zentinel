@@ -18,7 +18,7 @@ use gateway_api::httproutes::{
 };
 use kube::api::ListParams;
 use kube::{Api, Client, ResourceExt};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm, Priority, TlsVersion};
 use zentinel_config::{
@@ -28,6 +28,7 @@ use zentinel_config::{
     TlsConfig, UpstreamConfig, UpstreamTarget, UpstreamTimeouts, UrlRewriteFilter,
 };
 
+use crate::config_writer::ConfigWriter;
 use crate::error::GatewayError;
 use crate::reconcilers::gateway_class::CONTROLLER_NAME;
 use crate::reconcilers::ingress::translate_ingresses;
@@ -43,6 +44,7 @@ pub struct ConfigTranslator {
     config: Arc<ArcSwap<Config>>,
     reference_grants: Arc<ReferenceGrantIndex>,
     cert_manager: Arc<SecretCertificateManager>,
+    config_writer: Option<ConfigWriter>,
 }
 
 impl ConfigTranslator {
@@ -55,7 +57,18 @@ impl ConfigTranslator {
             config,
             reference_grants,
             cert_manager,
+            config_writer: None,
         }
+    }
+
+    /// Enable writing translated config to a KDL file for the proxy sidecar.
+    ///
+    /// When set, each `rebuild()` call writes the translated config to disk
+    /// in addition to storing it in the ArcSwap. The proxy reads this file
+    /// with `auto-reload: true`.
+    pub fn with_config_writer(mut self, writer: ConfigWriter) -> Self {
+        self.config_writer = Some(writer);
+        self
     }
 
     /// Get the current config (for reading).
@@ -239,7 +252,15 @@ impl ConfigTranslator {
             "Config rebuilt from Gateway API resources"
         );
 
-        self.config.store(Arc::new(new_config));
+        self.config.store(Arc::new(new_config.clone()));
+
+        // Write config to disk for the proxy sidecar
+        if let Some(ref writer) = self.config_writer {
+            if let Err(e) = writer.write(&new_config) {
+                error!(error = %e, "Failed to write config to disk");
+            }
+        }
+
         Ok(())
     }
 

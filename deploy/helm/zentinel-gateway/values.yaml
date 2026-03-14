@@ -9,6 +9,24 @@ image:
   tag: "" # defaults to appVersion
   pullPolicy: IfNotPresent
 
+# Proxy sidecar (data plane)
+proxy:
+  enabled: true
+  image:
+    repository: ghcr.io/zentinelproxy/zentinel
+    tag: "" # defaults to appVersion
+    pullPolicy: IfNotPresent
+  # Ports exposed by the proxy
+  httpPort: 8080
+  httpsPort: 8443
+  resources:
+    requests:
+      cpu: 200m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
@@ -71,6 +89,9 @@ securityContext:
 
 # TLS certificate directory (writable volume)
 certDir: /tmp/zentinel-gateway-certs
+
+# Shared config directory (controller writes, proxy reads)
+configDir: /etc/zentinel/gateway
 
 # Log level
 logLevel: "zentinel_gateway=info,kube=warn"

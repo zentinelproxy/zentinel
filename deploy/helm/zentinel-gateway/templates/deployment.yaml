@@ -23,6 +23,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
+        # Gateway API controller (control plane)
         - name: controller
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
@@ -37,6 +38,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: CONFIG_OUTPUT_PATH
+              value: "{{ .Values.configDir }}/zentinel.kdl"
             {{- if .Values.leaderElection.enabled }}
             - name: LEADER_ELECTION
               value: "true"
@@ -69,8 +72,47 @@ spec:
           volumeMounts:
             - name: cert-dir
               mountPath: {{ .Values.certDir }}
+            - name: config-dir
+              mountPath: {{ .Values.configDir }}
+        {{- if .Values.proxy.enabled }}
+        # Zentinel proxy (data plane)
+        - name: proxy
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          args:
+            - "-c"
+            - "{{ .Values.configDir }}/zentinel.kdl"
+          env:
+            - name: RUST_LOG
+              value: "info,zentinel_proxy=info"
+          ports:
+            - name: http
+              containerPort: {{ .Values.proxy.httpPort }}
+              protocol: TCP
+            - name: https
+              containerPort: {{ .Values.proxy.httpsPort }}
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: cert-dir
+              mountPath: {{ .Values.certDir }}
+              readOnly: true
+            - name: config-dir
+              mountPath: {{ .Values.configDir }}
+              readOnly: true
+        {{- end }}
       volumes:
         - name: cert-dir
+          emptyDir: {}
+        - name: config-dir
           emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:

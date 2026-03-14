@@ -30,6 +30,7 @@
 //! └──────────────────────────────────────────────────┘
 //! ```
 
+pub mod config_writer;
 pub mod controller;
 pub mod error;
 pub mod leader;
