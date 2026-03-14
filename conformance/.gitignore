@@ -1,0 +1,3 @@
+go.sum
+test-output.log
+*-report.yaml

@@ -33,15 +33,17 @@ picks up changes via file watching.
 
 ## Phase 2: kind-based test harness
 
-- [ ] Create `scripts/conformance-test.sh` that automates the full flow
-- [ ] Create a kind cluster with port mappings for the proxy's listeners
-- [ ] Install Gateway API CRDs (`kubectl apply -f standard-install.yaml`)
-- [ ] Build the `zentinel-gateway` Docker image locally
-- [ ] Load the image into kind (`kind load docker-image`)
-- [ ] Deploy via Helm chart
-- [ ] Wait for controller + proxy to be ready
-- [ ] Run the Go conformance suite: `go test ./conformance -run TestConformance -gateway-class=zentinel -controller-name=zentinelproxy.io/gateway-controller -supported-features=HTTPRoute,ReferenceGrant -v`
-- [ ] Capture output and report
+- [x] Create `scripts/conformance-test.sh` that automates the full flow
+- [x] Create a kind cluster with port mappings for the proxy's listeners
+- [x] Install Gateway API CRDs (standard + experimental)
+- [x] Build the `zentinel-gateway` Docker image locally
+- [x] Load the image into kind (`kind load docker-image`)
+- [x] Deploy via Helm chart with local images
+- [x] Wait for controller + proxy to be ready
+- [x] Go conformance test wrapper (`conformance/conformance_test.go`)
+- [x] `go.mod` with gateway-api v1.2.1 dependency
+- [x] `--report` flag for generating conformance report YAML
+- [x] `--keep-cluster` flag for debugging failures
 
 ## Phase 3: Fix conformance failures
 
@@ -67,7 +69,9 @@ There will be edge cases. Common areas where implementations fail:
 
 ## Phase 5: CI integration
 
-- [ ] Add a GitHub Actions workflow (`conformance.yml`) that runs on PRs touching `crates/gateway/`
-- [ ] Use kind-action to create a cluster in CI
-- [ ] Run conformance tests as a CI check
-- [ ] Fail the build if conformance regresses
+- [x] GitHub Actions workflow (`.github/workflows/conformance.yml`)
+- [x] Triggers on PRs touching `crates/gateway/`, `conformance/`, `deploy/helm/zentinel-gateway/`
+- [x] Uses `helm/kind-action` for cluster creation
+- [x] Builds images, loads into kind, deploys via Helm
+- [x] Runs Go conformance suite with 20m timeout
+- [x] Collects controller + proxy logs on failure

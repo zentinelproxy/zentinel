@@ -1,0 +1,130 @@
+# Gateway API Conformance Tests
+#
+# Builds the gateway controller and proxy, deploys to a kind cluster,
+# and runs the official Gateway API conformance test suite.
+#
+# Runs on PRs that touch the gateway crate or conformance tests.
+
+name: Conformance
+
+on:
+  pull_request:
+    paths:
+      - 'crates/gateway/**'
+      - 'conformance/**'
+      - 'deploy/helm/zentinel-gateway/**'
+      - '.github/workflows/conformance.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  GATEWAY_IMAGE: zentinel-gateway:ci
+  PROXY_IMAGE: zentinel:ci
+  CLUSTER_NAME: zentinel-conformance
+
+jobs:
+  conformance:
+    name: Gateway API Conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: conformance/go.sum
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-conformance-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build gateway controller
+        run: cargo build --release --package zentinel-gateway
+
+      - name: Build proxy
+        run: cargo build --release --package zentinel-proxy
+
+      - name: Build Docker images
+        run: |
+          docker build -t $GATEWAY_IMAGE --target gateway .
+          docker build -t $PROXY_IMAGE --target proxy .
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          config: |
+            kind: Cluster
+            apiVersion: kind.x-k8s.io/v1alpha4
+            nodes:
+              - role: control-plane
+
+      - name: Load images into kind
+        run: |
+          kind load docker-image $GATEWAY_IMAGE --name $CLUSTER_NAME
+          kind load docker-image $PROXY_IMAGE --name $CLUSTER_NAME
+
+      - name: Install Gateway API CRDs
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/experimental-install.yaml
+
+      - name: Deploy zentinel-gateway
+        run: |
+          kubectl create namespace zentinel-system
+          helm install zentinel-gateway deploy/helm/zentinel-gateway \
+            --namespace zentinel-system \
+            --set image.repository=$GATEWAY_IMAGE \
+            --set image.tag="" \
+            --set image.pullPolicy=Never \
+            --set proxy.image.repository=$PROXY_IMAGE \
+            --set proxy.image.tag="" \
+            --set proxy.image.pullPolicy=Never \
+            --wait \
+            --timeout 120s
+
+      - name: Wait for readiness
+        run: |
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=zentinel-gateway \
+            -n zentinel-system \
+            --timeout=60s
+          echo "GatewayClass status:"
+          kubectl get gatewayclass zentinel -o yaml
+
+      - name: Run conformance tests
+        working-directory: conformance
+        run: |
+          go test ./... \
+            -run TestConformance \
+            -gateway-class=zentinel \
+            -controller-name=zentinelproxy.io/gateway-controller \
+            -supported-features=HTTPRoute,ReferenceGrant \
+            -v \
+            -count=1 \
+            -timeout=20m
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Controller logs ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c controller --tail=100
+          echo "=== Proxy logs ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c proxy --tail=100
+          echo "=== Gateway resources ==="
+          kubectl get gateways,httproutes,gatewayclasses -A -o yaml
