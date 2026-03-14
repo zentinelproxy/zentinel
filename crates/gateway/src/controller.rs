@@ -7,6 +7,7 @@ use arc_swap::ArcSwap;
 use futures::StreamExt;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
+use gateway_api::grpcroutes::GRPCRoute;
 use gateway_api::httproutes::HTTPRoute;
 use gateway_api::referencegrants::ReferenceGrant;
 use k8s_openapi::api::core::v1::Secret;
@@ -20,7 +21,8 @@ use zentinel_config::Config;
 
 use crate::error::GatewayError;
 use crate::reconcilers::{
-    GatewayClassReconciler, GatewayReconciler, HttpRouteReconciler, ReferenceGrantIndex,
+    GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler, HttpRouteReconciler,
+    ReferenceGrantIndex,
 };
 use crate::tls::SecretCertificateManager;
 use crate::translator::ConfigTranslator;
@@ -106,6 +108,7 @@ impl GatewayController {
         let gateway_class_fut = self.run_gateway_class_controller();
         let gateway_fut = self.run_gateway_controller();
         let httproute_fut = self.run_httproute_controller(Arc::clone(&translator));
+        let grpcroute_fut = self.run_grpcroute_controller(Arc::clone(&translator));
         let refgrant_fut = self.run_reference_grant_watcher();
         let secret_fut = self.run_secret_watcher(Arc::clone(&translator));
 
@@ -118,6 +121,9 @@ impl GatewayController {
             }
             res = httproute_fut => {
                 error!("HTTPRoute controller exited: {:?}", res);
+            }
+            res = grpcroute_fut => {
+                error!("GRPCRoute controller exited: {:?}", res);
             }
             res = refgrant_fut => {
                 error!("ReferenceGrant watcher exited: {:?}", res);
@@ -198,6 +204,33 @@ impl GatewayController {
                 match res {
                     Ok((_obj, _action)) => {}
                     Err(e) => error!(error = %e, "HTTPRoute reconciliation error"),
+                }
+            })
+            .await;
+
+        Ok(())
+    }
+
+    async fn run_grpcroute_controller(
+        &self,
+        translator: Arc<ConfigTranslator>,
+    ) -> Result<(), GatewayError> {
+        let reconciler = Arc::new(GrpcRouteReconciler::new(self.client.clone(), translator));
+        let api: Api<GRPCRoute> = Api::all(self.client.clone());
+
+        Controller::new(api, watcher::Config::default())
+            .run(
+                move |obj, _ctx| {
+                    let reconciler = Arc::clone(&reconciler);
+                    async move { reconciler.reconcile(obj).await }
+                },
+                GrpcRouteReconciler::error_policy,
+                Arc::new(()),
+            )
+            .for_each(|res| async move {
+                match res {
+                    Ok((_obj, _action)) => {}
+                    Err(e) => error!(error = %e, "GRPCRoute reconciliation error"),
                 }
             })
             .await;

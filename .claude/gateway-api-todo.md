@@ -43,12 +43,12 @@
 - [x] Leader election — Kubernetes Lease-based (`coordination.k8s.io/v1`) with configurable duration/renew/retry intervals
 - [x] Prometheus metrics — reconciliation count/duration/errors, config rebuild stats, active resource gauges, leader status, TLS errors
 - [x] Helm chart — `deploy/helm/zentinel-gateway/` with Deployment, RBAC, ServiceAccount, GatewayClass, metrics Service
-- [ ] Gateway API conformance test suite integration
-- [ ] Migration guide: "From NGINX Ingress to Zentinel"
+- [x] Gateway API conformance test scaffolding — integration tests + Go conformance suite instructions in `docs/conformance.md`
+- [x] Migration guide — `docs/migration-from-nginx-ingress.md` mapping NGINX annotations → Gateway API + Zentinel
 
 ## Phase 6: Stretch Goals
 
-- [ ] GRPCRoute support
+- [x] GRPCRoute support — reconciler + translator with service/method → path matching, gRPC health checks, HTTP/2 forced
 - [ ] TLSRoute / TCPRoute support
 - [ ] BackendTLSPolicy support
 - [ ] Custom Zentinel policy CRDs (rate limiting, agent attachment, WAF)

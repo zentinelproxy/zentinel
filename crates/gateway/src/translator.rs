@@ -10,6 +10,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
+use gateway_api::grpcroutes::GRPCRoute;
 use gateway_api::httproutes::{
     HTTPRoute, HTTPRouteRulesBackendRefs, HTTPRouteRulesFilters, HTTPRouteRulesFiltersType,
     HTTPRouteRulesMatches, HTTPRouteRulesMatchesPathType,
@@ -128,6 +129,32 @@ impl ConfigTranslator {
             }
 
             let (route_configs, upstream_configs) = self.translate_httproute(route)?;
+            routes.extend(route_configs);
+            upstreams.extend(upstream_configs);
+        }
+
+        // Translate GRPCRoutes → Routes + Upstreams
+        let grpc_api: Api<GRPCRoute> = Api::all(client.clone());
+        let all_grpc_routes = grpc_api.list(&ListParams::default()).await?;
+
+        for route in &all_grpc_routes.items {
+            let parent_refs = route.spec.parent_refs.as_ref();
+            let is_ours = parent_refs.is_some_and(|refs: &Vec<gateway_api::grpcroutes::GRPCRouteParentRefs>| {
+                refs.iter().any(|pr: &gateway_api::grpcroutes::GRPCRouteParentRefs| {
+                    let gw_ns = pr.namespace.as_deref().unwrap_or("default");
+                    let gw_name = pr.name.as_str();
+                    our_gateways.iter().any(|g: &&Gateway| {
+                        g.name_any() == gw_name
+                            && g.namespace().unwrap_or_default() == gw_ns
+                    })
+                })
+            });
+
+            if !is_ours {
+                continue;
+            }
+
+            let (route_configs, upstream_configs) = self.translate_grpcroute(route)?;
             routes.extend(route_configs);
             upstreams.extend(upstream_configs);
         }
@@ -636,5 +663,238 @@ impl ConfigTranslator {
         }
 
         mods
+    }
+
+    // ========================================================================
+    // GRPCRoute Translation
+    // ========================================================================
+
+    /// Translate a GRPCRoute into Zentinel route and upstream configs.
+    ///
+    /// gRPC service/method matches are translated to path-prefix matches
+    /// using the gRPC path convention: `/<package.Service>/<Method>`.
+    fn translate_grpcroute(
+        &self,
+        route: &GRPCRoute,
+    ) -> Result<(Vec<RouteConfig>, HashMap<String, UpstreamConfig>), GatewayError> {
+        let route_name = route.name_any();
+        let route_ns = route.namespace().unwrap_or_else(|| "default".into());
+
+        let rules = route.spec.rules.as_ref().cloned().unwrap_or_default();
+        let mut route_configs = Vec::new();
+        let mut upstream_configs = HashMap::new();
+
+        let hostnames: Vec<String> = route
+            .spec
+            .hostnames
+            .clone()
+            .unwrap_or_default();
+
+        for (rule_idx, rule) in rules.iter().enumerate() {
+            let rule_id = format!("{route_ns}-{route_name}-grpc-rule{rule_idx}");
+
+            // Build match conditions from gRPC matches
+            let matches = self.translate_grpc_matches(&rule.matches, &hostnames);
+
+            // Build upstream from backend refs (same structure as HTTPRoute)
+            let backend_refs = rule.backend_refs.as_ref().cloned().unwrap_or_default();
+            let (upstream_id, upstream) =
+                self.translate_grpc_backends(&rule_id, &backend_refs, &route_ns)?;
+
+            if let Some(upstream) = upstream {
+                upstream_configs.insert(upstream_id.clone(), upstream);
+            }
+
+            let route_config = RouteConfig {
+                id: rule_id,
+                priority: Priority::Normal,
+                matches,
+                upstream: Some(upstream_id),
+                service_type: ServiceType::Web, // gRPC runs over HTTP/2
+                policies: RoutePolicies::default(),
+                filters: vec![],
+                builtin_handler: None,
+                waf_enabled: false,
+                circuit_breaker: None,
+                retry_policy: None,
+                static_files: None,
+                api_schema: None,
+                inference: None,
+                error_pages: None,
+                websocket: false,
+                websocket_inspection: false,
+                shadow: None,
+                fallback: None,
+            };
+
+            route_configs.push(route_config);
+        }
+
+        Ok((route_configs, upstream_configs))
+    }
+
+    /// Translate GRPCRoute matches into Zentinel match conditions.
+    ///
+    /// gRPC uses HTTP/2 POST with path `/<service>/<method>`, so service/method
+    /// matches become path prefix/exact matches.
+    fn translate_grpc_matches(
+        &self,
+        rule_matches: &Option<Vec<gateway_api::grpcroutes::GRPCRouteRulesMatches>>,
+        hostnames: &[String],
+    ) -> Vec<MatchCondition> {
+        let mut conditions = Vec::new();
+
+        // Add host matches
+        for hostname in hostnames {
+            conditions.push(MatchCondition::Host(hostname.clone()));
+        }
+
+        // gRPC is always POST
+        conditions.push(MatchCondition::Method(vec!["POST".to_string()]));
+
+        let route_matches = match rule_matches {
+            Some(m) if !m.is_empty() => m,
+            _ => {
+                // No matches = match all gRPC traffic
+                conditions.push(MatchCondition::PathPrefix("/".to_string()));
+                return conditions;
+            }
+        };
+
+        for m in route_matches {
+            if let Some(ref method_match) = m.method {
+                let service = method_match.service.as_deref().unwrap_or("");
+                let method = method_match.method.as_deref().unwrap_or("");
+
+                let path = match (service.is_empty(), method.is_empty()) {
+                    (false, false) => {
+                        // Exact: /<service>/<method>
+                        conditions.push(MatchCondition::Path(
+                            format!("/{service}/{method}"),
+                        ));
+                        continue;
+                    }
+                    (false, true) => {
+                        // Service only: prefix /<service>/
+                        format!("/{service}/")
+                    }
+                    (true, false) => {
+                        // Method only: harder to match, use path prefix
+                        // This is implementation-specific support
+                        format!("/{method}")
+                    }
+                    (true, true) => {
+                        // Both empty = match everything
+                        "/".to_string()
+                    }
+                };
+                conditions.push(MatchCondition::PathPrefix(path));
+            }
+
+            // Header matches
+            if let Some(ref headers) = m.headers {
+                for header in headers {
+                    conditions.push(MatchCondition::Header {
+                        name: header.name.clone(),
+                        value: Some(header.value.clone()),
+                    });
+                }
+            }
+        }
+
+        if conditions.iter().all(|c| {
+            matches!(c, MatchCondition::Host(_) | MatchCondition::Method(_))
+        }) {
+            conditions.push(MatchCondition::PathPrefix("/".to_string()));
+        }
+
+        conditions
+    }
+
+    /// Translate GRPCRoute backend refs into a Zentinel upstream.
+    fn translate_grpc_backends(
+        &self,
+        rule_id: &str,
+        backend_refs: &[gateway_api::grpcroutes::GRPCRouteRulesBackendRefs],
+        route_ns: &str,
+    ) -> Result<(String, Option<UpstreamConfig>), GatewayError> {
+        let upstream_id = format!("{rule_id}-upstream");
+
+        if backend_refs.is_empty() {
+            return Ok((upstream_id, None));
+        }
+
+        let mut targets = Vec::new();
+
+        for backend in backend_refs {
+            let svc_name = &backend.name;
+            let svc_ns = backend.namespace.as_deref().unwrap_or(route_ns);
+            let svc_port = backend.port.unwrap_or(50051); // default gRPC port
+            let weight = backend.weight.unwrap_or(1);
+
+            if svc_ns != route_ns
+                && !self.reference_grants.is_permitted(
+                    route_ns,
+                    "GRPCRoute",
+                    svc_ns,
+                    "Service",
+                    svc_name,
+                )
+            {
+                warn!(
+                    route_ns = route_ns,
+                    service = %svc_name,
+                    service_ns = %svc_ns,
+                    "Cross-namespace gRPC backend reference denied"
+                );
+                continue;
+            }
+
+            let address = format!("{svc_name}.{svc_ns}.svc.cluster.local:{svc_port}");
+
+            targets.push(UpstreamTarget {
+                address,
+                weight: weight as u32,
+                max_requests: None,
+                metadata: HashMap::from([
+                    ("k8s-service".to_string(), svc_name.clone()),
+                    ("k8s-namespace".to_string(), svc_ns.to_string()),
+                    ("protocol".to_string(), "grpc".to_string()),
+                ]),
+            });
+        }
+
+        if targets.is_empty() {
+            return Err(GatewayError::Translation(format!(
+                "GRPCRoute rule '{rule_id}' has no valid backend references"
+            )));
+        }
+
+        let upstream = UpstreamConfig {
+            id: upstream_id.clone(),
+            targets,
+            load_balancing: LoadBalancingAlgorithm::RoundRobin,
+            sticky_session: None,
+            health_check: Some(HealthCheck {
+                check_type: HealthCheckType::Grpc {
+                    service: String::new(), // gRPC health check on default service
+                },
+                interval_secs: 10,
+                timeout_secs: 5,
+                healthy_threshold: 2,
+                unhealthy_threshold: 3,
+            }),
+            connection_pool: ConnectionPoolConfig::default(),
+            timeouts: UpstreamTimeouts::default(),
+            tls: None,
+            http_version: HttpVersionConfig {
+                min_version: 2, // gRPC requires HTTP/2
+                max_version: 2,
+                h2_ping_interval_secs: 30,
+                max_h2_streams: 100,
+            },
+        };
+
+        Ok((upstream_id, Some(upstream)))
     }
 }
