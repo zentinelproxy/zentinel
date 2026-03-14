@@ -23,10 +23,53 @@ use crate::{
     RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketFrameEvent,
 };
 
-/// v2 agent server over Unix Domain Socket.
+/// Unix Domain Socket agent server implementation for Protocol v2.
 ///
-/// Listens on a Unix socket, accepts connections, and dispatches events to an
-/// [`AgentHandlerV2`] implementation using the v2 binary wire format.
+/// `UdsAgentServerV2` provides a high-performance local transport for agents running
+/// on the same machine as the Zentinel proxy. It uses Unix Domain Sockets for
+/// inter-process communication with minimal overhead.
+///
+/// This transport is recommended for agents that need the lowest possible latency
+/// and are co-located with the proxy process.
+///
+/// # Features
+///
+/// - **High performance**: Minimal overhead for local communication
+/// - **Binary protocol**: Efficient binary encoding for reduced CPU usage
+/// - **File system permissions**: Uses Unix socket permissions for access control
+/// - **Socket cleanup**: Removes stale socket files on startup
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use zentinel_agent_protocol::v2::UdsAgentServerV2;
+/// use std::path::Path;
+///
+/// // Create server with your handler
+/// let handler = Box::new(MyAgent::new());
+/// let server = UdsAgentServerV2::new(
+///     "my-agent",
+///     Path::new("/var/run/my-agent.sock"),
+///     handler
+/// );
+///
+/// // Start listening
+/// server.run().await?;
+/// ```
+///
+/// # Socket Management
+///
+/// The server automatically:
+/// - Creates the socket file with appropriate permissions
+/// - Removes stale socket files on startup
+/// - Handles multiple concurrent proxy connections
+///
+/// # Errors
+///
+/// May return errors for:
+/// - Permission issues creating/accessing the socket file
+/// - Invalid socket paths or filesystem issues
+/// - Handler implementation errors
 pub struct UdsAgentServerV2 {
     id: String,
     socket_path: PathBuf,

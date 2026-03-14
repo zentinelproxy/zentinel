@@ -519,16 +519,49 @@ impl AgentEntry {
     }
 }
 
-/// Agent connection pool.
+/// Agent connection pool for managing multiple connections to external processing agents.
 ///
-/// Manages multiple connections to multiple agents with load balancing,
-/// health tracking, automatic reconnection, and metrics collection.
+/// `AgentPool` provides production-ready connection pooling, load balancing, health tracking,
+/// automatic reconnection, and metrics collection for robust agent communication.
+///
+/// # Features
+///
+/// - **Connection pooling**: Maintains multiple connections per agent for better throughput
+/// - **Load balancing**: Routes requests using round-robin, least-connections, or health-based strategies
+/// - **Health monitoring**: Tracks agent health and routes requests to healthy connections
+/// - **Automatic reconnection**: Reconnects failed connections transparently
+/// - **Flow control**: Manages backpressure and request queuing
+/// - **Metrics**: Collects detailed metrics on performance and health
+/// - **Configuration management**: Distributes config updates to agents
 ///
 /// # Performance
 ///
 /// Uses `DashMap` for lock-free reads in the hot path. Agent lookup is O(1)
 /// without contention. Connection selection uses cached health state to avoid
 /// async I/O per request.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use std::time::Duration;
+/// use zentinel_agent_protocol::v2::{AgentPool, AgentPoolConfig, LoadBalanceStrategy};
+/// use zentinel_agent_protocol::RequestHeadersEvent;
+///
+/// // Create pool with custom config
+/// let config = AgentPoolConfig {
+///     connections_per_agent: 4,
+///     load_balance_strategy: LoadBalanceStrategy::LeastConnections,
+///     health_check_interval: Duration::from_secs(30),
+///     ..Default::default()
+/// };
+/// let pool = AgentPool::with_config(config);
+///
+/// // Add agent with Unix domain socket endpoint
+/// pool.add_agent("waf", "unix:/tmp/waf.sock").await?;
+///
+/// // Send request headers to an agent
+/// let response = pool.send_request_headers("waf", "correlation-123", &headers).await?;
+/// ```
 pub struct AgentPool {
     config: AgentPoolConfig,
     /// Lock-free concurrent map for agent lookup.

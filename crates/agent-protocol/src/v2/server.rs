@@ -24,14 +24,63 @@ use crate::{
     WebSocketFrameEvent,
 };
 
-/// v2 agent handler trait.
+/// Trait for implementing agent handlers in Protocol v2.
 ///
-/// Implement this trait to create a v2 agent. The v2 handler adds:
-/// - Capability reporting
-/// - Health reporting
-/// - Flow control awareness
-/// - Metrics export
-/// - Configuration updates
+/// `AgentHandlerV2` defines the interface that agent implementations must provide
+/// to handle various types of events from the proxy. This includes request/response
+/// processing, WebSocket handling, health monitoring, and configuration management.
+///
+/// The trait provides sensible defaults for all methods, allowing agents to implement
+/// only the events they need to handle. All methods are async to support I/O operations.
+///
+/// # Features
+///
+/// - **Capability reporting**: Declare what the agent can process
+/// - **Health reporting**: Report current health status to the proxy
+/// - **Flow control awareness**: Handle backpressure and flow control
+/// - **Metrics export**: Provide metrics about agent performance
+/// - **Configuration updates**: Handle dynamic configuration changes
+///
+/// # Event Lifecycle
+///
+/// 1. **Handshake**: Agent declares capabilities when connecting
+/// 2. **Headers**: Process request/response headers first
+/// 3. **Body chunks**: Handle streaming body data if needed
+/// 4. **Completion**: Final processing when request/response is complete
+/// 5. **WebSocket**: Handle WebSocket frames for upgraded connections
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use async_trait::async_trait;
+/// use zentinel_agent_protocol::v2::{AgentHandlerV2, AgentCapabilities};
+/// use zentinel_agent_protocol::{AgentResponse, EventType, RequestHeadersEvent};
+///
+/// pub struct MyWafAgent;
+///
+/// #[async_trait]
+/// impl AgentHandlerV2 for MyWafAgent {
+///     fn capabilities(&self) -> AgentCapabilities {
+///         AgentCapabilities::new("my-waf", "My WAF Agent", "1.0.0")
+///             .with_event(EventType::RequestHeaders)
+///     }
+///
+///     async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
+///         // Inspect headers for malicious patterns
+///         if event.headers.contains_key("x-malicious") {
+///             AgentResponse::block(403, Some("Blocked by WAF".to_string()))
+///         } else {
+///             AgentResponse::default_allow()
+///         }
+///     }
+/// }
+/// ```
+///
+/// # Errors
+///
+/// Agent methods should return `AgentResponse` with appropriate `Decision` variants.
+/// Runtime errors should be logged internally rather than propagated, as the proxy
+/// needs to maintain high availability.
 #[async_trait]
 pub trait AgentHandlerV2: Send + Sync {
     /// Get agent capabilities.
@@ -121,7 +170,41 @@ pub enum DrainReason {
     Manual,
 }
 
-/// v2 gRPC agent server.
+/// gRPC-based agent server implementation for Protocol v2.
+///
+/// `GrpcAgentServerV2` provides a gRPC transport for agents that need to communicate
+/// with the Zentinel proxy over the network. This is ideal for agents running in
+/// separate processes, containers, or on different machines.
+///
+/// # Features
+///
+/// - **Network transport**: Communicates over TCP with HTTP/2 and TLS support
+/// - **Language agnostic**: Works with any gRPC client implementation
+/// - **Scalability**: Can handle multiple concurrent proxy connections
+/// - **Monitoring**: Integrates with gRPC ecosystem tools for observability
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use zentinel_agent_protocol::v2::GrpcAgentServerV2;
+///
+/// // Create server with your handler
+/// let handler = Box::new(MyAgent::new());
+/// let server = GrpcAgentServerV2::new("my-agent", handler);
+///
+/// // Serve on a specific address
+/// let addr = "127.0.0.1:8080".parse()?;
+/// server.run(addr).await?;
+/// ```
+///
+/// # Transport Details
+///
+/// The gRPC transport uses the standard Agent Protocol v2 service definition:
+/// - Bidirectional streaming for event processing
+/// - Capability negotiation during handshake
+/// - Health check integration
+/// - Configuration update support
+/// - Metrics collection
 pub struct GrpcAgentServerV2 {
     id: String,
     handler: Arc<dyn AgentHandlerV2>,
