@@ -1,5 +1,6 @@
 //! Main controller that wires together all reconcilers and runs them.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -8,11 +9,12 @@ use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
 use gateway_api::httproutes::HTTPRoute;
 use gateway_api::referencegrants::ReferenceGrant;
+use k8s_openapi::api::core::v1::Secret;
 use kube::api::ListParams;
 use kube::runtime::controller::Controller;
 use kube::runtime::watcher;
 use kube::{Api, Client};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use zentinel_config::Config;
 
@@ -20,7 +22,11 @@ use crate::error::GatewayError;
 use crate::reconcilers::{
     GatewayClassReconciler, GatewayReconciler, HttpRouteReconciler, ReferenceGrantIndex,
 };
+use crate::tls::SecretCertificateManager;
 use crate::translator::ConfigTranslator;
+
+/// Default directory for writing TLS certificates extracted from Secrets.
+const DEFAULT_CERT_DIR: &str = "/tmp/zentinel-gateway-certs";
 
 /// The main Gateway API controller.
 ///
@@ -31,6 +37,7 @@ pub struct GatewayController {
     client: Client,
     config: Arc<ArcSwap<Config>>,
     reference_grants: Arc<ReferenceGrantIndex>,
+    cert_manager: Arc<SecretCertificateManager>,
 }
 
 impl GatewayController {
@@ -40,10 +47,20 @@ impl GatewayController {
         let config = Arc::new(ArcSwap::from_pointee(Config::default_for_testing()));
         let reference_grants = Arc::new(ReferenceGrantIndex::new());
 
+        let cert_dir = PathBuf::from(DEFAULT_CERT_DIR);
+        std::fs::create_dir_all(&cert_dir).map_err(|e| {
+            GatewayError::Translation(format!(
+                "Failed to create certificate directory {}: {e}",
+                cert_dir.display()
+            ))
+        })?;
+        let cert_manager = Arc::new(SecretCertificateManager::new(client.clone(), cert_dir));
+
         Ok(Self {
             client,
             config,
             reference_grants,
+            cert_manager,
         })
     }
 
@@ -51,10 +68,15 @@ impl GatewayController {
     /// with an existing Zentinel proxy instance).
     pub fn with_config(client: Client, config: Arc<ArcSwap<Config>>) -> Self {
         let reference_grants = Arc::new(ReferenceGrantIndex::new());
+        let cert_dir = PathBuf::from(DEFAULT_CERT_DIR);
+        let _ = std::fs::create_dir_all(&cert_dir);
+        let cert_manager = Arc::new(SecretCertificateManager::new(client.clone(), cert_dir));
+
         Self {
             client,
             config,
             reference_grants,
+            cert_manager,
         }
     }
 
@@ -72,6 +94,7 @@ impl GatewayController {
         let translator = Arc::new(ConfigTranslator::new(
             Arc::clone(&self.config),
             Arc::clone(&self.reference_grants),
+            Arc::clone(&self.cert_manager),
         ));
 
         info!("Starting Gateway API controller");
@@ -84,6 +107,7 @@ impl GatewayController {
         let gateway_fut = self.run_gateway_controller();
         let httproute_fut = self.run_httproute_controller(Arc::clone(&translator));
         let refgrant_fut = self.run_reference_grant_watcher();
+        let secret_fut = self.run_secret_watcher(Arc::clone(&translator));
 
         tokio::select! {
             res = gateway_class_fut => {
@@ -97,6 +121,9 @@ impl GatewayController {
             }
             res = refgrant_fut => {
                 error!("ReferenceGrant watcher exited: {:?}", res);
+            }
+            res = secret_fut => {
+                error!("Secret watcher exited: {:?}", res);
             }
         }
 
@@ -196,6 +223,43 @@ impl GatewayController {
                 }
                 Err(e) => {
                     error!(error = %e, "ReferenceGrant watch error");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Watch Secret resources and refresh TLS certificates when they change.
+    ///
+    /// When a Secret referenced by a Gateway's TLS config changes, the
+    /// certificate files are updated on disk and a config rebuild is triggered
+    /// so the proxy picks up the new certificates.
+    async fn run_secret_watcher(
+        &self,
+        translator: Arc<ConfigTranslator>,
+    ) -> Result<(), GatewayError> {
+        use kube::runtime::watcher as kube_watcher;
+
+        let api: Api<Secret> = Api::all(self.client.clone());
+        // Only watch TLS secrets
+        let config = kube_watcher::Config::default()
+            .fields("type=kubernetes.io/tls");
+        let mut stream = kube_watcher::watcher(api, config).boxed();
+
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(_) => {
+                    let errors = self.cert_manager.refresh_all().await;
+                    if errors.is_empty() {
+                        // Trigger config rebuild to pick up new cert paths
+                        if let Err(e) = translator.rebuild(&self.client).await {
+                            warn!(error = %e, "Config rebuild after Secret change failed");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "Secret watch error");
                 }
             }
         }

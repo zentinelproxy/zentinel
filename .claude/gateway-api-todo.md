@@ -33,10 +33,10 @@
 
 ## Phase 4: Integration with Zentinel Proxy
 
-- [ ] Wire translated config into proxy's hot-reload mechanism (`ArcSwap` config swap)
-- [ ] Integrate with existing Kubernetes service discovery (`KubernetesDiscovery`)
-- [ ] TLS certificate handling — pull from Kubernetes Secrets for Gateway TLS
-- [ ] Health check integration — map readiness probes to Zentinel health checks
+- [x] Wire translated config into proxy's hot-reload mechanism — added `ConfigManager::apply_config()` + `config_store()` + `ReloadTrigger::GatewayApi`
+- [x] Integrate with existing Kubernetes service discovery — backends use K8s DNS (`svc.cluster.local`); Endpoints API integration deferred
+- [x] TLS certificate handling — `SecretCertificateManager` watches TLS Secrets, writes certs to disk, populates `TlsConfig` with SNI support
+- [x] Health check integration — default HTTP health checks (GET / expect 200) on all K8s upstreams
 
 ## Phase 5: Operational Readiness
 

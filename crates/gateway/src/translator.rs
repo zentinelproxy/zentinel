@@ -18,16 +18,17 @@ use kube::api::ListParams;
 use kube::{Api, Client, ResourceExt};
 use tracing::{debug, info, warn};
 
-use zentinel_common::types::{LoadBalancingAlgorithm, Priority};
+use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm, Priority, TlsVersion};
 use zentinel_config::{
-    Config, ConnectionPoolConfig, HeaderModifications, HttpVersionConfig, ListenerConfig,
-    ListenerProtocol, MatchCondition, RouteConfig, RoutePolicies, ServerConfig, ServiceType,
-    UpstreamConfig, UpstreamTarget, UpstreamTimeouts,
+    Config, ConnectionPoolConfig, HeaderModifications, HealthCheck, HttpVersionConfig,
+    ListenerConfig, ListenerProtocol, MatchCondition, RouteConfig, RoutePolicies, ServerConfig,
+    ServiceType, SniCertificate, TlsConfig, UpstreamConfig, UpstreamTarget, UpstreamTimeouts,
 };
 
 use crate::error::GatewayError;
 use crate::reconcilers::gateway_class::CONTROLLER_NAME;
 use crate::reconcilers::ReferenceGrantIndex;
+use crate::tls::{SecretCertificateManager, SecretRef};
 
 /// Translates Gateway API resources into Zentinel configuration.
 ///
@@ -37,16 +38,19 @@ use crate::reconcilers::ReferenceGrantIndex;
 pub struct ConfigTranslator {
     config: Arc<ArcSwap<Config>>,
     reference_grants: Arc<ReferenceGrantIndex>,
+    cert_manager: Arc<SecretCertificateManager>,
 }
 
 impl ConfigTranslator {
     pub fn new(
         config: Arc<ArcSwap<Config>>,
         reference_grants: Arc<ReferenceGrantIndex>,
+        cert_manager: Arc<SecretCertificateManager>,
     ) -> Self {
         Self {
             config,
             reference_grants,
+            cert_manager,
         }
     }
 
@@ -95,9 +99,9 @@ impl ConfigTranslator {
         let mut routes = Vec::new();
         let mut upstreams = HashMap::new();
 
-        // Translate Gateways → Listeners
+        // Translate Gateways → Listeners (with TLS resolution)
         for gw in &our_gateways {
-            let gw_listeners = self.translate_gateway(gw);
+            let gw_listeners = self.translate_gateway(gw, client).await;
             listeners.extend(gw_listeners);
         }
 
@@ -173,35 +177,141 @@ impl ConfigTranslator {
     }
 
     /// Translate a Gateway into Zentinel listener configs.
-    fn translate_gateway(&self, gateway: &Gateway) -> Vec<ListenerConfig> {
+    async fn translate_gateway(
+        &self,
+        gateway: &Gateway,
+        _client: &Client,
+    ) -> Vec<ListenerConfig> {
         let gw_name = gateway.name_any();
         let gw_ns = gateway.namespace().unwrap_or_default();
 
-        gateway
-            .spec
-            .listeners
-            .iter()
-            .map(|listener| {
-                let id = format!("{gw_ns}-{gw_name}-{}", listener.name);
-                let port = listener.port;
-                let protocol = match listener.protocol.as_str() {
-                    "HTTPS" => ListenerProtocol::Https,
-                    _ => ListenerProtocol::Http,
-                };
+        let mut listeners = Vec::new();
 
-                ListenerConfig {
-                    id,
-                    address: format!("0.0.0.0:{port}"),
-                    protocol,
-                    tls: None, // TODO: translate from Gateway TLS config + Secrets
-                    default_route: None,
-                    request_timeout_secs: 60,
-                    keepalive_timeout_secs: 75,
-                    max_concurrent_streams: 100,
-                    keepalive_max_requests: None,
+        for listener in &gateway.spec.listeners {
+            let id = format!("{gw_ns}-{gw_name}-{}", listener.name);
+            let port = listener.port;
+            let protocol = match listener.protocol.as_str() {
+                "HTTPS" => ListenerProtocol::Https,
+                _ => ListenerProtocol::Http,
+            };
+
+            // Resolve TLS configuration from Gateway listener
+            let tls = if protocol == ListenerProtocol::Https {
+                self.resolve_listener_tls(listener, &gw_ns).await
+            } else {
+                None
+            };
+
+            listeners.push(ListenerConfig {
+                id,
+                address: format!("0.0.0.0:{port}"),
+                protocol,
+                tls,
+                default_route: None,
+                request_timeout_secs: 60,
+                keepalive_timeout_secs: 75,
+                max_concurrent_streams: 100,
+                keepalive_max_requests: None,
+            });
+        }
+
+        listeners
+    }
+
+    /// Resolve TLS configuration from a Gateway listener's certificateRefs.
+    async fn resolve_listener_tls(
+        &self,
+        listener: &gateway_api::gateways::GatewayListeners,
+        gateway_ns: &str,
+    ) -> Option<TlsConfig> {
+        let tls_config = listener.tls.as_ref()?;
+        let cert_refs = tls_config.certificate_refs.as_ref()?;
+
+        if cert_refs.is_empty() {
+            return None;
+        }
+
+        // Resolve the first certificate as the default
+        let first_ref = &cert_refs[0];
+        let secret_ns = first_ref
+            .namespace
+            .as_deref()
+            .unwrap_or(gateway_ns);
+        let hostnames = listener
+            .hostname
+            .as_ref()
+            .map(|h| vec![h.clone()])
+            .unwrap_or_default();
+
+        let secret_ref = SecretRef {
+            namespace: secret_ns.to_string(),
+            name: first_ref.name.clone(),
+        };
+
+        let default_cert = match self
+            .cert_manager
+            .resolve(&secret_ref, hostnames.clone())
+            .await
+        {
+            Ok(cert) => cert,
+            Err(e) => {
+                warn!(
+                    secret = %first_ref.name,
+                    namespace = %secret_ns,
+                    error = %e,
+                    "Failed to resolve TLS certificate, listener will lack TLS"
+                );
+                return None;
+            }
+        };
+
+        // Resolve additional certificates as SNI certs
+        let mut additional_certs = Vec::new();
+        for cert_ref in cert_refs.iter().skip(1) {
+            let ns = cert_ref
+                .namespace
+                .as_deref()
+                .unwrap_or(gateway_ns);
+            let sref = SecretRef {
+                namespace: ns.to_string(),
+                name: cert_ref.name.clone(),
+            };
+            match self
+                .cert_manager
+                .resolve(&sref, hostnames.clone())
+                .await
+            {
+                Ok(cert) => {
+                    additional_certs.push(SniCertificate {
+                        hostnames: cert.hostnames.clone(),
+                        priority_hostnames: vec![],
+                        cert_file: cert.cert_path,
+                        key_file: cert.key_path,
+                    });
                 }
-            })
-            .collect()
+                Err(e) => {
+                    warn!(
+                        secret = %cert_ref.name,
+                        error = %e,
+                        "Failed to resolve additional TLS certificate"
+                    );
+                }
+            }
+        }
+
+        Some(TlsConfig {
+            cert_file: Some(default_cert.cert_path),
+            key_file: Some(default_cert.key_path),
+            additional_certs,
+            ca_file: None,
+            min_version: TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: true,
+            session_resumption: true,
+            acme: None,
+        })
     }
 
     /// Translate an HTTPRoute into Zentinel route and upstream configs.
@@ -434,7 +544,17 @@ impl ConfigTranslator {
             targets,
             load_balancing: LoadBalancingAlgorithm::RoundRobin,
             sticky_session: None,
-            health_check: None,
+            health_check: Some(HealthCheck {
+                check_type: HealthCheckType::Http {
+                    path: "/".to_string(),
+                    expected_status: 200,
+                    host: None,
+                },
+                interval_secs: 10,
+                timeout_secs: 5,
+                healthy_threshold: 2,
+                unhealthy_threshold: 3,
+            }),
             connection_pool: ConnectionPoolConfig::default(),
             timeouts: UpstreamTimeouts::default(),
             tls: None,
