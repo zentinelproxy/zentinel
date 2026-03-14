@@ -1,10 +1,9 @@
 // Example: CORS Headers Configuration
 //
-// Configure Cross-Origin Resource Sharing (CORS) for API routes:
-// - Pre-flight request handling
-// - Origin whitelisting
-// - Credential support
-// - Custom headers
+// Apply Cross-Origin Resource Sharing (CORS) filters to API routes:
+// - CORS filter for public APIs (permissive)
+// - CORS filter for private APIs (restrictive)
+// - No CORS for internal health/metrics endpoints
 
 system {
     worker-threads 0
@@ -20,101 +19,180 @@ listeners {
     }
 }
 
-upstreams {
-    upstream "api" {
-        endpoint "api-1" {
-            address "localhost:3000"
-        }
+// =============================================================================
+// Filters — CORS policies
+// =============================================================================
+filters {
+    // Permissive CORS for public-facing API
+    filter "public-cors" {
+        type "cors"
+    }
+
+    // Auth filter (example: combine CORS with authentication)
+    filter "auth" {
+        type "agent"
+        agent "auth"
+        timeout-ms 100
+        failure-mode "closed"
     }
 }
 
+// =============================================================================
+// Agents
+// =============================================================================
+agents {
+    agent "auth" {
+        type "auth"
+        grpc address="http://localhost:50051"
+        events "request_headers"
+        timeout-ms 100
+        failure-mode "closed"
+    }
+}
+
+// =============================================================================
+// Routes
+// =============================================================================
 routes {
-    // Public API: Open CORS for specific origins
+    // Public API: CORS enabled, no auth
     route "public-api" {
         priority "high"
+
         matches {
             path-prefix "/api/public"
+            method "GET" "POST" "PUT" "DELETE" "OPTIONS"
         }
+
         upstream "api"
-        cors {
-            enabled true
 
-            // Allowed origins (use "*" for all, but not recommended for production)
-            allowed-origins [
-                "https://example.com",
-                "https://app.example.com",
-                "https://staging.example.com"
-            ]
+        filters "public-cors"
 
-            // Allowed HTTP methods
-            allowed-methods ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        policies {
+            timeout-secs 30
 
-            // Allowed request headers
-            allowed-headers [
-                "Content-Type",
-                "Authorization",
-                "X-Requested-With",
-                "X-API-Key"
-            ]
-
-            // Headers exposed to client
-            exposed-headers ["X-Total-Count", "X-Page-Count"]
-
-            // Allow cookies/credentials
-            allow-credentials true
-
-            // Pre-flight cache duration (in seconds)
-            max-age 3600  // 1 hour
+            // Set CORS response headers explicitly for fine-grained control
+            response-headers {
+                set {
+                    "Access-Control-Allow-Origin" "*"
+                    "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE, OPTIONS"
+                    "Access-Control-Allow-Headers" "Content-Type, Authorization, X-Requested-With, X-API-Key"
+                    "Access-Control-Expose-Headers" "X-Total-Count, X-Page-Count"
+                    "Access-Control-Max-Age" "3600"
+                }
+            }
         }
     }
 
-    // Private API: Strict CORS with credentials
+    // Private API: CORS with strict origin + auth
     route "private-api" {
         priority "high"
+
         matches {
             path-prefix "/api/private"
+            method "GET" "POST" "PUT" "DELETE" "OPTIONS"
         }
-        upstream "api"
-        cors {
-            enabled true
-            allowed-origins ["https://app.example.com"]
-            allowed-methods ["GET", "POST", "PUT", "DELETE"]
-            allowed-headers ["Content-Type", "Authorization"]
-            allow-credentials true
-            max-age 3600
-        }
-    }
 
-    // Development API: Open CORS (development only!)
-    route "dev-api" {
-        priority "low"
-        matches {
-            path-prefix "/api/dev"
-        }
         upstream "api"
-        cors {
-            enabled true
-            allowed-origins ["*"]  // WARNING: Only for development!
-            allowed-methods ["*"]
-            allowed-headers ["*"]
-            allow-credentials false  // Cannot be true with "*"
-            max-age 86400  // 24 hours
+
+        filters "public-cors" "auth"
+
+        policies {
+            timeout-secs 30
+            failure-mode "closed"
+
+            response-headers {
+                set {
+                    "Access-Control-Allow-Origin" "https://app.example.com"
+                    "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE"
+                    "Access-Control-Allow-Headers" "Content-Type, Authorization"
+                    "Access-Control-Allow-Credentials" "true"
+                    "Access-Control-Max-Age" "3600"
+                }
+            }
         }
     }
 
     // WebSocket route with CORS
     route "websocket" {
         priority "high"
+
         matches {
             path-prefix "/ws"
         }
+
         upstream "api"
-        cors {
-            enabled true
-            allowed-origins ["https://app.example.com"]
-            allowed-methods ["GET"]
-            allowed-headers ["*"]
-            allow-credentials true
+
+        filters "public-cors"
+
+        websocket {
+            enabled #true
+            ping-interval-secs 30
+            ping-timeout-secs 10
+            max-message-size-bytes 65536
+        }
+
+        policies {
+            response-headers {
+                set {
+                    "Access-Control-Allow-Origin" "https://app.example.com"
+                    "Access-Control-Allow-Credentials" "true"
+                }
+            }
         }
     }
+
+    // Health check — no CORS needed
+    route "health" {
+        priority "critical"
+
+        matches {
+            path "/health"
+        }
+
+        builtin-handler "health"
+    }
+}
+
+// =============================================================================
+// Upstreams
+// =============================================================================
+upstreams {
+    upstream "api" {
+        target "localhost:3000" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
+        }
+    }
+}
+
+// =============================================================================
+// Observability
+// =============================================================================
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
+    }
+
+    logging {
+        level "info"
+        format "json"
+    }
+}
+
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
 }

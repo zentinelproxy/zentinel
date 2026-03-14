@@ -1,10 +1,10 @@
 // Example: Rate Limiting Per Route
 //
-// Configure different rate limits for different routes:
-// - Strict limits for /api endpoints
-// - Relaxed limits for /static content
+// Apply different rate limits to different routes using the filters pattern:
+// - Strict limits for authentication endpoints (10 rps)
+// - Normal limits for API routes (100 rps)
+// - Generous limits for static content (1000 rps)
 // - No limits for health checks
-// - Custom rate limit responses
 
 system {
     worker-threads 0
@@ -20,88 +20,162 @@ listeners {
     }
 }
 
+// =============================================================================
+// Filters — rate limit definitions with different thresholds
+// =============================================================================
+filters {
+    // Very strict: protect auth endpoints from brute-force
+    filter "auth-rate-limit" {
+        type "rate-limit"
+
+        max-rps 10
+        burst 15
+        key "client-ip"
+        on-limit "reject"
+
+        backend "local"
+    }
+
+    // Standard: general API rate limiting
+    filter "api-rate-limit" {
+        type "rate-limit"
+
+        max-rps 100
+        burst 200
+        key "client-ip"
+        on-limit "reject"
+
+        backend "local"
+    }
+
+    // Generous: static assets rarely need tight limits
+    filter "static-rate-limit" {
+        type "rate-limit"
+
+        max-rps 1000
+        burst 2000
+        key "client-ip"
+        on-limit "reject"
+
+        backend "local"
+    }
+}
+
+// =============================================================================
+// Routes — each referencing the appropriate rate limit filter
+// =============================================================================
+routes {
+    // Auth routes: strictest rate limiting (10 rps per IP)
+    route "auth" {
+        priority "critical"
+
+        matches {
+            path-prefix "/api/auth"
+        }
+
+        upstream "api"
+
+        filters "auth-rate-limit"
+
+        policies {
+            timeout-secs 30
+            failure-mode "closed"
+        }
+    }
+
+    // General API routes: standard rate limiting (100 rps per IP)
+    route "api" {
+        priority "high"
+
+        matches {
+            path-prefix "/api"
+        }
+
+        upstream "api"
+
+        filters "api-rate-limit"
+
+        policies {
+            timeout-secs 30
+            failure-mode "open"
+        }
+    }
+
+    // Static content: generous rate limiting (1000 rps per IP)
+    route "static" {
+        priority "low"
+
+        matches {
+            path-prefix "/static"
+        }
+
+        upstream "static"
+
+        filters "static-rate-limit"
+
+        policies {
+            timeout-secs 10
+        }
+    }
+
+    // Health check: no rate limiting at all
+    route "health" {
+        priority "critical"
+
+        matches {
+            path "/health"
+        }
+
+        builtin-handler "health"
+    }
+}
+
+// =============================================================================
+// Upstreams
+// =============================================================================
 upstreams {
     upstream "api" {
-        endpoint "api-1" {
-            address "localhost:3000"
+        target "localhost:3000" weight=1
+
+        load-balancing "round-robin"
+
+        health-check {
+            type "http" {
+                path "/health"
+                expected-status 200
+            }
+            interval-secs 10
+            timeout-secs 5
+            healthy-threshold 2
+            unhealthy-threshold 3
         }
     }
 
     upstream "static" {
-        endpoint "static-1" {
-            address "localhost:4000"
-        }
+        target "localhost:4000" weight=1
+
+        load-balancing "round-robin"
     }
 }
 
-routes {
-    // API routes: 100 requests per minute per IP
-    route "api" {
-        priority "high"
-        matches {
-            path-prefix "/api"
-        }
-        upstream "api"
-        rate-limit {
-            enabled true
-            requests-per-minute 100
-            burst-size 20  // Allow temporary bursts
-            key-source "ip"  // Rate limit per IP address
-
-            // Custom response when rate limited
-            response {
-                status-code 429
-                content-type "application/json"
-                body '{"error": "rate_limit_exceeded", "message": "Too many requests"}'
-            }
-        }
+// =============================================================================
+// Observability
+// =============================================================================
+observability {
+    metrics {
+        enabled #true
+        address "0.0.0.0:9090"
+        path "/metrics"
     }
 
-    // Login/Auth routes: Very strict limits (10 per minute)
-    route "auth" {
-        priority "critical"
-        matches {
-            path-prefix "/api/auth"
-        }
-        upstream "api"
-        rate-limit {
-            enabled true
-            requests-per-minute 10
-            burst-size 3
-            key-source "ip"
-
-            response {
-                status-code 429
-                content-type "application/json"
-                body '{"error": "too_many_attempts", "retry_after": 60}'
-            }
-        }
+    logging {
+        level "info"
+        format "json"
     }
+}
 
-    // Static content: Generous limits (1000 per minute)
-    route "static" {
-        priority "low"
-        matches {
-            path-prefix "/static"
-        }
-        upstream "static"
-        rate-limit {
-            enabled true
-            requests-per-minute 1000
-            burst-size 200
-            key-source "ip"
-        }
-    }
-
-    // Health check: No rate limiting
-    route "health" {
-        priority "critical"
-        matches {
-            exact-path "/health"
-        }
-        upstream "api"
-        rate-limit {
-            enabled false
-        }
-    }
+limits {
+    max-header-size-bytes 8192
+    max-header-count 100
+    max-body-size-bytes 10485760
 }
