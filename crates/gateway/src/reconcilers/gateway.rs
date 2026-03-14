@@ -103,14 +103,18 @@ impl GatewayReconciler {
     }
 
     /// Look up the proxy Service to find its external address.
+    ///
+    /// Searches all namespaces for Services with the zentinel-gateway label,
+    /// since the proxy runs in the controller's namespace, not the Gateway's.
     async fn get_gateway_addresses(
         &self,
-        namespace: &str,
+        _namespace: &str,
     ) -> Vec<serde_json::Value> {
-        // Try to find the proxy service (named <release>-proxy in the same namespace,
-        // or fall back to any Service with our labels)
-        let svc_api: Api<Service> = Api::namespaced(self.client.clone(), namespace);
-        let services = match svc_api.list(&ListParams::default()).await {
+        // Search all namespaces for our proxy Service (labeled by Helm)
+        let svc_api: Api<Service> = Api::all(self.client.clone());
+        let params = ListParams::default()
+            .labels("app.kubernetes.io/name=zentinel-gateway");
+        let services = match svc_api.list(&params).await {
             Ok(s) => s,
             Err(_) => return vec![],
         };
@@ -118,6 +122,16 @@ impl GatewayReconciler {
         let mut addresses = Vec::new();
 
         for svc in &services.items {
+            // Only check LoadBalancer or NodePort services (skip metrics ClusterIP)
+            let svc_type = svc
+                .spec
+                .as_ref()
+                .and_then(|s| s.type_.as_deref())
+                .unwrap_or("ClusterIP");
+            if svc_type == "ClusterIP" {
+                continue;
+            }
+
             // Check LoadBalancer ingress
             if let Some(ref status) = svc.status {
                 if let Some(ref lb) = status.load_balancer {
@@ -140,22 +154,8 @@ impl GatewayReconciler {
                 }
             }
 
-            // For kind/NodePort, use ClusterIP as fallback
-            if addresses.is_empty() {
-                if let Some(ref spec) = svc.spec {
-                    if let Some(ref cluster_ip) = spec.cluster_ip {
-                        if cluster_ip != "None" && !cluster_ip.is_empty() {
-                            addresses.push(json!({
-                                "type": "IPAddress",
-                                "value": cluster_ip,
-                            }));
-                        }
-                    }
-                }
-            }
-
             if !addresses.is_empty() {
-                break; // Use first service with an address
+                break;
             }
         }
 
