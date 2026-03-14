@@ -1,0 +1,76 @@
+# Zentinel Gateway API Controller — Helm values
+#
+# Install: helm install zentinel-gateway ./deploy/helm/zentinel-gateway
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/zentinelproxy/zentinel-gateway
+  tag: "" # defaults to appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Leader election (enable for multi-replica deployments)
+leaderElection:
+  enabled: false
+  # Namespace for the Lease resource
+  namespace: "zentinel-system"
+
+# Metrics configuration
+metrics:
+  enabled: true
+  port: 9090
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    labels: {}
+
+# GatewayClass to create automatically
+gatewayClass:
+  create: true
+  name: zentinel
+  description: "Zentinel Gateway API implementation"
+
+# Service account
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Pod configuration
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Additional environment variables
+extraEnv: []
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# TLS certificate directory (writable volume)
+certDir: /tmp/zentinel-gateway-certs
+
+# Log level
+logLevel: "zentinel_gateway=info,kube=warn"

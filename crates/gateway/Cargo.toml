@@ -35,5 +35,11 @@ futures = "0.3"
 chrono.workspace = true
 parking_lot.workspace = true
 
+# Metrics
+prometheus.workspace = true
+hyper.workspace = true
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1"] }
+
 # Memory allocator
 tikv-jemallocator.workspace = true

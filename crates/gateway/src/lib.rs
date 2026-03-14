@@ -32,10 +32,14 @@
 
 pub mod controller;
 pub mod error;
+pub mod leader;
+pub mod metrics;
 pub mod reconcilers;
 pub mod tls;
 pub mod translator;
 
 pub use controller::GatewayController;
 pub use error::GatewayError;
+pub use leader::{LeaderElectionConfig, LeaderElector};
+pub use metrics::ControllerMetrics;
 pub use tls::SecretCertificateManager;

@@ -40,9 +40,9 @@
 
 ## Phase 5: Operational Readiness
 
-- [ ] Leader election for HA controller deployments
-- [ ] Prometheus metrics for controller reconciliation
-- [ ] Helm chart for deploying as Gateway API controller
+- [x] Leader election — Kubernetes Lease-based (`coordination.k8s.io/v1`) with configurable duration/renew/retry intervals
+- [x] Prometheus metrics — reconciliation count/duration/errors, config rebuild stats, active resource gauges, leader status, TLS errors
+- [x] Helm chart — `deploy/helm/zentinel-gateway/` with Deployment, RBAC, ServiceAccount, GatewayClass, metrics Service
 - [ ] Gateway API conformance test suite integration
 - [ ] Migration guide: "From NGINX Ingress to Zentinel"
 

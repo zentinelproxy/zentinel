@@ -1,0 +1,18 @@
+apiVersion: v2
+name: zentinel-gateway
+description: Zentinel Gateway API Controller — Kubernetes Gateway API implementation powered by the Zentinel reverse proxy
+type: application
+version: 0.1.0
+appVersion: "0.6.1"
+keywords:
+  - gateway-api
+  - ingress
+  - reverse-proxy
+  - kubernetes
+  - zentinel
+home: https://zentinelproxy.io
+sources:
+  - https://github.com/zentinelproxy/zentinel
+maintainers:
+  - name: Zentinel Contributors
+    url: https://github.com/zentinelproxy
