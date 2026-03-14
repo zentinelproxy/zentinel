@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use gateway_api::experimental::tlsroutes::TLSRoute;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
 use gateway_api::grpcroutes::GRPCRoute;
@@ -28,6 +29,7 @@ use zentinel_config::{
 
 use crate::error::GatewayError;
 use crate::reconcilers::gateway_class::CONTROLLER_NAME;
+use crate::reconcilers::ingress::translate_ingresses;
 use crate::reconcilers::ReferenceGrantIndex;
 use crate::tls::{SecretCertificateManager, SecretRef};
 
@@ -158,6 +160,40 @@ impl ConfigTranslator {
             routes.extend(route_configs);
             upstreams.extend(upstream_configs);
         }
+
+        // Translate TLSRoutes → Routes + Upstreams (SNI passthrough)
+        let tls_api: Api<TLSRoute> = Api::all(client.clone());
+        let all_tls_routes = tls_api.list(&ListParams::default()).await?;
+
+        for route in &all_tls_routes.items {
+            let parent_refs = route.spec.parent_refs.as_ref();
+            let is_ours = parent_refs.is_some_and(|refs: &Vec<gateway_api::experimental::tlsroutes::TLSRouteParentRefs>| {
+                refs.iter().any(|pr: &gateway_api::experimental::tlsroutes::TLSRouteParentRefs| {
+                    let gw_ns = pr.namespace.as_deref().unwrap_or("default");
+                    let gw_name = pr.name.as_str();
+                    our_gateways.iter().any(|g: &&Gateway| {
+                        g.name_any() == gw_name
+                            && g.namespace().unwrap_or_default() == gw_ns
+                    })
+                })
+            });
+
+            if !is_ours {
+                continue;
+            }
+
+            let (route_configs, upstream_configs) = self.translate_tlsroute(route)?;
+            routes.extend(route_configs);
+            upstreams.extend(upstream_configs);
+        }
+
+        // Translate legacy Ingress resources (compatibility shim)
+        let ingress_api: Api<k8s_openapi::api::networking::v1::Ingress> =
+            Api::all(client.clone());
+        let all_ingresses = ingress_api.list(&ListParams::default()).await?;
+        let (ingress_routes, ingress_upstreams) = translate_ingresses(&all_ingresses.items);
+        routes.extend(ingress_routes);
+        upstreams.extend(ingress_upstreams);
 
         if listeners.is_empty() {
             debug!("No listeners produced, keeping existing config");
@@ -893,6 +929,148 @@ impl ConfigTranslator {
                 h2_ping_interval_secs: 30,
                 max_h2_streams: 100,
             },
+        };
+
+        Ok((upstream_id, Some(upstream)))
+    }
+
+    // ========================================================================
+    // TLSRoute Translation
+    // ========================================================================
+
+    /// Translate a TLSRoute into Zentinel route and upstream configs.
+    ///
+    /// TLSRoutes are SNI-based passthrough routes — they match on hostnames
+    /// and forward the raw TLS connection to backends without termination.
+    fn translate_tlsroute(
+        &self,
+        route: &TLSRoute,
+    ) -> Result<(Vec<RouteConfig>, HashMap<String, UpstreamConfig>), GatewayError> {
+        let route_name = route.name_any();
+        let route_ns = route.namespace().unwrap_or_else(|| "default".into());
+
+        let mut route_configs = Vec::new();
+        let mut upstream_configs = HashMap::new();
+
+        for (rule_idx, rule) in route.spec.rules.iter().enumerate() {
+            let rule_id = format!("{route_ns}-{route_name}-tls-rule{rule_idx}");
+
+            // TLSRoute matches only on SNI hostnames
+            let mut matches = Vec::new();
+            for hostname in &route.spec.hostnames {
+                matches.push(MatchCondition::Host(hostname.clone()));
+            }
+            if matches.is_empty() {
+                matches.push(MatchCondition::PathPrefix("/".to_string()));
+            }
+
+            // Translate backends
+            let (upstream_id, upstream) =
+                self.translate_tls_backends(&rule_id, &rule.backend_refs, &route_ns)?;
+
+            if let Some(upstream) = upstream {
+                upstream_configs.insert(upstream_id.clone(), upstream);
+            }
+
+            let route_config = RouteConfig {
+                id: rule_id,
+                priority: Priority::Normal,
+                matches,
+                upstream: Some(upstream_id),
+                service_type: ServiceType::Web,
+                policies: RoutePolicies::default(),
+                filters: vec![],
+                builtin_handler: None,
+                waf_enabled: false,
+                circuit_breaker: None,
+                retry_policy: None,
+                static_files: None,
+                api_schema: None,
+                inference: None,
+                error_pages: None,
+                websocket: false,
+                websocket_inspection: false,
+                shadow: None,
+                fallback: None,
+            };
+
+            route_configs.push(route_config);
+        }
+
+        Ok((route_configs, upstream_configs))
+    }
+
+    /// Translate TLSRoute backend refs into a Zentinel upstream.
+    fn translate_tls_backends(
+        &self,
+        rule_id: &str,
+        backend_refs: &[gateway_api::experimental::tlsroutes::TLSRouteRulesBackendRefs],
+        route_ns: &str,
+    ) -> Result<(String, Option<UpstreamConfig>), GatewayError> {
+        let upstream_id = format!("{rule_id}-upstream");
+
+        if backend_refs.is_empty() {
+            return Ok((upstream_id, None));
+        }
+
+        let mut targets = Vec::new();
+
+        for backend in backend_refs {
+            let svc_name = &backend.name;
+            let svc_ns = backend.namespace.as_deref().unwrap_or(route_ns);
+            let svc_port = backend.port.unwrap_or(443);
+            let weight = backend.weight.unwrap_or(1);
+
+            if svc_ns != route_ns
+                && !self.reference_grants.is_permitted(
+                    route_ns, "TLSRoute", svc_ns, "Service", svc_name,
+                )
+            {
+                warn!(
+                    route_ns = route_ns,
+                    service = %svc_name,
+                    service_ns = %svc_ns,
+                    "Cross-namespace TLS backend reference denied"
+                );
+                continue;
+            }
+
+            let address = format!("{svc_name}.{svc_ns}.svc.cluster.local:{svc_port}");
+
+            targets.push(UpstreamTarget {
+                address,
+                weight: weight as u32,
+                max_requests: None,
+                metadata: HashMap::from([
+                    ("k8s-service".to_string(), svc_name.clone()),
+                    ("k8s-namespace".to_string(), svc_ns.to_string()),
+                    ("protocol".to_string(), "tls-passthrough".to_string()),
+                ]),
+            });
+        }
+
+        if targets.is_empty() {
+            return Err(GatewayError::Translation(format!(
+                "TLSRoute rule '{rule_id}' has no valid backend references"
+            )));
+        }
+
+        let upstream = UpstreamConfig {
+            id: upstream_id.clone(),
+            targets,
+            load_balancing: LoadBalancingAlgorithm::RoundRobin,
+            sticky_session: None,
+            health_check: Some(HealthCheck {
+                check_type: HealthCheckType::Tcp,
+                interval_secs: 10,
+                timeout_secs: 5,
+                healthy_threshold: 2,
+                unhealthy_threshold: 3,
+            }),
+            connection_pool: ConnectionPoolConfig::default(),
+            timeouts: UpstreamTimeouts::default(),
+            tls: None, // Passthrough — no TLS termination at proxy
+            http_version: HttpVersionConfig::default(),
         };
 
         Ok((upstream_id, Some(upstream)))

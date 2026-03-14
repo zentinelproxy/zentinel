@@ -5,11 +5,13 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use futures::StreamExt;
+use gateway_api::experimental::tlsroutes::TLSRoute;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
 use gateway_api::grpcroutes::GRPCRoute;
 use gateway_api::httproutes::HTTPRoute;
 use gateway_api::referencegrants::ReferenceGrant;
+use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::api::core::v1::Secret;
 use kube::api::ListParams;
 use kube::runtime::controller::Controller;
@@ -22,7 +24,7 @@ use zentinel_config::Config;
 use crate::error::GatewayError;
 use crate::reconcilers::{
     GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler, HttpRouteReconciler,
-    ReferenceGrantIndex,
+    IngressReconciler, ReferenceGrantIndex, TlsRouteReconciler,
 };
 use crate::tls::SecretCertificateManager;
 use crate::translator::ConfigTranslator;
@@ -109,6 +111,8 @@ impl GatewayController {
         let gateway_fut = self.run_gateway_controller();
         let httproute_fut = self.run_httproute_controller(Arc::clone(&translator));
         let grpcroute_fut = self.run_grpcroute_controller(Arc::clone(&translator));
+        let tlsroute_fut = self.run_tlsroute_controller(Arc::clone(&translator));
+        let ingress_fut = self.run_ingress_controller();
         let refgrant_fut = self.run_reference_grant_watcher();
         let secret_fut = self.run_secret_watcher(Arc::clone(&translator));
 
@@ -124,6 +128,12 @@ impl GatewayController {
             }
             res = grpcroute_fut => {
                 error!("GRPCRoute controller exited: {:?}", res);
+            }
+            res = tlsroute_fut => {
+                error!("TLSRoute controller exited: {:?}", res);
+            }
+            res = ingress_fut => {
+                error!("Ingress controller exited: {:?}", res);
             }
             res = refgrant_fut => {
                 error!("ReferenceGrant watcher exited: {:?}", res);
@@ -231,6 +241,57 @@ impl GatewayController {
                 match res {
                     Ok((_obj, _action)) => {}
                     Err(e) => error!(error = %e, "GRPCRoute reconciliation error"),
+                }
+            })
+            .await;
+
+        Ok(())
+    }
+
+    async fn run_tlsroute_controller(
+        &self,
+        translator: Arc<ConfigTranslator>,
+    ) -> Result<(), GatewayError> {
+        let reconciler = Arc::new(TlsRouteReconciler::new(self.client.clone(), translator));
+        let api: Api<TLSRoute> = Api::all(self.client.clone());
+
+        Controller::new(api, watcher::Config::default())
+            .run(
+                move |obj, _ctx| {
+                    let reconciler = Arc::clone(&reconciler);
+                    async move { reconciler.reconcile(obj).await }
+                },
+                TlsRouteReconciler::error_policy,
+                Arc::new(()),
+            )
+            .for_each(|res| async move {
+                match res {
+                    Ok((_obj, _action)) => {}
+                    Err(e) => error!(error = %e, "TLSRoute reconciliation error"),
+                }
+            })
+            .await;
+
+        Ok(())
+    }
+
+    async fn run_ingress_controller(&self) -> Result<(), GatewayError> {
+        let reconciler = Arc::new(IngressReconciler::new(self.client.clone()));
+        let api: Api<Ingress> = Api::all(self.client.clone());
+
+        Controller::new(api, watcher::Config::default())
+            .run(
+                move |obj, _ctx| {
+                    let reconciler = Arc::clone(&reconciler);
+                    async move { reconciler.reconcile(obj).await }
+                },
+                IngressReconciler::error_policy,
+                Arc::new(()),
+            )
+            .for_each(|res| async move {
+                match res {
+                    Ok((_obj, _action)) => {}
+                    Err(e) => error!(error = %e, "Ingress reconciliation error"),
                 }
             })
             .await;

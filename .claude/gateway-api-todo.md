@@ -49,7 +49,8 @@
 ## Phase 6: Stretch Goals
 
 - [x] GRPCRoute support — reconciler + translator with service/method → path matching, gRPC health checks, HTTP/2 forced
-- [ ] TLSRoute / TCPRoute support
+- [x] TLSRoute support — reconciler + translator with SNI hostname matching, TCP health checks, passthrough mode
+- [ ] TCPRoute support
 - [ ] BackendTLSPolicy support
 - [ ] Custom Zentinel policy CRDs (rate limiting, agent attachment, WAF)
-- [ ] Ingress resource compatibility shim (for easier migration)
+- [x] Ingress resource compatibility shim — watches `networking.k8s.io/v1` Ingress with `ingressClassName: zentinel`, translates rules/paths/backends into Zentinel config
