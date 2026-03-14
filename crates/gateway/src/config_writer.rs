@@ -71,7 +71,7 @@ impl ConfigWriter {
             config.server.worker_threads
         ));
         if config.server.auto_reload {
-            out.push_str("    auto-reload true\n");
+            out.push_str("    auto-reload #true\n");
         }
         out.push_str("}\n\n");
 
@@ -240,7 +240,7 @@ schema-version "1.0"
 
 system {
     worker-threads 0
-    auto-reload true
+    auto-reload #true
 }
 
 listeners {

@@ -24,6 +24,22 @@ const DEFAULT_METRICS_PORT: u16 = 9090;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install rustls crypto provider (required before any TLS operations)
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
+    // Write bootstrap config IMMEDIATELY so the proxy sidecar can start.
+    // This must happen before any async work since both containers start
+    // simultaneously in a pod.
+    if let Ok(config_path) = std::env::var("CONFIG_OUTPUT_PATH") {
+        let path = std::path::PathBuf::from(&config_path);
+        if !path.exists() {
+            zentinel_gateway::config_writer::write_bootstrap_config(&path)
+                .expect("Failed to write bootstrap config");
+        }
+    }
+
     // Initialize logging
     fmt()
         .with_env_filter(

@@ -26,7 +26,7 @@ use crate::reconcilers::{
     GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler, HttpRouteReconciler,
     IngressReconciler, ReferenceGrantIndex, TlsRouteReconciler,
 };
-use crate::config_writer::{write_bootstrap_config, ConfigWriter};
+use crate::config_writer::ConfigWriter;
 use crate::tls::SecretCertificateManager;
 use crate::translator::ConfigTranslator;
 
@@ -94,10 +94,6 @@ impl GatewayController {
     /// reconciliation cycle. A Zentinel proxy sidecar reads this file
     /// with `auto-reload: true` to serve traffic.
     pub fn with_config_output(mut self, path: PathBuf) -> Self {
-        // Write bootstrap config so the proxy can start immediately
-        if let Err(e) = write_bootstrap_config(&path) {
-            error!(error = %e, path = %path.display(), "Failed to write bootstrap config");
-        }
         self.config_output_path = Some(path);
         self
     }

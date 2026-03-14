@@ -13,7 +13,7 @@
 #   docker build --target proxy-debug -t zentinel:debug .
 
 # Build arguments
-ARG RUST_VERSION=1.85
+ARG RUST_VERSION=1.94
 ARG DEBIAN_VARIANT=slim-bookworm
 
 ################################################################################
@@ -41,7 +41,9 @@ COPY crates/config/Cargo.toml crates/config/Cargo.toml
 COPY crates/common/Cargo.toml crates/common/Cargo.toml
 COPY crates/gateway/Cargo.toml crates/gateway/Cargo.toml
 COPY crates/stack/Cargo.toml crates/stack/Cargo.toml
+COPY crates/wasm-runtime/Cargo.toml crates/wasm-runtime/Cargo.toml
 COPY agents/echo/Cargo.toml agents/echo/Cargo.toml
+COPY agents/data-masking/Cargo.toml agents/data-masking/Cargo.toml
 
 # Create dummy source files for dependency compilation
 # This allows Docker to cache the dependency build layer
@@ -49,12 +51,15 @@ RUN mkdir -p crates/proxy/src && \
     echo "fn main() {}" > crates/proxy/src/main.rs && \
     echo "" > crates/proxy/src/lib.rs && \
     mkdir -p crates/agent-protocol/src && echo "" > crates/agent-protocol/src/lib.rs && \
+    mkdir -p crates/agent-protocol/benches && echo "fn main() {}" > crates/agent-protocol/benches/hot_path.rs && \
     mkdir -p crates/config/src && echo "" > crates/config/src/lib.rs && \
     mkdir -p crates/common/src && echo "" > crates/common/src/lib.rs && \
     mkdir -p crates/gateway/src && echo "fn main() {}" > crates/gateway/src/main.rs && \
     echo "" > crates/gateway/src/lib.rs && \
     mkdir -p crates/stack/src && echo "fn main() {}" > crates/stack/src/main.rs && \
-    mkdir -p agents/echo/src && echo "fn main() {}" > agents/echo/src/main.rs
+    mkdir -p crates/wasm-runtime/src && echo "" > crates/wasm-runtime/src/lib.rs && \
+    mkdir -p agents/echo/src && echo "fn main() {}" > agents/echo/src/main.rs && \
+    mkdir -p agents/data-masking/src && echo "fn main() {}" > agents/data-masking/src/main.rs
 
 # Build dependencies only (this layer is cached)
 RUN cargo build --release --package zentinel-proxy

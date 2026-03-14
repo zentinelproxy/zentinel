@@ -29,6 +29,7 @@ arc-swap.workspace = true
 kube = { version = "2.0", features = ["runtime", "derive", "rustls-tls"], default-features = false }
 k8s-openapi = { version = "0.26", features = ["latest"] }
 gateway-api = { version = "0.19", features = ["experimental"] }
+rustls.workspace = true
 
 # Controller runtime
 futures = "0.3"
