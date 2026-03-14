@@ -5,9 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before proposing a feature, please read the [Manifesto](https://github.com/zentinelproxy/zentinel/blob/main/MANIFESTO.md).
+        Before proposing a feature, please read the [Manifesto](https://github.com/zentinelproxy/zentinel/blob/main/MANIFESTO.md) and the [design rationale documents](https://github.com/zentinelproxy/zentinel/tree/main/doc/design).
 
-        Zentinel values **predictability over flexibility** and **calm operation over feature breadth**.
+        Zentinel values **predictability over flexibility** and **calm operation over feature breadth**. The design documents explain why key architectural decisions were made and when they might be revisited.
 
   - type: textarea
     id: problem
@@ -71,4 +71,6 @@ body:
         - label: I have searched existing issues for duplicates
           required: true
         - label: I have read the [Manifesto](https://github.com/zentinelproxy/zentinel/blob/main/MANIFESTO.md)
+          required: true
+        - label: I have read the [design rationale documents](https://github.com/zentinelproxy/zentinel/tree/main/doc/design) and my proposal does not conflict with existing architectural decisions
           required: true

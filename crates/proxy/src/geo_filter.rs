@@ -444,6 +444,28 @@ impl GeoFilterPool {
         self.cache
             .retain(|_, v| now.duration_since(v.cached_at) < self.cache_ttl);
     }
+
+    /// Create a GeoFilterPool with a pre-built database (for testing).
+    #[cfg(test)]
+    pub(crate) fn new_with_database(config: GeoFilter, database: Arc<dyn GeoDatabase>) -> Self {
+        let countries_set: HashSet<String> = config.countries.iter().cloned().collect();
+        let cache_ttl = Duration::from_secs(config.cache_ttl_secs);
+        let database_path = PathBuf::from(&config.database_path);
+        let database_type = config
+            .database_type
+            .clone()
+            .unwrap_or(GeoDatabaseType::MaxMind);
+
+        Self {
+            database: RwLock::new(database),
+            cache: DashMap::new(),
+            config,
+            countries_set,
+            cache_ttl,
+            database_path,
+            database_type,
+        }
+    }
 }
 
 // =============================================================================
@@ -672,6 +694,76 @@ impl GeoDatabaseWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zentinel_config::{GeoDatabaseType, GeoFailureMode, GeoFilter, GeoFilterAction};
+
+    // =========================================================================
+    // Mock GeoDatabase
+    // =========================================================================
+
+    /// Mock database that returns pre-configured country codes for IPs.
+    struct MockGeoDatabase {
+        mapping: HashMap<IpAddr, String>,
+        fail_on: HashSet<IpAddr>,
+    }
+
+    impl MockGeoDatabase {
+        fn new() -> Self {
+            Self {
+                mapping: HashMap::new(),
+                fail_on: HashSet::new(),
+            }
+        }
+
+        fn with_entries(entries: Vec<(&str, &str)>) -> Self {
+            let mut db = Self::new();
+            for (ip, country) in entries {
+                db.mapping.insert(ip.parse().unwrap(), country.to_string());
+            }
+            db
+        }
+
+        fn with_failure(mut self, ip: &str) -> Self {
+            self.fail_on.insert(ip.parse().unwrap());
+            self
+        }
+    }
+
+    impl GeoDatabase for MockGeoDatabase {
+        fn lookup(&self, ip: IpAddr) -> Result<Option<String>, GeoLookupError> {
+            if self.fail_on.contains(&ip) {
+                return Err(GeoLookupError::DatabaseError("mock failure".to_string()));
+            }
+            Ok(self.mapping.get(&ip).cloned())
+        }
+
+        fn database_type(&self) -> GeoDatabaseType {
+            GeoDatabaseType::MaxMind
+        }
+    }
+
+    fn mock_pool(
+        action: GeoFilterAction,
+        countries: Vec<&str>,
+        on_failure: GeoFailureMode,
+        db: MockGeoDatabase,
+    ) -> GeoFilterPool {
+        let config = GeoFilter {
+            database_path: "/mock/db.mmdb".to_string(),
+            database_type: Some(GeoDatabaseType::MaxMind),
+            action,
+            countries: countries.into_iter().map(|s| s.to_string()).collect(),
+            on_failure,
+            status_code: 403,
+            block_message: Some("Blocked by geo filter".to_string()),
+            cache_ttl_secs: 300,
+            add_country_header: true,
+        };
+        GeoFilterPool::new_with_database(config, Arc::new(db))
+    }
+
+    // =========================================================================
+    // Error Display Tests
+    // =========================================================================
 
     #[test]
     fn test_geo_lookup_error_display() {
@@ -685,22 +777,259 @@ mod tests {
         assert!(err.to_string().contains("failed to load"));
     }
 
+    // =========================================================================
+    // Block Mode Tests (blocklist)
+    // =========================================================================
+
     #[test]
-    fn test_geo_filter_result_default() {
-        let result = GeoFilterResult {
-            allowed: true,
-            country_code: Some("US".to_string()),
-            cache_hit: false,
-            add_header: true,
+    fn block_mode_blocks_listed_country() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "CN"), ("5.6.7.8", "US")]);
+        let pool = mock_pool(
+            GeoFilterAction::Block,
+            vec!["CN", "RU"],
+            GeoFailureMode::Open,
+            db,
+        );
+
+        let result = pool.check("1.2.3.4");
+        assert!(!result.allowed, "CN should be blocked");
+        assert_eq!(result.country_code, Some("CN".to_string()));
+        assert_eq!(result.status_code, 403);
+    }
+
+    #[test]
+    fn block_mode_allows_unlisted_country() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "CN"), ("5.6.7.8", "US")]);
+        let pool = mock_pool(
+            GeoFilterAction::Block,
+            vec!["CN", "RU"],
+            GeoFailureMode::Open,
+            db,
+        );
+
+        let result = pool.check("5.6.7.8");
+        assert!(result.allowed, "US should be allowed");
+        assert_eq!(result.country_code, Some("US".to_string()));
+    }
+
+    #[test]
+    fn block_mode_allows_unknown_ip() {
+        let db = MockGeoDatabase::new(); // Empty database
+        let pool = mock_pool(GeoFilterAction::Block, vec!["CN"], GeoFailureMode::Open, db);
+
+        let result = pool.check("10.0.0.1");
+        assert!(result.allowed, "Unknown IP should be allowed in block mode");
+        assert_eq!(result.country_code, None);
+    }
+
+    // =========================================================================
+    // Allow Mode Tests (allowlist)
+    // =========================================================================
+
+    #[test]
+    fn allow_mode_allows_listed_country() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "US"), ("5.6.7.8", "GB")]);
+        let pool = mock_pool(
+            GeoFilterAction::Allow,
+            vec!["US", "GB", "CA"],
+            GeoFailureMode::Open,
+            db,
+        );
+
+        let result = pool.check("1.2.3.4");
+        assert!(result.allowed, "US should be allowed");
+
+        let result = pool.check("5.6.7.8");
+        assert!(result.allowed, "GB should be allowed");
+    }
+
+    #[test]
+    fn allow_mode_blocks_unlisted_country() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "CN")]);
+        let pool = mock_pool(
+            GeoFilterAction::Allow,
+            vec!["US", "GB"],
+            GeoFailureMode::Open,
+            db,
+        );
+
+        let result = pool.check("1.2.3.4");
+        assert!(!result.allowed, "CN should be blocked in allow mode");
+    }
+
+    #[test]
+    fn allow_mode_blocks_unknown_ip() {
+        let db = MockGeoDatabase::new();
+        let pool = mock_pool(GeoFilterAction::Allow, vec!["US"], GeoFailureMode::Open, db);
+
+        let result = pool.check("10.0.0.1");
+        assert!(!result.allowed, "Unknown IP blocked when allowlist is set");
+    }
+
+    #[test]
+    fn allow_mode_allows_all_when_empty_list() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "CN")]);
+        let pool = mock_pool(
+            GeoFilterAction::Allow,
+            vec![], // Empty countries list
+            GeoFailureMode::Open,
+            db,
+        );
+
+        let result = pool.check("1.2.3.4");
+        assert!(result.allowed, "Empty allow list should allow all");
+    }
+
+    // =========================================================================
+    // Log-Only Mode Tests
+    // =========================================================================
+
+    #[test]
+    fn log_only_mode_never_blocks() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "CN")]);
+        let pool = mock_pool(
+            GeoFilterAction::LogOnly,
+            vec!["CN"],
+            GeoFailureMode::Open,
+            db,
+        );
+
+        let result = pool.check("1.2.3.4");
+        assert!(result.allowed, "Log-only mode should never block");
+        assert_eq!(result.country_code, Some("CN".to_string()));
+    }
+
+    // =========================================================================
+    // Failure Mode Tests
+    // =========================================================================
+
+    #[test]
+    fn fail_open_allows_on_lookup_error() {
+        let db = MockGeoDatabase::new().with_failure("1.2.3.4");
+        let pool = mock_pool(GeoFilterAction::Block, vec!["CN"], GeoFailureMode::Open, db);
+
+        let result = pool.check("1.2.3.4");
+        assert!(result.allowed, "Fail-open should allow on error");
+        assert_eq!(result.country_code, None);
+    }
+
+    #[test]
+    fn fail_closed_blocks_on_lookup_error() {
+        let db = MockGeoDatabase::new().with_failure("1.2.3.4");
+        let pool = mock_pool(
+            GeoFilterAction::Block,
+            vec!["CN"],
+            GeoFailureMode::Closed,
+            db,
+        );
+
+        let result = pool.check("1.2.3.4");
+        assert!(!result.allowed, "Fail-closed should block on error");
+    }
+
+    #[test]
+    fn fail_open_allows_on_invalid_ip() {
+        let db = MockGeoDatabase::new();
+        let pool = mock_pool(GeoFilterAction::Block, vec!["CN"], GeoFailureMode::Open, db);
+
+        let result = pool.check("not-an-ip");
+        assert!(result.allowed, "Fail-open should allow on invalid IP");
+    }
+
+    #[test]
+    fn fail_closed_blocks_on_invalid_ip() {
+        let db = MockGeoDatabase::new();
+        let pool = mock_pool(
+            GeoFilterAction::Block,
+            vec!["CN"],
+            GeoFailureMode::Closed,
+            db,
+        );
+
+        let result = pool.check("not-an-ip");
+        assert!(!result.allowed, "Fail-closed should block on invalid IP");
+    }
+
+    // =========================================================================
+    // Cache Tests
+    // =========================================================================
+
+    #[test]
+    fn cache_hit_on_repeated_lookup() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "US")]);
+        let pool = mock_pool(GeoFilterAction::Block, vec!["CN"], GeoFailureMode::Open, db);
+
+        let first = pool.check("1.2.3.4");
+        assert!(!first.cache_hit, "First lookup should be a cache miss");
+
+        let second = pool.check("1.2.3.4");
+        assert!(second.cache_hit, "Second lookup should be a cache hit");
+        assert_eq!(second.country_code, Some("US".to_string()));
+    }
+
+    #[test]
+    fn cache_stats_report_correctly() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "US"), ("5.6.7.8", "GB")]);
+        let pool = mock_pool(GeoFilterAction::Block, vec!["CN"], GeoFailureMode::Open, db);
+
+        // Initial state
+        let (total, valid) = pool.cache_stats();
+        assert_eq!(total, 0);
+        assert_eq!(valid, 0);
+
+        // After lookups
+        pool.check("1.2.3.4");
+        pool.check("5.6.7.8");
+
+        let (total, valid) = pool.cache_stats();
+        assert_eq!(total, 2);
+        assert_eq!(valid, 2);
+    }
+
+    #[test]
+    fn clear_expired_removes_old_entries() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "US")]);
+        let config = GeoFilter {
+            database_path: "/mock/db.mmdb".to_string(),
+            database_type: Some(GeoDatabaseType::MaxMind),
+            action: GeoFilterAction::Block,
+            countries: vec!["CN".to_string()],
+            on_failure: GeoFailureMode::Open,
             status_code: 403,
             block_message: None,
+            cache_ttl_secs: 0, // Immediate expiry
+            add_country_header: true,
         };
+        let pool = GeoFilterPool::new_with_database(config, Arc::new(db));
 
-        assert!(result.allowed);
-        assert_eq!(result.country_code, Some("US".to_string()));
-        assert!(!result.cache_hit);
-        assert!(result.add_header);
+        pool.check("1.2.3.4");
+        let (total, _) = pool.cache_stats();
+        assert_eq!(total, 1);
+
+        // With TTL=0, entries are expired immediately
+        std::thread::sleep(Duration::from_millis(10));
+        pool.clear_expired();
+
+        let (total, _) = pool.cache_stats();
+        assert_eq!(total, 0);
     }
+
+    // =========================================================================
+    // Country Header Tests
+    // =========================================================================
+
+    #[test]
+    fn add_header_flag_propagated() {
+        let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "US")]);
+        let pool = mock_pool(GeoFilterAction::Block, vec!["CN"], GeoFailureMode::Open, db);
+
+        let result = pool.check("1.2.3.4");
+        assert!(result.add_header, "add_country_header should be true");
+    }
+
+    // =========================================================================
+    // Manager Tests
+    // =========================================================================
 
     #[test]
     fn test_geo_filter_manager_new() {
@@ -709,6 +1038,17 @@ mod tests {
         assert!(!manager.has_filter("test"));
     }
 
-    // Integration tests would require actual database files
-    // These are covered in the integration test suite
+    #[test]
+    fn test_geo_filter_manager_check_nonexistent_filter() {
+        let manager = GeoFilterManager::new();
+        let result = manager.check("nonexistent", "1.2.3.4");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_geo_filter_manager_reload_nonexistent() {
+        let manager = GeoFilterManager::new();
+        let result = manager.reload_filter("nonexistent");
+        assert!(matches!(result, Err(GeoLookupError::LoadError(_))));
+    }
 }

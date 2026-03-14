@@ -266,6 +266,7 @@ listeners {
 
             // Additional certificates for SNI
             additional-certs {
+                // Explicit hostnames: only these are registered, SAN is ignored
                 cert hostnames=["api.example.com" "*.api.example.com"] {
                     cert-file "/etc/ssl/certs/api.crt"
                     key-file "/etc/ssl/private/api.key"
@@ -273,6 +274,14 @@ listeners {
                 cert hostnames=["admin.example.com"] {
                     cert-file "/etc/ssl/certs/admin.crt"
                     key-file "/etc/ssl/private/admin.key"
+                }
+
+                // Priority hostnames: auto-extract all SANs, but this cert
+                // wins for "shared.example.com" if another cert also claims it
+                cert {
+                    priority-hostnames "shared.example.com"
+                    cert-file "/etc/ssl/certs/shared.crt"
+                    key-file "/etc/ssl/private/shared.key"
                 }
             }
         }

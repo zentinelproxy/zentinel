@@ -20,7 +20,7 @@ zentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.6
 zentinel-common = { path = "../../crates/common", version = "0.6.1" }
 
 # Async runtime
-tokio = { version = "1.49", features = ["full"] }
+tokio = { version = "1.50", features = ["full"] }
 async-trait = "0.1"
 
 # Serialization
@@ -36,11 +36,11 @@ anyhow = "1.0"
 thiserror = "2.0"
 
 # Utilities
-uuid = { version = "1.21", features = ["v4", "serde"] }
+uuid = { version = "1.22", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Command line
 clap = { version = "4.5", features = ["derive", "env"] }
 
 [dev-dependencies]
-tempfile = "3.25"
+tempfile = "3.26"

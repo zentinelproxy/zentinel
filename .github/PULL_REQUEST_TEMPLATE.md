@@ -23,6 +23,7 @@
 ## Checklist
 
 - [ ] I have read [CONTRIBUTING.md](CONTRIBUTING.md)
+- [ ] I have read the [design rationale documents](doc/design/) and my changes align with existing architectural decisions
 - [ ] My code follows the project's coding standards
 - [ ] I have added tests that prove my fix/feature works
 - [ ] All new and existing tests pass locally
