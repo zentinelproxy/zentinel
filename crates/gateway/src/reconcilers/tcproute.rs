@@ -29,10 +29,7 @@ impl TcpRouteReconciler {
         Self { client, translator }
     }
 
-    pub async fn reconcile(
-        &self,
-        route: Arc<TCPRoute>,
-    ) -> Result<Action, GatewayError> {
+    pub async fn reconcile(&self, route: Arc<TCPRoute>) -> Result<Action, GatewayError> {
         let name = route.name_any();
         let namespace = route.namespace().unwrap_or_else(|| "default".into());
 
@@ -61,7 +58,8 @@ impl TcpRouteReconciler {
             return Ok(Action::requeue(std::time::Duration::from_secs(15)));
         }
 
-        self.update_status(&route, &namespace, &accepted_parents).await?;
+        self.update_status(&route, &namespace, &accepted_parents)
+            .await?;
         Ok(Action::await_change())
     }
 
@@ -92,35 +90,42 @@ impl TcpRouteReconciler {
 
         let parent_statuses: Vec<serde_json::Value> = parents
             .iter()
-            .map(|(gw_name, gw_ns)| json!({
-                "parentRef": {
-                    "group": "gateway.networking.k8s.io",
-                    "kind": "Gateway",
-                    "name": gw_name,
-                    "namespace": gw_ns,
-                },
-                "controllerName": CONTROLLER_NAME,
-                "conditions": [{
-                    "type": "Accepted",
-                    "status": "True",
-                    "reason": "Accepted",
-                    "message": "TCPRoute accepted by Zentinel",
-                    "observedGeneration": generation,
-                    "lastTransitionTime": now,
-                }, {
-                    "type": "ResolvedRefs",
-                    "status": "True",
-                    "reason": "ResolvedRefs",
-                    "message": "All backend references resolved",
-                    "observedGeneration": generation,
-                    "lastTransitionTime": now,
-                }]
-            }))
+            .map(|(gw_name, gw_ns)| {
+                json!({
+                    "parentRef": {
+                        "group": "gateway.networking.k8s.io",
+                        "kind": "Gateway",
+                        "name": gw_name,
+                        "namespace": gw_ns,
+                    },
+                    "controllerName": CONTROLLER_NAME,
+                    "conditions": [{
+                        "type": "Accepted",
+                        "status": "True",
+                        "reason": "Accepted",
+                        "message": "TCPRoute accepted by Zentinel",
+                        "observedGeneration": generation,
+                        "lastTransitionTime": now,
+                    }, {
+                        "type": "ResolvedRefs",
+                        "status": "True",
+                        "reason": "ResolvedRefs",
+                        "message": "All backend references resolved",
+                        "observedGeneration": generation,
+                        "lastTransitionTime": now,
+                    }]
+                })
+            })
             .collect();
 
         let status = json!({ "status": { "parents": parent_statuses } });
         let api: Api<TCPRoute> = Api::namespaced(self.client.clone(), namespace);
-        api.patch_status(&name, &PatchParams::apply(CONTROLLER_NAME), &Patch::Merge(&status)).await?;
+        api.patch_status(
+            &name,
+            &PatchParams::apply(CONTROLLER_NAME),
+            &Patch::Merge(&status),
+        )
+        .await?;
         Ok(())
     }
 

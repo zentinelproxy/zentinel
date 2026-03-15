@@ -85,11 +85,7 @@ impl GatewayClassReconciler {
     }
 
     /// Handle errors during reconciliation.
-    pub fn error_policy(
-        _obj: Arc<GatewayClass>,
-        error: &GatewayError,
-        _ctx: Arc<()>,
-    ) -> Action {
+    pub fn error_policy(_obj: Arc<GatewayClass>, error: &GatewayError, _ctx: Arc<()>) -> Action {
         warn!(error = %error, "GatewayClass reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(30))
     }
@@ -105,8 +101,6 @@ fn is_already_accepted(gc: &GatewayClass, generation: i64) -> bool {
         return false;
     };
     conditions.iter().any(|c| {
-        c.type_ == "Accepted"
-            && c.status == "True"
-            && c.observed_generation == Some(generation)
+        c.type_ == "Accepted" && c.status == "True" && c.observed_generation == Some(generation)
     })
 }

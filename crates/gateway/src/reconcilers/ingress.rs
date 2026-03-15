@@ -40,10 +40,7 @@ impl IngressReconciler {
     ///
     /// Only processes Ingress resources with `ingressClassName: zentinel`
     /// or the annotation `kubernetes.io/ingress.class: zentinel`.
-    pub async fn reconcile(
-        &self,
-        ingress: Arc<Ingress>,
-    ) -> Result<Action, GatewayError> {
+    pub async fn reconcile(&self, ingress: Arc<Ingress>) -> Result<Action, GatewayError> {
         let name = ingress.name_any();
         let namespace = ingress.namespace().unwrap_or_else(|| "default".into());
 
@@ -63,11 +60,7 @@ impl IngressReconciler {
         Ok(Action::await_change())
     }
 
-    pub fn error_policy(
-        _obj: Arc<Ingress>,
-        error: &GatewayError,
-        _ctx: Arc<()>,
-    ) -> Action {
+    pub fn error_policy(_obj: Arc<Ingress>, error: &GatewayError, _ctx: Arc<()>) -> Action {
         warn!(error = %error, "Ingress reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(30))
     }
@@ -108,9 +101,7 @@ pub fn translate_ingresses(
         }
 
         let ing_name = ingress.name_any();
-        let ing_ns = ingress
-            .namespace()
-            .unwrap_or_else(|| "default".into());
+        let ing_ns = ingress.namespace().unwrap_or_else(|| "default".into());
 
         let spec = match &ingress.spec {
             Some(s) => s,
@@ -118,7 +109,13 @@ pub fn translate_ingresses(
         };
 
         // Process each rule
-        for (rule_idx, rule) in spec.rules.as_ref().cloned().unwrap_or_default().iter().enumerate()
+        for (rule_idx, rule) in spec
+            .rules
+            .as_ref()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
         {
             let host = rule.host.clone();
 
@@ -147,15 +144,10 @@ pub fn translate_ingresses(
                 // Build upstream from backend
                 if let Some(ref backend) = path.backend.service {
                     let svc_name = &backend.name;
-                    let svc_port = backend
-                        .port
-                        .as_ref()
-                        .and_then(|p| p.number)
-                        .unwrap_or(80);
+                    let svc_port = backend.port.as_ref().and_then(|p| p.number).unwrap_or(80);
                     let upstream_id = format!("{rule_id}-upstream");
 
-                    let address =
-                        format!("{svc_name}.{ing_ns}.svc.cluster.local:{svc_port}");
+                    let address = format!("{svc_name}.{ing_ns}.svc.cluster.local:{svc_port}");
 
                     let upstream = UpstreamConfig {
                         id: upstream_id.clone(),

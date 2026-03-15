@@ -30,10 +30,7 @@ impl GrpcRouteReconciler {
     }
 
     /// Reconcile a GRPCRoute resource.
-    pub async fn reconcile(
-        &self,
-        route: Arc<GRPCRoute>,
-    ) -> Result<Action, GatewayError> {
+    pub async fn reconcile(&self, route: Arc<GRPCRoute>) -> Result<Action, GatewayError> {
         let name = route.name_any();
         let namespace = route.namespace().unwrap_or_else(|| "default".into());
 
@@ -45,20 +42,12 @@ impl GrpcRouteReconciler {
         );
 
         // Find parent Gateways that belong to us
-        let parent_refs = route
-            .spec
-            .parent_refs
-            .as_ref()
-            .cloned()
-            .unwrap_or_default();
+        let parent_refs = route.spec.parent_refs.as_ref().cloned().unwrap_or_default();
 
         let mut accepted_parents = Vec::new();
 
         for parent_ref in &parent_refs {
-            let gw_namespace = parent_ref
-                .namespace
-                .as_deref()
-                .unwrap_or(&namespace);
+            let gw_namespace = parent_ref.namespace.as_deref().unwrap_or(&namespace);
             let gw_name = &parent_ref.name;
 
             match self.is_our_gateway(gw_name, gw_namespace).await {
@@ -88,16 +77,13 @@ impl GrpcRouteReconciler {
         }
 
         // Update status
-        self.update_status(&route, &namespace, &accepted_parents).await?;
+        self.update_status(&route, &namespace, &accepted_parents)
+            .await?;
 
         Ok(Action::await_change())
     }
 
-    async fn is_our_gateway(
-        &self,
-        name: &str,
-        namespace: &str,
-    ) -> Result<bool, GatewayError> {
+    async fn is_our_gateway(&self, name: &str, namespace: &str) -> Result<bool, GatewayError> {
         let api: Api<Gateway> = Api::namespaced(self.client.clone(), namespace);
         let gw = match api.get(name).await {
             Ok(gw) => gw,
@@ -167,11 +153,7 @@ impl GrpcRouteReconciler {
     }
 
     /// Handle errors during reconciliation.
-    pub fn error_policy(
-        _obj: Arc<GRPCRoute>,
-        error: &GatewayError,
-        _ctx: Arc<()>,
-    ) -> Action {
+    pub fn error_policy(_obj: Arc<GRPCRoute>, error: &GatewayError, _ctx: Arc<()>) -> Action {
         warn!(error = %error, "GRPCRoute reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(15))
     }

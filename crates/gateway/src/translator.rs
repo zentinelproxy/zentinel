@@ -127,19 +127,19 @@ impl ConfigTranslator {
         for route in &all_routes.items {
             // Check if any parent ref points to one of our Gateways
             let parent_refs = route.spec.parent_refs.as_ref();
-            let is_ours = parent_refs.is_some_and(|refs: &Vec<gateway_api::httproutes::HTTPRouteParentRefs>| {
-                refs.iter().any(|pr: &gateway_api::httproutes::HTTPRouteParentRefs| {
-                    let gw_ns = pr
-                        .namespace
-                        .as_deref()
-                        .unwrap_or("default");
-                    let gw_name = pr.name.as_str();
-                    our_gateways.iter().any(|g: &&Gateway| {
-                        g.name_any() == gw_name
-                            && g.namespace().unwrap_or_default() == gw_ns
-                    })
-                })
-            });
+            let is_ours = parent_refs.is_some_and(
+                |refs: &Vec<gateway_api::httproutes::HTTPRouteParentRefs>| {
+                    refs.iter()
+                        .any(|pr: &gateway_api::httproutes::HTTPRouteParentRefs| {
+                            let gw_ns = pr.namespace.as_deref().unwrap_or("default");
+                            let gw_name = pr.name.as_str();
+                            our_gateways.iter().any(|g: &&Gateway| {
+                                g.name_any() == gw_name
+                                    && g.namespace().unwrap_or_default() == gw_ns
+                            })
+                        })
+                },
+            );
 
             if !is_ours {
                 continue;
@@ -158,16 +158,19 @@ impl ConfigTranslator {
 
         for route in &all_grpc_routes.items {
             let parent_refs = route.spec.parent_refs.as_ref();
-            let is_ours = parent_refs.is_some_and(|refs: &Vec<gateway_api::grpcroutes::GRPCRouteParentRefs>| {
-                refs.iter().any(|pr: &gateway_api::grpcroutes::GRPCRouteParentRefs| {
-                    let gw_ns = pr.namespace.as_deref().unwrap_or("default");
-                    let gw_name = pr.name.as_str();
-                    our_gateways.iter().any(|g: &&Gateway| {
-                        g.name_any() == gw_name
-                            && g.namespace().unwrap_or_default() == gw_ns
-                    })
-                })
-            });
+            let is_ours = parent_refs.is_some_and(
+                |refs: &Vec<gateway_api::grpcroutes::GRPCRouteParentRefs>| {
+                    refs.iter()
+                        .any(|pr: &gateway_api::grpcroutes::GRPCRouteParentRefs| {
+                            let gw_ns = pr.namespace.as_deref().unwrap_or("default");
+                            let gw_name = pr.name.as_str();
+                            our_gateways.iter().any(|g: &&Gateway| {
+                                g.name_any() == gw_name
+                                    && g.namespace().unwrap_or_default() == gw_ns
+                            })
+                        })
+                },
+            );
 
             if !is_ours {
                 continue;
@@ -191,16 +194,20 @@ impl ConfigTranslator {
 
         for route in &all_tls_routes {
             let parent_refs = route.spec.parent_refs.as_ref();
-            let is_ours = parent_refs.is_some_and(|refs: &Vec<gateway_api::experimental::tlsroutes::TLSRouteParentRefs>| {
-                refs.iter().any(|pr: &gateway_api::experimental::tlsroutes::TLSRouteParentRefs| {
-                    let gw_ns = pr.namespace.as_deref().unwrap_or("default");
-                    let gw_name = pr.name.as_str();
-                    our_gateways.iter().any(|g: &&Gateway| {
-                        g.name_any() == gw_name
-                            && g.namespace().unwrap_or_default() == gw_ns
-                    })
-                })
-            });
+            let is_ours = parent_refs.is_some_and(
+                |refs: &Vec<gateway_api::experimental::tlsroutes::TLSRouteParentRefs>| {
+                    refs.iter().any(
+                        |pr: &gateway_api::experimental::tlsroutes::TLSRouteParentRefs| {
+                            let gw_ns = pr.namespace.as_deref().unwrap_or("default");
+                            let gw_name = pr.name.as_str();
+                            our_gateways.iter().any(|g: &&Gateway| {
+                                g.name_any() == gw_name
+                                    && g.namespace().unwrap_or_default() == gw_ns
+                            })
+                        },
+                    )
+                },
+            );
 
             if !is_ours {
                 continue;
@@ -212,8 +219,7 @@ impl ConfigTranslator {
         }
 
         // Translate legacy Ingress resources (compatibility shim)
-        let ingress_api: Api<k8s_openapi::api::networking::v1::Ingress> =
-            Api::all(client.clone());
+        let ingress_api: Api<k8s_openapi::api::networking::v1::Ingress> = Api::all(client.clone());
         let ingress_items = match ingress_api.list(&ListParams::default()).await {
             Ok(list) => list.items,
             Err(e) => {
@@ -278,11 +284,7 @@ impl ConfigTranslator {
     }
 
     /// Translate a Gateway into Zentinel listener configs.
-    async fn translate_gateway(
-        &self,
-        gateway: &Gateway,
-        _client: &Client,
-    ) -> Vec<ListenerConfig> {
+    async fn translate_gateway(&self, gateway: &Gateway, _client: &Client) -> Vec<ListenerConfig> {
         let gw_name = gateway.name_any();
         let gw_ns = gateway.namespace().unwrap_or_default();
 
@@ -334,10 +336,7 @@ impl ConfigTranslator {
 
         // Resolve the first certificate as the default
         let first_ref = &cert_refs[0];
-        let secret_ns = first_ref
-            .namespace
-            .as_deref()
-            .unwrap_or(gateway_ns);
+        let secret_ns = first_ref.namespace.as_deref().unwrap_or(gateway_ns);
         let hostnames = listener
             .hostname
             .as_ref()
@@ -369,19 +368,12 @@ impl ConfigTranslator {
         // Resolve additional certificates as SNI certs
         let mut additional_certs = Vec::new();
         for cert_ref in cert_refs.iter().skip(1) {
-            let ns = cert_ref
-                .namespace
-                .as_deref()
-                .unwrap_or(gateway_ns);
+            let ns = cert_ref.namespace.as_deref().unwrap_or(gateway_ns);
             let sref = SecretRef {
                 namespace: ns.to_string(),
                 name: cert_ref.name.clone(),
             };
-            match self
-                .cert_manager
-                .resolve(&sref, hostnames.clone())
-                .await
-            {
+            match self.cert_manager.resolve(&sref, hostnames.clone()).await {
                 Ok(cert) => {
                     additional_certs.push(SniCertificate {
                         hostnames: cert.hostnames.clone(),
@@ -437,11 +429,7 @@ impl ConfigTranslator {
         let mut filter_configs = HashMap::new();
 
         // Hostnames from the route spec
-        let hostnames: Vec<String> = route
-            .spec
-            .hostnames
-            .clone()
-            .unwrap_or_default();
+        let hostnames: Vec<String> = route.spec.hostnames.clone().unwrap_or_default();
 
         for (rule_idx, rule) in rules.iter().enumerate() {
             let rule_id = format!("{route_ns}-{route_name}-rule{rule_idx}");
@@ -587,7 +575,10 @@ impl ConfigTranslator {
         }
 
         // If only host matches and no path, add a catch-all prefix
-        if conditions.iter().all(|c| matches!(c, MatchCondition::Host(_))) && !conditions.is_empty()
+        if conditions
+            .iter()
+            .all(|c| matches!(c, MatchCondition::Host(_)))
+            && !conditions.is_empty()
         {
             conditions.push(MatchCondition::PathPrefix("/".to_string()));
         }
@@ -617,10 +608,7 @@ impl ConfigTranslator {
 
         for backend in backend_refs {
             let svc_name = &backend.name;
-            let svc_ns = backend
-                .namespace
-                .as_deref()
-                .unwrap_or(route_ns);
+            let svc_ns = backend.namespace.as_deref().unwrap_or(route_ns);
             let svc_port = backend.port.unwrap_or(80);
             let weight = backend.weight.unwrap_or(1);
 
@@ -706,8 +694,7 @@ impl ConfigTranslator {
                 if let Some(ref modifier) = filter.request_header_modifier {
                     if let Some(ref adds) = modifier.add {
                         for header in adds {
-                            mods.add
-                                .insert(header.name.clone(), header.value.clone());
+                            mods.add.insert(header.name.clone(), header.value.clone());
                         }
                     }
                     if let Some(ref removes) = modifier.remove {
@@ -715,8 +702,7 @@ impl ConfigTranslator {
                     }
                     if let Some(ref sets) = modifier.set {
                         for header in sets {
-                            mods.set
-                                .insert(header.name.clone(), header.value.clone());
+                            mods.set.insert(header.name.clone(), header.value.clone());
                         }
                     }
                 }
@@ -743,8 +729,7 @@ impl ConfigTranslator {
                 if let Some(ref modifier) = filter.response_header_modifier {
                     if let Some(ref adds) = modifier.add {
                         for header in adds {
-                            mods.add
-                                .insert(header.name.clone(), header.value.clone());
+                            mods.add.insert(header.name.clone(), header.value.clone());
                         }
                     }
                     if let Some(ref removes) = modifier.remove {
@@ -752,8 +737,7 @@ impl ConfigTranslator {
                     }
                     if let Some(ref sets) = modifier.set {
                         for header in sets {
-                            mods.set
-                                .insert(header.name.clone(), header.value.clone());
+                            mods.set.insert(header.name.clone(), header.value.clone());
                         }
                     }
                 }
@@ -794,10 +778,7 @@ impl ConfigTranslator {
                     .unwrap_or_else(|| format!("{s:?}"))
             });
 
-            let status_code = redirect
-                .status_code
-                .map(|c| c as u16)
-                .unwrap_or(302);
+            let status_code = redirect.status_code.map(|c| c as u16).unwrap_or(302);
 
             let path = redirect.path.as_ref().map(|p| {
                 if let Some(ref full) = p.replace_full_path {
@@ -903,11 +884,7 @@ impl ConfigTranslator {
         let mut route_configs = Vec::new();
         let mut upstream_configs = HashMap::new();
 
-        let hostnames: Vec<String> = route
-            .spec
-            .hostnames
-            .clone()
-            .unwrap_or_default();
+        let hostnames: Vec<String> = route.spec.hostnames.clone().unwrap_or_default();
 
         for (rule_idx, rule) in rules.iter().enumerate() {
             let rule_id = format!("{route_ns}-{route_name}-grpc-rule{rule_idx}");
@@ -988,9 +965,7 @@ impl ConfigTranslator {
                 let path = match (service.is_empty(), method.is_empty()) {
                     (false, false) => {
                         // Exact: /<service>/<method>
-                        conditions.push(MatchCondition::Path(
-                            format!("/{service}/{method}"),
-                        ));
+                        conditions.push(MatchCondition::Path(format!("/{service}/{method}")));
                         continue;
                     }
                     (false, true) => {
@@ -1021,9 +996,10 @@ impl ConfigTranslator {
             }
         }
 
-        if conditions.iter().all(|c| {
-            matches!(c, MatchCondition::Host(_) | MatchCondition::Method(_))
-        }) {
+        if conditions
+            .iter()
+            .all(|c| matches!(c, MatchCondition::Host(_) | MatchCondition::Method(_)))
+        {
             conditions.push(MatchCondition::PathPrefix("/".to_string()));
         }
 
@@ -1205,9 +1181,9 @@ impl ConfigTranslator {
             let weight = backend.weight.unwrap_or(1);
 
             if svc_ns != route_ns
-                && !self.reference_grants.is_permitted(
-                    route_ns, "TLSRoute", svc_ns, "Service", svc_name,
-                )
+                && !self
+                    .reference_grants
+                    .is_permitted(route_ns, "TLSRoute", svc_ns, "Service", svc_name)
             {
                 warn!(
                     route_ns = route_ns,

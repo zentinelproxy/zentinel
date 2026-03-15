@@ -83,8 +83,7 @@ impl LeaderElector {
 
     /// Run the leader election loop. This never returns unless cancelled.
     pub async fn run(&self) -> Result<(), GatewayError> {
-        let api: Api<Lease> =
-            Api::namespaced(self.client.clone(), &self.config.lease_namespace);
+        let api: Api<Lease> = Api::namespaced(self.client.clone(), &self.config.lease_namespace);
 
         info!(
             identity = %self.config.identity,
@@ -147,8 +146,7 @@ impl LeaderElector {
                 // Check if the lease has expired
                 let expired = match (renew_time, duration_secs) {
                     (Some(MicroTime(last_renew)), Some(duration)) => {
-                        let expiry = *last_renew
-                            + chrono::Duration::seconds(i64::from(duration));
+                        let expiry = *last_renew + chrono::Duration::seconds(i64::from(duration));
                         now > expiry
                     }
                     _ => true, // No renew time = treat as expired
@@ -209,11 +207,7 @@ impl LeaderElector {
     }
 
     /// Update an existing Lease with our identity and renew time.
-    async fn update_lease(
-        &self,
-        api: &Api<Lease>,
-        existing: &Lease,
-    ) -> Result<(), GatewayError> {
+    async fn update_lease(&self, api: &Api<Lease>, existing: &Lease) -> Result<(), GatewayError> {
         let now = Utc::now();
         let previous_holder = existing
             .spec

@@ -101,7 +101,9 @@ impl ConfigSink for FileSink {
 pub struct EmbeddedSink {
     /// The apply function, stored as a boxed async closure.
     /// This avoids a direct dependency on `zentinel-proxy` crate.
-    apply_fn: Box<dyn Fn(Config) -> futures::future::BoxFuture<'static, Result<(), String>> + Send + Sync>,
+    apply_fn: Box<
+        dyn Fn(Config) -> futures::future::BoxFuture<'static, Result<(), String>> + Send + Sync,
+    >,
 }
 
 impl EmbeddedSink {

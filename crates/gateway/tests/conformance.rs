@@ -28,7 +28,6 @@
 
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::{Gateway, GatewaySpec};
-use gateway_api::httproutes::{HTTPRoute, HTTPRouteSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::Client;
@@ -74,7 +73,10 @@ async fn gateway_class_accepted_by_controller() {
 
     // Create GatewayClass
     let gc = create_test_gateway_class(&client, gc_name).await;
-    assert_eq!(gc.spec.controller_name, "zentinelproxy.io/gateway-controller");
+    assert_eq!(
+        gc.spec.controller_name,
+        "zentinelproxy.io/gateway-controller"
+    );
 
     // Wait for controller to set Accepted condition
     let api: Api<GatewayClass> = Api::all(client.clone());
@@ -84,9 +86,10 @@ async fn gateway_class_accepted_by_controller() {
         if let Ok(gc) = api.get(gc_name).await {
             if let Some(ref status) = gc.status {
                 if let Some(ref conditions) = status.conditions {
-                    if conditions.iter().any(|c| {
-                        c.type_ == "Accepted" && c.status == "True"
-                    }) {
+                    if conditions
+                        .iter()
+                        .any(|c| c.type_ == "Accepted" && c.status == "True")
+                    {
                         accepted = true;
                         break;
                     }
@@ -153,9 +156,10 @@ async fn gateway_gets_programmed_status() {
         if let Ok(gw) = gw_api.get(gw_name).await {
             if let Some(ref status) = gw.status {
                 if let Some(ref conditions) = status.conditions {
-                    if conditions.iter().any(|c| {
-                        c.type_ == "Programmed" && c.status == "True"
-                    }) {
+                    if conditions
+                        .iter()
+                        .any(|c| c.type_ == "Programmed" && c.status == "True")
+                    {
                         programmed = true;
                         break;
                     }

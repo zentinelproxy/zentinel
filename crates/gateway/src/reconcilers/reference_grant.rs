@@ -44,10 +44,7 @@ impl ReferenceGrantIndex {
         let mut permitted = HashSet::new();
 
         for grant in &grants {
-            let target_ns: String = grant
-                .namespace()
-                .unwrap_or_default()
-                .to_string();
+            let target_ns: String = grant.namespace().unwrap_or_default().to_string();
 
             for from in &grant.spec.from {
                 let source_ns = from.namespace.clone();

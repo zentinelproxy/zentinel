@@ -15,9 +15,7 @@ use std::net::SocketAddr;
 use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
-use zentinel_gateway::{
-    ControllerMetrics, GatewayController, LeaderElectionConfig, LeaderElector,
-};
+use zentinel_gateway::{ControllerMetrics, GatewayController, LeaderElectionConfig, LeaderElector};
 
 /// Metrics server port (configurable via METRICS_PORT env var).
 const DEFAULT_METRICS_PORT: u16 = 9090;

@@ -34,10 +34,7 @@ impl GatewayReconciler {
         }
     }
 
-    pub async fn reconcile(
-        &self,
-        gateway: Arc<Gateway>,
-    ) -> Result<Action, GatewayError> {
+    pub async fn reconcile(&self, gateway: Arc<Gateway>) -> Result<Action, GatewayError> {
         let name = gateway.name_any();
         let namespace = gateway.namespace().unwrap_or_else(|| "default".into());
         let class_name = &gateway.spec.gateway_class_name;
@@ -106,10 +103,7 @@ impl GatewayReconciler {
     ///
     /// Searches all namespaces for Services with the zentinel-gateway label,
     /// since the proxy runs in the controller's namespace, not the Gateway's.
-    async fn get_gateway_addresses(
-        &self,
-        _namespace: &str,
-    ) -> Vec<serde_json::Value> {
+    async fn get_gateway_addresses(&self, _namespace: &str) -> Vec<serde_json::Value> {
         // Check for override via environment variable (for kind/test environments)
         if let Ok(addr) = std::env::var("GATEWAY_ADDRESS") {
             return vec![json!({"type": "IPAddress", "value": addr})];
@@ -117,8 +111,7 @@ impl GatewayReconciler {
 
         // Search all namespaces for our proxy Service (labeled by Helm)
         let svc_api: Api<Service> = Api::all(self.client.clone());
-        let params = ListParams::default()
-            .labels("app.kubernetes.io/name=zentinel-gateway");
+        let params = ListParams::default().labels("app.kubernetes.io/name=zentinel-gateway");
         let services = match svc_api.list(&params).await {
             Ok(s) => s,
             Err(_) => return vec![],
@@ -204,10 +197,7 @@ impl GatewayReconciler {
                 );
             }
 
-            let secret_ns = cert_ref
-                .namespace
-                .as_deref()
-                .unwrap_or(gw_namespace);
+            let secret_ns = cert_ref.namespace.as_deref().unwrap_or(gw_namespace);
 
             // Cross-namespace check
             if secret_ns != gw_namespace
@@ -283,14 +273,14 @@ impl GatewayReconciler {
             }
         }
 
-        (true, "ResolvedRefs", "All certificate references resolved".into())
+        (
+            true,
+            "ResolvedRefs",
+            "All certificate references resolved".into(),
+        )
     }
 
-    async fn update_status(
-        &self,
-        gateway: &Gateway,
-        namespace: &str,
-    ) -> Result<(), GatewayError> {
+    async fn update_status(&self, gateway: &Gateway, namespace: &str) -> Result<(), GatewayError> {
         let name = gateway.name_any();
         let generation = gateway.metadata.generation.unwrap_or(0);
         let now = chrono::Utc::now().to_rfc3339();
@@ -302,11 +292,8 @@ impl GatewayReconciler {
         // Build listener statuses with per-listener validation
         let mut listener_statuses = Vec::new();
         for l in &gateway.spec.listeners {
-            let listener_count = attached_counts
-                .get(&l.name)
-                .copied()
-                .unwrap_or(0)
-                + wildcard_count;
+            let listener_count =
+                attached_counts.get(&l.name).copied().unwrap_or(0) + wildcard_count;
 
             // Validate TLS certificate refs
             let (tls_resolved, tls_reason, tls_message) =
@@ -393,11 +380,7 @@ impl GatewayReconciler {
         Ok(())
     }
 
-    pub fn error_policy(
-        _obj: Arc<Gateway>,
-        error: &GatewayError,
-        _ctx: Arc<()>,
-    ) -> Action {
+    pub fn error_policy(_obj: Arc<Gateway>, error: &GatewayError, _ctx: Arc<()>) -> Action {
         warn!(error = %error, "Gateway reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(30))
     }
@@ -419,11 +402,21 @@ fn validate_listener_route_kinds(
 
     let Some(kinds) = allowed else {
         // No explicit kinds = use defaults, all valid
-        return (true, "ResolvedRefs", "All references resolved".into(), default_kinds);
+        return (
+            true,
+            "ResolvedRefs",
+            "All references resolved".into(),
+            default_kinds,
+        );
     };
 
     if kinds.is_empty() {
-        return (true, "ResolvedRefs", "All references resolved".into(), default_kinds);
+        return (
+            true,
+            "ResolvedRefs",
+            "All references resolved".into(),
+            default_kinds,
+        );
     }
 
     let valid_kinds = ["HTTPRoute", "GRPCRoute", "TLSRoute", "TCPRoute", "UDPRoute"];
@@ -452,20 +445,21 @@ fn validate_listener_route_kinds(
             filtered,
         )
     } else {
-        (true, "ResolvedRefs", "All references resolved".into(), filtered)
+        (
+            true,
+            "ResolvedRefs",
+            "All references resolved".into(),
+            filtered,
+        )
     }
 }
 
 fn supported_route_kinds(protocol: &str) -> Vec<serde_json::Value> {
     match protocol {
-        "HTTP" | "HTTPS" => vec![
-            json!({"group": "gateway.networking.k8s.io", "kind": "HTTPRoute"}),
-        ],
-        "TLS" => vec![
-            json!({"group": "gateway.networking.k8s.io", "kind": "TLSRoute"}),
-        ],
-        _ => vec![
-            json!({"group": "gateway.networking.k8s.io", "kind": "HTTPRoute"}),
-        ],
+        "HTTP" | "HTTPS" => {
+            vec![json!({"group": "gateway.networking.k8s.io", "kind": "HTTPRoute"})]
+        }
+        "TLS" => vec![json!({"group": "gateway.networking.k8s.io", "kind": "TLSRoute"})],
+        _ => vec![json!({"group": "gateway.networking.k8s.io", "kind": "HTTPRoute"})],
     }
 }

@@ -82,12 +82,13 @@ impl SecretCertificateManager {
 
         // Fetch Secret
         let api: Api<Secret> = Api::namespaced(self.client.clone(), &secret_ref.namespace);
-        let secret = api.get(&secret_ref.name).await.map_err(|e| {
-            GatewayError::InvalidResource {
-                name: format!("{}/{}", secret_ref.namespace, secret_ref.name),
-                reason: format!("Failed to fetch TLS Secret: {e}"),
-            }
-        })?;
+        let secret =
+            api.get(&secret_ref.name)
+                .await
+                .map_err(|e| GatewayError::InvalidResource {
+                    name: format!("{}/{}", secret_ref.namespace, secret_ref.name),
+                    reason: format!("Failed to fetch TLS Secret: {e}"),
+                })?;
 
         // Extract tls.crt and tls.key from Secret data
         let data = secret.data.ok_or_else(|| GatewayError::InvalidResource {
@@ -95,15 +96,19 @@ impl SecretCertificateManager {
             reason: "Secret has no data field".to_string(),
         })?;
 
-        let cert_data = data.get("tls.crt").ok_or_else(|| GatewayError::InvalidResource {
-            name: format!("{}/{}", secret_ref.namespace, secret_ref.name),
-            reason: "Secret missing 'tls.crt' key".to_string(),
-        })?;
+        let cert_data = data
+            .get("tls.crt")
+            .ok_or_else(|| GatewayError::InvalidResource {
+                name: format!("{}/{}", secret_ref.namespace, secret_ref.name),
+                reason: "Secret missing 'tls.crt' key".to_string(),
+            })?;
 
-        let key_data = data.get("tls.key").ok_or_else(|| GatewayError::InvalidResource {
-            name: format!("{}/{}", secret_ref.namespace, secret_ref.name),
-            reason: "Secret missing 'tls.key' key".to_string(),
-        })?;
+        let key_data = data
+            .get("tls.key")
+            .ok_or_else(|| GatewayError::InvalidResource {
+                name: format!("{}/{}", secret_ref.namespace, secret_ref.name),
+                reason: "Secret missing 'tls.key' key".to_string(),
+            })?;
 
         // Write to disk
         let safe_name = format!("{}-{}", secret_ref.namespace, secret_ref.name);

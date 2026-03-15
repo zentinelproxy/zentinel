@@ -90,16 +90,10 @@ impl ConfigWriter {
             if let Some(ref tls) = listener.tls {
                 out.push_str("        tls {\n");
                 if let Some(ref cert) = tls.cert_file {
-                    out.push_str(&format!(
-                        "            cert-file \"{}\"\n",
-                        cert.display()
-                    ));
+                    out.push_str(&format!("            cert-file \"{}\"\n", cert.display()));
                 }
                 if let Some(ref key) = tls.key_file {
-                    out.push_str(&format!(
-                        "            key-file \"{}\"\n",
-                        key.display()
-                    ));
+                    out.push_str(&format!("            key-file \"{}\"\n", key.display()));
                 }
                 out.push_str("        }\n");
             }
@@ -114,10 +108,7 @@ impl ConfigWriter {
             for (id, upstream) in &config.upstreams {
                 out.push_str(&format!("    upstream \"{}\" {{\n", id));
                 for target in &upstream.targets {
-                    out.push_str(&format!(
-                        "        target \"{}\"",
-                        target.address
-                    ));
+                    out.push_str(&format!("        target \"{}\"", target.address));
                     if target.weight != 1 {
                         out.push_str(&format!(" weight={}", target.weight));
                     }
@@ -154,14 +145,8 @@ impl ConfigWriter {
                             out.push_str("            type \"tcp\"\n");
                         }
                     }
-                    out.push_str(&format!(
-                        "            interval-secs {}\n",
-                        hc.interval_secs
-                    ));
-                    out.push_str(&format!(
-                        "            timeout-secs {}\n",
-                        hc.timeout_secs
-                    ));
+                    out.push_str(&format!("            interval-secs {}\n", hc.interval_secs));
+                    out.push_str(&format!("            timeout-secs {}\n", hc.timeout_secs));
                     out.push_str("        }\n");
                 }
 
@@ -194,9 +179,7 @@ impl ConfigWriter {
                         }
                         zentinel_config::MatchCondition::Header { name, value } => {
                             if let Some(v) = value {
-                                out.push_str(&format!(
-                                    "            header \"{name}\" \"{v}\"\n"
-                                ));
+                                out.push_str(&format!("            header \"{name}\" \"{v}\"\n"));
                             } else {
                                 out.push_str(&format!("            header \"{name}\"\n"));
                             }

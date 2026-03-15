@@ -28,10 +28,7 @@ impl BackendTlsPolicyReconciler {
         Self { client, translator }
     }
 
-    pub async fn reconcile(
-        &self,
-        policy: Arc<BackendTLSPolicy>,
-    ) -> Result<Action, GatewayError> {
+    pub async fn reconcile(&self, policy: Arc<BackendTLSPolicy>) -> Result<Action, GatewayError> {
         let name = policy.name_any();
         let namespace = policy.namespace().unwrap_or_else(|| "default".into());
 
@@ -55,35 +52,45 @@ impl BackendTlsPolicyReconciler {
             .spec
             .target_refs
             .iter()
-            .map(|target| json!({
-                "ancestorRef": {
-                    "group": &target.group,
-                    "kind": &target.kind,
-                    "name": &target.name,
-                    "namespace": &namespace,
-                },
-                "controllerName": CONTROLLER_NAME,
-                "conditions": [{
-                    "type": "Accepted",
-                    "status": "True",
-                    "reason": "Accepted",
-                    "message": "BackendTLSPolicy accepted by Zentinel",
-                    "observedGeneration": generation,
-                    "lastTransitionTime": now,
-                }]
-            }))
+            .map(|target| {
+                json!({
+                    "ancestorRef": {
+                        "group": &target.group,
+                        "kind": &target.kind,
+                        "name": &target.name,
+                        "namespace": &namespace,
+                    },
+                    "controllerName": CONTROLLER_NAME,
+                    "conditions": [{
+                        "type": "Accepted",
+                        "status": "True",
+                        "reason": "Accepted",
+                        "message": "BackendTLSPolicy accepted by Zentinel",
+                        "observedGeneration": generation,
+                        "lastTransitionTime": now,
+                    }]
+                })
+            })
             .collect();
 
         let status = json!({ "status": { "ancestors": ancestors } });
         let api: Api<BackendTLSPolicy> = Api::namespaced(self.client.clone(), &namespace);
         let _ = api
-            .patch_status(&name, &PatchParams::apply(CONTROLLER_NAME), &Patch::Merge(&status))
+            .patch_status(
+                &name,
+                &PatchParams::apply(CONTROLLER_NAME),
+                &Patch::Merge(&status),
+            )
             .await;
 
         Ok(Action::await_change())
     }
 
-    pub fn error_policy(_obj: Arc<BackendTLSPolicy>, error: &GatewayError, _ctx: Arc<()>) -> Action {
+    pub fn error_policy(
+        _obj: Arc<BackendTLSPolicy>,
+        error: &GatewayError,
+        _ctx: Arc<()>,
+    ) -> Action {
         warn!(error = %error, "BackendTLSPolicy reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(30))
     }

@@ -30,10 +30,7 @@ impl TlsRouteReconciler {
     }
 
     /// Reconcile a TLSRoute resource.
-    pub async fn reconcile(
-        &self,
-        route: Arc<TLSRoute>,
-    ) -> Result<Action, GatewayError> {
+    pub async fn reconcile(&self, route: Arc<TLSRoute>) -> Result<Action, GatewayError> {
         let name = route.name_any();
         let namespace = route.namespace().unwrap_or_else(|| "default".into());
 
@@ -44,12 +41,7 @@ impl TlsRouteReconciler {
             "Reconciling TLSRoute"
         );
 
-        let parent_refs = route
-            .spec
-            .parent_refs
-            .as_ref()
-            .cloned()
-            .unwrap_or_default();
+        let parent_refs = route.spec.parent_refs.as_ref().cloned().unwrap_or_default();
 
         let mut accepted_parents = Vec::new();
 
@@ -79,7 +71,8 @@ impl TlsRouteReconciler {
             return Ok(Action::requeue(std::time::Duration::from_secs(15)));
         }
 
-        self.update_status(&route, &namespace, &accepted_parents).await?;
+        self.update_status(&route, &namespace, &accepted_parents)
+            .await?;
 
         Ok(Action::await_change())
     }
@@ -153,11 +146,7 @@ impl TlsRouteReconciler {
         Ok(())
     }
 
-    pub fn error_policy(
-        _obj: Arc<TLSRoute>,
-        error: &GatewayError,
-        _ctx: Arc<()>,
-    ) -> Action {
+    pub fn error_policy(_obj: Arc<TLSRoute>, error: &GatewayError, _ctx: Arc<()>) -> Action {
         warn!(error = %error, "TLSRoute reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(15))
     }

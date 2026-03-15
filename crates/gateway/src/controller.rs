@@ -23,13 +23,13 @@ use tracing::{error, info, warn};
 
 use zentinel_config::Config;
 
+use crate::config_writer::ConfigWriter;
 use crate::error::GatewayError;
 use crate::reconcilers::{
     BackendTlsPolicyReconciler, GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler,
     HttpRouteReconciler, IngressReconciler, ReferenceGrantIndex, TcpRouteReconciler,
     TlsRouteReconciler,
 };
-use crate::config_writer::ConfigWriter;
 use crate::tls::SecretCertificateManager;
 use crate::translator::ConfigTranslator;
 
@@ -400,8 +400,7 @@ impl GatewayController {
         use kube::runtime::watcher as kube_watcher;
 
         let api: Api<ReferenceGrant> = Api::all(self.client.clone());
-        let mut stream =
-            kube_watcher::watcher(api, kube_watcher::Config::default()).boxed();
+        let mut stream = kube_watcher::watcher(api, kube_watcher::Config::default()).boxed();
 
         while let Some(event) = stream.next().await {
             match event {
@@ -433,8 +432,7 @@ impl GatewayController {
 
         let api: Api<Secret> = Api::all(self.client.clone());
         // Only watch TLS secrets
-        let config = kube_watcher::Config::default()
-            .fields("type=kubernetes.io/tls");
+        let config = kube_watcher::Config::default().fields("type=kubernetes.io/tls");
         let mut stream = kube_watcher::watcher(api, config).boxed();
 
         while let Some(event) = stream.next().await {

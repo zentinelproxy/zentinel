@@ -39,10 +39,7 @@ impl HttpRouteReconciler {
         }
     }
 
-    pub async fn reconcile(
-        &self,
-        route: Arc<HTTPRoute>,
-    ) -> Result<Action, GatewayError> {
+    pub async fn reconcile(&self, route: Arc<HTTPRoute>) -> Result<Action, GatewayError> {
         let name = route.name_any();
         let namespace = route.namespace().unwrap_or_else(|| "default".into());
 
@@ -61,10 +58,7 @@ impl HttpRouteReconciler {
         let mut any_accepted = false;
 
         for parent_ref in &parent_refs {
-            let gw_namespace = parent_ref
-                .namespace
-                .as_deref()
-                .unwrap_or(&namespace);
+            let gw_namespace = parent_ref.namespace.as_deref().unwrap_or(&namespace);
             let gw_name = &parent_ref.name;
 
             // Check if Gateway belongs to us
@@ -75,11 +69,7 @@ impl HttpRouteReconciler {
 
             // Check sectionName matches a listener
             if let Some(ref section_name) = parent_ref.section_name {
-                let has_listener = gw
-                    .spec
-                    .listeners
-                    .iter()
-                    .any(|l| l.name == *section_name);
+                let has_listener = gw.spec.listeners.iter().any(|l| l.name == *section_name);
                 if !has_listener {
                     parent_statuses.push(json!({
                         "parentRef": {
@@ -361,14 +351,14 @@ impl HttpRouteReconciler {
             }
         }
 
-        (true, "ResolvedRefs", "All backend references resolved".into())
+        (
+            true,
+            "ResolvedRefs",
+            "All backend references resolved".into(),
+        )
     }
 
-    pub fn error_policy(
-        _obj: Arc<HTTPRoute>,
-        error: &GatewayError,
-        _ctx: Arc<()>,
-    ) -> Action {
+    pub fn error_policy(_obj: Arc<HTTPRoute>, error: &GatewayError, _ctx: Arc<()>) -> Action {
         warn!(error = %error, "HTTPRoute reconciliation failed");
         Action::requeue(std::time::Duration::from_secs(15))
     }

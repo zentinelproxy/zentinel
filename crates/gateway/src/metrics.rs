@@ -4,8 +4,7 @@
 //! resource counts for operational visibility.
 
 use prometheus::{
-    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts,
-    Registry,
+    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
 };
 
 /// All controller metrics, registered with a Prometheus registry.
@@ -51,7 +50,9 @@ impl ControllerMetrics {
                 "zentinel_gateway_reconciliation_duration_seconds",
                 "Duration of reconciliation by resource type",
             )
-            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0]),
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
+            ]),
             &["resource"],
         )?;
         registry.register(Box::new(reconciliation_duration_seconds.clone()))?;
