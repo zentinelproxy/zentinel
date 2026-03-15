@@ -122,6 +122,13 @@ impl HttpRouteReconciler {
                             "message": "Cross-namespace parent ref not allowed by Gateway",
                             "observedGeneration": generation,
                             "lastTransitionTime": now,
+                        }, {
+                            "type": "ResolvedRefs",
+                            "status": "True",
+                            "reason": "ResolvedRefs",
+                            "message": "References resolved (route not accepted)",
+                            "observedGeneration": generation,
+                            "lastTransitionTime": now,
                         }]
                     }));
                     continue;
@@ -159,6 +166,13 @@ impl HttpRouteReconciler {
                             "status": "False",
                             "reason": "NoMatchingListenerHostname",
                             "message": "No listener hostname intersects with route hostnames",
+                            "observedGeneration": generation,
+                            "lastTransitionTime": now,
+                        }, {
+                            "type": "ResolvedRefs",
+                            "status": "True",
+                            "reason": "ResolvedRefs",
+                            "message": "References resolved (route not accepted)",
                             "observedGeneration": generation,
                             "lastTransitionTime": now,
                         }]

@@ -234,11 +234,10 @@ impl GatewayReconciler {
             match secret_api.get(&cert_ref.name).await {
                 Ok(secret) => {
                     // Verify it has tls.crt and tls.key
-                    let has_data = secret
-                        .data
-                        .as_ref()
+                    let data = secret.data.as_ref();
+                    let has_keys = data
                         .is_some_and(|d| d.contains_key("tls.crt") && d.contains_key("tls.key"));
-                    if !has_data {
+                    if !has_keys {
                         return (
                             false,
                             "InvalidCertificateRef",
@@ -247,6 +246,23 @@ impl GatewayReconciler {
                                 secret_ns, cert_ref.name
                             ),
                         );
+                    }
+
+                    // Validate PEM content (must start with -----BEGIN)
+                    if let Some(d) = data {
+                        if let Some(cert_bytes) = d.get("tls.crt") {
+                            let cert_str = String::from_utf8_lossy(&cert_bytes.0);
+                            if !cert_str.trim_start().starts_with("-----BEGIN") {
+                                return (
+                                    false,
+                                    "InvalidCertificateRef",
+                                    format!(
+                                        "Secret {}/{} tls.crt is not valid PEM",
+                                        secret_ns, cert_ref.name
+                                    ),
+                                );
+                            }
+                        }
                     }
                 }
                 Err(kube::Error::Api(err)) if err.code == 404 => {
