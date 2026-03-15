@@ -32,9 +32,11 @@
 
 pub mod config_writer;
 pub mod controller;
+pub mod embedded;
 pub mod error;
 pub mod leader;
 pub mod metrics;
+pub mod policies;
 pub mod reconcilers;
 pub mod tls;
 pub mod translator;

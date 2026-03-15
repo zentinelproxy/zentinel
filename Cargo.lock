@@ -8240,6 +8240,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "async-trait",
  "chrono",
  "futures",
  "gateway-api",
@@ -8251,6 +8252,7 @@ dependencies = [
  "parking_lot",
  "prometheus 0.14.0",
  "rustls",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

@@ -5,14 +5,16 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use futures::StreamExt;
+use gateway_api::backendtlspolicies::BackendTLSPolicy;
+use gateway_api::experimental::tcproutes::TCPRoute;
 use gateway_api::experimental::tlsroutes::TLSRoute;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
 use gateway_api::grpcroutes::GRPCRoute;
 use gateway_api::httproutes::HTTPRoute;
 use gateway_api::referencegrants::ReferenceGrant;
-use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::api::core::v1::Secret;
+use k8s_openapi::api::networking::v1::Ingress;
 use kube::api::ListParams;
 use kube::runtime::controller::Controller;
 use kube::runtime::watcher;
@@ -23,8 +25,9 @@ use zentinel_config::Config;
 
 use crate::error::GatewayError;
 use crate::reconcilers::{
-    GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler, HttpRouteReconciler,
-    IngressReconciler, ReferenceGrantIndex, TlsRouteReconciler,
+    BackendTlsPolicyReconciler, GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler,
+    HttpRouteReconciler, IngressReconciler, ReferenceGrantIndex, TcpRouteReconciler,
+    TlsRouteReconciler,
 };
 use crate::config_writer::ConfigWriter;
 use crate::tls::SecretCertificateManager;
@@ -133,6 +136,8 @@ impl GatewayController {
         let httproute_fut = self.run_httproute_controller(Arc::clone(&translator));
         let grpcroute_fut = self.run_grpcroute_controller(Arc::clone(&translator));
         let tlsroute_fut = self.run_tlsroute_controller(Arc::clone(&translator));
+        let tcproute_fut = self.run_tcproute_controller(Arc::clone(&translator));
+        let backend_tls_fut = self.run_backend_tls_policy_controller(Arc::clone(&translator));
         let ingress_fut = self.run_ingress_controller();
         let refgrant_fut = self.run_reference_grant_watcher();
         let secret_fut = self.run_secret_watcher(Arc::clone(&translator));
@@ -152,6 +157,12 @@ impl GatewayController {
             }
             res = tlsroute_fut => {
                 error!("TLSRoute controller exited: {:?}", res);
+            }
+            res = tcproute_fut => {
+                error!("TCPRoute controller exited: {:?}", res);
+            }
+            res = backend_tls_fut => {
+                error!("BackendTLSPolicy controller exited: {:?}", res);
             }
             res = ingress_fut => {
                 error!("Ingress controller exited: {:?}", res);
@@ -296,6 +307,63 @@ impl GatewayController {
                 match res {
                     Ok((_obj, _action)) => {}
                     Err(e) => error!(error = %e, "TLSRoute reconciliation error"),
+                }
+            })
+            .await;
+
+        Ok(())
+    }
+
+    async fn run_tcproute_controller(
+        &self,
+        translator: Arc<ConfigTranslator>,
+    ) -> Result<(), GatewayError> {
+        let reconciler = Arc::new(TcpRouteReconciler::new(self.client.clone(), translator));
+        let api: Api<TCPRoute> = Api::all(self.client.clone());
+
+        Controller::new(api, watcher::Config::default())
+            .run(
+                move |obj, _ctx| {
+                    let reconciler = Arc::clone(&reconciler);
+                    async move { reconciler.reconcile(obj).await }
+                },
+                TcpRouteReconciler::error_policy,
+                Arc::new(()),
+            )
+            .for_each(|res| async move {
+                match res {
+                    Ok((_obj, _action)) => {}
+                    Err(e) => error!(error = %e, "TCPRoute reconciliation error"),
+                }
+            })
+            .await;
+
+        Ok(())
+    }
+
+    async fn run_backend_tls_policy_controller(
+        &self,
+        translator: Arc<ConfigTranslator>,
+    ) -> Result<(), GatewayError> {
+        let reconciler = Arc::new(BackendTlsPolicyReconciler::new(
+            self.client.clone(),
+            translator,
+        ));
+        let api: Api<BackendTLSPolicy> = Api::all(self.client.clone());
+
+        Controller::new(api, watcher::Config::default())
+            .run(
+                move |obj, _ctx| {
+                    let reconciler = Arc::clone(&reconciler);
+                    async move { reconciler.reconcile(obj).await }
+                },
+                BackendTlsPolicyReconciler::error_policy,
+                Arc::new(()),
+            )
+            .for_each(|res| async move {
+                match res {
+                    Ok((_obj, _action)) => {}
+                    Err(e) => error!(error = %e, "BackendTLSPolicy reconciliation error"),
                 }
             })
             .await;
