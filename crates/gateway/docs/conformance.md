@@ -13,7 +13,7 @@ Zentinel's Gateway API controller aims to pass the official [Gateway API conform
 ### Install Gateway API CRDs
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
 ```
 
 ### Deploy the Controller
@@ -42,10 +42,10 @@ git clone https://github.com/kubernetes-sigs/gateway-api.git
 cd gateway-api
 
 # Run conformance tests
-go test ./conformance -run TestConformance \
+go test ./... -run TestConformance \
   -gateway-class=zentinel \
   -controller-name=zentinelproxy.io/gateway-controller \
-  -supported-features=HTTPRoute,ReferenceGrant \
+  -v \
   -v
 ```
 

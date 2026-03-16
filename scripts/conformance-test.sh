@@ -24,7 +24,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CLUSTER_NAME="zentinel-conformance"
 GATEWAY_IMAGE="zentinel-gateway:conformance"
 PROXY_IMAGE="zentinel:conformance"
-GATEWAY_API_VERSION="v1.2.1"
+GATEWAY_API_VERSION="v1.4.1"
 NAMESPACE="zentinel-system"
 
 SKIP_BUILD=false
@@ -94,7 +94,6 @@ kind load docker-image "$PROXY_IMAGE" --name "$CLUSTER_NAME"
 # Step 3: Install Gateway API CRDs
 echo "==> Installing Gateway API CRDs ($GATEWAY_API_VERSION)..."
 kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
-kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/experimental-install.yaml"
 
 # Step 4: Deploy zentinel-gateway
 echo "==> Deploying zentinel-gateway controller + proxy..."
@@ -102,11 +101,11 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 helm upgrade --install zentinel-gateway "$ROOT_DIR/deploy/helm/zentinel-gateway" \
     --namespace "$NAMESPACE" \
-    --set image.repository="$GATEWAY_IMAGE" \
-    --set image.tag="" \
+    --set image.repository=zentinel-gateway \
+    --set image.tag=conformance \
     --set image.pullPolicy=Never \
-    --set proxy.image.repository="$PROXY_IMAGE" \
-    --set proxy.image.tag="" \
+    --set proxy.image.repository=zentinel \
+    --set proxy.image.tag=conformance \
     --set proxy.image.pullPolicy=Never \
     --set proxy.httpPort=8080 \
     --set proxy.httpsPort=8443 \
@@ -129,19 +128,17 @@ cd "$ROOT_DIR/conformance"
 CONFORMANCE_ARGS=(
     -run TestConformance
     -gateway-class=zentinel
-    -controller-name=zentinelproxy.io/gateway-controller
-    -supported-features=HTTPRoute,ReferenceGrant
     -v
     -count=1
 )
 
 if [ "$GENERATE_REPORT" = true ]; then
-    REPORT_FILE="$ROOT_DIR/conformance/zentinel-conformance-report.yaml"
-    CONFORMANCE_ARGS+=(-conformance-report="$REPORT_FILE")
+    REPORT_FILE="$ROOT_DIR/conformance/reports/standard-v0.6.1-default-report.yaml"
+    CONFORMANCE_ARGS+=(-report-output="$REPORT_FILE")
     echo "    Report will be written to: $REPORT_FILE"
 fi
 
-go test ./... "${CONFORMANCE_ARGS[@]}" 2>&1 | tee "$ROOT_DIR/conformance/test-output.log"
+go test ./... "${CONFORMANCE_ARGS[@]}" -timeout=90m 2>&1 | tee "$ROOT_DIR/conformance/test-output.log"
 TEST_EXIT=${PIPESTATUS[0]}
 
 if [ $TEST_EXIT -eq 0 ]; then

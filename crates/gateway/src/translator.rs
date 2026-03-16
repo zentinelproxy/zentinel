@@ -8,13 +8,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use gateway_api::common::{HTTPFilterType, ParentReference};
 use gateway_api::experimental::tlsroutes::TLSRoute;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
 use gateway_api::grpcroutes::GRPCRoute;
 use gateway_api::httproutes::{
-    HTTPRoute, HTTPRouteRulesBackendRefs, HTTPRouteRulesFilters, HTTPRouteRulesFiltersType,
-    HTTPRouteRulesMatches, HTTPRouteRulesMatchesPathType,
+    HTTPBackendReference, HTTPRoute, HttpRouteFilter, HttpRouteRulesMatchesPathType, RouteMatch,
 };
 use kube::api::ListParams;
 use kube::{Api, Client, ResourceExt};
@@ -127,19 +127,15 @@ impl ConfigTranslator {
         for route in &all_routes.items {
             // Check if any parent ref points to one of our Gateways
             let parent_refs = route.spec.parent_refs.as_ref();
-            let is_ours = parent_refs.is_some_and(
-                |refs: &Vec<gateway_api::httproutes::HTTPRouteParentRefs>| {
-                    refs.iter()
-                        .any(|pr: &gateway_api::httproutes::HTTPRouteParentRefs| {
-                            let gw_ns = pr.namespace.as_deref().unwrap_or("default");
-                            let gw_name = pr.name.as_str();
-                            our_gateways.iter().any(|g: &&Gateway| {
-                                g.name_any() == gw_name
-                                    && g.namespace().unwrap_or_default() == gw_ns
-                            })
-                        })
-                },
-            );
+            let is_ours = parent_refs.is_some_and(|refs: &Vec<ParentReference>| {
+                refs.iter().any(|pr: &ParentReference| {
+                    let gw_ns = pr.namespace.as_deref().unwrap_or("default");
+                    let gw_name = pr.name.as_str();
+                    our_gateways.iter().any(|g: &&Gateway| {
+                        g.name_any() == gw_name && g.namespace().unwrap_or_default() == gw_ns
+                    })
+                })
+            });
 
             if !is_ours {
                 continue;
@@ -158,19 +154,15 @@ impl ConfigTranslator {
 
         for route in &all_grpc_routes.items {
             let parent_refs = route.spec.parent_refs.as_ref();
-            let is_ours = parent_refs.is_some_and(
-                |refs: &Vec<gateway_api::grpcroutes::GRPCRouteParentRefs>| {
-                    refs.iter()
-                        .any(|pr: &gateway_api::grpcroutes::GRPCRouteParentRefs| {
-                            let gw_ns = pr.namespace.as_deref().unwrap_or("default");
-                            let gw_name = pr.name.as_str();
-                            our_gateways.iter().any(|g: &&Gateway| {
-                                g.name_any() == gw_name
-                                    && g.namespace().unwrap_or_default() == gw_ns
-                            })
-                        })
-                },
-            );
+            let is_ours = parent_refs.is_some_and(|refs: &Vec<ParentReference>| {
+                refs.iter().any(|pr: &ParentReference| {
+                    let gw_ns = pr.namespace.as_deref().unwrap_or("default");
+                    let gw_name = pr.name.as_str();
+                    our_gateways.iter().any(|g: &&Gateway| {
+                        g.name_any() == gw_name && g.namespace().unwrap_or_default() == gw_ns
+                    })
+                })
+            });
 
             if !is_ours {
                 continue;
@@ -195,17 +187,16 @@ impl ConfigTranslator {
         for route in &all_tls_routes {
             let parent_refs = route.spec.parent_refs.as_ref();
             let is_ours = parent_refs.is_some_and(
-                |refs: &Vec<gateway_api::experimental::tlsroutes::TLSRouteParentRefs>| {
-                    refs.iter().any(
-                        |pr: &gateway_api::experimental::tlsroutes::TLSRouteParentRefs| {
+                |refs: &Vec<gateway_api::experimental::common::ParentReference>| {
+                    refs.iter()
+                        .any(|pr: &gateway_api::experimental::common::ParentReference| {
                             let gw_ns = pr.namespace.as_deref().unwrap_or("default");
                             let gw_name = pr.name.as_str();
                             our_gateways.iter().any(|g: &&Gateway| {
                                 g.name_any() == gw_name
                                     && g.namespace().unwrap_or_default() == gw_ns
                             })
-                        },
-                    )
+                        })
                 },
             );
 
@@ -499,7 +490,7 @@ impl ConfigTranslator {
     /// Translate HTTPRoute matches into Zentinel match conditions.
     fn translate_matches(
         &self,
-        rule_matches: &Option<Vec<HTTPRouteRulesMatches>>,
+        rule_matches: &Option<Vec<RouteMatch>>,
         hostnames: &[String],
     ) -> Vec<MatchCondition> {
         let mut conditions = Vec::new();
@@ -531,10 +522,10 @@ impl ConfigTranslator {
                 let value = path.value.as_deref().unwrap_or("/").to_string();
 
                 match path.r#type {
-                    Some(HTTPRouteRulesMatchesPathType::Exact) => {
+                    Some(HttpRouteRulesMatchesPathType::Exact) => {
                         conditions.push(MatchCondition::Path(value));
                     }
-                    Some(HTTPRouteRulesMatchesPathType::RegularExpression) => {
+                    Some(HttpRouteRulesMatchesPathType::RegularExpression) => {
                         conditions.push(MatchCondition::PathRegex(value));
                     }
                     _ => {
@@ -590,7 +581,7 @@ impl ConfigTranslator {
     fn translate_backends(
         &self,
         rule_id: &str,
-        backend_refs: &Option<Vec<HTTPRouteRulesBackendRefs>>,
+        backend_refs: &Option<Vec<HTTPBackendReference>>,
         route_ns: &str,
     ) -> Result<(String, Option<UpstreamConfig>), GatewayError> {
         let upstream_id = format!("{rule_id}-upstream");
@@ -680,7 +671,7 @@ impl ConfigTranslator {
     /// Extract request header modifications from HTTPRoute filters.
     fn extract_request_header_mods(
         &self,
-        filters: &Option<Vec<HTTPRouteRulesFilters>>,
+        filters: &Option<Vec<HttpRouteFilter>>,
     ) -> HeaderModifications {
         let mut mods = HeaderModifications::default();
 
@@ -690,7 +681,7 @@ impl ConfigTranslator {
         };
 
         for filter in filters {
-            if filter.r#type == HTTPRouteRulesFiltersType::RequestHeaderModifier {
+            if filter.r#type == HTTPFilterType::RequestHeaderModifier {
                 if let Some(ref modifier) = filter.request_header_modifier {
                     if let Some(ref adds) = modifier.add {
                         for header in adds {
@@ -715,7 +706,7 @@ impl ConfigTranslator {
     /// Extract response header modifications from HTTPRoute filters.
     fn extract_response_header_mods(
         &self,
-        filters: &Option<Vec<HTTPRouteRulesFilters>>,
+        filters: &Option<Vec<HttpRouteFilter>>,
     ) -> HeaderModifications {
         let mut mods = HeaderModifications::default();
 
@@ -725,7 +716,7 @@ impl ConfigTranslator {
         };
 
         for filter in filters {
-            if filter.r#type == HTTPRouteRulesFiltersType::ResponseHeaderModifier {
+            if filter.r#type == HTTPFilterType::ResponseHeaderModifier {
                 if let Some(ref modifier) = filter.response_header_modifier {
                     if let Some(ref adds) = modifier.add {
                         for header in adds {
@@ -750,7 +741,7 @@ impl ConfigTranslator {
     /// Extract RequestRedirect filters and create Zentinel filter configs.
     fn extract_redirect_filters(
         &self,
-        rule_filters: &Option<Vec<HTTPRouteRulesFilters>>,
+        rule_filters: &Option<Vec<HttpRouteFilter>>,
         rule_id: &str,
         filter_configs: &mut HashMap<String, FilterConfig>,
         route_filter_ids: &mut Vec<String>,
@@ -761,7 +752,7 @@ impl ConfigTranslator {
         };
 
         for (i, filter) in filters.iter().enumerate() {
-            if filter.r#type != HTTPRouteRulesFiltersType::RequestRedirect {
+            if filter.r#type != HTTPFilterType::RequestRedirect {
                 continue;
             }
 
@@ -815,7 +806,7 @@ impl ConfigTranslator {
     /// Extract URLRewrite filters and create Zentinel filter configs.
     fn extract_rewrite_filters(
         &self,
-        rule_filters: &Option<Vec<HTTPRouteRulesFilters>>,
+        rule_filters: &Option<Vec<HttpRouteFilter>>,
         rule_id: &str,
         filter_configs: &mut HashMap<String, FilterConfig>,
         route_filter_ids: &mut Vec<String>,
@@ -826,7 +817,7 @@ impl ConfigTranslator {
         };
 
         for (i, filter) in filters.iter().enumerate() {
-            if filter.r#type != HTTPRouteRulesFiltersType::UrlRewrite {
+            if filter.r#type != HTTPFilterType::UrlRewrite {
                 continue;
             }
 
@@ -935,7 +926,7 @@ impl ConfigTranslator {
     /// matches become path prefix/exact matches.
     fn translate_grpc_matches(
         &self,
-        rule_matches: &Option<Vec<gateway_api::grpcroutes::GRPCRouteRulesMatches>>,
+        rule_matches: &Option<Vec<gateway_api::grpcroutes::GrpcRouteMatch>>,
         hostnames: &[String],
     ) -> Vec<MatchCondition> {
         let mut conditions = Vec::new();
@@ -1010,7 +1001,7 @@ impl ConfigTranslator {
     fn translate_grpc_backends(
         &self,
         rule_id: &str,
-        backend_refs: &[gateway_api::grpcroutes::GRPCRouteRulesBackendRefs],
+        backend_refs: &[gateway_api::grpcroutes::GRPCBackendReference],
         route_ns: &str,
     ) -> Result<(String, Option<UpstreamConfig>), GatewayError> {
         let upstream_id = format!("{rule_id}-upstream");
@@ -1163,7 +1154,7 @@ impl ConfigTranslator {
     fn translate_tls_backends(
         &self,
         rule_id: &str,
-        backend_refs: &[gateway_api::experimental::tlsroutes::TLSRouteRulesBackendRefs],
+        backend_refs: &[gateway_api::experimental::common::BackendReference],
         route_ns: &str,
     ) -> Result<(String, Option<UpstreamConfig>), GatewayError> {
         let upstream_id = format!("{rule_id}-upstream");

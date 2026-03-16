@@ -10,7 +10,7 @@
 
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-use k8s_openapi::chrono::Utc;
+use k8s_openapi::jiff;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::core::ObjectMeta;
 use kube::Client;
@@ -125,7 +125,7 @@ impl LeaderElector {
     ///
     /// Returns `true` if this instance is (now) the leader.
     async fn try_acquire_or_renew(&self, api: &Api<Lease>) -> Result<bool, GatewayError> {
-        let now = Utc::now();
+        let now = jiff::Timestamp::now();
 
         // Try to get existing lease
         match api.get(&self.config.lease_name).await {
@@ -146,7 +146,8 @@ impl LeaderElector {
                 // Check if the lease has expired
                 let expired = match (renew_time, duration_secs) {
                     (Some(MicroTime(last_renew)), Some(duration)) => {
-                        let expiry = *last_renew + chrono::Duration::seconds(i64::from(duration));
+                        let expiry =
+                            *last_renew + jiff::SignedDuration::from_secs(i64::from(duration));
                         now > expiry
                     }
                     _ => true, // No renew time = treat as expired
@@ -184,7 +185,7 @@ impl LeaderElector {
 
     /// Create a new Lease resource.
     async fn create_lease(&self, api: &Api<Lease>) -> Result<(), GatewayError> {
-        let now = Utc::now();
+        let now = jiff::Timestamp::now();
         let lease = Lease {
             metadata: ObjectMeta {
                 name: Some(self.config.lease_name.clone()),
@@ -208,7 +209,7 @@ impl LeaderElector {
 
     /// Update an existing Lease with our identity and renew time.
     async fn update_lease(&self, api: &Api<Lease>, existing: &Lease) -> Result<(), GatewayError> {
-        let now = Utc::now();
+        let now = jiff::Timestamp::now();
         let previous_holder = existing
             .spec
             .as_ref()

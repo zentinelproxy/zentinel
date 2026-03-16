@@ -3,7 +3,8 @@
 //! Each reconciler watches a specific Gateway API resource type and
 //! triggers config translation when resources change.
 
-pub mod backend_tls;
+// TODO: Re-enable when BackendTLSPolicy CRD is available in gateway-api 0.20+
+// pub mod backend_tls;
 pub mod gateway;
 pub mod gateway_class;
 pub mod grpcroute;
@@ -13,7 +14,8 @@ pub mod reference_grant;
 pub mod tcproute;
 pub mod tlsroute;
 
-pub use backend_tls::BackendTlsPolicyReconciler;
+// TODO: Re-enable when BackendTLSPolicy CRD is available in gateway-api 0.20+
+// pub use backend_tls::BackendTlsPolicyReconciler;
 pub use gateway::GatewayReconciler;
 pub use gateway_class::GatewayClassReconciler;
 pub use grpcroute::GrpcRouteReconciler;

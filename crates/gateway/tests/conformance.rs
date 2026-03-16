@@ -8,7 +8,7 @@
 //!
 //! ```bash
 //! # Install Gateway API CRDs
-//! kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+//! kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
 //!
 //! # Deploy zentinel-gateway controller
 //! helm install zentinel-gateway deploy/helm/zentinel-gateway/

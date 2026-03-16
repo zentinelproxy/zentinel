@@ -3,12 +3,12 @@
 //
 // Run:
 //
-//	go test ./... -run TestConformance -gateway-class=zentinel -v
+//	go test ./... -run TestConformance -gateway-class=zentinel -v -timeout=30m
 //
 // Generate report:
 //
 //	go test ./... -run TestConformance -gateway-class=zentinel \
-//	  -report-output=reports/standard-v0.6.1-default-report.yaml -v
+//	  -report-output=reports/standard-v0.6.1-default-report.yaml -v -timeout=30m
 package conformance
 
 import (
@@ -17,6 +17,7 @@ import (
 	confv1 "sigs.k8s.io/gateway-api/conformance/apis/v1"
 	"sigs.k8s.io/gateway-api/conformance"
 	"sigs.k8s.io/gateway-api/conformance/utils/suite"
+	"sigs.k8s.io/gateway-api/pkg/features"
 )
 
 func TestConformance(t *testing.T) {
@@ -27,6 +28,15 @@ func TestConformance(t *testing.T) {
 	}
 
 	opts.ConformanceProfiles.Insert(suite.GatewayHTTPConformanceProfileName)
+
+	// Declare core Gateway HTTP features. We set exactly the features required
+	// by the GATEWAY-HTTP profile's core set so the suite can run.
+	opts.SupportedFeatures = suite.FeaturesSet{}
+	opts.SupportedFeatures.Insert(
+		features.SupportGateway,
+		features.SupportHTTPRoute,
+		features.SupportReferenceGrant,
+	)
 
 	opts.Implementation = confv1.Implementation{
 		Organization: "zentinelproxy",

@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use futures::StreamExt;
-use gateway_api::backendtlspolicies::BackendTLSPolicy;
 use gateway_api::experimental::tcproutes::TCPRoute;
 use gateway_api::experimental::tlsroutes::TLSRoute;
 use gateway_api::gatewayclasses::GatewayClass;
@@ -26,9 +25,8 @@ use zentinel_config::Config;
 use crate::config_writer::ConfigWriter;
 use crate::error::GatewayError;
 use crate::reconcilers::{
-    BackendTlsPolicyReconciler, GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler,
-    HttpRouteReconciler, IngressReconciler, ReferenceGrantIndex, TcpRouteReconciler,
-    TlsRouteReconciler,
+    GatewayClassReconciler, GatewayReconciler, GrpcRouteReconciler, HttpRouteReconciler,
+    IngressReconciler, ReferenceGrantIndex, TcpRouteReconciler, TlsRouteReconciler,
 };
 use crate::tls::SecretCertificateManager;
 use crate::translator::ConfigTranslator;
@@ -137,7 +135,8 @@ impl GatewayController {
         let grpcroute_fut = self.run_grpcroute_controller(Arc::clone(&translator));
         let tlsroute_fut = self.run_tlsroute_controller(Arc::clone(&translator));
         let tcproute_fut = self.run_tcproute_controller(Arc::clone(&translator));
-        let backend_tls_fut = self.run_backend_tls_policy_controller(Arc::clone(&translator));
+        // TODO: Re-enable when BackendTLSPolicy CRD is available in gateway-api 0.20+
+        // let backend_tls_fut = self.run_backend_tls_policy_controller(Arc::clone(&translator));
         let ingress_fut = self.run_ingress_controller();
         let refgrant_fut = self.run_reference_grant_watcher();
         let secret_fut = self.run_secret_watcher(Arc::clone(&translator));
@@ -161,9 +160,10 @@ impl GatewayController {
             res = tcproute_fut => {
                 error!("TCPRoute controller exited: {:?}", res);
             }
-            res = backend_tls_fut => {
-                error!("BackendTLSPolicy controller exited: {:?}", res);
-            }
+            // TODO: Re-enable when BackendTLSPolicy CRD is available in gateway-api 0.20+
+            // res = backend_tls_fut => {
+            //     error!("BackendTLSPolicy controller exited: {:?}", res);
+            // }
             res = ingress_fut => {
                 error!("Ingress controller exited: {:?}", res);
             }
@@ -341,35 +341,8 @@ impl GatewayController {
         Ok(())
     }
 
-    async fn run_backend_tls_policy_controller(
-        &self,
-        translator: Arc<ConfigTranslator>,
-    ) -> Result<(), GatewayError> {
-        let reconciler = Arc::new(BackendTlsPolicyReconciler::new(
-            self.client.clone(),
-            translator,
-        ));
-        let api: Api<BackendTLSPolicy> = Api::all(self.client.clone());
-
-        Controller::new(api, watcher::Config::default())
-            .run(
-                move |obj, _ctx| {
-                    let reconciler = Arc::clone(&reconciler);
-                    async move { reconciler.reconcile(obj).await }
-                },
-                BackendTlsPolicyReconciler::error_policy,
-                Arc::new(()),
-            )
-            .for_each(|res| async move {
-                match res {
-                    Ok((_obj, _action)) => {}
-                    Err(e) => error!(error = %e, "BackendTLSPolicy reconciliation error"),
-                }
-            })
-            .await;
-
-        Ok(())
-    }
+    // TODO: Re-enable when BackendTLSPolicy CRD is available in gateway-api 0.20+
+    // async fn run_backend_tls_policy_controller(...)
 
     async fn run_ingress_controller(&self) -> Result<(), GatewayError> {
         let reconciler = Arc::new(IngressReconciler::new(self.client.clone()));
