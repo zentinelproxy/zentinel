@@ -95,7 +95,7 @@ impl HttpRouteReconciler {
 
             // Check cross-namespace parent ref permission
             if gw_namespace != namespace {
-                let allowed = self.is_parent_ref_allowed(&gw, &namespace);
+                let allowed = self.is_parent_ref_allowed(&gw, &namespace).await;
                 if !allowed {
                     parent_statuses.push(json!({
                         "parentRef": {
@@ -249,7 +249,7 @@ impl HttpRouteReconciler {
     }
 
     /// Check if a Gateway allows routes from the given namespace.
-    fn is_parent_ref_allowed(&self, gw: &Gateway, route_namespace: &str) -> bool {
+    async fn is_parent_ref_allowed(&self, gw: &Gateway, route_namespace: &str) -> bool {
         use gateway_api::gateways::GatewayListenersAllowedRoutesNamespacesFrom;
 
         let gw_ns = gw.namespace().unwrap_or_default();
@@ -265,7 +265,16 @@ impl HttpRouteReconciler {
                                     return true;
                                 }
                             }
-                            _ => {}
+                            GatewayListenersAllowedRoutesNamespacesFrom::Selector => {
+                                if let Some(ref selector) = namespaces.selector {
+                                    if self
+                                        .namespace_matches_selector(route_namespace, selector)
+                                        .await
+                                    {
+                                        return true;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -277,6 +286,33 @@ impl HttpRouteReconciler {
             }
         }
         false
+    }
+
+    /// Check if a namespace's labels match a label selector.
+    async fn namespace_matches_selector(
+        &self,
+        namespace: &str,
+        selector: &gateway_api::gateways::GatewayListenersAllowedRoutesNamespacesSelector,
+    ) -> bool {
+        let Some(ref match_labels) = selector.match_labels else {
+            return true; // Empty selector matches all
+        };
+
+        let ns_api: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(self.client.clone());
+        match ns_api.get(namespace).await {
+            Ok(ns) => {
+                let ns_labels = ns.metadata.labels.unwrap_or_default();
+                match_labels.iter().all(|(k, v)| ns_labels.get(k) == Some(v))
+            }
+            Err(e) => {
+                warn!(
+                    namespace = namespace,
+                    error = %e,
+                    "Failed to fetch namespace for label selector check"
+                );
+                false
+            }
+        }
     }
 
     /// Validate backend refs for an HTTPRoute.

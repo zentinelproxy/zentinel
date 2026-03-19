@@ -10,7 +10,7 @@ use pingora_proxy::Session;
 use tracing::{debug, trace};
 use zentinel_config::{
     CompressFilter, Config, CorsFilter, Filter, FilterPhase, HeadersFilter, LogFilter,
-    TimeoutFilter,
+    PathModifier, RedirectFilter, TimeoutFilter, UrlRewriteFilter,
 };
 
 use super::context::RequestContext;
@@ -36,6 +36,14 @@ pub async fn apply_request_filters(
         };
 
         match &filter_config.filter {
+            Filter::Redirect(redirect) => {
+                if apply_redirect(session, ctx, redirect).await? {
+                    return Ok(true); // Redirect sent, short-circuit
+                }
+            }
+            Filter::UrlRewrite(rewrite) => {
+                apply_url_rewrite(session, ctx, rewrite);
+            }
             Filter::Cors(cors) => {
                 if apply_cors_preflight(session, ctx, cors).await? {
                     return Ok(true); // Preflight handled, short-circuit
@@ -180,6 +188,168 @@ fn apply_headers_to_response(resp: &mut ResponseHeader, filter: &HeadersFilter, 
         remove_count = filter.remove.len(),
         "Applied headers filter to response"
     );
+}
+
+// =============================================================================
+// Redirect Filter
+// =============================================================================
+
+/// Apply a redirect filter by sending a redirect response. Returns true (short-circuit).
+async fn apply_redirect(
+    session: &mut Session,
+    ctx: &RequestContext,
+    redirect: &RedirectFilter,
+) -> pingora::Result<bool> {
+    let req = session.req_header();
+
+    // Build Location URL from the original request, applying overrides
+    let orig_scheme = if req.uri.scheme().is_some_and(|s| s.as_str() == "https") {
+        "https"
+    } else {
+        "http"
+    };
+    let scheme = redirect.scheme.as_deref().unwrap_or(orig_scheme);
+
+    let orig_host = req
+        .headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    // Strip port from host if present (we'll add port separately)
+    let orig_host_no_port = orig_host.split(':').next().unwrap_or(orig_host);
+    let host = redirect.hostname.as_deref().unwrap_or(orig_host_no_port);
+
+    let orig_path = req.uri.path();
+    let path = match &redirect.path {
+        Some(PathModifier::ReplaceFullPath { value }) => value.to_string(),
+        Some(PathModifier::ReplacePrefixMatch { value }) => {
+            replace_matched_prefix(orig_path, ctx, value)
+        }
+        None => orig_path.to_string(),
+    };
+
+    let port_suffix = match redirect.port {
+        Some(port) => {
+            let is_default =
+                (scheme == "http" && port == 80) || (scheme == "https" && port == 443);
+            if is_default {
+                String::new()
+            } else {
+                format!(":{port}")
+            }
+        }
+        None => String::new(),
+    };
+
+    let location = format!("{scheme}://{host}{port_suffix}{path}");
+
+    debug!(
+        correlation_id = %ctx.trace_id,
+        status = redirect.status_code,
+        location = %location,
+        "Applying redirect filter"
+    );
+
+    let mut header = ResponseHeader::build(redirect.status_code, None)?;
+    header.insert_header("Location", &location)?;
+    header.insert_header("Content-Length", "0")?;
+
+    session
+        .write_response_header(Box::new(header), true)
+        .await?;
+    Ok(true)
+}
+
+// =============================================================================
+// URL Rewrite Filter
+// =============================================================================
+
+/// Apply a URL rewrite filter by modifying the request URI and/or Host header.
+fn apply_url_rewrite(session: &mut Session, ctx: &RequestContext, rewrite: &UrlRewriteFilter) {
+    // Rewrite hostname (Host header)
+    if let Some(ref hostname) = rewrite.hostname {
+        session
+            .req_header_mut()
+            .insert_header("Host", hostname.as_str())
+            .ok();
+    }
+
+    // Rewrite path
+    if let Some(ref path_mod) = rewrite.path {
+        let orig_path = session.req_header().uri.path().to_string();
+        let new_path = match path_mod {
+            PathModifier::ReplaceFullPath { value } => value.clone(),
+            PathModifier::ReplacePrefixMatch { value } => {
+                replace_matched_prefix(&orig_path, ctx, value)
+            }
+        };
+        // Rebuild the URI with the new path, preserving query string
+        let query = session.req_header().uri.query();
+        let new_uri = if let Some(q) = query {
+            format!("{new_path}?{q}")
+        } else {
+            new_path
+        };
+        if let Ok(uri) = new_uri.parse::<http::Uri>() {
+            session.req_header_mut().set_uri(uri);
+        }
+    }
+
+    trace!(
+        correlation_id = %ctx.trace_id,
+        hostname = ?rewrite.hostname,
+        path = ?rewrite.path,
+        "Applied URL rewrite filter"
+    );
+}
+
+/// Replace the matched path prefix, preserving the suffix.
+///
+/// Finds the longest `PathPrefix` from the route's match conditions, strips it
+/// from the request path, and prepends the replacement value.
+///
+/// Example: prefix="/foo", request="/foo/bar", replacement="/baz" → "/baz/bar"
+fn replace_matched_prefix(request_path: &str, ctx: &RequestContext, replacement: &str) -> String {
+    // Find the matched prefix from the route's match conditions
+    let matched_prefix = ctx
+        .route_config
+        .as_ref()
+        .map(|rc| {
+            rc.matches
+                .iter()
+                .filter_map(|m| match m {
+                    zentinel_config::MatchCondition::PathPrefix(p) => Some(p.as_str()),
+                    _ => None,
+                })
+                // Use the longest prefix that actually matches the request path
+                .filter(|p| request_path.starts_with(p) || *p == "/")
+                .max_by_key(|p| p.len())
+                .unwrap_or("/")
+        })
+        .unwrap_or("/");
+
+    // Strip the prefix and join with replacement
+    let suffix = if matched_prefix == "/" {
+        request_path
+    } else {
+        request_path
+            .strip_prefix(matched_prefix)
+            .unwrap_or(request_path)
+    };
+
+    // Normalize: avoid double slashes or missing slash
+    let replacement = replacement.trim_end_matches('/');
+    if suffix.is_empty() || suffix == "/" {
+        if replacement.is_empty() {
+            "/".to_string()
+        } else {
+            format!("{replacement}/")
+        }
+    } else if suffix.starts_with('/') {
+        format!("{replacement}{suffix}")
+    } else {
+        format!("{replacement}/{suffix}")
+    }
 }
 
 // =============================================================================
@@ -940,5 +1110,83 @@ mod tests {
         // Both should not panic
         emit_request_log(&ctx, &log);
         emit_response_log(&ctx, &log, 404);
+    }
+
+    // =========================================================================
+    // ReplacePrefixMatch tests
+    // =========================================================================
+
+    fn ctx_with_prefix(prefix: &str) -> RequestContext {
+        use zentinel_common::types::Priority;
+        use zentinel_config::{MatchCondition, RouteConfig, RoutePolicies, ServiceType};
+
+        let route = RouteConfig {
+            id: "test".to_string(),
+            priority: Priority::Normal,
+            matches: vec![MatchCondition::PathPrefix(prefix.to_string())],
+            upstream: None,
+            service_type: ServiceType::Web,
+            policies: RoutePolicies::default(),
+            filters: vec![],
+            builtin_handler: None,
+            waf_enabled: false,
+            circuit_breaker: None,
+            retry_policy: None,
+            static_files: None,
+            api_schema: None,
+            inference: None,
+            error_pages: None,
+            websocket: false,
+            websocket_inspection: false,
+            shadow: None,
+            fallback: None,
+        };
+
+        let mut ctx = RequestContext::new();
+        ctx.trace_id = "test".to_string();
+        ctx.route_config = Some(Arc::new(route));
+        ctx
+    }
+
+    #[test]
+    fn replace_prefix_basic() {
+        let ctx = ctx_with_prefix("/foo");
+        assert_eq!(
+            replace_matched_prefix("/foo/bar", &ctx, "/baz"),
+            "/baz/bar"
+        );
+    }
+
+    #[test]
+    fn replace_prefix_exact_match() {
+        let ctx = ctx_with_prefix("/foo");
+        assert_eq!(replace_matched_prefix("/foo", &ctx, "/baz"), "/baz/");
+    }
+
+    #[test]
+    fn replace_prefix_root() {
+        let ctx = ctx_with_prefix("/");
+        assert_eq!(
+            replace_matched_prefix("/anything", &ctx, "/new"),
+            "/new/anything"
+        );
+    }
+
+    #[test]
+    fn replace_prefix_empty_replacement() {
+        let ctx = ctx_with_prefix("/old");
+        assert_eq!(
+            replace_matched_prefix("/old/path", &ctx, ""),
+            "/path"
+        );
+    }
+
+    #[test]
+    fn replace_prefix_trailing_slash() {
+        let ctx = ctx_with_prefix("/api");
+        assert_eq!(
+            replace_matched_prefix("/api/v1/users", &ctx, "/v2"),
+            "/v2/v1/users"
+        );
     }
 }

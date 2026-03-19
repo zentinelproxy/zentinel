@@ -333,58 +333,91 @@ impl CompiledRoute {
         })
     }
 
-    /// Check if this route matches the request
+    /// Check if this route matches the request.
+    ///
+    /// Host matchers use OR logic (match any host), all other matchers use AND.
+    /// This matches Gateway API semantics where multiple hostnames on an
+    /// HTTPRoute are alternatives, not conjunctions.
     fn matches(&self, req: &RequestInfo<'_>) -> bool {
-        // All matchers must pass (AND logic)
-        for (index, matcher) in self.matchers.iter().enumerate() {
-            let result = matcher.matches(req);
-            if !result {
-                trace!(
-                    route_id = %self.id,
-                    matcher_index = index,
-                    matcher_type = ?matcher,
-                    path = %req.path,
-                    "Matcher did not match"
-                );
-                return false;
+        // Partition matchers into host matchers and non-host matchers
+        let mut has_host_matchers = false;
+        let mut any_host_matched = false;
+
+        for matcher in &self.matchers {
+            match matcher {
+                CompiledMatcher::Host(_) => {
+                    has_host_matchers = true;
+                    if matcher.matches(req) {
+                        any_host_matched = true;
+                    }
+                }
+                _ => {
+                    if !matcher.matches(req) {
+                        trace!(
+                            route_id = %self.id,
+                            matcher_type = ?matcher,
+                            path = %req.path,
+                            "Matcher did not match"
+                        );
+                        return false;
+                    }
+                }
             }
+        }
+
+        // If there are host matchers, at least one must match (OR logic)
+        if has_host_matchers && !any_host_matched {
             trace!(
                 route_id = %self.id,
-                matcher_index = index,
-                matcher_type = ?matcher,
-                "Matcher passed"
+                host = %req.host,
+                "No host matcher matched"
             );
+            return false;
         }
+
         true
     }
 
-    /// Calculate route specificity for tie-breaking
+    /// Calculate route specificity for tie-breaking.
+    ///
+    /// Per Gateway API precedence rules:
+    /// 1. Path specificity is primary (exact > longest prefix > regex)
+    /// 2. Host specificity is secondary (exact > wildcard)
+    /// 3. Header/method/query conditions add specificity
+    ///
+    /// Host matchers use OR logic, so multiple hosts don't increase
+    /// specificity — we use the max host score, not the sum.
     fn specificity(&self) -> u32 {
-        let mut score = 0;
+        let mut path_score = 0u32;
+        let mut host_score = 0u32;
+        let mut condition_score = 0u32;
+
         for matcher in &self.matchers {
-            score += match matcher {
-                CompiledMatcher::Path(_) => 1000,     // Exact path is most specific
-                CompiledMatcher::PathRegex(_) => 500, // Regex is moderately specific
-                CompiledMatcher::PathPrefix(_) => 100, // Prefix is least specific
-                CompiledMatcher::Host(_) => 50,
+            match matcher {
+                CompiledMatcher::Path(_) => path_score = path_score.max(10000),
+                CompiledMatcher::PathRegex(_) => path_score = path_score.max(5000),
+                CompiledMatcher::PathPrefix(p) => {
+                    path_score = path_score.max(1000 + p.len() as u32)
+                }
+                CompiledMatcher::Host(host) => {
+                    let s = match host {
+                        HostMatcher::Exact(_) => 70,
+                        HostMatcher::Regex(_) => 60,
+                        HostMatcher::Wildcard { .. } => 50,
+                    };
+                    host_score = host_score.max(s);
+                }
                 CompiledMatcher::Header { value, .. } => {
-                    if value.is_some() {
-                        30
-                    } else {
-                        20
-                    }
+                    condition_score += if value.is_some() { 30 } else { 20 };
                 }
-                CompiledMatcher::Method(_) => 10,
+                CompiledMatcher::Method(_) => condition_score += 10,
                 CompiledMatcher::QueryParam { value, .. } => {
-                    if value.is_some() {
-                        25
-                    } else {
-                        15
-                    }
+                    condition_score += if value.is_some() { 25 } else { 15 };
                 }
-            };
+            }
         }
-        score
+
+        path_score + host_score + condition_score
     }
 }
 
@@ -393,7 +426,18 @@ impl CompiledMatcher {
     fn matches(&self, req: &RequestInfo<'_>) -> bool {
         match self {
             Self::Path(path) => req.path == *path,
-            Self::PathPrefix(prefix) => req.path.starts_with(prefix),
+            Self::PathPrefix(prefix) => {
+                if !req.path.starts_with(prefix) {
+                    return false;
+                }
+                // Enforce segment boundary per Gateway API spec:
+                // PathPrefix "/v2" must NOT match "/v2example", only "/v2", "/v2/", "/v2/anything"
+                prefix == "/"
+                    || req.path.len() == prefix.len()
+                    || prefix.ends_with('/')
+                    || req.path.as_bytes()[prefix.len()] == b'/'
+                    || req.path.as_bytes()[prefix.len()] == b'?'
+            }
             Self::PathRegex(regex) => regex.is_match(req.path),
             Self::Host(host_matcher) => host_matcher.matches(req.host),
             Self::Header { name, value } => {
@@ -438,8 +482,13 @@ impl HostMatcher {
         }
     }
 
-    /// Check if this matcher matches the host
+    /// Check if this matcher matches the host.
+    ///
+    /// Strips any port suffix from the host before matching, per Gateway API
+    /// spec: `Host: example.com:8080` must match hostname `example.com`.
     fn matches(&self, host: &str) -> bool {
+        // Strip port from host (e.g. "example.com:8080" → "example.com")
+        let host = host.split(':').next().unwrap_or(host);
         match self {
             Self::Exact(pattern) => host == pattern,
             Self::Wildcard { suffix } => {
@@ -612,6 +661,15 @@ impl<'a> RequestInfo<'a> {
             let mut buf = buf.borrow_mut();
             buf.clear();
             let _ = write!(buf, "{}:{}:{}", self.method, self.host, self.path);
+            // Include headers in cache key when header-based routing is active,
+            // otherwise different header combinations can poison the cache.
+            if let Some(ref headers) = self.headers {
+                let mut pairs: Vec<_> = headers.iter().collect();
+                pairs.sort_by_key(|(k, _)| k.as_str());
+                for (k, v) in pairs {
+                    let _ = write!(buf, "\n{k}={v}");
+                }
+            }
             f(&buf)
         })
     }
@@ -820,5 +878,82 @@ mod tests {
         assert_eq!(params.get("foo"), Some(&"bar".to_string()));
         assert_eq!(params.get("baz"), Some(&"qux".to_string()));
         assert_eq!(params.get("empty"), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn test_path_prefix_segment_boundary() {
+        let routes = vec![
+            create_test_route(
+                "v2",
+                vec![MatchCondition::PathPrefix("/v2".to_string())],
+            ),
+            create_test_route(
+                "catch-all",
+                vec![MatchCondition::PathPrefix("/".to_string())],
+            ),
+        ];
+
+        let matcher = RouteMatcher::new(routes, None).unwrap();
+
+        // /v2 exact → v2
+        let req = RequestInfo::new("GET", "/v2", "example.com");
+        assert_eq!(matcher.match_request(&req).unwrap().route_id.as_str(), "v2");
+
+        // /v2/ with trailing slash → v2
+        let req = RequestInfo::new("GET", "/v2/", "example.com");
+        assert_eq!(matcher.match_request(&req).unwrap().route_id.as_str(), "v2");
+
+        // /v2/anything → v2
+        let req = RequestInfo::new("GET", "/v2/anything", "example.com");
+        assert_eq!(matcher.match_request(&req).unwrap().route_id.as_str(), "v2");
+
+        // /v2example must NOT match /v2 prefix — falls to catch-all
+        let req = RequestInfo::new("GET", "/v2example", "example.com");
+        assert_eq!(
+            matcher.match_request(&req).unwrap().route_id.as_str(),
+            "catch-all"
+        );
+
+        // /v2?query → v2
+        let req = RequestInfo::new("GET", "/v2?foo=bar", "example.com");
+        assert_eq!(matcher.match_request(&req).unwrap().route_id.as_str(), "v2");
+    }
+
+    #[test]
+    fn test_header_matching_with_specificity() {
+        let routes = vec![
+            create_test_route(
+                "catch-all",
+                vec![MatchCondition::PathPrefix("/".to_string())],
+            ),
+            create_test_route(
+                "header-v2",
+                vec![
+                    MatchCondition::Header {
+                        name: "version".to_string(),
+                        value: Some("two".to_string()),
+                    },
+                    MatchCondition::PathPrefix("/".to_string()),
+                ],
+            ),
+        ];
+
+        let matcher = RouteMatcher::new(routes, None).unwrap();
+
+        // Without headers → catch-all
+        let req = RequestInfo::new("GET", "/", "example.com");
+        assert_eq!(
+            matcher.match_request(&req).unwrap().route_id.as_str(),
+            "catch-all"
+        );
+
+        // With version:two header → header-v2 (more specific)
+        let mut headers = HashMap::new();
+        headers.insert("version".to_string(), "two".to_string());
+        let req = RequestInfo::new("GET", "/", "example.com").with_headers(headers);
+        assert_eq!(
+            matcher.match_request(&req).unwrap().route_id.as_str(),
+            "header-v2"
+        );
     }
 }

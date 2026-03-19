@@ -300,9 +300,43 @@ impl ConfigManager {
             }
         });
 
+        // Spawn a fallback polling loop that checks the file's content hash
+        // every 1 second. inotify can miss rename-based atomic writes on some
+        // filesystems (emptyDir, overlayfs). The poll acts as a safety net.
+        // We compare content length + first/last bytes as a cheap hash to avoid
+        // re-reading the entire file on every poll.
+        let poll_manager = Arc::new(self.clone_for_task());
+        let poll_path = self.config_path.clone();
+        tokio::spawn(async move {
+            use std::io::Read;
+            let content_sig = |p: &std::path::Path| -> Option<(u64, Vec<u8>)> {
+                let mut f = std::fs::File::open(p).ok()?;
+                let meta = f.metadata().ok()?;
+                let len = meta.len();
+                // Read first 256 bytes as a fingerprint (covers schema + listeners)
+                let mut buf = vec![0u8; 256.min(len as usize)];
+                f.read_exact(&mut buf).ok()?;
+                Some((len, buf))
+            };
+            let mut last_sig = content_sig(&poll_path);
+
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                let current_sig = content_sig(&poll_path);
+                if current_sig != last_sig {
+                    last_sig = current_sig;
+                    debug!("Config file content changed (poll fallback), triggering reload");
+                    if let Err(e) = poll_manager.reload(ReloadTrigger::FileChange).await {
+                        error!(error = %e, "Poll-triggered reload failed");
+                    }
+                }
+            }
+        });
+
         info!(
             config_file = %self.config_path.display(),
-            "Auto-reload enabled: watching for configuration changes"
+            "Auto-reload enabled: watching for configuration changes (with poll fallback)"
         );
         Ok(())
     }

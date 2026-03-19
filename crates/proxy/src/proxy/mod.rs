@@ -31,6 +31,7 @@ use pingora::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -374,16 +375,33 @@ impl ZentinelProxy {
         let config_manager_clone = config_manager.clone();
 
         tokio::spawn(async move {
-            while let Ok(event) = reload_rx.recv().await {
-                if let ReloadEvent::Applied { .. } = event {
+            loop {
+                match reload_rx.recv().await {
+                    Ok(ReloadEvent::Applied { .. }) => {}
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("Reload handler lagged by {n} events, applying latest config");
+                        // Fall through to reload with the latest config
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                {
                     // Reload routes and upstreams
                     let new_config = config_manager_clone.current();
                     let flattened = new_config.flatten();
 
-                    // Update route matcher (sync parking_lot::RwLock)
-                    if let Ok(new_matcher) = RouteMatcher::new(new_config.routes.clone(), None) {
-                        *route_matcher.write() = new_matcher;
-                        info!("Global routes reloaded successfully");
+                    // Update route matcher FIRST (most critical for traffic)
+                    match RouteMatcher::new(new_config.routes.clone(), None) {
+                        Ok(new_matcher) => {
+                            *route_matcher.write() = new_matcher;
+                            info!(
+                                routes = new_config.routes.len(),
+                                "Global routes reloaded successfully"
+                            );
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to compile route matcher");
+                        }
                     }
 
                     // Update scoped route matcher
@@ -394,51 +412,48 @@ impl ZentinelProxy {
                         .await
                     {
                         error!("Failed to reload scoped routes: {}", e);
-                    } else {
-                        info!(
-                            "Scoped routes reloaded ({} scopes)",
-                            scoped_route_matcher.read().await.scope_count().await
-                        );
                     }
 
-                    // Update global upstream pools
-                    let mut new_pools = HashMap::new();
-                    for (upstream_id, upstream_config) in &new_config.upstreams {
-                        let mut config_with_id = upstream_config.clone();
-                        config_with_id.id = upstream_id.clone();
-                        match UpstreamPool::new(config_with_id).await {
-                            Ok(pool) => {
-                                new_pools.insert(upstream_id.clone(), Arc::new(pool));
-                            }
-                            Err(e) => {
-                                error!("Failed to create upstream pool {}: {}", upstream_id, e);
+                    // Update upstream pools with timeout to avoid blocking
+                    // the reload handler on DNS resolution / connection attempts
+                    let pool_update = async {
+                        let mut new_pools = HashMap::new();
+                        for (upstream_id, upstream_config) in &new_config.upstreams {
+                            let mut config_with_id = upstream_config.clone();
+                            config_with_id.id = upstream_id.clone();
+                            match UpstreamPool::new(config_with_id).await {
+                                Ok(pool) => {
+                                    new_pools.insert(upstream_id.clone(), Arc::new(pool));
+                                }
+                                Err(e) => {
+                                    error!("Failed to create upstream pool {}: {}", upstream_id, e);
+                                }
                             }
                         }
+                        new_pools
+                    };
+
+                    match tokio::time::timeout(Duration::from_secs(10), pool_update).await {
+                        Ok(new_pools) => {
+                            let old_pools = upstream_pools.replace(new_pools).await;
+
+                            // Update scoped upstream pools
+                            let new_scoped_pools =
+                                Self::build_scoped_pools_list(&flattened).await;
+                            let old_scoped_pools =
+                                scoped_upstream_pools.replace_all(new_scoped_pools).await;
+
+                            // Track drain lifecycle for old pools
+                            tokio::spawn(async move {
+                                let tracker = crate::upstream::drain::DrainTracker::default();
+                                tracker.track_pools(old_pools).await;
+                                tracker.track_pools(old_scoped_pools).await;
+                            });
+                        }
+                        Err(_) => {
+                            warn!("Upstream pool update timed out after 10s, routes still updated");
+                        }
                     }
-
-                    // Gracefully swap global pools
-                    let old_pools = upstream_pools.replace(new_pools).await;
-
-                    // Update scoped upstream pools
-                    let new_scoped_pools = Self::build_scoped_pools_list(&flattened).await;
-                    let old_scoped_pools =
-                        scoped_upstream_pools.replace_all(new_scoped_pools).await;
-
-                    info!(
-                        "Scoped upstream pools reloaded ({} pools)",
-                        scoped_upstream_pools.len().await
-                    );
-
-                    // Track drain lifecycle for old pools instead of blind sleep
-                    tokio::spawn(async move {
-                        let tracker = crate::upstream::drain::DrainTracker::default();
-
-                        // Track global pools
-                        tracker.track_pools(old_pools).await;
-
-                        // Track scoped pools
-                        tracker.track_pools(old_scoped_pools).await;
-                    });
                 }
             }
         });

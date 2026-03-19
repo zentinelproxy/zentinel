@@ -452,6 +452,16 @@ fn validate_routes(
                 && r.service_type != ServiceType::Builtin
                 && r.upstream.is_none()
                 && r.static_files.is_none()
+                // Routes with redirect/rewrite filters don't need an upstream
+                // (the filter short-circuits before upstream selection)
+                && !r.filters.iter().any(|fid| {
+                    config.filters.get(fid).is_some_and(|fc| {
+                        matches!(
+                            fc.filter,
+                            crate::Filter::Redirect(_) | crate::Filter::UrlRewrite(_)
+                        )
+                    })
+                })
         })
         .collect();
 
@@ -477,15 +487,14 @@ fn validate_routes(
         }
     }
 
-    // Validate non-static routes without upstream or static-files
+    // Warn about non-static routes without upstream or static-files.
+    // These routes are valid in Gateway API mode (e.g. invalid backend refs
+    // that should return 500), so we only warn rather than error.
     for route in &routes_missing_upstream_config {
-        errors.push(format!(
-            "Route '{}' has no upstream and no static-files configuration.\n\
-             Each route must either:\n\
-             1. Reference an upstream: upstream \"my-backend\"\n\
-             2. Serve static files: static-files {{ root \"/var/www/html\" }}",
-            route.id
-        ));
+        warn!(
+            route_id = %route.id,
+            "Route has no upstream and no static-files configuration (will return 500)"
+        );
     }
 
     // Validate filter references in routes

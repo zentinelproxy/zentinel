@@ -137,7 +137,14 @@ impl ProxyHttp for ZentinelProxy {
         // Match route to determine service type
         let route_match = {
             let route_matcher = self.route_matcher.read();
-            let request_info = RequestInfo::new(method, path, host);
+            let mut request_info = RequestInfo::new(method, path, host);
+
+            // Include headers for header-based route matching (Gateway API)
+            if route_matcher.needs_headers() {
+                request_info = request_info
+                    .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
+            }
+
             match route_matcher.match_request(&request_info) {
                 Some(m) => m,
                 None => return Ok(()), // No matching route, let upstream_peer handle it
@@ -293,7 +300,7 @@ impl ProxyHttp for ZentinelProxy {
                             request_info.method, request_info.path, request_info.host
                         )),
                     );
-                    Error::explain(ErrorType::InternalError, "No matching route found")
+                    Error::explain(ErrorType::HTTPStatus(404), "No matching route found")
                 })?;
                 let route_duration = route_start.elapsed();
                 // Lock is dropped here when block ends
@@ -457,17 +464,24 @@ impl ProxyHttp for ZentinelProxy {
                     "Upstream configured for route"
                 );
             } else {
-                error!(
+                // Route matched but has no valid upstream (e.g. invalid backend
+                // kind, denied cross-namespace ref). Return HTTP 500 per Gateway
+                // API spec — the route exists but cannot be fulfilled.
+                warn!(
                     correlation_id = %ctx.trace_id,
                     route_id = %route_match.route_id,
-                    "Route has no upstream configured"
+                    "Route has no upstream configured, returning 500"
                 );
+                crate::http_helpers::write_error(
+                    session,
+                    500,
+                    "Internal Server Error",
+                    "text/plain",
+                )
+                .await?;
                 return Err(Error::explain(
-                    ErrorType::InternalError,
-                    format!(
-                        "Route '{}' has no upstream configured",
-                        route_match.route_id
-                    ),
+                    ErrorType::HTTPStatus(500),
+                    "Route has no valid upstream",
                 ));
             }
         }
@@ -3123,19 +3137,9 @@ impl ProxyHttp for ZentinelProxy {
             // Explicit HTTP status (e.g., from agent fail-closed blocking)
             ErrorType::HTTPStatus(status) => *status,
 
-            // Internal errors - return 502 for upstream issues (more accurate than 500)
-            ErrorType::InternalError => {
-                // Check if this is an upstream-related error
-                let error_str = e.to_string();
-                if error_str.contains("upstream")
-                    || error_str.contains("DNS")
-                    || error_str.contains("resolve")
-                {
-                    502
-                } else {
-                    500
-                }
-            }
+            // Internal errors indicate server-side configuration issues (e.g.,
+            // invalid/missing backends). Gateway API spec requires 500 for these.
+            ErrorType::InternalError => 500,
 
             // Default to 502 for unknown errors
             _ => 502,

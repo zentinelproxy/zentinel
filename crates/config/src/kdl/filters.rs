@@ -58,8 +58,10 @@ pub fn parse_single_filter_definition(node: &kdl::KdlNode) -> Result<Filter> {
         "timeout" => parse_timeout_filter(node),
         "log" => parse_log_filter(node),
         "geo" => parse_geo_filter(node),
+        "redirect" => parse_redirect_filter(node),
+        "url-rewrite" => parse_url_rewrite_filter(node),
         other => Err(anyhow::anyhow!(
-            "Unknown filter type: '{}'. Valid types: rate-limit, agent, headers, compress, cors, timeout, log, geo",
+            "Unknown filter type: '{}'. Valid types: rate-limit, agent, headers, compress, cors, timeout, log, geo, redirect, url-rewrite",
             other
         )),
     }
@@ -391,4 +393,38 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
         cache_ttl_secs,
         add_country_header,
     }))
+}
+
+fn parse_redirect_filter(node: &kdl::KdlNode) -> Result<Filter> {
+    let status_code = get_int_entry(node, "status-code")
+        .map(|v| v as u16)
+        .unwrap_or(302);
+    let hostname = get_string_entry(node, "hostname");
+    let scheme = get_string_entry(node, "scheme");
+    let port = get_int_entry(node, "port").map(|v| v as u16);
+    let path = parse_path_modifier(node);
+
+    Ok(Filter::Redirect(RedirectFilter {
+        hostname,
+        status_code,
+        scheme,
+        port,
+        path,
+    }))
+}
+
+fn parse_url_rewrite_filter(node: &kdl::KdlNode) -> Result<Filter> {
+    let hostname = get_string_entry(node, "hostname");
+    let path = parse_path_modifier(node);
+
+    Ok(Filter::UrlRewrite(UrlRewriteFilter { hostname, path }))
+}
+
+fn parse_path_modifier(node: &kdl::KdlNode) -> Option<PathModifier> {
+    if let Some(full) = get_string_entry(node, "replace-full-path") {
+        Some(PathModifier::ReplaceFullPath { value: full })
+    } else {
+        get_string_entry(node, "replace-prefix-match")
+            .map(|prefix| PathModifier::ReplacePrefixMatch { value: prefix })
+    }
 }

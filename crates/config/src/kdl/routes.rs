@@ -188,9 +188,39 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
                                 matches.push(MatchCondition::Path(path));
                             }
                         }
+                        "path-regex" => {
+                            if let Some(regex) = get_first_arg_string(match_node) {
+                                matches.push(MatchCondition::PathRegex(regex));
+                            }
+                        }
                         "host" => {
                             if let Some(host) = get_first_arg_string(match_node) {
                                 matches.push(MatchCondition::Host(host));
+                            }
+                        }
+                        "header" => {
+                            let entries: Vec<_> = match_node.entries().iter().collect();
+                            if let Some(name) = entries.first().and_then(|e| e.value().as_string()) {
+                                let value = entries.get(1).and_then(|e| e.value().as_string()).map(|s| s.to_string());
+                                matches.push(MatchCondition::Header {
+                                    name: name.to_string(),
+                                    value,
+                                });
+                            }
+                        }
+                        "method" => {
+                            if let Some(method) = get_first_arg_string(match_node) {
+                                matches.push(MatchCondition::Method(vec![method]));
+                            }
+                        }
+                        "query-param" => {
+                            let entries: Vec<_> = match_node.entries().iter().collect();
+                            if let Some(name) = entries.first().and_then(|e| e.value().as_string()) {
+                                let value = entries.get(1).and_then(|e| e.value().as_string()).map(|s| s.to_string());
+                                matches.push(MatchCondition::QueryParam {
+                                    name: name.to_string(),
+                                    value,
+                                });
                             }
                         }
                         _ => {}

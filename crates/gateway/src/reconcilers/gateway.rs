@@ -155,6 +155,19 @@ impl GatewayReconciler {
             if !addresses.is_empty() {
                 break;
             }
+
+            // Fallback: use ClusterIP when no LB ingress is available (e.g. kind, NodePort)
+            if let Some(ref spec) = svc.spec {
+                if let Some(ref cluster_ip) = spec.cluster_ip {
+                    if cluster_ip != "None" && !cluster_ip.is_empty() {
+                        addresses.push(json!({
+                            "type": "IPAddress",
+                            "value": cluster_ip,
+                        }));
+                        break;
+                    }
+                }
+            }
         }
 
         addresses

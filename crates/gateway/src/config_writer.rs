@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-use zentinel_config::Config;
+use zentinel_config::{Config, Filter, HeaderModifications, PathModifier};
 
 /// Writes a `Config` to a KDL file that the proxy can read.
 pub struct ConfigWriter {
@@ -30,9 +30,18 @@ impl ConfigWriter {
     pub fn write(&self, config: &Config) -> Result<(), std::io::Error> {
         let kdl = self.render_kdl(config);
 
+        // Write atomically via temp file + rename, then re-touch the output
+        // file to ensure inotify fires IN_MODIFY (rename only fires
+        // IN_MOVED_TO on the directory, which some watchers miss).
         let tmp_path = self.output_path.with_extension("kdl.tmp");
         std::fs::write(&tmp_path, &kdl)?;
         std::fs::rename(&tmp_path, &self.output_path)?;
+
+        // Touch the file to trigger IN_CLOSE_WRITE / IN_MODIFY
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.output_path)?;
+        drop(file);
 
         info!(
             path = %self.output_path.display(),
@@ -155,14 +164,65 @@ impl ConfigWriter {
             out.push_str("}\n\n");
         }
 
+        // Filters (redirect, rewrite, etc.)
+        if !config.filters.is_empty() {
+            out.push_str("filters {\n");
+            for (id, fc) in &config.filters {
+                match &fc.filter {
+                    Filter::Redirect(r) => {
+                        out.push_str(&format!("    filter \"{id}\" {{\n"));
+                        out.push_str("        type \"redirect\"\n");
+                        out.push_str(&format!("        status-code {}\n", r.status_code));
+                        if let Some(ref h) = r.hostname {
+                            out.push_str(&format!("        hostname \"{h}\"\n"));
+                        }
+                        if let Some(ref s) = r.scheme {
+                            out.push_str(&format!("        scheme \"{s}\"\n"));
+                        }
+                        if let Some(port) = r.port {
+                            out.push_str(&format!("        port {port}\n"));
+                        }
+                        if let Some(ref path) = r.path {
+                            render_path_modifier(&mut out, path, 8);
+                        }
+                        out.push_str("    }\n");
+                    }
+                    Filter::UrlRewrite(r) => {
+                        out.push_str(&format!("    filter \"{id}\" {{\n"));
+                        out.push_str("        type \"url-rewrite\"\n");
+                        if let Some(ref h) = r.hostname {
+                            out.push_str(&format!("        hostname \"{h}\"\n"));
+                        }
+                        if let Some(ref path) = r.path {
+                            render_path_modifier(&mut out, path, 8);
+                        }
+                        out.push_str("    }\n");
+                    }
+                    _ => {}
+                }
+            }
+            out.push_str("}\n\n");
+        }
+
         // Routes
         if !config.routes.is_empty() {
             out.push_str("routes {\n");
             for route in &config.routes {
                 out.push_str(&format!("    route \"{}\" {{\n", route.id));
 
+                // Priority (if not default)
+                if route.priority != zentinel_common::types::Priority::Normal {
+                    let prio_str = match route.priority {
+                        zentinel_common::types::Priority::Critical => "high",
+                        zentinel_common::types::Priority::High => "high",
+                        zentinel_common::types::Priority::Normal => "normal",
+                        zentinel_common::types::Priority::Low => "low",
+                    };
+                    out.push_str(&format!("        priority \"{prio_str}\"\n"));
+                }
+
                 // Match conditions
-                out.push_str("        match {\n");
+                out.push_str("        matches {\n");
                 for m in &route.matches {
                     match m {
                         zentinel_config::MatchCondition::PathPrefix(p) => {
@@ -204,12 +264,97 @@ impl ConfigWriter {
                     out.push_str(&format!("        upstream \"{upstream}\"\n"));
                 }
 
+                // Route-level filters (referenced by ID)
+                if !route.filters.is_empty() {
+                    out.push_str("        filters");
+                    for filter_id in &route.filters {
+                        out.push_str(&format!(" \"{filter_id}\""));
+                    }
+                    out.push('\n');
+                }
+
+                // Policies block (header modifications)
+                let req_h = &route.policies.request_headers;
+                let res_h = &route.policies.response_headers;
+                let has_req = !req_h.set.is_empty()
+                    || !req_h.add.is_empty()
+                    || !req_h.remove.is_empty();
+                let has_res = !res_h.set.is_empty()
+                    || !res_h.add.is_empty()
+                    || !res_h.remove.is_empty();
+
+                if has_req || has_res {
+                    out.push_str("        policies {\n");
+
+                    if has_req {
+                        out.push_str("            request-headers {\n");
+                        render_header_mods_block(&mut out, req_h, 16);
+                        out.push_str("            }\n");
+                    }
+
+                    if has_res {
+                        out.push_str("            response-headers {\n");
+                        render_header_mods_block(&mut out, res_h, 16);
+                        out.push_str("            }\n");
+                    }
+
+                    out.push_str("        }\n");
+                }
+
                 out.push_str("    }\n");
             }
             out.push_str("}\n");
         }
 
         out
+    }
+}
+
+/// Render header modifications in the nested structure the parser expects:
+/// ```kdl
+/// set {
+///     Header-Name "value"
+/// }
+/// add {
+///     Header-Name "value"
+/// }
+/// remove "Header-Name" "Other-Header"
+/// ```
+fn render_header_mods_block(out: &mut String, mods: &HeaderModifications, indent: usize) {
+    let pad: String = " ".repeat(indent);
+    if !mods.set.is_empty() {
+        out.push_str(&format!("{pad}set {{\n"));
+        for (k, v) in &mods.set {
+            out.push_str(&format!("{pad}    {k} \"{v}\"\n"));
+        }
+        out.push_str(&format!("{pad}}}\n"));
+    }
+    if !mods.add.is_empty() {
+        out.push_str(&format!("{pad}add {{\n"));
+        for (k, v) in &mods.add {
+            out.push_str(&format!("{pad}    {k} \"{v}\"\n"));
+        }
+        out.push_str(&format!("{pad}}}\n"));
+    }
+    if !mods.remove.is_empty() {
+        out.push_str(&format!("{pad}remove"));
+        for k in &mods.remove {
+            out.push_str(&format!(" \"{k}\""));
+        }
+        out.push('\n');
+    }
+}
+
+/// Render a `PathModifier` as KDL at the given indentation level.
+fn render_path_modifier(out: &mut String, path: &PathModifier, indent: usize) {
+    let pad: String = " ".repeat(indent);
+    match path {
+        PathModifier::ReplaceFullPath { value } => {
+            out.push_str(&format!("{pad}replace-full-path \"{value}\"\n"));
+        }
+        PathModifier::ReplacePrefixMatch { value } => {
+            out.push_str(&format!("{pad}replace-prefix-match \"{value}\"\n"));
+        }
     }
 }
 
@@ -244,4 +389,195 @@ listeners {
     std::fs::write(path, kdl)?;
     info!(path = %path.display(), "Bootstrap config written");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use zentinel_common::types::{LoadBalancingAlgorithm, Priority};
+    use zentinel_config::{
+        ConnectionPoolConfig, FilterConfig, HeaderModifications, HttpVersionConfig,
+        ListenerConfig, ListenerProtocol, MatchCondition, RedirectFilter, RoutePolicies,
+        RouteConfig, ServerConfig, ServiceType, UpstreamConfig, UpstreamTarget,
+        UpstreamTimeouts,
+    };
+
+    /// Build a Config with routes, upstreams, filters, and header policies,
+    /// render it to KDL, and verify the proxy parser can read it back.
+    #[test]
+    fn round_trip_rendered_kdl_parses_successfully() {
+        let mut filters = HashMap::new();
+        filters.insert(
+            "redir-0".to_string(),
+            FilterConfig::new(
+                "redir-0",
+                Filter::Redirect(RedirectFilter {
+                    hostname: Some("example.com".to_string()),
+                    status_code: 301,
+                    scheme: Some("https".to_string()),
+                    port: None,
+                    path: Some(PathModifier::ReplaceFullPath {
+                        value: "/new".to_string(),
+                    }),
+                }),
+            ),
+        );
+
+        let mut upstreams = HashMap::new();
+        upstreams.insert(
+            "backend".to_string(),
+            UpstreamConfig {
+                id: "backend".to_string(),
+                targets: vec![
+                    UpstreamTarget {
+                        address: "svc.default.svc.cluster.local:80".to_string(),
+                        weight: 3,
+                        max_requests: None,
+                        metadata: HashMap::new(),
+                    },
+                    UpstreamTarget {
+                        address: "svc2.default.svc.cluster.local:80".to_string(),
+                        weight: 1,
+                        max_requests: None,
+                        metadata: HashMap::new(),
+                    },
+                ],
+                load_balancing: LoadBalancingAlgorithm::RoundRobin,
+                sticky_session: None,
+                health_check: None,
+                connection_pool: ConnectionPoolConfig::default(),
+                timeouts: UpstreamTimeouts::default(),
+                tls: None,
+                http_version: HttpVersionConfig::default(),
+            },
+        );
+
+        let config = Config {
+            schema_version: "1.0".to_string(),
+            server: ServerConfig {
+                worker_threads: 0,
+                max_connections: 10000,
+                graceful_shutdown_timeout_secs: 30,
+                daemon: false,
+                pid_file: None,
+                user: None,
+                group: None,
+                working_directory: None,
+                trace_id_format: Default::default(),
+                auto_reload: true,
+            },
+            listeners: vec![ListenerConfig {
+                id: "http".to_string(),
+                address: "0.0.0.0:8080".to_string(),
+                protocol: ListenerProtocol::Http,
+                tls: None,
+                default_route: None,
+                request_timeout_secs: 60,
+                keepalive_timeout_secs: 75,
+                max_concurrent_streams: 100,
+                keepalive_max_requests: None,
+            }],
+            routes: vec![RouteConfig {
+                id: "test-route".to_string(),
+                priority: Priority::High,
+                matches: vec![
+                    MatchCondition::Host("example.com".to_string()),
+                    MatchCondition::PathPrefix("/api".to_string()),
+                    MatchCondition::Header {
+                        name: "X-Test".to_string(),
+                        value: Some("yes".to_string()),
+                    },
+                    MatchCondition::Method(vec!["GET".to_string()]),
+                ],
+                upstream: Some("backend".to_string()),
+                service_type: ServiceType::Web,
+                policies: RoutePolicies {
+                    request_headers: HeaderModifications {
+                        rename: HashMap::new(),
+                        set: HashMap::from([("X-Forwarded-Proto".to_string(), "https".to_string())]),
+                        add: HashMap::from([("X-Extra".to_string(), "value".to_string())]),
+                        remove: vec!["X-Internal".to_string()],
+                    },
+                    response_headers: HeaderModifications {
+                        rename: HashMap::new(),
+                        set: HashMap::from([("X-Powered-By".to_string(), "Zentinel".to_string())]),
+                        add: HashMap::new(),
+                        remove: vec![],
+                    },
+                    ..RoutePolicies::default()
+                },
+                filters: vec!["redir-0".to_string()],
+                builtin_handler: None,
+                waf_enabled: false,
+                circuit_breaker: None,
+                retry_policy: None,
+                static_files: None,
+                api_schema: None,
+                inference: None,
+                error_pages: None,
+                websocket: false,
+                websocket_inspection: false,
+                shadow: None,
+                fallback: None,
+            }],
+            upstreams,
+            filters,
+            agents: vec![],
+            waf: None,
+            namespaces: vec![],
+            limits: Default::default(),
+            observability: Default::default(),
+            rate_limits: Default::default(),
+            cache: None,
+            default_upstream: None,
+        };
+
+        let writer = ConfigWriter::new(PathBuf::from("/tmp/test.kdl"));
+        let kdl = writer.render_kdl(&config);
+
+        // Parse it back using the proxy's KDL parser
+        let parsed = zentinel_config::Config::from_kdl(&kdl)
+            .unwrap_or_else(|e| panic!("Failed to parse generated KDL:\n{kdl}\n\nError: {e}"));
+
+        // Verify key fields survived the round trip
+        assert_eq!(parsed.listeners.len(), 1);
+        assert_eq!(parsed.listeners[0].address, "0.0.0.0:8080");
+        assert_eq!(parsed.routes.len(), 1);
+        assert_eq!(parsed.routes[0].id, "test-route");
+        assert_eq!(parsed.routes[0].priority, Priority::High);
+        assert_eq!(parsed.routes[0].upstream.as_deref(), Some("backend"));
+        assert_eq!(parsed.upstreams.len(), 1);
+        assert_eq!(parsed.upstreams["backend"].targets.len(), 2);
+        assert_eq!(parsed.upstreams["backend"].targets[0].weight, 3);
+        assert_eq!(parsed.filters.len(), 1);
+        assert_eq!(parsed.routes[0].filters, vec!["redir-0"]);
+
+        // Verify match conditions
+        assert!(parsed.routes[0].matches.iter().any(|m| matches!(m, MatchCondition::Host(h) if h == "example.com")));
+        assert!(parsed.routes[0].matches.iter().any(|m| matches!(m, MatchCondition::PathPrefix(p) if p == "/api")));
+        assert!(parsed.routes[0].matches.iter().any(|m| matches!(m, MatchCondition::Header { name, value } if name == "X-Test" && value.as_deref() == Some("yes"))));
+        assert!(parsed.routes[0].matches.iter().any(|m| matches!(m, MatchCondition::Method(methods) if methods == &["GET"])));
+
+        // Verify header policies
+        assert_eq!(
+            parsed.routes[0].policies.request_headers.set.get("X-Forwarded-Proto").map(|s| s.as_str()),
+            Some("https")
+        );
+        assert_eq!(parsed.routes[0].policies.request_headers.remove, vec!["X-Internal"]);
+        assert_eq!(
+            parsed.routes[0].policies.response_headers.set.get("X-Powered-By").map(|s| s.as_str()),
+            Some("Zentinel")
+        );
+
+        // Verify redirect filter
+        match &parsed.filters["redir-0"].filter {
+            Filter::Redirect(r) => {
+                assert_eq!(r.status_code, 301);
+                assert_eq!(r.hostname.as_deref(), Some("example.com"));
+                assert_eq!(r.scheme.as_deref(), Some("https"));
+            }
+            other => panic!("Expected Redirect filter, got {other:?}"),
+        }
+    }
 }

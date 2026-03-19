@@ -80,8 +80,8 @@ go test ./... -run TestConformance \
 | Feature | Status |
 |---------|--------|
 | RegularExpression path matching | Implemented |
-| RequestRedirect filter | Planned |
-| URLRewrite filter | Planned |
+| RequestRedirect filter | Implemented |
+| URLRewrite filter | Implemented |
 | RequestMirror filter | Planned |
 | GRPCRoute | Planned |
 | TLSRoute | Planned |

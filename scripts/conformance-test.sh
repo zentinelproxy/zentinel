@@ -79,11 +79,15 @@ apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
     extraPortMappings:
+      # Map standard HTTP/HTTPS ports so the conformance suite can reach
+      # the proxy at the Gateway's logical listener ports (80/443).
+      # On macOS (Docker Desktop) and Linux, kind runs in a container/VM
+      # so privileged host ports work without root on the outer host.
       - containerPort: 30080
-        hostPort: 8080
+        hostPort: 80
         protocol: TCP
       - containerPort: 30443
-        hostPort: 8443
+        hostPort: 443
         protocol: TCP
 EOF
 
@@ -109,6 +113,15 @@ helm upgrade --install zentinel-gateway "$ROOT_DIR/deploy/helm/zentinel-gateway"
     --set proxy.image.pullPolicy=Never \
     --set proxy.httpPort=8080 \
     --set proxy.httpsPort=8443 \
+    --set proxy.serviceType=NodePort \
+    --set proxy.httpNodePort=30080 \
+    --set proxy.httpsNodePort=30443 \
+    --set "extraEnv[0].name=GATEWAY_ADDRESS" \
+    --set "extraEnv[0].value=127.0.0.1" \
+    --set "extraEnv[1].name=PROXY_HTTP_PORT" \
+    --set-string "extraEnv[1].value=8080" \
+    --set "extraEnv[2].name=PROXY_HTTPS_PORT" \
+    --set-string "extraEnv[2].value=8443" \
     --wait \
     --timeout 120s
 
