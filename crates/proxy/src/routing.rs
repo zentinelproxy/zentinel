@@ -883,10 +883,7 @@ mod tests {
     #[test]
     fn test_path_prefix_segment_boundary() {
         let routes = vec![
-            create_test_route(
-                "v2",
-                vec![MatchCondition::PathPrefix("/v2".to_string())],
-            ),
+            create_test_route("v2", vec![MatchCondition::PathPrefix("/v2".to_string())]),
             create_test_route(
                 "catch-all",
                 vec![MatchCondition::PathPrefix("/".to_string())],

@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 
 use super::gateway_class::CONTROLLER_NAME;
 use crate::error::GatewayError;
-use crate::reconcilers::ReferenceGrantIndex;
+use crate::reconcilers::{ReferenceGrantIndex, ReferenceQuery};
 use crate::translator::ConfigTranslator;
 
 /// Reconciler for HTTPRoute resources.
@@ -302,7 +302,9 @@ impl HttpRouteReconciler {
         match ns_api.get(namespace).await {
             Ok(ns) => {
                 let ns_labels = ns.metadata.labels.unwrap_or_default();
-                match_labels.iter().all(|(k, v)| ns_labels.get(k) == Some(v))
+                match_labels
+                    .iter()
+                    .all(|(k, v)| ns_labels.get(k) == Some(v))
             }
             Err(e) => {
                 warn!(
@@ -351,15 +353,15 @@ impl HttpRouteReconciler {
                 let backend_ns = backend.namespace.as_deref().unwrap_or(route_ns);
                 let backend_name = &backend.name;
                 if backend_ns != route_ns
-                    && !self.reference_grants.is_permitted(
-                        route_ns,
-                        "gateway.networking.k8s.io",
-                        "HTTPRoute",
-                        backend_ns,
-                        "",
-                        "Service",
-                        backend_name,
-                    )
+                    && !self.reference_grants.is_permitted(&ReferenceQuery {
+                        source_namespace: route_ns,
+                        source_group: "gateway.networking.k8s.io",
+                        source_kind: "HTTPRoute",
+                        target_namespace: backend_ns,
+                        target_group: "",
+                        target_kind: "Service",
+                        target_name: backend_name,
+                    })
                 {
                     return (
                         false,

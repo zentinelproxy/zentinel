@@ -28,6 +28,17 @@ pub struct PermittedReference {
     pub target_name: String,
 }
 
+/// Query parameters for checking a cross-namespace reference.
+pub struct ReferenceQuery<'a> {
+    pub source_namespace: &'a str,
+    pub source_group: &'a str,
+    pub source_kind: &'a str,
+    pub target_namespace: &'a str,
+    pub target_group: &'a str,
+    pub target_kind: &'a str,
+    pub target_name: &'a str,
+}
+
 /// In-memory index of ReferenceGrant permissions.
 ///
 /// This is rebuilt whenever ReferenceGrant resources change. Lookups use
@@ -82,16 +93,15 @@ impl ReferenceGrantIndex {
     /// Returns `true` if either:
     /// - The source and target are in the same namespace (no grant needed)
     /// - A matching ReferenceGrant exists (all fields must match)
-    pub fn is_permitted(
-        &self,
-        source_namespace: &str,
-        source_group: &str,
-        source_kind: &str,
-        target_namespace: &str,
-        target_group: &str,
-        target_kind: &str,
-        target_name: &str,
-    ) -> bool {
+    pub fn is_permitted(&self, q: &ReferenceQuery<'_>) -> bool {
+        let source_namespace = q.source_namespace;
+        let source_group = q.source_group;
+        let source_kind = q.source_kind;
+        let target_namespace = q.target_namespace;
+        let target_group = q.target_group;
+        let target_kind = q.target_kind;
+        let target_name = q.target_name;
+
         // Same-namespace references are always allowed
         if source_namespace == target_namespace {
             return true;
@@ -158,28 +168,28 @@ mod tests {
     #[test]
     fn same_namespace_always_permitted() {
         let index = ReferenceGrantIndex::new();
-        assert!(index.is_permitted(
-            "default",
-            "gateway.networking.k8s.io",
-            "HTTPRoute",
-            "default",
-            "",
-            "Service",
-            "my-svc"
-        ));
+        assert!(index.is_permitted(&ReferenceQuery {
+            source_namespace: "default",
+            source_group: "gateway.networking.k8s.io",
+            source_kind: "HTTPRoute",
+            target_namespace: "default",
+            target_group: "",
+            target_kind: "Service",
+            target_name: "my-svc",
+        }));
     }
 
     #[test]
     fn cross_namespace_denied_without_grant() {
         let index = ReferenceGrantIndex::new();
-        assert!(!index.is_permitted(
-            "web",
-            "gateway.networking.k8s.io",
-            "HTTPRoute",
-            "backend",
-            "",
-            "Service",
-            "api"
-        ));
+        assert!(!index.is_permitted(&ReferenceQuery {
+            source_namespace: "web",
+            source_group: "gateway.networking.k8s.io",
+            source_kind: "HTTPRoute",
+            target_namespace: "backend",
+            target_group: "",
+            target_kind: "Service",
+            target_name: "api",
+        }));
     }
 }

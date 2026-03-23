@@ -230,8 +230,7 @@ async fn apply_redirect(
 
     let port_suffix = match redirect.port {
         Some(port) => {
-            let is_default =
-                (scheme == "http" && port == 80) || (scheme == "https" && port == 443);
+            let is_default = (scheme == "http" && port == 80) || (scheme == "https" && port == 443);
             if is_default {
                 String::new()
             } else {
@@ -1151,10 +1150,7 @@ mod tests {
     #[test]
     fn replace_prefix_basic() {
         let ctx = ctx_with_prefix("/foo");
-        assert_eq!(
-            replace_matched_prefix("/foo/bar", &ctx, "/baz"),
-            "/baz/bar"
-        );
+        assert_eq!(replace_matched_prefix("/foo/bar", &ctx, "/baz"), "/baz/bar");
     }
 
     #[test]
@@ -1175,10 +1171,7 @@ mod tests {
     #[test]
     fn replace_prefix_empty_replacement() {
         let ctx = ctx_with_prefix("/old");
-        assert_eq!(
-            replace_matched_prefix("/old/path", &ctx, ""),
-            "/path"
-        );
+        assert_eq!(replace_matched_prefix("/old/path", &ctx, ""), "/path");
     }
 
     #[test]

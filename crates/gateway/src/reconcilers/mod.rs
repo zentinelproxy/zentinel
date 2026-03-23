@@ -21,6 +21,6 @@ pub use gateway_class::GatewayClassReconciler;
 pub use grpcroute::GrpcRouteReconciler;
 pub use httproute::HttpRouteReconciler;
 pub use ingress::IngressReconciler;
-pub use reference_grant::ReferenceGrantIndex;
+pub use reference_grant::{ReferenceGrantIndex, ReferenceQuery};
 pub use tcproute::TcpRouteReconciler;
 pub use tlsroute::TlsRouteReconciler;

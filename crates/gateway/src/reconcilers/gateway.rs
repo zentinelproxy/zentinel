@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 
 use super::gateway_class::CONTROLLER_NAME;
 use crate::error::GatewayError;
-use crate::reconcilers::ReferenceGrantIndex;
+use crate::reconcilers::{ReferenceGrantIndex, ReferenceQuery};
 
 /// Reconciler for Gateway resources.
 pub struct GatewayReconciler {
@@ -270,15 +270,15 @@ impl GatewayReconciler {
 
             // Cross-namespace check
             if secret_ns != gw_namespace
-                && !self.reference_grants.is_permitted(
-                    gw_namespace,
-                    "gateway.networking.k8s.io",
-                    "Gateway",
-                    secret_ns,
-                    "",
-                    "Secret",
-                    &cert_ref.name,
-                )
+                && !self.reference_grants.is_permitted(&ReferenceQuery {
+                    source_namespace: gw_namespace,
+                    source_group: "gateway.networking.k8s.io",
+                    source_kind: "Gateway",
+                    target_namespace: secret_ns,
+                    target_group: "",
+                    target_kind: "Secret",
+                    target_name: &cert_ref.name,
+                })
             {
                 return (
                     false,
@@ -356,7 +356,9 @@ impl GatewayReconciler {
         let generation = gateway.metadata.generation.unwrap_or(0);
         let now = chrono::Utc::now().to_rfc3339();
 
-        let attached_counts = self.count_attached_routes(gateway, &name, namespace).await?;
+        let attached_counts = self
+            .count_attached_routes(gateway, &name, namespace)
+            .await?;
         let wildcard_count = attached_counts.get("").copied().unwrap_or(0);
         let addresses = self.get_gateway_addresses(namespace).await;
 

@@ -200,8 +200,12 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
                         }
                         "header" => {
                             let entries: Vec<_> = match_node.entries().iter().collect();
-                            if let Some(name) = entries.first().and_then(|e| e.value().as_string()) {
-                                let value = entries.get(1).and_then(|e| e.value().as_string()).map(|s| s.to_string());
+                            if let Some(name) = entries.first().and_then(|e| e.value().as_string())
+                            {
+                                let value = entries
+                                    .get(1)
+                                    .and_then(|e| e.value().as_string())
+                                    .map(|s| s.to_string());
                                 matches.push(MatchCondition::Header {
                                     name: name.to_string(),
                                     value,
@@ -215,8 +219,12 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
                         }
                         "query-param" => {
                             let entries: Vec<_> = match_node.entries().iter().collect();
-                            if let Some(name) = entries.first().and_then(|e| e.value().as_string()) {
-                                let value = entries.get(1).and_then(|e| e.value().as_string()).map(|s| s.to_string());
+                            if let Some(name) = entries.first().and_then(|e| e.value().as_string())
+                            {
+                                let value = entries
+                                    .get(1)
+                                    .and_then(|e| e.value().as_string())
+                                    .map(|s| s.to_string());
                                 matches.push(MatchCondition::QueryParam {
                                     name: name.to_string(),
                                     value,

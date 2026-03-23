@@ -438,8 +438,7 @@ impl ZentinelProxy {
                             let old_pools = upstream_pools.replace(new_pools).await;
 
                             // Update scoped upstream pools
-                            let new_scoped_pools =
-                                Self::build_scoped_pools_list(&flattened).await;
+                            let new_scoped_pools = Self::build_scoped_pools_list(&flattened).await;
                             let old_scoped_pools =
                                 scoped_upstream_pools.replace_all(new_scoped_pools).await;
 

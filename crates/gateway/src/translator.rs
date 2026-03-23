@@ -32,7 +32,7 @@ use crate::config_writer::ConfigWriter;
 use crate::error::GatewayError;
 use crate::reconcilers::gateway_class::CONTROLLER_NAME;
 use crate::reconcilers::ingress::translate_ingresses;
-use crate::reconcilers::ReferenceGrantIndex;
+use crate::reconcilers::{ReferenceGrantIndex, ReferenceQuery};
 use crate::tls::{SecretCertificateManager, SecretRef};
 
 /// Translates Gateway API resources into Zentinel configuration.
@@ -153,13 +153,14 @@ impl ConfigTranslator {
                 let gw_ns = pr.namespace.as_deref().unwrap_or(&route_ns);
                 let gw_name = pr.name.as_str();
 
-                if let Some(gw) = our_gateways.iter().find(|g| {
-                    g.name_any() == gw_name && g.namespace().unwrap_or_default() == gw_ns
-                }) {
+                if let Some(gw) = our_gateways
+                    .iter()
+                    .find(|g| g.name_any() == gw_name && g.namespace().unwrap_or_default() == gw_ns)
+                {
                     // Check if route namespace is allowed by listener's allowedRoutes
                     let gw_namespace = gw.namespace().unwrap_or_default();
                     let route_allowed = self
-                        .is_route_namespace_allowed(gw, &route_ns, &gw_namespace, &client)
+                        .is_route_namespace_allowed(gw, &route_ns, &gw_namespace, client)
                         .await;
                     if !route_allowed {
                         debug!(
@@ -192,8 +193,9 @@ impl ConfigTranslator {
                 continue;
             }
 
-            let (route_configs, upstream_configs, filter_configs) =
-                self.translate_httproute(route, &listener_hostnames, &client).await?;
+            let (route_configs, upstream_configs, filter_configs) = self
+                .translate_httproute(route, &listener_hostnames, client)
+                .await?;
             routes.extend(route_configs);
             upstreams.extend(upstream_configs);
             filters.extend(filter_configs);
@@ -511,8 +513,9 @@ impl ConfigTranslator {
             let rule_id = format!("{route_ns}-{route_name}-rule{rule_idx}");
 
             // Build upstream from backend refs (shared across all match entries)
-            let (upstream_id, upstream) =
-                self.translate_backends(&rule_id, &rule.backend_refs, &route_ns, client).await?;
+            let (upstream_id, upstream) = self
+                .translate_backends(&rule_id, &rule.backend_refs, &route_ns, client)
+                .await?;
 
             let has_upstream = upstream.is_some();
             if let Some(upstream) = upstream {
@@ -730,15 +733,15 @@ impl ConfigTranslator {
 
             // Check cross-namespace reference permission
             if svc_ns != route_ns
-                && !self.reference_grants.is_permitted(
-                    route_ns,
-                    "gateway.networking.k8s.io",
-                    "HTTPRoute",
-                    svc_ns,
-                    "",
-                    "Service",
-                    svc_name,
-                )
+                && !self.reference_grants.is_permitted(&ReferenceQuery {
+                    source_namespace: route_ns,
+                    source_group: "gateway.networking.k8s.io",
+                    source_kind: "HTTPRoute",
+                    target_namespace: svc_ns,
+                    target_group: "",
+                    target_kind: "Service",
+                    target_name: svc_name,
+                })
             {
                 warn!(
                     route_ns = route_ns,
@@ -785,11 +788,13 @@ impl ConfigTranslator {
                         .as_ref()
                         .and_then(|ports| ports.first())
                         .and_then(|p| p.port)
-                        .unwrap_or(svc_port as i32) as u16;
+                        .unwrap_or(svc_port) as u16;
 
                     for endpoint in &ep_slice.endpoints {
                         // Only use ready endpoints
-                        if !endpoint.conditions.as_ref()
+                        if !endpoint
+                            .conditions
+                            .as_ref()
                             .and_then(|c| c.ready)
                             .unwrap_or(true)
                         {
@@ -1219,15 +1224,15 @@ impl ConfigTranslator {
             let weight = backend.weight.unwrap_or(1);
 
             if svc_ns != route_ns
-                && !self.reference_grants.is_permitted(
-                    route_ns,
-                    "gateway.networking.k8s.io",
-                    "GRPCRoute",
-                    svc_ns,
-                    "",
-                    "Service",
-                    svc_name,
-                )
+                && !self.reference_grants.is_permitted(&ReferenceQuery {
+                    source_namespace: route_ns,
+                    source_group: "gateway.networking.k8s.io",
+                    source_kind: "GRPCRoute",
+                    target_namespace: svc_ns,
+                    target_group: "",
+                    target_kind: "Service",
+                    target_name: svc_name,
+                })
             {
                 warn!(
                     route_ns = route_ns,
@@ -1374,9 +1379,15 @@ impl ConfigTranslator {
             let weight = backend.weight.unwrap_or(1);
 
             if svc_ns != route_ns
-                && !self
-                    .reference_grants
-                    .is_permitted(route_ns, "gateway.networking.k8s.io", "TLSRoute", svc_ns, "", "Service", svc_name)
+                && !self.reference_grants.is_permitted(&ReferenceQuery {
+                    source_namespace: route_ns,
+                    source_group: "gateway.networking.k8s.io",
+                    source_kind: "TLSRoute",
+                    target_namespace: svc_ns,
+                    target_group: "",
+                    target_kind: "Service",
+                    target_name: svc_name,
+                })
             {
                 warn!(
                     route_ns = route_ns,
@@ -1453,12 +1464,10 @@ impl ConfigTranslator {
                             GatewayListenersAllowedRoutesNamespacesFrom::Selector => {
                                 if let Some(ref selector) = namespaces.selector {
                                     if let Some(ref match_labels) = selector.match_labels {
-                                        let ns_api: Api<
-                                            k8s_openapi::api::core::v1::Namespace,
-                                        > = Api::all(client.clone());
+                                        let ns_api: Api<k8s_openapi::api::core::v1::Namespace> =
+                                            Api::all(client.clone());
                                         if let Ok(ns) = ns_api.get(route_ns).await {
-                                            let ns_labels =
-                                                ns.metadata.labels.unwrap_or_default();
+                                            let ns_labels = ns.metadata.labels.unwrap_or_default();
                                             if match_labels
                                                 .iter()
                                                 .all(|(k, v)| ns_labels.get(k) == Some(v))

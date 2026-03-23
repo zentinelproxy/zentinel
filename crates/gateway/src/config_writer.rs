@@ -125,10 +125,14 @@ impl ConfigWriter {
                 }
 
                 // Emit load balancing algorithm (omit if default RoundRobin)
-                if upstream.load_balancing != zentinel_common::types::LoadBalancingAlgorithm::RoundRobin {
+                if upstream.load_balancing
+                    != zentinel_common::types::LoadBalancingAlgorithm::RoundRobin
+                {
                     let algo_str = match upstream.load_balancing {
                         zentinel_common::types::LoadBalancingAlgorithm::Weighted => "weighted",
-                        zentinel_common::types::LoadBalancingAlgorithm::LeastConnections => "least-connections",
+                        zentinel_common::types::LoadBalancingAlgorithm::LeastConnections => {
+                            "least-connections"
+                        }
                         zentinel_common::types::LoadBalancingAlgorithm::Random => "random",
                         zentinel_common::types::LoadBalancingAlgorithm::IpHash => "ip-hash",
                         _ => "round-robin",
@@ -288,12 +292,10 @@ impl ConfigWriter {
                 // Policies block (header modifications)
                 let req_h = &route.policies.request_headers;
                 let res_h = &route.policies.response_headers;
-                let has_req = !req_h.set.is_empty()
-                    || !req_h.add.is_empty()
-                    || !req_h.remove.is_empty();
-                let has_res = !res_h.set.is_empty()
-                    || !res_h.add.is_empty()
-                    || !res_h.remove.is_empty();
+                let has_req =
+                    !req_h.set.is_empty() || !req_h.add.is_empty() || !req_h.remove.is_empty();
+                let has_res =
+                    !res_h.set.is_empty() || !res_h.add.is_empty() || !res_h.remove.is_empty();
 
                 if has_req || has_res {
                     out.push_str("        policies {\n");
@@ -483,8 +485,8 @@ fn write_fallback_self_signed_cert(
 ) -> Result<(), std::io::Error> {
     // Use rcgen to generate a self-signed certificate
     let subject_alt_names = vec!["localhost".to_string()];
-    let cert = rcgen::generate_simple_self_signed(subject_alt_names)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let cert =
+        rcgen::generate_simple_self_signed(subject_alt_names).map_err(std::io::Error::other)?;
 
     std::fs::write(cert_path, cert.cert.pem())?;
     std::fs::write(key_path, cert.key_pair.serialize_pem())?;
@@ -504,10 +506,9 @@ mod tests {
     use std::collections::HashMap;
     use zentinel_common::types::{LoadBalancingAlgorithm, Priority};
     use zentinel_config::{
-        ConnectionPoolConfig, FilterConfig, HeaderModifications, HttpVersionConfig,
-        ListenerConfig, ListenerProtocol, MatchCondition, RedirectFilter, RoutePolicies,
-        RouteConfig, ServerConfig, ServiceType, UpstreamConfig, UpstreamTarget,
-        UpstreamTimeouts,
+        ConnectionPoolConfig, FilterConfig, HeaderModifications, HttpVersionConfig, ListenerConfig,
+        ListenerProtocol, MatchCondition, RedirectFilter, RouteConfig, RoutePolicies, ServerConfig,
+        ServiceType, UpstreamConfig, UpstreamTarget, UpstreamTimeouts,
     };
 
     /// Build a Config with routes, upstreams, filters, and header policies,
@@ -602,7 +603,10 @@ mod tests {
                 policies: RoutePolicies {
                     request_headers: HeaderModifications {
                         rename: HashMap::new(),
-                        set: HashMap::from([("X-Forwarded-Proto".to_string(), "https".to_string())]),
+                        set: HashMap::from([(
+                            "X-Forwarded-Proto".to_string(),
+                            "https".to_string(),
+                        )]),
                         add: HashMap::from([("X-Extra".to_string(), "value".to_string())]),
                         remove: vec!["X-Internal".to_string()],
                     },
@@ -661,19 +665,41 @@ mod tests {
         assert_eq!(parsed.routes[0].filters, vec!["redir-0"]);
 
         // Verify match conditions
-        assert!(parsed.routes[0].matches.iter().any(|m| matches!(m, MatchCondition::Host(h) if h == "example.com")));
-        assert!(parsed.routes[0].matches.iter().any(|m| matches!(m, MatchCondition::PathPrefix(p) if p == "/api")));
+        assert!(parsed.routes[0]
+            .matches
+            .iter()
+            .any(|m| matches!(m, MatchCondition::Host(h) if h == "example.com")));
+        assert!(parsed.routes[0]
+            .matches
+            .iter()
+            .any(|m| matches!(m, MatchCondition::PathPrefix(p) if p == "/api")));
         assert!(parsed.routes[0].matches.iter().any(|m| matches!(m, MatchCondition::Header { name, value } if name == "X-Test" && value.as_deref() == Some("yes"))));
-        assert!(parsed.routes[0].matches.iter().any(|m| matches!(m, MatchCondition::Method(methods) if methods == &["GET"])));
+        assert!(parsed.routes[0]
+            .matches
+            .iter()
+            .any(|m| matches!(m, MatchCondition::Method(methods) if methods == &["GET"])));
 
         // Verify header policies
         assert_eq!(
-            parsed.routes[0].policies.request_headers.set.get("X-Forwarded-Proto").map(|s| s.as_str()),
+            parsed.routes[0]
+                .policies
+                .request_headers
+                .set
+                .get("X-Forwarded-Proto")
+                .map(|s| s.as_str()),
             Some("https")
         );
-        assert_eq!(parsed.routes[0].policies.request_headers.remove, vec!["X-Internal"]);
         assert_eq!(
-            parsed.routes[0].policies.response_headers.set.get("X-Powered-By").map(|s| s.as_str()),
+            parsed.routes[0].policies.request_headers.remove,
+            vec!["X-Internal"]
+        );
+        assert_eq!(
+            parsed.routes[0]
+                .policies
+                .response_headers
+                .set
+                .get("X-Powered-By")
+                .map(|s| s.as_str()),
             Some("Zentinel")
         );
 
