@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "TinyUFO"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "ahash",
  "crossbeam-queue",
@@ -4130,7 +4130,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 [[package]]
 name = "pingora"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "pingora-cache",
  "pingora-core",
@@ -4143,7 +4143,7 @@ dependencies = [
 [[package]]
 name = "pingora-cache"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "ahash",
  "async-trait",
@@ -4179,7 +4179,7 @@ dependencies = [
 [[package]]
 name = "pingora-core"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "ahash",
  "async-trait",
@@ -4232,12 +4232,12 @@ dependencies = [
 [[package]]
 name = "pingora-error"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 
 [[package]]
 name = "pingora-header-serde"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -4252,7 +4252,7 @@ dependencies = [
 [[package]]
 name = "pingora-http"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -4262,7 +4262,7 @@ dependencies = [
 [[package]]
 name = "pingora-ketama"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "crc32fast",
 ]
@@ -4270,7 +4270,7 @@ dependencies = [
 [[package]]
 name = "pingora-limits"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "ahash",
 ]
@@ -4278,7 +4278,7 @@ dependencies = [
 [[package]]
 name = "pingora-load-balancing"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -4299,7 +4299,7 @@ dependencies = [
 [[package]]
 name = "pingora-lru"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "arrayvec",
  "hashbrown 0.16.1",
@@ -4310,7 +4310,7 @@ dependencies = [
 [[package]]
 name = "pingora-memory-cache"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "TinyUFO",
  "ahash",
@@ -4325,7 +4325,7 @@ dependencies = [
 [[package]]
 name = "pingora-pool"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "crossbeam-queue",
  "log",
@@ -4339,7 +4339,7 @@ dependencies = [
 [[package]]
 name = "pingora-proxy"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4361,7 +4361,7 @@ dependencies = [
 [[package]]
 name = "pingora-runtime"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "once_cell",
  "rand 0.8.5",
@@ -4372,7 +4372,7 @@ dependencies = [
 [[package]]
 name = "pingora-rustls"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "log",
  "no_debug",
@@ -4388,7 +4388,7 @@ dependencies = [
 [[package]]
 name = "pingora-timeout"
 version = "0.8.0"
-source = "git+https://github.com/raskell-io/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=5c23fe7#5c23fe704ea6abb7842d5d33e537f34ba13b573d"
 dependencies = [
  "once_cell",
  "parking_lot",
