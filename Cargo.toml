@@ -79,9 +79,9 @@ config = "0.14"
 validator = { version = "0.20", features = ["derive"] }
 
 # Testing
-proptest = "1.10"
+proptest = "1.11"
 criterion = "0.8"
-insta = "1.46"
+insta = "1.47"
 
 # Security
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
@@ -93,7 +93,7 @@ hyper = "1.5"
 tower = "0.5"
 
 # Utilities
-uuid = { version = "1.22", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6.1"
 parking_lot = "0.12"
