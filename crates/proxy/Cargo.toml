@@ -69,7 +69,7 @@ sha2 = "0.10"
 url = "2.5"
 
 # HMAC for cookie signing (sticky sessions)
-hmac = "0.12"
+hmac = "0.13"
 
 # Utilities
 uuid = { workspace = true }
