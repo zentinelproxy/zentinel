@@ -38,7 +38,7 @@ aes = "0.8"
 regex = "1.11"
 
 # Hashing (for irreversible masking)
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Token storage
 dashmap = "6.1"
