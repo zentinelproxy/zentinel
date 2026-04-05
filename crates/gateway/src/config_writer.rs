@@ -489,7 +489,7 @@ fn write_fallback_self_signed_cert(
         rcgen::generate_simple_self_signed(subject_alt_names).map_err(std::io::Error::other)?;
 
     std::fs::write(cert_path, cert.cert.pem())?;
-    std::fs::write(key_path, cert.key_pair.serialize_pem())?;
+    std::fs::write(key_path, cert.signing_key.serialize_pem())?;
 
     #[cfg(unix)]
     {
