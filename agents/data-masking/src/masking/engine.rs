@@ -257,11 +257,13 @@ fn compute_hash(value: &str, algorithm: &HashAlgorithm, truncate: usize) -> Stri
             let mut hasher = Sha256::new();
             hasher.update(value.as_bytes());
             let digest = hasher.finalize();
-            digest.iter().fold(String::with_capacity(64), |mut acc, byte| {
-                use std::fmt::Write;
-                write!(acc, "{byte:02x}").expect("write to String cannot fail");
-                acc
-            })
+            digest
+                .iter()
+                .fold(String::with_capacity(64), |mut acc, byte| {
+                    use std::fmt::Write;
+                    write!(acc, "{byte:02x}").expect("write to String cannot fail");
+                    acc
+                })
         }
     };
 
