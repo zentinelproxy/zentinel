@@ -17,7 +17,7 @@ zentinel-agent-protocol = { path = "../agent-protocol", version = "0.6.1" }
 
 # Wasmtime runtime with component model
 wasmtime = { version = "42", features = ["component-model", "async", "cranelift"] }
-wasmtime-wasi = "42"
+wasmtime-wasi = "43"
 
 # Async runtime
 tokio = { workspace = true }
