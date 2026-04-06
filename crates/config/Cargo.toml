@@ -19,7 +19,7 @@ zentinel-common = { path = "../common", version = "0.6.1", default-features = fa
 kdl = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = "1.0"
+toml = "1.1"
 
 # Validation
 validator = { workspace = true }

@@ -20,7 +20,7 @@ zentinel-agent-protocol = { path = "../../crates/agent-protocol", version = "0.6
 zentinel-common = { path = "../../crates/common", version = "0.6.1" }
 
 # Async runtime
-tokio = { version = "1.50", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio = { version = "1.51", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 async-trait = "0.1"
 
 # Serialization
