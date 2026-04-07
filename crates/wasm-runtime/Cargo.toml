@@ -16,8 +16,8 @@ categories = ["wasm", "network-programming"]
 zentinel-agent-protocol = { path = "../agent-protocol", version = "0.6.1" }
 
 # Wasmtime runtime with component model
-wasmtime = { version = "42", features = ["component-model", "async", "cranelift"] }
-wasmtime-wasi = "42"
+wasmtime = { version = "43", features = ["component-model", "async", "cranelift"] }
+wasmtime-wasi = "43"
 
 # Async runtime
 tokio = { workspace = true }
@@ -45,4 +45,4 @@ tempfile = "3"
 
 [build-dependencies]
 # For generating bindings from WIT files
-wasmtime = { version = "42", features = ["component-model"] }
+wasmtime = { version = "43", features = ["component-model"] }
