@@ -172,6 +172,12 @@ CMD ["-c", "/etc/zentinel/config.kdl"]
 ################################################################################
 # Pre-built binary stage (for CI multi-arch builds)
 # Usage: docker build --build-arg BINARY_PATH=./zentinel --target proxy-prebuilt .
+#
+# IMPORTANT: The binary copied in must be dynamically linked against a glibc
+# version <= 2.36 (bookworm). Building on ubuntu-latest (24.04, glibc 2.39)
+# produces a binary that crashes on startup inside this distroless image.
+# CI pins Linux build runners to ubuntu-22.04 (glibc 2.35) for this reason.
+# See zentinelproxy/zentinel#172.
 ################################################################################
 FROM gcr.io/distroless/cc-debian12:nonroot AS proxy-prebuilt
 
