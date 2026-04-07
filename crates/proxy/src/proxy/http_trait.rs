@@ -89,11 +89,7 @@ impl ProxyHttp for ZentinelProxy {
         let req_header = session.req_header();
         let method = req_header.method.as_str();
         let path = req_header.uri.path();
-        let host = req_header
-            .headers
-            .get("host")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
+        let host = crate::http_helpers::extract_request_host(req_header);
 
         // Handle ACME HTTP-01 challenges before any other processing
         if let Some(ref challenge_manager) = self.acme_challenges {
@@ -221,11 +217,7 @@ impl ProxyHttp for ZentinelProxy {
             ctx.method = req_header.method.to_string();
             ctx.path = req_header.uri.path().to_string();
             ctx.query = req_header.uri.query().map(|q| q.to_string());
-            ctx.host = req_header
-                .headers
-                .get("host")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
+            ctx.host = Some(crate::http_helpers::extract_request_host(req_header).to_string());
         }
         ctx.user_agent = req_header
             .headers
