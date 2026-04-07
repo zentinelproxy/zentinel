@@ -129,6 +129,10 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.latest }}
 
       # Build and push AMD64 image
+      # In validation mode (push: false) we also `load` the image into the
+      # local Docker daemon so the smoke test step below can run it. This
+      # catches regressions like zentinelproxy/zentinel#172 (glibc mismatch
+      # between build runner and distroless runtime) before publishing.
       - name: Build and push AMD64 image
         if: steps.check-artifacts.outputs.amd64 == 'true'
         uses: docker/build-push-action@v7
@@ -138,9 +142,21 @@ jobs:
           target: proxy-prebuilt
           platforms: linux/amd64
           push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false  # Disable to create single-arch image, not manifest list
+
+      # Smoke test: run the freshly built AMD64 image to catch runtime issues
+      # (e.g., dynamic linker failures like missing GLIBC symbols) before we
+      # push to the registry. Only runs in validation mode where `load: true`
+      # actually placed the image in the local daemon.
+      - name: Smoke test AMD64 image
+        if: ${{ !inputs.push && steps.check-artifacts.outputs.amd64 == 'true' }}
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64"
+          echo "Running smoke test: $IMAGE --version"
+          docker run --rm "$IMAGE" --version
 
       # Build and push ARM64 image
       - name: Build and push ARM64 image

@@ -102,10 +102,14 @@ jobs:
       upload-artifacts: true
       artifact-prefix: zentinel-${{ needs.validate.outputs.calver }}
       version: ${{ needs.validate.outputs.calver }}
+      # Linux builds pinned to ubuntu-22.04 (glibc 2.35) to stay compatible
+      # with the distroless/cc-debian12 runtime (glibc 2.36). ubuntu-latest
+      # would produce binaries linked against glibc 2.39 and crash inside
+      # the published image. See zentinelproxy/zentinel#172.
       targets: |
         [
-          {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"},
-          {"os": "ubuntu-latest", "target": "aarch64-unknown-linux-gnu", "suffix": "linux-arm64"},
+          {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"},
+          {"os": "ubuntu-22.04", "target": "aarch64-unknown-linux-gnu", "suffix": "linux-arm64"},
           {"os": "macos-latest", "target": "x86_64-apple-darwin", "suffix": "darwin-amd64"},
           {"os": "macos-latest", "target": "aarch64-apple-darwin", "suffix": "darwin-arm64"}
         ]
