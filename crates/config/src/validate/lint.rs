@@ -177,7 +177,7 @@ mod tests {
     fn test_route_config() -> RouteConfig {
         RouteConfig {
             id: "test".to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches: vec![MatchCondition::PathPrefix("/".to_string())],
             upstream: None,
             service_type: ServiceType::Web,

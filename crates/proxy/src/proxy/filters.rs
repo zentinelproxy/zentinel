@@ -1121,7 +1121,7 @@ mod tests {
 
         let route = RouteConfig {
             id: "test".to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches: vec![MatchCondition::PathPrefix(prefix.to_string())],
             upstream: None,
             service_type: ServiceType::Web,

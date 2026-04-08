@@ -778,7 +778,7 @@ mod tests {
     fn create_test_route(id: &str, matches: Vec<MatchCondition>) -> RouteConfig {
         RouteConfig {
             id: id.to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches,
             upstream: Some("test_upstream".to_string()),
             service_type: zentinel_config::ServiceType::Web,
@@ -851,11 +851,11 @@ mod tests {
     fn test_priority_ordering() {
         let mut route1 =
             create_test_route("low", vec![MatchCondition::PathPrefix("/".to_string())]);
-        route1.priority = Priority::Low;
+        route1.priority = Priority::LOW;
 
         let mut route2 =
             create_test_route("high", vec![MatchCondition::PathPrefix("/".to_string())]);
-        route2.priority = Priority::High;
+        route2.priority = Priority::HIGH;
 
         let routes = vec![route1, route2];
         let matcher = RouteMatcher::new(routes, None).unwrap();

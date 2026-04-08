@@ -159,7 +159,7 @@ pub(super) fn parse_route(node: &KdlNode) -> Result<RouteConfig> {
 
     Ok(RouteConfig {
         id,
-        priority: crate::Priority::Normal,
+        priority: crate::Priority::NORMAL,
         matches,
         upstream: get_string_entry(node, "upstream"),
         service_type: crate::ServiceType::Web,
