@@ -94,10 +94,15 @@ jobs:
           kind load docker-image $GATEWAY_IMAGE --name $CLUSTER_NAME
           kind load docker-image $PROXY_IMAGE --name $CLUSTER_NAME
 
+      # CRD version MUST match the suite version declared in
+      # conformance/go.mod (sigs.k8s.io/gateway-api v1.4.1). Otherwise
+      # the conformance suite bails with
+      #   "the installed CRDs version is different from the suite version"
+      # before any test runs.
       - name: Install Gateway API CRDs
         run: |
-          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
-          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/experimental-install.yaml
+          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
+          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/experimental-install.yaml
 
       # The Helm chart renders the image as
       #   "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
