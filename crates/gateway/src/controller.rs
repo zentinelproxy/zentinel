@@ -125,8 +125,23 @@ impl GatewayController {
 
         info!("Starting Gateway API controller");
 
-        // Build initial ReferenceGrant index
-        self.rebuild_reference_grants().await?;
+        // Build initial ReferenceGrant index.
+        //
+        // This is an optimization to seed the index before the first
+        // reconciliation runs — the ReferenceGrant watcher further down
+        // will rebuild the index again once it starts receiving events.
+        // Hard-failing here would crash the controller on startup if the
+        // Kubernetes API is still initializing (commonly yields HTTP 429
+        // "storage is (re)initializing"), forcing Kubernetes to restart
+        // the pod. Treat the initial rebuild as best-effort: log and
+        // continue, same as the watcher-triggered rebuild below.
+        if let Err(e) = self.rebuild_reference_grants().await {
+            warn!(
+                error = %e,
+                "Initial ReferenceGrant rebuild failed; the watcher will populate \
+                 the index once the Kubernetes API is ready"
+            );
+        }
 
         // Run all controllers concurrently
         let gateway_class_fut = self.run_gateway_class_controller();
