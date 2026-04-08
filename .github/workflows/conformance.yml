@@ -151,10 +151,18 @@ jobs:
       - name: Run conformance tests
         working-directory: conformance
         run: |
+          # The test harness (conformance_test.go) sets the implementation's
+          # controllerName indirectly: the helm chart's gatewayclass.yaml
+          # already creates a GatewayClass with
+          # `controllerName: zentinelproxy.io/gateway-controller`, and the
+          # test binary matches against it via `-gateway-class=zentinel`.
+          # There is no `-controller-name` flag on the gateway-api v1.4.1
+          # conformance suite — passing it causes
+          # `flag provided but not defined: -controller-name` and crashes
+          # the test runner before any test runs.
           go test ./... \
             -run TestConformance \
             -gateway-class=zentinel \
-            -controller-name=zentinelproxy.io/gateway-controller \
             -supported-features=HTTPRoute,ReferenceGrant \
             -v \
             -count=1 \
