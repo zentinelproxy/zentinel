@@ -99,10 +99,18 @@ jobs:
       # the conformance suite bails with
       #   "the installed CRDs version is different from the suite version"
       # before any test runs.
+      #
+      # Use --server-side because the v1.4.1 CRDs are large enough that
+      # kubectl's client-side last-applied-configuration annotation
+      # overflows Kubernetes' 262144-byte metadata.annotations limit.
+      # Server-side apply uses field ownership instead of the annotation
+      # and handles arbitrarily large resources. --force-conflicts lets
+      # the second apply (experimental-install) take ownership of fields
+      # already managed by the first (standard-install).
       - name: Install Gateway API CRDs
         run: |
-          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
-          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/experimental-install.yaml
+          kubectl apply --server-side --force-conflicts -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
+          kubectl apply --server-side --force-conflicts -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/experimental-install.yaml
 
       # The Helm chart renders the image as
       #   "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
