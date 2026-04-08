@@ -205,30 +205,46 @@ match breaker.state() {
 
 ### Priority
 
-Request priority levels for scheduling.
+Route evaluation priority. `Priority` is a transparent newtype around `i32`:
+any integer is a valid priority, and higher values are evaluated first.
+Named constants are provided for common tiers.
 
 ```rust
-use zentinel_common::Priority;
+use zentinel_common::types::Priority;
 
-let priority = Priority::High;
+let priority = Priority::HIGH;
 
-// Orderable
-assert!(Priority::Critical > Priority::High);
-assert!(Priority::High > Priority::Normal);
-assert!(Priority::Normal > Priority::Low);
+// Orderable — direct integer comparison
+assert!(Priority::CRITICAL > Priority::HIGH);
+assert!(Priority::HIGH > Priority::NORMAL);
+assert!(Priority::NORMAL > Priority::LOW);
 
-// Numeric value
-assert_eq!(Priority::Critical.as_u8(), 3);
+// Arbitrary numeric priorities are valid and slot in between named tiers.
+// Useful for gap-based ordering (see KDL `priority N` syntax).
+assert!(Priority(500) > Priority::HIGH);
+assert!(Priority(75) > Priority::NORMAL);
+
+// Underlying weight
+assert_eq!(Priority::CRITICAL.as_i32(), 1000);
+
+// Default is Priority::NORMAL
+assert_eq!(Priority::default(), Priority::NORMAL);
 ```
 
-**Variants:**
+**Named constants (canonical weights):**
 
-| Priority | Value | Use Case |
-|----------|-------|----------|
-| `Low` | 0 | Background tasks |
-| `Normal` | 1 | Default requests |
-| `High` | 2 | Important requests |
-| `Critical` | 3 | Must not be dropped |
+| Constant | Weight | Use case |
+|---|---|---|
+| `Priority::LOW` | `10` | Catch-all routes, fallbacks |
+| `Priority::NORMAL` | `50` | Default for routes without explicit priority |
+| `Priority::HIGH` | `100` | Important routes evaluated before `NORMAL` |
+| `Priority::CRITICAL` | `1000` | Health checks and infrastructure routes evaluated first |
+
+In KDL, a route's `priority` directive accepts either an integer
+(`priority 500`) or one of the named string aliases
+(`"low"`, `"normal"`, `"high"`, `"critical"`, case-insensitive). Integer
+weights allow fine-grained ordering between the named tiers, e.g.
+`priority 75` sits between `NORMAL` and `HIGH`.
 
 ## Byte Size
 

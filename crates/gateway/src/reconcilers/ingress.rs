@@ -184,7 +184,7 @@ pub fn translate_ingresses(
 
                     routes.push(RouteConfig {
                         id: rule_id,
-                        priority: Priority::Normal,
+                        priority: Priority::NORMAL,
                         matches,
                         upstream: Some(upstream_id),
                         service_type: ServiceType::Web,
@@ -242,7 +242,7 @@ pub fn translate_ingresses(
 
                 routes.push(RouteConfig {
                     id: rule_id,
-                    priority: Priority::Low,
+                    priority: Priority::LOW,
                     matches: vec![MatchCondition::PathPrefix("/".to_string())],
                     upstream: Some(upstream_id),
                     service_type: ServiceType::Web,

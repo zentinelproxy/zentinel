@@ -150,7 +150,7 @@ fn build_route_nodes(routes: &[RouteConfig]) -> Vec<RouteNode> {
 
             RouteNode {
                 id: r.id.clone(),
-                priority: format!("{:?}", r.priority),
+                priority: r.priority.to_string(),
                 match_summary: summarize_matches(&r.matches),
                 service_type: format!("{:?}", r.service_type),
                 has_circuit_breaker: r.circuit_breaker.is_some(),

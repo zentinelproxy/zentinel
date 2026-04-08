@@ -226,15 +226,11 @@ impl ConfigWriter {
             for route in &config.routes {
                 out.push_str(&format!("    route \"{}\" {{\n", route.id));
 
-                // Priority (if not default)
-                if route.priority != zentinel_common::types::Priority::Normal {
-                    let prio_str = match route.priority {
-                        zentinel_common::types::Priority::Critical => "high",
-                        zentinel_common::types::Priority::High => "high",
-                        zentinel_common::types::Priority::Normal => "normal",
-                        zentinel_common::types::Priority::Low => "low",
-                    };
-                    out.push_str(&format!("        priority \"{prio_str}\"\n"));
+                // Priority (if not default). Emitted as an integer weight to
+                // preserve fine-grained numeric priorities set by upstream
+                // translators or config sources.
+                if route.priority != zentinel_common::types::Priority::NORMAL {
+                    out.push_str(&format!("        priority {}\n", route.priority.as_i32()));
                 }
 
                 // Match conditions
@@ -588,7 +584,7 @@ mod tests {
             }],
             routes: vec![RouteConfig {
                 id: "test-route".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Host("example.com".to_string()),
                     MatchCondition::PathPrefix("/api".to_string()),
@@ -656,7 +652,7 @@ mod tests {
         assert_eq!(parsed.listeners[0].address, "0.0.0.0:8080");
         assert_eq!(parsed.routes.len(), 1);
         assert_eq!(parsed.routes[0].id, "test-route");
-        assert_eq!(parsed.routes[0].priority, Priority::High);
+        assert_eq!(parsed.routes[0].priority, Priority::HIGH);
         assert_eq!(parsed.routes[0].upstream.as_deref(), Some("backend"));
         assert_eq!(parsed.upstreams.len(), 1);
         assert_eq!(parsed.upstreams["backend"].targets.len(), 2);
