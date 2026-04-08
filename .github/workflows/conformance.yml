@@ -26,7 +26,13 @@ jobs:
   conformance:
     name: Gateway API Conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The full gateway-api conformance suite takes 25-40 minutes to run
+    # against a correct implementation, longer if there are failures
+    # (each failing assertion retries until its per-test deadline).
+    # 60 minutes gives the suite enough room to finish and produce a
+    # pass/fail summary; 30 minutes was cancelling mid-run before any
+    # cleanup or summary could happen.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -173,13 +179,17 @@ jobs:
           # conformance suite — passing it causes
           # `flag provided but not defined: -controller-name` and crashes
           # the test runner before any test runs.
+          # go test timeout must be strictly less than the job-level
+          # timeout-minutes so that a runaway test suite panics (and
+          # prints a pass/fail summary) before GitHub Actions cancels
+          # the whole job. 45m leaves 15m of slack for cleanup.
           go test ./... \
             -run TestConformance \
             -gateway-class=zentinel \
             -supported-features=HTTPRoute,ReferenceGrant \
             -v \
             -count=1 \
-            -timeout=20m
+            -timeout=45m
 
       - name: Collect logs on failure
         if: failure()
