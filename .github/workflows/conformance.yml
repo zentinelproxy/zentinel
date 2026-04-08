@@ -104,6 +104,9 @@ jobs:
       # `InvalidImageName`. Split the `IMAGE_NAME:TAG` env vars into
       # repository and tag using bash parameter expansion so the chart
       # template renders the correct reference.
+      # Deploy without --wait so helm returns immediately after applying the
+      # manifests. Readiness is then waited on separately below with a longer
+      # timeout, so we can dump pod state during the wait if needed.
       - name: Deploy zentinel-gateway
         run: |
           kubectl create namespace zentinel-system
@@ -114,16 +117,32 @@ jobs:
             --set image.pullPolicy=Never \
             --set proxy.image.repository="${PROXY_IMAGE%:*}" \
             --set proxy.image.tag="${PROXY_IMAGE##*:}" \
-            --set proxy.image.pullPolicy=Never \
-            --wait \
-            --timeout 120s
+            --set proxy.image.pullPolicy=Never
+
+          echo "=== Rendered manifest (first 200 lines) ==="
+          helm get manifest zentinel-gateway -n zentinel-system | head -200
+
+          echo "=== Initial pod state ==="
+          kubectl get pods -n zentinel-system -o wide
 
       - name: Wait for readiness
         run: |
+          set +e
           kubectl wait --for=condition=ready pod \
             -l app.kubernetes.io/name=zentinel-gateway \
             -n zentinel-system \
-            --timeout=60s
+            --timeout=300s
+          WAIT_RC=$?
+          set -e
+
+          echo "=== Pod state after wait (rc=$WAIT_RC) ==="
+          kubectl get pods -n zentinel-system -o wide
+
+          if [ "$WAIT_RC" -ne 0 ]; then
+            echo "::error::Pods did not reach Ready within 300s"
+            exit "$WAIT_RC"
+          fi
+
           echo "GatewayClass status:"
           kubectl get gatewayclass zentinel -o yaml
 
@@ -142,9 +161,36 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
-          echo "=== Controller logs ==="
-          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c controller --tail=100
-          echo "=== Proxy logs ==="
-          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c proxy --tail=100
+          # Best-effort: any of these may produce nothing if the cluster
+          # never reached the corresponding state. Do not exit on error so
+          # we collect every signal we can.
+          set +e
+
+          echo "=== Pod state ==="
+          kubectl get pods -n zentinel-system -o wide
+          echo
+          kubectl get pods -n zentinel-system -o yaml
+
+          echo "=== Pod descriptions (events, container statuses, probes) ==="
+          kubectl describe pods -n zentinel-system
+
+          echo "=== Namespace events (chronological) ==="
+          kubectl get events -n zentinel-system --sort-by='.lastTimestamp'
+
+          echo "=== Controller logs (full) ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c controller
+          echo "=== Controller logs (previous, if restarted) ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c controller --previous
+
+          echo "=== Proxy logs (full) ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c proxy
+          echo "=== Proxy logs (previous, if restarted) ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c proxy --previous
+
           echo "=== Gateway resources ==="
           kubectl get gateways,httproutes,gatewayclasses -A -o yaml
+
+          echo "=== Helm release ==="
+          helm status zentinel-gateway -n zentinel-system || true
+
+          true
