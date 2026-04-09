@@ -269,15 +269,67 @@ pub enum CircuitBreakerState {
     HalfOpen,
 }
 
-/// Request priority
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum Priority {
-    Low = 0,
-    #[default]
-    Normal = 1,
-    High = 2,
-    Critical = 3,
+/// Route evaluation priority.
+///
+/// Routes are sorted in descending priority order — higher values are
+/// evaluated first. Any `i32` value is accepted; the named constants
+/// ([`LOW`](Self::LOW), [`NORMAL`](Self::NORMAL), [`HIGH`](Self::HIGH),
+/// [`CRITICAL`](Self::CRITICAL)) exist as conveniences for common cases, but
+/// gap-based values like `Priority(500)` are fully supported so routes can be
+/// finely ordered between named tiers.
+///
+/// KDL syntax accepts either an integer (`priority 100`) or one of the named
+/// string aliases (`priority "high"`), with the aliases resolving to the
+/// matching constant defined below.
+///
+/// # Examples
+///
+/// ```
+/// use zentinel_common::types::Priority;
+///
+/// assert!(Priority::HIGH > Priority::NORMAL);
+/// assert!(Priority(500) > Priority::HIGH);
+/// assert_eq!(Priority::default(), Priority::NORMAL);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Priority(pub i32);
+
+impl Priority {
+    /// Low-priority routes (default weight: `10`). Evaluated after normal routes.
+    pub const LOW: Self = Self(10);
+    /// Normal-priority routes (default weight: `50`). The default for routes
+    /// that do not specify an explicit priority.
+    pub const NORMAL: Self = Self(50);
+    /// High-priority routes (default weight: `100`). Evaluated before normal routes.
+    pub const HIGH: Self = Self(100);
+    /// Critical-priority routes (default weight: `1000`). Evaluated first; intended
+    /// for health checks and other infrastructure-critical routes.
+    pub const CRITICAL: Self = Self(1000);
+
+    /// Returns the underlying integer weight.
+    #[inline]
+    pub const fn as_i32(self) -> i32 {
+        self.0
+    }
+}
+
+impl Default for Priority {
+    fn default() -> Self {
+        Self::NORMAL
+    }
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<i32> for Priority {
+    fn from(value: i32) -> Self {
+        Self(value)
+    }
 }
 
 /// Time window for rate limiting and metrics

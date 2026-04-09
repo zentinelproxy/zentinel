@@ -514,7 +514,7 @@ fn validate_routes(
 
     // Validate routes have at least one match condition
     for route in &config.routes {
-        if route.matches.is_empty() && route.priority != Priority::Low {
+        if route.matches.is_empty() && route.priority != Priority::LOW {
             errors.push(format!(
                 "Route '{}' has no match conditions.\n\
                  Add at least one match condition or set priority to \"low\" for catch-all routes.",
@@ -1084,7 +1084,7 @@ mod tests {
     fn test_route(id: &str, upstream: Option<&str>) -> RouteConfig {
         RouteConfig {
             id: id.to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches: vec![MatchCondition::PathPrefix("/".to_string())],
             upstream: upstream.map(String::from),
             service_type: ServiceType::Web,
@@ -1618,7 +1618,7 @@ mod tests {
         // --- RouteConfig ---
         let _route = RouteConfig {
             id: "test".to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches: vec![MatchCondition::PathPrefix("/".to_string())],
             upstream: Some("default".to_string()),
             service_type: ServiceType::Web,

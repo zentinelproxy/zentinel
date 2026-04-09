@@ -29,7 +29,12 @@ on:
       targets:
         description: 'JSON array of target configs'
         required: false
-        default: '[{"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"}]'
+        # Linux builds MUST run on ubuntu-22.04 (glibc 2.35) so the resulting
+        # dynamically-linked binary is compatible with our distroless runtime
+        # (gcr.io/distroless/cc-debian12 = bookworm = glibc 2.36). Building on
+        # ubuntu-latest (24.04, glibc 2.39) produces binaries that crash on
+        # startup inside the published image. See zentinelproxy/zentinel#172.
+        default: '[{"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu", "suffix": "linux-amd64"}]'
         type: string
 
 env:

@@ -14,13 +14,13 @@ pub fn find_shadowed_routes(routes: &[RouteConfig]) -> Vec<(String, String, Stri
 
     // Sort routes by priority (highest first), preserving definition order within same priority
     let mut sorted: Vec<&RouteConfig> = routes.iter().collect();
-    sorted.sort_by(|a, b| priority_rank(&b.priority).cmp(&priority_rank(&a.priority)));
+    sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
 
     // For each route, check if any higher-priority route shadows it
     for (i, route) in sorted.iter().enumerate() {
         for higher in &sorted[..i] {
             // Same priority routes don't shadow each other (evaluated in definition order)
-            if priority_rank(&higher.priority) == priority_rank(&route.priority) {
+            if higher.priority == route.priority {
                 continue;
             }
 
@@ -140,15 +140,6 @@ fn path_is_superset(
     }
 }
 
-fn priority_rank(p: &Priority) -> u8 {
-    match p {
-        Priority::Critical => 3,
-        Priority::High => 2,
-        Priority::Normal => 1,
-        Priority::Low => 0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,8 +171,8 @@ mod tests {
     #[test]
     fn prefix_shadows_longer_prefix() {
         let routes = vec![
-            route("api", Priority::High, vec![MatchCondition::PathPrefix("/api".into())]),
-            route("api-users", Priority::Normal, vec![MatchCondition::PathPrefix("/api/users".into())]),
+            route("api", Priority::HIGH, vec![MatchCondition::PathPrefix("/api".into())]),
+            route("api-users", Priority::NORMAL, vec![MatchCondition::PathPrefix("/api/users".into())]),
         ];
         let shadowed = find_shadowed_routes(&routes);
         assert_eq!(shadowed.len(), 1);
@@ -192,8 +183,8 @@ mod tests {
     #[test]
     fn same_priority_does_not_shadow() {
         let routes = vec![
-            route("api", Priority::Normal, vec![MatchCondition::PathPrefix("/api".into())]),
-            route("api-users", Priority::Normal, vec![MatchCondition::PathPrefix("/api/users".into())]),
+            route("api", Priority::NORMAL, vec![MatchCondition::PathPrefix("/api".into())]),
+            route("api-users", Priority::NORMAL, vec![MatchCondition::PathPrefix("/api/users".into())]),
         ];
         let shadowed = find_shadowed_routes(&routes);
         assert!(shadowed.is_empty());
@@ -204,13 +195,13 @@ mod tests {
         let routes = vec![
             route(
                 "api-internal",
-                Priority::High,
+                Priority::HIGH,
                 vec![
                     MatchCondition::PathPrefix("/api".into()),
                     MatchCondition::Host("internal.example.com".into()),
                 ],
             ),
-            route("api", Priority::Normal, vec![MatchCondition::PathPrefix("/api".into())]),
+            route("api", Priority::NORMAL, vec![MatchCondition::PathPrefix("/api".into())]),
         ];
         let shadowed = find_shadowed_routes(&routes);
         assert!(shadowed.is_empty());

@@ -241,11 +241,34 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
     Ok(matches)
 }
 
+/// Parse a `priority` child node into a [`Priority`](zentinel_common::types::Priority).
+///
+/// Accepts either:
+/// - An integer: `priority 100` → `Priority(100)`
+/// - A named string alias: `priority "high"` → `Priority::HIGH`
+///
+/// Supported string aliases (case-insensitive): `"low"`, `"normal"`, `"high"`,
+/// `"critical"`. Unrecognized strings and missing values fall back to
+/// [`Priority::NORMAL`](zentinel_common::types::Priority::NORMAL).
 fn parse_priority(node: &kdl::KdlNode) -> zentinel_common::types::Priority {
-    match get_string_entry(node, "priority").as_deref() {
-        Some("high") => zentinel_common::types::Priority::High,
-        Some("low") => zentinel_common::types::Priority::Low,
-        _ => zentinel_common::types::Priority::Normal,
+    use zentinel_common::types::Priority;
+
+    // Integer form takes precedence: `priority 100`
+    if let Some(n) = get_int_entry(node, "priority") {
+        return Priority(n as i32);
+    }
+
+    // Named string alias: `priority "high"`
+    match get_string_entry(node, "priority")
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("critical") => Priority::CRITICAL,
+        Some("high") => Priority::HIGH,
+        Some("low") => Priority::LOW,
+        Some("normal") => Priority::NORMAL,
+        _ => Priority::NORMAL,
     }
 }
 
@@ -1629,4 +1652,106 @@ fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig>
         timeout_ms,
         failure_mode,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zentinel_common::types::Priority;
+
+    /// Parse a KDL fragment like `route "test" { priority ... }` and return
+    /// the resulting `Priority`. The parser expects a `route` parent node, so
+    /// we wrap the priority directive in a minimal route block.
+    fn parse_priority_from(kdl: &str) -> Priority {
+        let doc: ::kdl::KdlDocument = kdl.parse().expect("KDL parses");
+        let route_node = doc.get("route").expect("route node present");
+        parse_priority(route_node)
+    }
+
+    #[test]
+    fn priority_accepts_integer() {
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority 100 }"#),
+            Priority(100)
+        );
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority 1000 }"#),
+            Priority::CRITICAL
+        );
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority 1 }"#),
+            Priority(1)
+        );
+    }
+
+    #[test]
+    fn priority_accepts_large_and_negative_integers() {
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority 999999 }"#),
+            Priority(999_999)
+        );
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority -50 }"#),
+            Priority(-50)
+        );
+    }
+
+    #[test]
+    fn priority_accepts_all_string_aliases() {
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority "critical" }"#),
+            Priority::CRITICAL
+        );
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority "high" }"#),
+            Priority::HIGH
+        );
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority "normal" }"#),
+            Priority::NORMAL
+        );
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority "low" }"#),
+            Priority::LOW
+        );
+    }
+
+    #[test]
+    fn priority_string_aliases_are_case_insensitive() {
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority "HIGH" }"#),
+            Priority::HIGH
+        );
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority "Critical" }"#),
+            Priority::CRITICAL
+        );
+    }
+
+    #[test]
+    fn priority_unknown_string_falls_back_to_normal() {
+        assert_eq!(
+            parse_priority_from(r#"route "r" { priority "medium" }"#),
+            Priority::NORMAL
+        );
+    }
+
+    #[test]
+    fn priority_missing_is_normal() {
+        assert_eq!(
+            parse_priority_from(r#"route "r" { upstream "backend" }"#),
+            Priority::NORMAL
+        );
+    }
+
+    #[test]
+    fn numeric_priorities_sort_before_named_aliases() {
+        // Regression: documentation-style gap-based priorities must preserve
+        // the numeric ordering the docs advertise (e.g. 500 > HIGH > 50).
+        assert!(Priority(500) > Priority::HIGH);
+        assert!(Priority::HIGH > Priority(75));
+        assert!(Priority(75) > Priority::NORMAL);
+        assert!(Priority::NORMAL > Priority(25));
+        assert!(Priority(25) > Priority::LOW);
+    }
 }

@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use http::Response;
 use http_body_util::{BodyExt, Full};
-use pingora::http::ResponseHeader;
+use pingora::http::{RequestHeader, ResponseHeader};
 use pingora::prelude::*;
 use pingora::proxy::Session;
 use std::collections::HashMap;
@@ -36,6 +36,29 @@ pub struct OwnedRequestInfo {
     pub query_params: HashMap<String, String>,
 }
 
+/// Extract the request host from a Pingora `RequestHeader`.
+///
+/// Resolves the host using a protocol-aware fallback chain so route matching
+/// works consistently for HTTP/1.1, HTTP/2, and absolute-URI requests:
+///
+/// 1. `uri.host()` — populated by Pingora from the HTTP/2 `:authority`
+///    pseudo-header and from absolute-form HTTP/1.1 request URIs.
+/// 2. The `Host` header — used by HTTP/1.1 requests with a relative URI.
+///
+/// Returns `""` if neither source provides a host. Any port suffix is left
+/// intact; downstream matchers (e.g. `HostMatcher::matches`) are responsible
+/// for stripping it per Gateway API semantics.
+pub fn extract_request_host(req_header: &RequestHeader) -> &str {
+    if let Some(host) = req_header.uri.host() {
+        return host;
+    }
+    req_header
+        .headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+}
+
 /// Extract request info from a Pingora session
 ///
 /// Builds an `OwnedRequestInfo` struct from the session's request headers.
@@ -53,7 +76,7 @@ pub fn extract_request_info(session: &Session) -> OwnedRequestInfo {
     let req_header = session.req_header();
 
     let headers = RequestInfo::build_headers(req_header.headers.iter());
-    let host = headers.get("host").cloned().unwrap_or_default();
+    let host = extract_request_host(req_header).to_string();
     let path = req_header.uri.path().to_string();
     let method = req_header.method.as_str().to_string();
 
@@ -297,6 +320,47 @@ pub async fn write_rate_limit_error(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn req(uri: &str, host_header: Option<&str>) -> RequestHeader {
+        let mut h = RequestHeader::build("GET", b"/", None).unwrap();
+        h.set_uri(uri.parse().unwrap());
+        if let Some(v) = host_header {
+            h.insert_header("host", v).unwrap();
+        }
+        h
+    }
+
+    #[test]
+    fn extract_host_prefers_uri_host_for_absolute_uri() {
+        // HTTP/1.1 absolute-form request — uri.host() is populated.
+        let h = req("http://example.com/path", Some("other.example.org"));
+        assert_eq!(extract_request_host(&h), "example.com");
+    }
+
+    #[test]
+    fn extract_host_falls_back_to_header_for_relative_uri() {
+        // HTTP/1.1 relative-form — uri.host() is None, must use Host header.
+        let h = req(
+            "/_matrix/federation/v1/send/123",
+            Some("im.example.com:443"),
+        );
+        assert_eq!(extract_request_host(&h), "im.example.com:443");
+    }
+
+    #[test]
+    fn extract_host_returns_empty_when_no_host_anywhere() {
+        let h = req("/path", None);
+        assert_eq!(extract_request_host(&h), "");
+    }
+
+    #[test]
+    fn extract_host_uses_uri_when_header_missing() {
+        // Simulates the HTTP/2 case where Pingora parses :authority into uri.
+        let h = req("http://api.example.com/v1", None);
+        assert_eq!(extract_request_host(&h), "api.example.com");
+    }
+
     // Trace ID generation tests are in crate::trace_id module.
     // Integration tests for get_or_create_trace_id require mocking Pingora session.
     // See crates/proxy/tests/ for integration test examples.

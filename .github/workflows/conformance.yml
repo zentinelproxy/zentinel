@@ -26,7 +26,13 @@ jobs:
   conformance:
     name: Gateway API Conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The full gateway-api conformance suite takes 25-40 minutes to run
+    # against a correct implementation, longer if there are failures
+    # (each failing assertion retries until its per-test deadline).
+    # 60 minutes gives the suite enough room to finish and produce a
+    # pass/fail summary; 30 minutes was cancelling mid-run before any
+    # cleanup or summary could happen.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -38,7 +44,9 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.22'
+          # conformance/go.mod requires Go >= 1.25.0. Must stay in sync with
+          # the `go` directive in that file.
+          go-version: '1.25'
           cache-dependency-path: conformance/go.sum
 
       - name: Cache cargo
@@ -64,67 +72,158 @@ jobs:
           docker build -t $GATEWAY_IMAGE --target gateway .
           docker build -t $PROXY_IMAGE --target proxy .
 
+      # helm/kind-action's `config` parameter passes its value straight to
+      # `kind create cluster --config`, which expects a file path. Older
+      # releases of the action did not write inline YAML to a temp file
+      # first, so passing the config inline produced
+      #   `failed to create cluster: error reading file: open kind: Cluster ...`
+      # because the YAML body itself was being treated as a filename.
+      # Write the config to a real file and reference it by path so this
+      # works regardless of which action version the @v1 tag resolves to.
+      - name: Write kind cluster config
+        run: |
+          cat > /tmp/kind-config.yaml <<'EOF'
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+            - role: control-plane
+          EOF
+
       - name: Create kind cluster
         uses: helm/kind-action@v1
         with:
           cluster_name: ${{ env.CLUSTER_NAME }}
-          config: |
-            kind: Cluster
-            apiVersion: kind.x-k8s.io/v1alpha4
-            nodes:
-              - role: control-plane
+          config: /tmp/kind-config.yaml
 
       - name: Load images into kind
         run: |
           kind load docker-image $GATEWAY_IMAGE --name $CLUSTER_NAME
           kind load docker-image $PROXY_IMAGE --name $CLUSTER_NAME
 
+      # CRD version MUST match the suite version declared in
+      # conformance/go.mod (sigs.k8s.io/gateway-api v1.4.1). Otherwise
+      # the conformance suite bails with
+      #   "the installed CRDs version is different from the suite version"
+      # before any test runs.
+      #
+      # Use --server-side because the v1.4.1 CRDs are large enough that
+      # kubectl's client-side last-applied-configuration annotation
+      # overflows Kubernetes' 262144-byte metadata.annotations limit.
+      # Server-side apply uses field ownership instead of the annotation
+      # and handles arbitrarily large resources. --force-conflicts lets
+      # the second apply (experimental-install) take ownership of fields
+      # already managed by the first (standard-install).
       - name: Install Gateway API CRDs
         run: |
-          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
-          kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/experimental-install.yaml
+          kubectl apply --server-side --force-conflicts -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
+          kubectl apply --server-side --force-conflicts -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/experimental-install.yaml
 
+      # The Helm chart renders the image as
+      #   "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      # so passing the full `name:tag` as repository + an empty tag yields
+      # `zentinel-gateway:ci:<chart-version>`, which kind rejects with
+      # `InvalidImageName`. Split the `IMAGE_NAME:TAG` env vars into
+      # repository and tag using bash parameter expansion so the chart
+      # template renders the correct reference.
+      # Deploy without --wait so helm returns immediately after applying the
+      # manifests. Readiness is then waited on separately below with a longer
+      # timeout, so we can dump pod state during the wait if needed.
       - name: Deploy zentinel-gateway
         run: |
           kubectl create namespace zentinel-system
           helm install zentinel-gateway deploy/helm/zentinel-gateway \
             --namespace zentinel-system \
-            --set image.repository=$GATEWAY_IMAGE \
-            --set image.tag="" \
+            --set image.repository="${GATEWAY_IMAGE%:*}" \
+            --set image.tag="${GATEWAY_IMAGE##*:}" \
             --set image.pullPolicy=Never \
-            --set proxy.image.repository=$PROXY_IMAGE \
-            --set proxy.image.tag="" \
-            --set proxy.image.pullPolicy=Never \
-            --wait \
-            --timeout 120s
+            --set proxy.image.repository="${PROXY_IMAGE%:*}" \
+            --set proxy.image.tag="${PROXY_IMAGE##*:}" \
+            --set proxy.image.pullPolicy=Never
+
+          echo "=== Rendered manifest (first 200 lines) ==="
+          helm get manifest zentinel-gateway -n zentinel-system | head -200
+
+          echo "=== Initial pod state ==="
+          kubectl get pods -n zentinel-system -o wide
 
       - name: Wait for readiness
         run: |
+          set +e
           kubectl wait --for=condition=ready pod \
             -l app.kubernetes.io/name=zentinel-gateway \
             -n zentinel-system \
-            --timeout=60s
+            --timeout=300s
+          WAIT_RC=$?
+          set -e
+
+          echo "=== Pod state after wait (rc=$WAIT_RC) ==="
+          kubectl get pods -n zentinel-system -o wide
+
+          if [ "$WAIT_RC" -ne 0 ]; then
+            echo "::error::Pods did not reach Ready within 300s"
+            exit "$WAIT_RC"
+          fi
+
           echo "GatewayClass status:"
           kubectl get gatewayclass zentinel -o yaml
 
       - name: Run conformance tests
         working-directory: conformance
         run: |
+          # The test harness (conformance_test.go) sets the implementation's
+          # controllerName indirectly: the helm chart's gatewayclass.yaml
+          # already creates a GatewayClass with
+          # `controllerName: zentinelproxy.io/gateway-controller`, and the
+          # test binary matches against it via `-gateway-class=zentinel`.
+          # There is no `-controller-name` flag on the gateway-api v1.4.1
+          # conformance suite — passing it causes
+          # `flag provided but not defined: -controller-name` and crashes
+          # the test runner before any test runs.
+          # go test timeout must be strictly less than the job-level
+          # timeout-minutes so that a runaway test suite panics (and
+          # prints a pass/fail summary) before GitHub Actions cancels
+          # the whole job. 45m leaves 15m of slack for cleanup.
           go test ./... \
             -run TestConformance \
             -gateway-class=zentinel \
-            -controller-name=zentinelproxy.io/gateway-controller \
             -supported-features=HTTPRoute,ReferenceGrant \
             -v \
             -count=1 \
-            -timeout=20m
+            -timeout=45m
 
       - name: Collect logs on failure
         if: failure()
         run: |
-          echo "=== Controller logs ==="
-          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c controller --tail=100
-          echo "=== Proxy logs ==="
-          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c proxy --tail=100
+          # Best-effort: any of these may produce nothing if the cluster
+          # never reached the corresponding state. Do not exit on error so
+          # we collect every signal we can.
+          set +e
+
+          echo "=== Pod state ==="
+          kubectl get pods -n zentinel-system -o wide
+          echo
+          kubectl get pods -n zentinel-system -o yaml
+
+          echo "=== Pod descriptions (events, container statuses, probes) ==="
+          kubectl describe pods -n zentinel-system
+
+          echo "=== Namespace events (chronological) ==="
+          kubectl get events -n zentinel-system --sort-by='.lastTimestamp'
+
+          echo "=== Controller logs (full) ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c controller
+          echo "=== Controller logs (previous, if restarted) ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c controller --previous
+
+          echo "=== Proxy logs (full) ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c proxy
+          echo "=== Proxy logs (previous, if restarted) ==="
+          kubectl logs -l app.kubernetes.io/name=zentinel-gateway -n zentinel-system -c proxy --previous
+
           echo "=== Gateway resources ==="
           kubectl get gateways,httproutes,gatewayclasses -A -o yaml
+
+          echo "=== Helm release ==="
+          helm status zentinel-gateway -n zentinel-system || true
+
+          true
