@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.04_1](#26041---2026-04-09) | 0.6.4 | 2026-04-09 | Numeric route priorities, host extraction fix, Docker glibc fix, conformance CI restored |
 | [26.03_4](#26034---2026-03-18) | 0.6.2 | 2026-03-18 | Configurable Cache-Status header name |
 | [26.02_18](#260218---2026-02-26) | 0.5.10 | 2026-02-26 | Remove v1 agent protocol |
 | [26.02_16](#260216---2026-02-24) | 0.5.7 | 2026-02-24 | Fix KDL parser missing agent event aliases |
@@ -33,6 +34,36 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.04_1] - 2026-04-09
+
+**Crate version:** 0.6.4
+
+### Added
+- **Numeric route priorities** — The `priority` directive now accepts integer weights (`priority 100`) in addition to the existing named string aliases (`priority "high"`). This matches the syntax documented across zentinelproxy.io since 25.12. Named constants: `LOW=10`, `NORMAL=50`, `HIGH=100`, `CRITICAL=1000`. Any `i32` is valid, enabling fine-grained gap-based ordering like `priority 75` (between `NORMAL` and `HIGH`). The `"critical"` string alias now works (was previously silently dropped to `Normal`). (#180)
+
+### Fixed
+- **Route matcher host extraction** — Route matching now uses `uri.host()` before falling back to the `Host` header, fixing `404 No matching route found` errors for HTTP/2 traffic and HTTP/1.1 requests with relative URIs (e.g., Matrix federation). Port stripping is handled by `HostMatcher::matches` per Gateway API semantics. (#178, fixes #173)
+- **Docker image GLIBC crash** — The published `ghcr.io/zentinelproxy/zentinel:latest` image crashed on startup with `GLIBC_2.39 not found` because CI built on `ubuntu-latest` (24.04, glibc 2.39) but packaged into `distroless/cc-debian12` (bookworm, glibc 2.36). Pinned Linux build runners to `ubuntu-22.04` (glibc 2.35). Added a Docker smoke test (`docker run --rm <image> --version`) in the validation pipeline to catch future regressions before publishing. (#179, fixes #172)
+- **Gateway controller startup crash** — The controller's initial `rebuild_reference_grants` call raced the Kubernetes API server's initialization, consistently receiving HTTP 429 "storage is (re)initializing" and crashing the pod. Made the initial rebuild non-fatal (log and continue); the watcher repopulates the index once the API is ready. (#182)
+
+### Changed
+- **Gateway API conformance CI restored** — The conformance workflow had been red on every PR since 2026-03-15 (when it was introduced). Six fixes across #181 and #182 restored it to a reliable 23-minute end-to-end run: kind cluster config file path, helm image name/tag split, Go 1.25, CRDs v1.4.1 with server-side apply, non-fatal controller startup, `-controller-name` flag removal, and timeout adjustments. Baseline established: 42/235 tests passing (all controller/status tests; data-plane routing is incomplete). (#181, #182)
+- **Priority type refactored** — `Priority` changed from a 4-variant enum (`Low/Normal/High/Critical`) to a transparent `i32` newtype with named constants. Serialization is now integer (`"priority": 50`) instead of string (`"priority": "normal"`). The gateway KDL writer emits integer weights (was incorrectly collapsing `Critical` onto `"high"`). (#180)
+
+### Dependencies
+- Bump sha2 0.10→0.11, hmac 0.12→0.13 (digest 0.11 migration) (#175)
+- Bump tokio 1.50→1.51, hyper 1.8→1.9, arc-swap 1.9.0→1.9.1, toml 1.1.0→1.1.2, insta 1.47.1→1.47.2, libc, and others (#177)
+- Bump rcgen to 0.14.7 (#174)
+- Bump wasmtime and wasmtime-wasi to 43.0.0 (#176)
+- Bump tokio-tungstenite 0.28→0.29 (#169)
+- Bump rust-minor group with 3 updates (#165)
+
+### Chores
+- Update Pingora fork URL from raskell-io to zentinelproxy (#163)
+- Bump actions/deploy-pages from 4 to 5 (#164)
 
 ---
 
