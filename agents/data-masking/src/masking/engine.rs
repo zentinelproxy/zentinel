@@ -256,7 +256,14 @@ fn compute_hash(value: &str, algorithm: &HashAlgorithm, truncate: usize) -> Stri
         HashAlgorithm::Sha256 => {
             let mut hasher = Sha256::new();
             hasher.update(value.as_bytes());
-            format!("{:x}", hasher.finalize())
+            let digest = hasher.finalize();
+            digest
+                .iter()
+                .fold(String::with_capacity(64), |mut acc, byte| {
+                    use std::fmt::Write;
+                    write!(acc, "{byte:02x}").expect("write to String cannot fail");
+                    acc
+                })
         }
     };
 

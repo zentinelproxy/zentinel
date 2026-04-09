@@ -65,11 +65,11 @@ webpki-roots = "1.0"
 
 # X.509 certificate parsing for OCSP
 x509-parser = "0.18"
-sha2 = "0.10"
+sha2 = "0.11"
 url = "2.5"
 
 # HMAC for cookie signing (sticky sessions)
-hmac = "0.12"
+hmac = "0.13"
 
 # Utilities
 uuid = { workspace = true }
