@@ -563,7 +563,7 @@ impl ConfigTranslator {
 
                 let route_config = RouteConfig {
                     id: match_id,
-                    priority: Priority::Normal,
+                    priority: Priority::NORMAL,
                     matches: conditions,
                     upstream: route_upstream,
                     service_type: ServiceType::Web,
@@ -1099,7 +1099,7 @@ impl ConfigTranslator {
 
             let route_config = RouteConfig {
                 id: rule_id,
-                priority: Priority::Normal,
+                priority: Priority::NORMAL,
                 matches,
                 upstream: Some(upstream_id),
                 service_type: ServiceType::Web, // gRPC runs over HTTP/2
@@ -1331,7 +1331,7 @@ impl ConfigTranslator {
 
             let route_config = RouteConfig {
                 id: rule_id,
-                priority: Priority::Normal,
+                priority: Priority::NORMAL,
                 matches,
                 upstream: Some(upstream_id),
                 service_type: ServiceType::Web,

@@ -833,7 +833,7 @@ impl Config {
             }],
             routes: vec![RouteConfig {
                 id: "default".to_string(),
-                priority: Priority::Normal,
+                priority: Priority::NORMAL,
                 matches: vec![MatchCondition::PathPrefix("/".to_string())],
                 upstream: Some("default".to_string()),
                 service_type: ServiceType::Web,

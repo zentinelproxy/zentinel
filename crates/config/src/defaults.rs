@@ -195,7 +195,7 @@ pub fn create_default_config() -> Config {
         routes: vec![
             RouteConfig {
                 id: "status".to_string(),
-                priority: Priority::Low,
+                priority: Priority::LOW,
                 matches: vec![MatchCondition::PathPrefix("/".to_string())],
                 upstream: None,
                 service_type: ServiceType::Builtin,
@@ -216,7 +216,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "health".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Path("/health".to_string()),
                     MatchCondition::Path("/healthz".to_string()),
@@ -241,7 +241,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "metrics".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![MatchCondition::Path("/metrics".to_string())],
                 upstream: None,
                 service_type: ServiceType::Builtin,
@@ -262,7 +262,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "config".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Path("/admin/config".to_string()),
                     MatchCondition::Path("/config".to_string()),
@@ -286,7 +286,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "upstreams".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Path("/admin/upstreams".to_string()),
                     MatchCondition::Path("/upstreams".to_string()),
@@ -310,7 +310,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "cache-stats".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::Path("/admin/cache/stats".to_string()),
                     MatchCondition::Path("/cache/stats".to_string()),
@@ -334,7 +334,7 @@ pub fn create_default_config() -> Config {
             },
             RouteConfig {
                 id: "cache-purge".to_string(),
-                priority: Priority::High,
+                priority: Priority::HIGH,
                 matches: vec![
                     MatchCondition::PathPrefix("/admin/cache/purge".to_string()),
                     MatchCondition::PathPrefix("/cache/purge".to_string()),

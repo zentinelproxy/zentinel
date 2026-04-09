@@ -201,14 +201,15 @@ fn check_catch_all_priority(config: &Config, warnings: &mut Vec<Warning>) {
     for route in &config.routes {
         if route.matches.is_empty()
             && !matches!(route.service_type, ServiceType::Builtin)
-            && !matches!(route.priority, Priority::Low)
+            && route.priority > Priority::LOW
         {
             warnings.push(Warning {
                 severity: Severity::Warn,
                 code: "CATCH_ALL_NOT_LAST".to_string(),
                 message: format!(
-                    "Route '{}' has no match conditions (catch-all) but priority={:?} — \
-                     it may shadow lower-priority routes. Set priority to Low.",
+                    "Route '{}' has no match conditions (catch-all) but priority={} — \
+                     it may shadow lower-priority routes. Lower the priority (e.g. \
+                     \"low\" or a small integer) so it is evaluated last.",
                     route.id, route.priority
                 ),
                 context: vec![route.id.clone()],

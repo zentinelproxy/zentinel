@@ -407,21 +407,9 @@ impl HostMatcher {
     }
 }
 
-// Extension trait for Priority to get i32 value
-trait PriorityExt {
-    fn as_i32(&self) -> i32;
-}
-
-impl PriorityExt for Priority {
-    fn as_i32(&self) -> i32 {
-        match self {
-            Priority::Critical => 1000,
-            Priority::High => 100,
-            Priority::Normal => 0,
-            Priority::Low => -100,
-        }
-    }
-}
+// NOTE: Priority is now a transparent newtype around i32, so `Priority::as_i32()`
+// is provided by zentinel_common directly. The previous local extension trait
+// that mapped the old 4-variant enum to arbitrary weights has been removed.
 
 #[cfg(test)]
 mod tests {
@@ -431,7 +419,7 @@ mod tests {
     fn create_route(id: &str, matches: Vec<MatchCondition>) -> RouteConfig {
         RouteConfig {
             id: id.to_string(),
-            priority: Priority::Normal,
+            priority: Priority::NORMAL,
             matches,
             upstream: Some("test-upstream".to_string()),
             service_type: ServiceType::Web,
@@ -597,10 +585,10 @@ mod tests {
     #[test]
     fn test_priority_ordering() {
         let mut low_priority = create_route("low", vec![MatchCondition::PathPrefix("/".to_string())]);
-        low_priority.priority = Priority::Low;
+        low_priority.priority = Priority::LOW;
 
         let mut high_priority = create_route("high", vec![MatchCondition::PathPrefix("/".to_string())]);
-        high_priority.priority = Priority::High;
+        high_priority.priority = Priority::HIGH;
 
         // Add in wrong order to verify sorting
         let routes = vec![low_priority, high_priority];

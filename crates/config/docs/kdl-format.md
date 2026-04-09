@@ -203,16 +203,17 @@ listeners {
 
 ```kdl
 routes {
-    // Basic route
+    // Basic route — integer priority (higher = evaluated first)
     route "api" {
-        priority "normal"
+        priority 100
         matches {
             path-prefix "/api"
         }
         upstream "api-backend"
     }
 
-    // Route with multiple match conditions
+    // Route with multiple match conditions. Named string aliases are also
+    // accepted: "critical" (1000), "high" (100), "normal" (50), "low" (10).
     route "admin" {
         priority "high"
         matches {
@@ -238,9 +239,10 @@ routes {
         }
     }
 
-    // Built-in handler
+    // Built-in handler — gap-based numeric priority allows fine-grained
+    // ordering between the named tiers (e.g. 500 sits between HIGH and CRITICAL)
     route "health" {
-        priority "high"
+        priority 1000
         matches {
             path "/health"
         }
