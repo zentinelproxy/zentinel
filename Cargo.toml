@@ -26,7 +26,7 @@ authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zentinelproxy/zentinel"
 homepage = "https://github.com/zentinelproxy/zentinel"
-rust-version = "1.85"
+rust-version = "1.94.1"
 
 [workspace.dependencies]
 # Core dependencies (using our fork with security fixes, rebased on 0.8.0)
