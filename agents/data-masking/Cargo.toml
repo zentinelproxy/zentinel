@@ -32,7 +32,7 @@ serde_urlencoded = "0.7"
 quick-xml = { version = "0.39", features = ["serialize"] }
 
 # Format-preserving encryption (FF1 - NIST approved)
-aes = "0.8"
+aes = "0.9"
 
 # Regex for pattern matching
 regex = "1.11"
