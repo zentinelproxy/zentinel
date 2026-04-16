@@ -87,7 +87,7 @@ maxminddb = "0.27"
 ip2location = "0.6"
 
 # Schema validation
-jsonschema = "0.45"
+jsonschema = "0.46"
 serde_yaml = "0.9"
 
 # Static file serving
@@ -125,7 +125,7 @@ tikv-jemallocator = { workspace = true }
 rand = "0.10"
 
 # Token counting for inference
-tiktoken-rs = { version = "0.9", optional = true }
+tiktoken-rs = { version = "0.11", optional = true }
 
 # Hex encoding
 hex = "0.4"
