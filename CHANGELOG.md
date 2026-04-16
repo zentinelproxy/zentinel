@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.04_3](#26043---2026-04-16) | 0.6.6 | 2026-04-16 | Security: rand unsoundness fix, dependency updates |
 | [26.04_2](#26042---2026-04-10) | 0.6.5 | 2026-04-10 | Security: wasmtime 43.0.1 (critical sandbox escape fix) |
 | [26.04_1](#26041---2026-04-09) | 0.6.4 | 2026-04-09 | Numeric route priorities, host extraction fix, Docker glibc fix, conformance CI restored |
 | [26.03_4](#26034---2026-03-18) | 0.6.2 | 2026-03-18 | Configurable Cache-Status header name |
@@ -35,6 +36,23 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.04_3] - 2026-04-16
+
+**Crate version:** 0.6.6
+
+### Security
+- **Bump rand to fix unsoundness advisory** — Updates pingora fork to bump `rand` 0.8→0.9 across all pingora crates, and bumps direct `rand` 0.10.0→0.10.1 and transitive `rand` 0.9.2→0.9.4. Resolves Dependabot alerts #43, #44, #45 (RUSTSEC unsoundness with custom loggers). (#192)
+- **Bump aes 0.8→0.9** — Migrates to cipher 0.5 (`BlockEncrypt`→`BlockCipherEncrypt`). (#193)
+
+### Dependencies
+- Bump `jsonschema` 0.45→0.46 (#193)
+- Bump `tiktoken-rs` 0.9→0.11 (#193)
+- Bump `actions/github-script` 8→9 (#186)
+- Bump `softprops/action-gh-release` 2→3 (#185)
+- Bump Rust toolchain to 1.94.1, MSRV to 1.94.1
 
 ---
 
