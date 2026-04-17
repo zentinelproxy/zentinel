@@ -1,0 +1,41 @@
+// ACME ZeroSSL with EAB Example
+//
+// This example demonstrates how to configure ACME with a custom directory
+// URL and External Account Binding (EAB), required by providers like ZeroSSL.
+
+listeners {
+    listener "https" address="0.0.0.0:443" {
+        tls {
+            acme {
+                email "admin@example.com"
+                domains "example.com" "www.example.com"
+
+                // Custom ACME directory URL for ZeroSSL
+                server-url "https://acme.zerossl.com/v2/DV90"
+
+                // External Account Binding (EAB)
+                // Obtain these from your ZeroSSL dashboard
+                eab {
+                    kid "your-eab-kid"
+                    hmac-key "your-base64url-encoded-hmac-key"
+                }
+
+                storage "/var/lib/zentinel/acme-zerossl"
+                renew-before-days 30
+            }
+        }
+    }
+}
+
+upstreams {
+    upstream "backend" {
+        server address="127.0.0.1:8080"
+    }
+}
+
+routes {
+    route "default" {
+        match path="/"
+        back-to upstream="backend"
+    }
+}

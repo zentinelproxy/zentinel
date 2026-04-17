@@ -9,6 +9,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use instant_acme::{
     Account, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
@@ -71,9 +73,11 @@ impl AcmeClient {
         &self.storage
     }
 
-    /// Get the ACME directory URL based on staging configuration
+    /// Get the ACME directory URL based on configuration
     fn directory_url(&self) -> &str {
-        if self.config.staging {
+        if let Some(ref url) = self.config.server_url {
+            url
+        } else if self.config.staging {
             LETSENCRYPT_STAGING
         } else {
             LETSENCRYPT_PRODUCTION
@@ -114,14 +118,20 @@ impl AcmeClient {
         // Create new account
         info!(
             email = %self.config.email,
-            staging = self.config.staging,
+            server_url = %self.directory_url(),
             "Creating new ACME account"
         );
 
-        let directory = if self.config.staging {
-            LetsEncrypt::Staging
+        let eab = if let Some(ref eab_config) = self.config.eab {
+            let hmac_key = URL_SAFE_NO_PAD.decode(&eab_config.hmac_key).map_err(|e| {
+                AcmeError::AccountCreation(format!("Invalid EAB HMAC key (base64url): {}", e))
+            })?;
+            Some(instant_acme::ExternalAccountKey::new(
+                eab_config.kid.clone(),
+                &hmac_key,
+            ))
         } else {
-            LetsEncrypt::Production
+            None
         };
 
         let (account, credentials) = Account::builder()
@@ -132,8 +142,8 @@ impl AcmeClient {
                     terms_of_service_agreed: true,
                     only_return_existing: false,
                 },
-                directory.url().to_owned(),
-                None,
+                self.directory_url().to_owned(),
+                eab.as_ref(),
             )
             .await
             .map_err(|e| AcmeError::AccountCreation(e.to_string()))?;

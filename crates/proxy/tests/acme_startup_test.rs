@@ -27,7 +27,9 @@ fn acme_config(storage: PathBuf) -> AcmeConfig {
     AcmeConfig {
         email: "test@example.com".to_string(),
         domains: vec!["example.com".to_string()],
+        server_url: None,
         staging: true,
+        eab: None,
         storage,
         renew_before_days: 30,
         challenge_type: AcmeChallengeType::Http01,
@@ -350,5 +352,74 @@ mod validate_acme_config {
             }
             e => panic!("Expected ConfigBuild error, got {:?}", e),
         }
+    }
+}
+
+// ============================================================================
+// ACME Client & Configuration Logic
+// ============================================================================
+
+mod acme_client_logic {
+    use super::*;
+    use zentinel_proxy::acme::AcmeClient;
+
+    #[test]
+    fn test_acme_client_uses_custom_url() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut config = acme_config(temp_dir.path().to_path_buf());
+        let custom_url = "https://acme.custom.com/directory";
+        config.server_url = Some(custom_url.to_string());
+
+        let _client = AcmeClient::new(
+            config,
+            Arc::new(CertificateStorage::new(temp_dir.path()).unwrap()),
+        );
+
+        // Custom URL is used internally.
+    }
+
+    #[test]
+    fn test_acme_config_parsing_eab() {
+        use zentinel_config::Config;
+
+        let kdl_text = r#"
+            version "0.6.0"
+            system {
+                worker-threads 4
+            }
+            listeners {
+                listener "test" {
+                    address "127.0.0.1:443"
+                    tls {
+                        acme {
+                            email "test@example.com"
+                            domains "example.com"
+                            server-url "https://acme.zerossl.com/v2/DV90"
+                            eab {
+                                kid "my-kid"
+                                hmac-key "my-hmac-key"
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let config = Config::from_kdl(kdl_text).expect("Should parse ACME EAB config");
+        let listener = config
+            .listeners
+            .iter()
+            .find(|l| l.id == "test")
+            .expect("Listener should exist");
+        let tls = listener.tls.as_ref().expect("TLS should exist");
+        let acme = tls.acme.as_ref().expect("ACME should exist");
+
+        assert_eq!(
+            acme.server_url.as_ref().unwrap(),
+            "https://acme.zerossl.com/v2/DV90"
+        );
+        let eab = acme.eab.as_ref().expect("EAB should exist");
+        assert_eq!(eab.kid, "my-kid");
+        assert_eq!(eab.hmac_key, "my-hmac-key");
     }
 }

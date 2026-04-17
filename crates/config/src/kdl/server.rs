@@ -10,8 +10,8 @@ use crate::server::{
     default_acme_storage, default_graceful_shutdown_timeout, default_keepalive_timeout,
     default_max_concurrent_streams, default_max_connections, default_renewal_days,
     default_request_timeout, default_worker_threads, AcmeChallengeType, AcmeConfig,
-    DnsProviderConfig, DnsProviderType, ListenerConfig, ListenerProtocol, PropagationCheckConfig,
-    ServerConfig, SniCertificate, TlsConfig,
+    DnsProviderConfig, DnsProviderType, ExternalAccountBinding, ListenerConfig, ListenerProtocol,
+    PropagationCheckConfig, ServerConfig, SniCertificate, TlsConfig,
 };
 
 use super::helpers::{get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry};
@@ -324,7 +324,25 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     }
 
     // Optional with defaults
+    let server_url = get_string_entry(node, "server-url");
     let staging = get_bool_entry(node, "staging").unwrap_or(false);
+    // Parse EAB if present
+    let eab = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "eab")
+            .map(|eab_node| -> Result<ExternalAccountBinding> {
+                let kid = get_string_entry(eab_node, "kid")
+                    .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'kid'"))?;
+                let hmac_key = get_string_entry(eab_node, "hmac-key")
+                    .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'hmac-key'"))?;
+                Ok(ExternalAccountBinding { kid, hmac_key })
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let storage = get_string_entry(node, "storage")
         .map(PathBuf::from)
         .unwrap_or_else(default_acme_storage);
@@ -382,7 +400,9 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     Ok(AcmeConfig {
         email,
         domains,
+        server_url,
         staging,
+        eab,
         storage,
         renew_before_days,
         challenge_type,
@@ -483,6 +503,7 @@ fn parse_dns_provider_type(
 ) -> Result<DnsProviderType> {
     match type_str.to_lowercase().as_str() {
         "hetzner" => Ok(DnsProviderType::Hetzner),
+        "cloudflare" => Ok(DnsProviderType::Cloudflare),
         "webhook" => {
             let url = get_string_entry(node, "url").ok_or_else(|| {
                 anyhow::anyhow!(

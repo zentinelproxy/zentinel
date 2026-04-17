@@ -198,23 +198,29 @@ pub struct TlsConfig {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AcmeConfig {
-    /// Contact email for Let's Encrypt account
-    /// Required for account registration and recovery
+    /// Contact email for account registration and recovery
     #[validate(email)]
     pub email: String,
 
     /// Domain names to obtain certificates for
-    /// At least one domain is required
     #[validate(length(min = 1, message = "at least one domain is required"))]
     pub domains: Vec<String>,
 
+    /// Optional custom ACME directory URL (e.g., ZeroSSL)
+    /// If not provided, defaults to Let's Encrypt
+    #[validate(url)]
+    pub server_url: Option<String>,
+
     /// Use Let's Encrypt staging environment
-    /// Set to true for testing to avoid rate limits
+    /// Only used if server_url is not provided
     #[serde(default)]
     pub staging: bool,
 
+    /// External Account Binding (EAB) credentials
+    /// Required by some providers like ZeroSSL
+    pub eab: Option<ExternalAccountBinding>,
+
     /// Directory for storing certificates and account keys
-    /// Defaults to /var/lib/zentinel/acme
     #[serde(default = "default_acme_storage")]
     pub storage: PathBuf,
 
@@ -231,6 +237,15 @@ pub struct AcmeConfig {
 
     /// DNS provider configuration (required for DNS-01 challenges)
     pub dns_provider: Option<DnsProviderConfig>,
+}
+
+/// External Account Binding (EAB) credentials for ACME
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAccountBinding {
+    /// Key ID (KID) provided by the ACME CA
+    pub kid: String,
+    /// HMAC Key (base64url-encoded) provided by the ACME CA
+    pub hmac_key: String,
 }
 
 /// ACME challenge type
@@ -288,6 +303,9 @@ pub struct DnsProviderConfig {
 pub enum DnsProviderType {
     /// Hetzner DNS API
     Hetzner,
+
+    /// Cloudflare DNS API
+    Cloudflare,
 
     /// Generic webhook provider
     Webhook {
