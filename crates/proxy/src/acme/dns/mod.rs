@@ -47,4 +47,4 @@ pub use challenge::{create_challenge_info, Dns01ChallengeInfo, Dns01ChallengeMan
 pub use credentials::CredentialLoader;
 pub use propagation::{PropagationChecker, PropagationConfig};
 pub use provider::{DnsProvider, DnsProviderError, DnsResult};
-pub use providers::{create_provider, HetznerProvider, WebhookProvider};
+pub use providers::{create_provider, CloudflareProvider, HetznerProvider, WebhookProvider};

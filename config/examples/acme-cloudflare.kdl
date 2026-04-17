@@ -1,0 +1,53 @@
+// ACME Cloudflare DNS-01 Challenge Example
+//
+// This example demonstrates how to configure automatic TLS certificates
+// using Cloudflare DNS-01 challenges, which supports wildcard certificates.
+
+listeners {
+    listener "https" address="0.0.0.0:443" {
+        tls {
+            acme {
+                email "admin@example.com"
+
+                // Wildcard and apex domain
+                domains "example.com" "*.example.com"
+
+                // DNS-01 is required for wildcard certificates
+                challenge-type "dns-01"
+
+                dns-provider {
+                    type "cloudflare"
+
+                    // Path to a file containing your Cloudflare API Token
+                    // The token needs "Zone.DNS:Edit" and "Zone.Zone:Read" permissions
+                    credentials-file "/etc/zentinel/secrets/cloudflare-token.txt"
+
+                    api-timeout-secs 30
+
+                    propagation {
+                        initial-delay-secs 20
+                        check-interval-secs 10
+                        timeout-secs 300
+                        nameservers "1.1.1.1" "8.8.8.8"
+                    }
+                }
+
+                // Optional: custom storage path
+                storage "/var/lib/zentinel/acme"
+            }
+        }
+    }
+}
+
+upstreams {
+    upstream "backend" {
+        server address="127.0.0.1:8080"
+    }
+}
+
+routes {
+    route "default" {
+        match path="/"
+        back-to upstream="backend"
+    }
+}

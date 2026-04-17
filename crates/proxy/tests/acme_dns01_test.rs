@@ -479,3 +479,169 @@ mod provider_errors {
         assert!(msg.contains("not supported"));
     }
 }
+
+// ============================================================================
+// Cloudflare Provider Tests
+// ============================================================================
+
+mod cloudflare_provider {
+    use super::*;
+    use zentinel_proxy::acme::dns::CloudflareProvider;
+
+    #[tokio::test]
+    async fn test_create_record_success() {
+        let mock_server = MockServer::start().await;
+        let token = "test-token";
+        let zone_id = "zone-123";
+        let record_id = "record-456";
+
+        // Mock zone lookup
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": zone_id, "name": "example.com" }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Mock record creation
+        Mock::given(method("POST"))
+            .and(path(format!("/zones/{}/dns_records", zone_id)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": { "id": record_id }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test(token, mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let id = provider
+            .create_txt_record("example.com", "_acme-challenge", "value")
+            .await
+            .unwrap();
+
+        assert_eq!(id, record_id);
+    }
+
+    #[tokio::test]
+    async fn test_zone_caching() {
+        let mock_server = MockServer::start().await;
+        let zone_id = "zone-123";
+
+        // Mock zone lookup - only allow ONE call
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": zone_id, "name": "example.com" }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        // First call triggers API
+        let id1 = provider.supports_domain("example.com").await.unwrap();
+        assert!(id1);
+
+        // Second call should use cache (no API call, otherwise expect(1) fails)
+        let id2 = provider.supports_domain("example.com").await.unwrap();
+        assert!(id2);
+    }
+
+    #[tokio::test]
+    async fn test_authentication_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("bad-token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let result = provider.create_txt_record("example.com", "re", "val").await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DnsProviderError::Authentication(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_delete_record_success() {
+        let mock_server = MockServer::start().await;
+        let zone_id = "zone-123";
+        let record_id = "record-456";
+
+        // Mock zone lookup (cached from previous if we were careful, but here new provider)
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": zone_id, "name": "example.com" }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Mock record deletion
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/zones/{}/dns_records/{}",
+                zone_id, record_id
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": {}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let result = provider.delete_txt_record("example.com", record_id).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_zone_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let result = provider.supports_domain("unknown.com").await.unwrap();
+        assert!(!result);
+    }
+}

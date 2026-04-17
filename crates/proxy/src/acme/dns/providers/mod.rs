@@ -2,11 +2,14 @@
 //!
 //! Available providers:
 //! - [`HetznerProvider`] - Hetzner DNS API
+//! - [`CloudflareProvider`] - Cloudflare DNS API
 //! - [`WebhookProvider`] - Generic webhook for custom providers
 
+mod cloudflare;
 mod hetzner;
 mod webhook;
 
+pub use cloudflare::CloudflareProvider;
 pub use hetzner::HetznerProvider;
 pub use webhook::WebhookProvider;
 
@@ -33,6 +36,15 @@ pub fn create_provider(config: &DnsProviderConfig) -> DnsResult<Arc<dyn DnsProvi
                 )
             })?;
             let provider = HetznerProvider::new(token, timeout)?;
+            Ok(Arc::new(provider))
+        }
+        DnsProviderType::Cloudflare => {
+            let token = credentials.token().ok_or_else(|| {
+                DnsProviderError::Credentials(
+                    "Cloudflare provider requires a token credential".to_string(),
+                )
+            })?;
+            let provider = CloudflareProvider::new(token, timeout)?;
             Ok(Arc::new(provider))
         }
         DnsProviderType::Webhook { url, auth_header } => {
