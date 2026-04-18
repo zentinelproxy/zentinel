@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.04_4](#26044---2026-04-19) | 0.6.7 | 2026-04-19 | Cloudflare DNS-01, custom ACME servers, EAB, SAN renewal fix |
 | [26.04_3](#26043---2026-04-16) | 0.6.6 | 2026-04-16 | Security: rand unsoundness fix, dependency updates |
 | [26.04_2](#26042---2026-04-10) | 0.6.5 | 2026-04-10 | Security: wasmtime 43.0.1 (critical sandbox escape fix) |
 | [26.04_1](#26041---2026-04-09) | 0.6.4 | 2026-04-09 | Numeric route priorities, host extraction fix, Docker glibc fix, conformance CI restored |
@@ -36,6 +37,23 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.04_4] - 2026-04-19
+
+**Crate version:** 0.6.7
+
+### Added
+- **Cloudflare DNS-01 provider** for ACME challenges, enabling wildcard certificate issuance via Cloudflare DNS API v4. Includes zone ID caching and full test coverage. (#197)
+- **Custom ACME directory URLs** via `server-url` config option, supporting non-Let's Encrypt CAs like ZeroSSL and Step-ca. (#197)
+- **External Account Binding (EAB)** support for ACME account creation, required by providers like ZeroSSL. Configured via `eab { kid "..." hmac-key "..." }` block. (#197)
+
+### Fixed
+- **SAN certificate renewal loop** where the renewal scheduler iterated all domains in a multi-domain certificate, triggering redundant renewals. Now only checks the primary domain. (#197)
+
+### Security
+- **Bump `github.com/moby/spdystream`** 0.5.0 to 0.5.1 in conformance tests, fixing a high-severity DOS on CRI vulnerability. (#196)
 
 ---
 
