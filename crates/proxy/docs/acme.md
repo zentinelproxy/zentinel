@@ -101,15 +101,48 @@ pub trait DnsProvider: Send + Sync + Debug {
     async fn supports_domain(&self, domain: &str) -> DnsResult<bool>;
 }
 ```
-
 #### Supported DNS Providers
 
 | Provider | Description |
 |----------|-------------|
 | `hetzner` | Hetzner DNS API |
+| `cloudflare` | Cloudflare DNS API v4 |
 | `webhook` | Generic webhook for custom DNS integrations |
 
 #### DNS-01 Challenge Flow
+...
+### Custom ACME Directory and EAB
+
+Zentinel supports custom ACME directory URLs and External Account Binding (EAB), which is required by providers like ZeroSSL.
+
+```kdl
+acme {
+    email "admin@example.com"
+    domains "example.com"
+
+    // Custom ACME directory URL
+    server-url "https://acme.zerossl.com/v2/DV90"
+
+    // External Account Binding (EAB) credentials
+    eab {
+        kid "your-eab-kid"
+        hmac-key "your-base64url-encoded-hmac-key"
+    }
+}
+```
+
+### SAN (Subject Alternative Name) Certificates
+
+Zentinel supports single certificates covering multiple domains. The renewal scheduler automatically handles this by only checking the primary domain (the first one in the list) to avoid redundant renewal requests and infinite loops.
+
+```kdl
+acme {
+    email "admin@example.com"
+    domains "example.com" "api.example.com" "www.example.com"
+}
+```
+
+### `acme/client.rs`
 
 1. **Create Order** - Request certificate with DNS-01 challenges
 2. **Create TXT Records** - Provider creates `_acme-challenge.{domain}` records
