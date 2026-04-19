@@ -75,6 +75,7 @@ acme/dns/
 └── providers/
     ├── mod.rs       # Provider factory
     ├── hetzner.rs   # Hetzner DNS provider
+    ├── cloudflare.rs # Cloudflare DNS provider
     └── webhook.rs   # Generic webhook provider
 ```
 
@@ -358,7 +359,27 @@ dns-provider {
 | `storage` | path | `/var/lib/zentinel/acme` | Directory for certificates and credentials |
 | `renew-before-days` | u32 | `30` | Days before expiry to trigger renewal |
 | `challenge-type` | string | `"http-01"` | Challenge type: `http-01` or `dns-01` |
+| `key-type` | string | `"ecdsa-p256"` | Certificate key type: `ecdsa-p256`, `ecdsa-p384` |
 | `dns-provider` | block | - | DNS provider config (required for dns-01) |
+
+### Certificate Key Types
+
+Zentinel allows specifying the encryption algorithm and key size for ACME certificates.
+
+| Value | Description |
+|-------|-------------|
+| `ecdsa-p256` | ECDSA with NIST P-256 curve (Default, fast and secure) |
+| `ecdsa-p384` | ECDSA with NIST P-384 curve (Higher security strength) |
+
+```kdl
+acme {
+    email "admin@example.com"
+    domains "example.com"
+    
+    // Use high-strength ECDSA
+    key-type "ecdsa-p384"
+}
+```
 
 ### DNS Provider Options
 
