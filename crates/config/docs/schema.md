@@ -75,19 +75,29 @@ Port binding configuration.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `email` | `string` | **required** | Contact email for Let's Encrypt account |
+| `email` | `string` | **required** | Contact email for ACME account |
 | `domains` | `[string]` | **required** | Domains to include in certificate |
+| `server-url` | `string` | - | Custom ACME directory URL (e.g., ZeroSSL) |
 | `staging` | `bool` | `false` | Use Let's Encrypt staging environment |
+| `eab` | `ExternalAccountBinding` | - | EAB credentials (required by some CAs) |
 | `storage` | `string` | `/var/lib/zentinel/acme` | Certificate storage directory |
 | `renew-before-days` | `u32` | `30` | Days before expiry to trigger renewal |
 | `challenge-type` | `string` | `"http-01"` | Challenge type: `http-01` or `dns-01` |
+| `key-type` | `string` | `"ecdsa-p256"` | Key type: `ecdsa-p256`, `ecdsa-p384` |
 | `dns-provider` | `DnsProviderConfig` | - | DNS provider (required for dns-01) |
+
+### ExternalAccountBinding
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `kid` | `string` | **required** | Key ID provided by the ACME CA |
+| `hmac-key` | `string` | **required** | HMAC key (base64url-encoded) from the CA |
 
 ### DnsProviderConfig
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `type` | `string` | **required** | Provider: `hetzner`, `webhook` |
+| `type` | `string` | **required** | Provider: `cloudflare`, `hetzner`, `webhook` |
 | `credentials-file` | `string` | - | Path to credentials file |
 | `credentials-env` | `string` | - | Environment variable with credentials |
 | `api-timeout-secs` | `u64` | `30` | API request timeout |
