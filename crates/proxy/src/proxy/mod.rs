@@ -114,9 +114,9 @@ pub struct ZentinelProxy {
     /// ACME challenge manager for HTTP-01 challenge handling
     /// Present only when ACME is configured for at least one listener
     pub acme_challenges: Option<Arc<crate::acme::ChallengeManager>>,
-    /// ACME client for certificate management
+    /// ACME clients for certificate management
     /// Present only when ACME is configured
-    pub acme_client: Option<Arc<crate::acme::AcmeClient>>,
+    pub acme_clients: Vec<Arc<crate::acme::AcmeClient>>,
 }
 
 impl ZentinelProxy {
@@ -332,6 +332,11 @@ impl ZentinelProxy {
             warn!("Failed to initialize model routing metrics: {}", e);
         }
 
+        // Initialize TLS metrics (best-effort, log warning if fails)
+        if let Err(e) = crate::tls_metrics::init_tls_metrics() {
+            warn!("Failed to initialize TLS metrics: {}", e);
+        }
+
         Ok(Self {
             config_manager,
             route_matcher,
@@ -359,7 +364,7 @@ impl ZentinelProxy {
             guardrail_processor,
             // ACME challenge manager - initialized later if ACME is configured
             acme_challenges: None,
-            acme_client: None,
+            acme_clients: Vec::new(),
         })
     }
 

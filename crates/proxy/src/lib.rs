@@ -77,6 +77,7 @@ pub mod scoped_routing;
 pub mod shadow;
 pub mod static_files;
 pub mod tls;
+pub mod tls_metrics;
 pub mod trace_id;
 pub mod upstream;
 pub mod validation;

@@ -64,6 +64,11 @@ impl RenewalScheduler {
         }
     }
 
+    /// Get the ACME client
+    pub fn client(&self) -> &Arc<AcmeClient> {
+        &self.client
+    }
+
     /// Set the DNS-01 challenge manager
     ///
     /// Required when using DNS-01 challenge type.

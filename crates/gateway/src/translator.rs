@@ -442,8 +442,9 @@ impl ConfigTranslator {
                     additional_certs.push(SniCertificate {
                         hostnames: cert.hostnames.clone(),
                         priority_hostnames: vec![],
-                        cert_file: cert.cert_path,
-                        key_file: cert.key_path,
+                        cert_file: Some(cert.cert_path),
+                        key_file: Some(cert.key_path),
+                        acme: None,
                     });
                 }
                 Err(e) => {

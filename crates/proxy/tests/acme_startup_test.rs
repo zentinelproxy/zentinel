@@ -85,7 +85,7 @@ mod storage_resolver_integration {
         };
 
         // SniResolver should load the cert files that storage wrote
-        let resolver = SniResolver::from_config(&config);
+        let resolver = SniResolver::from_config(&config, Some("test-listener"));
         assert!(
             resolver.is_ok(),
             "SniResolver should load storage-managed certs: {:?}",
