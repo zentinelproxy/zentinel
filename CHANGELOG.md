@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.04_7](#26047---2026-04-28) | 0.6.10 | 2026-04-28 | Security: rand fix in `zentinel-sim` |
 | [26.04_6](#26046---2026-04-25) | 0.6.9 | 2026-04-25 | Security: openssl & rand fixes, ACME schema docs, CI update |
 | [26.04_5](#26045---2026-04-20) | 0.6.8 | 2026-04-20 | Configurable ACME certificate key type (ECDSA P-256/P-384) |
 | [26.04_4](#26044---2026-04-19) | 0.6.7 | 2026-04-19 | Cloudflare DNS-01, custom ACME servers, EAB, SAN renewal fix |
@@ -39,6 +40,15 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.04_7] - 2026-04-28
+
+**Crate version:** 0.6.10
+
+### Security
+- **Bump `rand` 0.9.2 → 0.9.4 in `zentinel-sim`** — closes Dependabot alert for [GHSA-cq8v-f236-94qc](https://github.com/advisories/GHSA-cq8v-f236-94qc) (rand unsoundness with custom logger using `rand::rng()`). Also re-syncs `zentinel-sim`'s stale path-dep version pins to the workspace so its lockfile is regenerable. (#214)
 
 ---
 
