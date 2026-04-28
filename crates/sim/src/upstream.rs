@@ -402,6 +402,7 @@ mod tests {
                 })
                 .collect(),
             load_balancing: algorithm,
+            sticky_session: None,
             health_check: None,
             connection_pool: Default::default(),
             timeouts: Default::default(),
