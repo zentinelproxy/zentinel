@@ -3,12 +3,22 @@
 # Builds the gateway controller and proxy, deploys to a kind cluster,
 # and runs the official Gateway API conformance test suite.
 #
-# Runs on PRs that touch the gateway crate or conformance tests.
+# Runs on PRs that touch the gateway crate or conformance tests, and
+# on every push to main so we always have a known-good baseline to
+# compare against when a PR fails.
 
 name: Conformance
 
 on:
   pull_request:
+    paths:
+      - 'crates/gateway/**'
+      - 'conformance/**'
+      - 'deploy/helm/zentinel-gateway/**'
+      - '.github/workflows/conformance.yml'
+  push:
+    branches:
+      - main
     paths:
       - 'crates/gateway/**'
       - 'conformance/**'

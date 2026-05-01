@@ -227,33 +227,53 @@ This runs `fmt-check` + `lint` (clippy) + `docs-check` — the fast CI jobs that
 
 ## Release Process
 
-### Version Bump
+Zentinel uses [CalVer](https://calver.org/) (`YY.MM_PATCH`) as the operator-facing version
+and [SemVer](https://semver.org/) for crate versions on crates.io. The Release workflow
+(`.github/workflows/release.yml`) is triggered by **CalVer tags** matching
+`[0-9][0-9].[0-9][0-9]_[0-9]*` (e.g. `26.04_7`). It builds platform binaries, signs them,
+publishes all workspace crates to crates.io, and creates the GitHub Release.
 
-1. Update version in `Cargo.toml` (workspace)
-2. Update `CHANGELOG.md`
-3. Commit: `chore: bump version to X.Y.Z`
-4. Tag: `git tag vX.Y.Z`
-5. Push: `git push && git push --tags`
+### Cutting a release
 
-### Crates.io Publishing
+1. **Bump PR**: open `chore/bump-X.Y.Z` against `main` containing:
+   - Workspace version bump in root `Cargo.toml` (`[workspace.package].version`).
+   - `cargo update --workspace` so `Cargo.lock` reflects the bump.
+   - New entry in `CHANGELOG.md` (both the overview table and the dated section).
+   - Commit message: `chore: bump version to X.Y.Z for release YY.MM_PATCH`.
+2. **Merge** the PR to `main` once CI is green.
+3. **Tag immediately** on the merge commit. The tag must be the **CalVer** form, not
+   SemVer. SemVer-form tags do not trigger the workflow.
+   ```bash
+   git fetch origin main
+   git tag -a YY.MM_PATCH origin/main -m "Release YY.MM_PATCH (semver X.Y.Z)"
+   git push origin YY.MM_PATCH
+   ```
+4. **Verify** the Release workflow at `gh run list --workflow Release --limit 1` —
+   it builds 4 platform targets, signs with cosign, publishes crates.io, creates the
+   GitHub Release, and pushes a follow-up "bump to X.Y.Z+1" commit to `main`.
+
+> **Important:** if you skip step 3, the bump merges silently and no release is cut.
+> This is what happened to `26.04_6` (PR #207) before it was tagged retroactively.
+> Always tag immediately after merging the bump PR.
+
+### Crates.io publishing
+
+The Release workflow handles publishing automatically once the tag is pushed. Manual
+publishing (in dependency order) is only needed when re-publishing or recovering from
+a failure:
 
 ```bash
-# Publish in dependency order
 cargo publish -p zentinel-common
 cargo publish -p zentinel-config
 cargo publish -p zentinel-agent-protocol
+cargo publish -p zentinel-wasm-runtime
 cargo publish -p zentinel-proxy
+cargo publish -p zentinel-gateway
+cargo publish -p zentinel-stack
 ```
 
-### GitHub Release
-
-```bash
-# Create release with notes
-gh release create vX.Y.Z --title "vX.Y.Z" --notes-file RELEASE_NOTES.md
-
-# Attach binaries (if not done by CI)
-gh release upload vX.Y.Z target/release/zentinel
-```
+Crates excluded from the workspace (`crates/sim`, `crates/playground-wasm`,
+`crates/config-inspect`) are not published as part of the release.
 
 ---
 
