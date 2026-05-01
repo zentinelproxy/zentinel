@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.05_1](#26051---2026-05-01) | 0.6.11 | 2026-05-01 | Per-SNI ACME certificates for multi-tenant TLS, dependency updates |
 | [26.04_7](#26047---2026-04-28) | 0.6.10 | 2026-04-28 | Security: rand fix in `zentinel-sim` |
 | [26.04_6](#26046---2026-04-25) | 0.6.9 | 2026-04-25 | Security: openssl & rand fixes, ACME schema docs, CI update |
 | [26.04_5](#26045---2026-04-20) | 0.6.8 | 2026-04-20 | Configurable ACME certificate key type (ECDSA P-256/P-384) |
@@ -40,6 +41,22 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.05_1] - 2026-05-01
+
+**Crate version:** 0.6.11
+
+### Added
+- **Per-SNI ACME certificates for multi-tenant TLS.** SNI blocks can now carry their own `acme` configuration, enabling independent certificate lifecycles per tenant on the same listener. Each ACME block gets its own `RenewalScheduler` and `AcmeClient` ("Option B" architecture), so a stuck issuance on one domain (e.g. waiting on DNS propagation) does not block renewals for others. Includes global domain-uniqueness validation across all ACME blocks (case-insensitive, preventing physical storage path collisions) and implicit hostname derivation from `acme.domains` when explicit `hostnames` are omitted. (#213)
+- **Cold-start observability for ACME-managed SNI.** When an ACME-managed SNI certificate is missing at startup (the cold-start case), Zentinel logs a structured warning carrying `listener_id`, `sni_index`, and `primary_domain`, and increments a new `tls_metrics::record_sni_cert_skip` counter so operators can detect tenants stuck in shadowed state. The certificate is loaded later via hot-reload once issued. (#213)
+
+### Changed
+- **Bump `maxminddb` 0.27.3 → 0.28.1.** (#209)
+- **Bump `jsonschema` 0.46.2 → 0.46.3.** Fixes memory not reclaimed when a `Validator` for a schema with recursive `$ref` is dropped. (#219)
+- **Bump `reqwest` 0.13.2 → 0.13.3.** Fixes rustls CRL PEM parsing, hickory-dns fallback when `/etc/resolv.conf` is unreadable, HTTP/3 `STOP_SENDING` handling, IPv6 connection establishment. (#219)
+- **Bump `rustls` 0.23.39 → 0.23.40.** (#219)
 
 ---
 

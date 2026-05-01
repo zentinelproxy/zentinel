@@ -1,0 +1,74 @@
+# Tests workflow - runs the full workspace test suite.
+#
+# Not run on every PR (would burn through Action minutes — `cargo test
+# --workspace` takes 20+ minutes on this codebase). Instead:
+#
+#   - Push to main: catches regressions after merge.
+#   - Weekly schedule: catches drift from upstream toolchain or
+#     dependency changes that don't trigger a PR.
+#   - workflow_dispatch: lets a maintainer trigger a run on demand
+#     before merging a risky PR.
+#
+# Locally: `cargo test --workspace` reproduces what this job runs.
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Mondays 06:00 UTC — early enough to surface drift before the
+    # week's reviews, late enough that it's not competing with peak
+    # CI traffic.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Run tests
+        run: cargo test --workspace

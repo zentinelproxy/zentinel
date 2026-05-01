@@ -279,14 +279,62 @@ pub struct ZentinelProxy {
     /// ACME challenge manager for HTTP-01 validation
     pub acme_challenges: Option<Arc<ChallengeManager>>,
 
-    /// ACME client for certificate operations
-    pub acme_client: Option<Arc<AcmeClient>>,
+    /// ACME clients for certificate operations (one per config block)
+    pub acme_clients: Vec<Arc<AcmeClient>>,
 }
 ```
 
+## Multi-tenant ACME (SNI Support)
+
+Zentinel supports independent ACME certificate management for SNI blocks. This is ideal for multi-tenant environments where each tenant has its own domain and requires a separate certificate with potentially different account details or challenge types.
+
+### Independent Renewal Schedulers
+
+When multiple ACME blocks are configured (root level or within SNI blocks), Zentinel spawns independent background schedulers for each. This ensures that a failure or delay in one tenant's certificate issuance (e.g., waiting for DNS propagation) does not block or impact the renewal process of other tenants.
+
+### Implicit Hostname Derivation
+
+For better usability, SNI blocks with ACME can automatically derive their routing hostnames from the ACME domain list if explicit `hostnames` are not provided.
+
+```kdl
+listeners {
+    listener "https" {
+        tls {
+            // Root certificate (fallback)
+            acme {
+                email "admin@example.com"
+                domains "example.com"
+            }
+
+            // Tenant A - using HTTP-01
+            sni {
+                acme {
+                    email "tenant-a@example.com"
+                    domains "tenant-a.com"
+                }
+            }
+
+            // Tenant B - using DNS-01 for wildcard
+            sni {
+                acme {
+                    email "tenant-b@example.com"
+                    domains "*.tenant-b.com" "tenant-b.com"
+                    challenge-type "dns-01"
+                    dns-provider { ... }
+                }
+            }
+        }
+    }
+}
+```
+
+### Global Domain Validation
+
+To prevent storage path collisions and race conditions, Zentinel enforces global uniqueness for ACME-managed domains. A domain cannot appear in more than one ACME block across the entire configuration.
+
 ## Configuration
 
-ACME is configured within the `tls {}` block of a listener.
+ACME is configured within the `tls {}` block of a listener or an `sni {}` block.
 
 ### HTTP-01 Challenge (Default)
 

@@ -20,7 +20,7 @@ use pingora::prelude::*;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use zentinel_config::server::AcmeChallengeType;
+use zentinel_config::server::{AcmeChallengeType, AcmeConfig};
 use zentinel_config::Config;
 use zentinel_proxy::acme::{
     AcmeClient, AcmeError, CertificateStorage, ChallengeManager, RenewalScheduler,
@@ -359,19 +359,17 @@ fn lint_config(config_path: Option<&str>) -> Result<()> {
 struct AcmeState {
     /// Challenge manager for HTTP-01 challenge handling
     challenge_manager: Arc<ChallengeManager>,
-    /// ACME client for certificate operations
-    acme_client: Arc<AcmeClient>,
-    /// Renewal scheduler (consumed by spawning its `run()` loop)
-    scheduler: RenewalScheduler,
+    /// Renewal schedulers (one per ACME configuration block)
+    schedulers: Vec<RenewalScheduler>,
 }
 
-/// Initialize ACME for all listeners that have ACME configured
+/// Initialize ACME for all listeners and SNI certificates that have ACME configured
 ///
 /// This function:
-/// 1. Creates storage, client, and challenge manager for each ACME listener
+/// 1. Creates storage, client, and challenge manager for each ACME configuration
 /// 2. Initializes (or loads) the ACME account with Let's Encrypt
 /// 3. Obtains initial certificates if they don't exist yet
-/// 4. Returns the ACME state for wiring into the proxy and background scheduler
+/// 4. Returns the ACME state for wiring into the proxy and background schedulers
 ///
 /// For HTTP-01 challenges during initial issuance, a temporary HTTP server is
 /// spawned to serve challenge responses (since Pingora isn't running yet).
@@ -379,146 +377,159 @@ async fn initialize_acme(
     config: &Config,
     sni_resolver: Option<Arc<HotReloadableSniResolver>>,
 ) -> Result<Option<AcmeState>, AcmeError> {
-    // Find the first HTTPS listener with ACME configured
-    let acme_listener = config.listeners.iter().find(|l| {
-        l.protocol == zentinel_config::ListenerProtocol::Https
-            && l.tls.as_ref().is_some_and(|t| t.acme.is_some())
-    });
+    // Collect all ACME configurations from listeners and SNI blocks
+    let mut acme_configs: Vec<(String, AcmeConfig)> = Vec::new();
 
-    let acme_listener = match acme_listener {
-        Some(l) => l,
-        None => return Ok(None),
-    };
+    for listener in &config.listeners {
+        if listener.protocol == zentinel_config::ListenerProtocol::Https {
+            if let Some(ref tls) = listener.tls {
+                // Root-level ACME
+                if let Some(ref acme) = tls.acme {
+                    acme_configs.push((format!("listener '{}' (root)", listener.id), acme.clone()));
+                }
 
-    let tls_config = acme_listener.tls.as_ref().unwrap();
-    let acme_config = tls_config.acme.as_ref().unwrap();
-
-    info!(
-        listener_id = %acme_listener.id,
-        domains = ?acme_config.domains,
-        staging = acme_config.staging,
-        challenge_type = ?acme_config.challenge_type,
-        "Initializing ACME certificate management"
-    );
-
-    // Create storage
-    let storage = Arc::new(CertificateStorage::new(&acme_config.storage)?);
-
-    // Create client and initialize account
-    let acme_client = Arc::new(AcmeClient::new(acme_config.clone(), Arc::clone(&storage)));
-    acme_client.init_account().await?;
-
-    // Create challenge manager
-    let challenge_manager = Arc::new(ChallengeManager::new());
-
-    // Create renewal scheduler
-    let mut scheduler = RenewalScheduler::new(
-        Arc::clone(&acme_client),
-        Arc::clone(&challenge_manager),
-        sni_resolver,
-    );
-
-    // If DNS-01, set up DNS challenge manager
-    if acme_config.challenge_type == AcmeChallengeType::Dns01 {
-        if let Some(ref dns_config) = acme_config.dns_provider {
-            let provider = zentinel_proxy::acme::dns::create_provider(dns_config)?;
-
-            let nameservers: Vec<std::net::IpAddr> = dns_config
-                .propagation
-                .nameservers
-                .iter()
-                .filter_map(|s| s.parse().ok())
-                .collect();
-
-            let propagation_config = zentinel_proxy::acme::dns::PropagationConfig {
-                initial_delay: std::time::Duration::from_secs(
-                    dns_config.propagation.initial_delay_secs,
-                ),
-                check_interval: std::time::Duration::from_secs(
-                    dns_config.propagation.check_interval_secs,
-                ),
-                timeout: std::time::Duration::from_secs(dns_config.propagation.timeout_secs),
-                nameservers,
-            };
-
-            let dns_manager = Arc::new(zentinel_proxy::acme::dns::Dns01ChallengeManager::new(
-                provider,
-                propagation_config,
-            )?);
-            scheduler = scheduler.with_dns_manager(dns_manager);
+                // SNI-level ACME
+                for (i, sni) in tls.additional_certs.iter().enumerate() {
+                    if let Some(ref acme) = sni.acme {
+                        acme_configs.push((
+                            format!("listener '{}' (sni cert #{})", listener.id, i),
+                            acme.clone(),
+                        ));
+                    }
+                }
+            }
         }
     }
 
-    // Check if initial certificate issuance is needed
-    let primary_domain = acme_config
-        .domains
-        .first()
-        .ok_or_else(|| AcmeError::OrderCreation("No domains configured for ACME".to_string()))?;
+    if acme_configs.is_empty() {
+        return Ok(None);
+    }
 
-    if acme_client.needs_renewal(primary_domain)? {
+    info!(
+        config_count = acme_configs.len(),
+        "Initializing ACME certificate management for multiple configurations"
+    );
+
+    // Shared challenge manager for all HTTP-01 challenges on this proxy instance
+    let challenge_manager = Arc::new(ChallengeManager::new());
+    let mut schedulers = Vec::new();
+
+    for (description, acme_config) in acme_configs {
         info!(
-            domain = %primary_domain,
-            "Initial certificate issuance required"
+            source = %description,
+            domains = ?acme_config.domains,
+            staging = acme_config.staging,
+            challenge_type = ?acme_config.challenge_type,
+            "Initializing ACME for {}", description
         );
 
-        match acme_config.challenge_type {
-            AcmeChallengeType::Http01 => {
-                // Find an HTTP listener address for the temporary challenge server
-                let http_addr = config
-                    .listeners
+        // Create storage
+        let storage = Arc::new(CertificateStorage::new(&acme_config.storage)?);
+
+        // Create client and initialize account
+        let acme_client = Arc::new(AcmeClient::new(acme_config.clone(), Arc::clone(&storage)));
+        acme_client.init_account().await?;
+
+        // Create renewal scheduler
+        let mut scheduler = RenewalScheduler::new(
+            Arc::clone(&acme_client),
+            Arc::clone(&challenge_manager),
+            sni_resolver.clone(),
+        );
+
+        // If DNS-01, set up DNS challenge manager
+        if acme_config.challenge_type == AcmeChallengeType::Dns01 {
+            if let Some(ref dns_config) = acme_config.dns_provider {
+                let provider = zentinel_proxy::acme::dns::create_provider(dns_config)?;
+
+                let nameservers: Vec<std::net::IpAddr> = dns_config
+                    .propagation
+                    .nameservers
                     .iter()
-                    .find(|l| l.protocol == zentinel_config::ListenerProtocol::Http)
-                    .map(|l| l.address.clone())
-                    .unwrap_or_else(|| "0.0.0.0:80".to_string());
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
 
-                info!(
-                    address = %http_addr,
-                    "Starting temporary HTTP challenge server for initial certificate acquisition"
-                );
+                let propagation_config = zentinel_proxy::acme::dns::PropagationConfig {
+                    initial_delay: std::time::Duration::from_secs(
+                        dns_config.propagation.initial_delay_secs,
+                    ),
+                    check_interval: std::time::Duration::from_secs(
+                        dns_config.propagation.check_interval_secs,
+                    ),
+                    timeout: std::time::Duration::from_secs(dns_config.propagation.timeout_secs),
+                    nameservers,
+                };
 
-                // Start temporary challenge server
-                let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-                let cm_clone = Arc::clone(&challenge_manager);
-                let server_handle = tokio::spawn(async move {
-                    zentinel_proxy::acme::challenge_server::run_challenge_server(
-                        &http_addr,
-                        cm_clone,
-                        shutdown_rx,
-                    )
-                    .await
-                });
-
-                // Give the server a moment to bind
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-                // Obtain certificates
-                let result = scheduler.ensure_certificates().await;
-
-                // Shut down temporary server
-                let _ = shutdown_tx.send(true);
-                let _ =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
-
-                result?;
-            }
-            AcmeChallengeType::Dns01 => {
-                // DNS-01 doesn't need an HTTP server
-                scheduler.ensure_certificates().await?;
+                let dns_manager = Arc::new(zentinel_proxy::acme::dns::Dns01ChallengeManager::new(
+                    provider,
+                    propagation_config,
+                )?);
+                scheduler = scheduler.with_dns_manager(dns_manager);
             }
         }
 
-        info!("Initial ACME certificate acquisition completed");
-    } else {
-        info!(
-            domain = %primary_domain,
-            "ACME certificates already exist and are valid"
-        );
+        // Check if initial certificate issuance is needed
+        let primary_domain = acme_config.domains.first().ok_or_else(|| {
+            AcmeError::OrderCreation(format!("No domains configured for ACME in {}", description))
+        })?;
+
+        if acme_client.needs_renewal(primary_domain)? {
+            info!(
+                source = %description,
+                domain = %primary_domain,
+                "Initial certificate issuance required"
+            );
+
+            match acme_config.challenge_type {
+                AcmeChallengeType::Http01 => {
+                    // Find an HTTP listener address for the temporary challenge server
+                    let http_addr = config
+                        .listeners
+                        .iter()
+                        .find(|l| l.protocol == zentinel_config::ListenerProtocol::Http)
+                        .map(|l| l.address.clone())
+                        .unwrap_or_else(|| "0.0.0.0:80".to_string());
+
+                    info!(
+                        address = %http_addr,
+                        "Starting temporary HTTP challenge server for initial certificate acquisition"
+                    );
+
+                    // Start temporary challenge server
+                    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+                    let cm_clone = Arc::clone(&challenge_manager);
+                    let _server_handle = tokio::spawn(async move {
+                        zentinel_proxy::acme::challenge_server::run_challenge_server(
+                            &http_addr,
+                            cm_clone,
+                            shutdown_rx,
+                        )
+                        .await
+                    });
+
+                    // Give the server a moment to bind
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                    // Obtain certificates
+                    let result = scheduler.ensure_certificates().await;
+
+                    // Shut down temporary server
+                    let _ = shutdown_tx.send(true);
+                    result?;
+                }
+                AcmeChallengeType::Dns01 => {
+                    // DNS-01 doesn't need a temporary server
+                    scheduler.ensure_certificates().await?;
+                }
+            }
+        }
+
+        schedulers.push(scheduler);
     }
 
     Ok(Some(AcmeState {
         challenge_manager,
-        acme_client,
-        scheduler,
+        schedulers,
     }))
 }
 
@@ -603,7 +614,11 @@ fn run_server(
     // Wire ACME components into the proxy
     if let Some(ref state) = acme_state {
         proxy.acme_challenges = Some(Arc::clone(&state.challenge_manager));
-        proxy.acme_client = Some(Arc::clone(&state.acme_client));
+        proxy.acme_clients = state
+            .schedulers
+            .iter()
+            .map(|s| Arc::clone(s.client()))
+            .collect();
     }
 
     // Initialize OpenTelemetry tracer if configured
@@ -839,12 +854,18 @@ fn run_server(
         warn!("Auto-reload requires a config file path");
     }
 
-    // Spawn ACME renewal scheduler as a background task
+    // Spawn ACME renewal schedulers as background tasks
     if let Some(state) = acme_state {
-        runtime.spawn(async move {
-            state.scheduler.run().await;
-        });
-        info!("ACME certificate renewal scheduler started");
+        let scheduler_count = state.schedulers.len();
+        for scheduler in state.schedulers {
+            runtime.spawn(async move {
+                scheduler.run().await;
+            });
+        }
+        info!(
+            count = scheduler_count,
+            "ACME certificate renewal schedulers started"
+        );
     }
 
     // Spawn signal handler task in the runtime

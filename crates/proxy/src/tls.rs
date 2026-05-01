@@ -129,7 +129,9 @@ pub struct SniResolver {
 
 impl SniResolver {
     /// Create a new SNI resolver from TLS configuration
-    pub fn from_config(config: &TlsConfig) -> Result<Self, TlsError> {
+    pub fn from_config(config: &TlsConfig, listener_id: Option<&str>) -> Result<Self, TlsError> {
+        let listener_id_str = listener_id.unwrap_or("unknown");
+
         // Get cert_file and key_file - manual certs or ACME-managed paths
         let (cert_path_buf, key_path_buf);
         let (cert_file, key_file) = match (&config.cert_file, &config.key_file) {
@@ -156,6 +158,7 @@ impl SniResolver {
         let default_cert = load_certified_key(cert_file, key_file)?;
 
         info!(
+            listener_id = %listener_id_str,
             cert_file = %cert_file.display(),
             "Loaded default TLS certificate"
         );
@@ -170,9 +173,55 @@ impl SniResolver {
         let mut priority_wildcard: HashSet<String> = HashSet::new();
 
         // Load SNI certificates
-        for sni_config in &config.additional_certs {
-            let cert = load_certified_key(&sni_config.cert_file, &sni_config.key_file)?;
-            let cert = Arc::new(cert);
+        for (i, sni_config) in config.additional_certs.iter().enumerate() {
+            // Resolve paths for this SNI cert
+            let (sni_cert_path_buf, sni_key_path_buf);
+            let (sni_cert_path, sni_key_path) = match (&sni_config.cert_file, &sni_config.key_file)
+            {
+                (Some(cert), Some(key)) => (cert.as_path(), key.as_path()),
+                _ if sni_config.acme.is_some() => {
+                    let acme = sni_config.acme.as_ref().unwrap();
+                    let primary = acme.domains.first().ok_or_else(|| {
+                        TlsError::ConfigBuild("SNI ACME configuration has no domains".to_string())
+                    })?;
+                    sni_cert_path_buf = acme.storage.join("domains").join(primary).join("cert.pem");
+                    sni_key_path_buf = acme.storage.join("domains").join(primary).join("key.pem");
+                    (sni_cert_path_buf.as_path(), sni_key_path_buf.as_path())
+                }
+                _ => unreachable!("Config validation ensures certs or acme"),
+            };
+
+            let cert = match load_certified_key(sni_cert_path, sni_key_path) {
+                Ok(cert) => Arc::new(cert),
+                Err(e) => {
+                    // If ACME is configured, the certificate might not exist yet.
+                    // We log a warning and skip this certificate for now.
+                    // It will be loaded later via hot-reload once issued.
+                    if let Some(acme) = &sni_config.acme {
+                        let primary = acme
+                            .domains
+                            .first()
+                            .map(|s| s.as_str())
+                            .unwrap_or("unknown");
+                        warn!(
+                            listener_id = %listener_id_str,
+                            sni_index = i,
+                            primary_domain = %primary,
+                            error = %e,
+                            "ACME SNI certificate not yet available, skipping initial load"
+                        );
+
+                        // Record metric for observability
+                        if let Some(metrics) = crate::tls_metrics::get_tls_metrics() {
+                            metrics.record_sni_cert_skip(listener_id_str, primary);
+                        }
+
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
 
             // Build priority set for this cert (lowercased for consistent matching)
             let priority_set: HashSet<String> = sni_config
@@ -182,37 +231,40 @@ impl SniResolver {
                 .collect();
             let has_priority = !priority_set.is_empty();
 
-            // Determine hostnames: use explicit config or auto-extract from certificate.
-            // When priority_hostnames is set, we always auto-extract (hostnames will be
-            // empty due to mutual exclusion validation in the config parser).
-            let hostnames = if sni_config.hostnames.is_empty() {
-                let extracted =
-                    extract_hostnames_from_cert(cert.cert.first().ok_or_else(|| {
-                        TlsError::InvalidCertificate(format!(
-                            "No certificates in chain for {:?}",
-                            sni_config.cert_file
-                        ))
-                    })?)?;
-
-                if has_priority {
-                    info!(
-                        cert_file = %sni_config.cert_file.display(),
-                        hostnames = ?extracted,
-                        priority_hostnames = ?sni_config.priority_hostnames,
-                        "Auto-extracted hostnames from certificate CN/SAN (with priority tie-breaking)"
-                    );
-                } else {
-                    info!(
-                        cert_file = %sni_config.cert_file.display(),
-                        hostnames = ?extracted,
-                        "Auto-extracted hostnames from certificate CN/SAN"
-                    );
-                }
-
-                extracted
-            } else {
+            // Determine hostnames: use explicit config, acme domains, or auto-extract from certificate.
+            let hostnames = if !sni_config.hostnames.is_empty() {
                 sni_config.hostnames.clone()
+            } else if !priority_set.is_empty() {
+                // When priority_hostnames is set, we always auto-extract.
+                extract_hostnames_from_cert(cert.cert.first().unwrap())?
+            } else if let Some(ref acme) = sni_config.acme {
+                // If ACME is present and no explicit hostnames, use ACME domains.
+                acme.domains.clone()
+            } else {
+                // Fallback to auto-extraction
+                extract_hostnames_from_cert(cert.cert.first().unwrap())?
             };
+
+            if has_priority {
+                info!(
+                    cert_file = %sni_cert_path.display(),
+                    hostnames = ?hostnames,
+                    priority_hostnames = ?sni_config.priority_hostnames,
+                    "Loaded SNI certificate with priority tie-breaking"
+                );
+            } else if sni_config.hostnames.is_empty() && sni_config.acme.is_none() {
+                info!(
+                    cert_file = %sni_cert_path.display(),
+                    hostnames = ?hostnames,
+                    "Loaded SNI certificate (auto-extracted hostnames)"
+                );
+            } else {
+                info!(
+                    cert_file = %sni_cert_path.display(),
+                    hostnames = ?hostnames,
+                    "Loaded SNI certificate"
+                );
+            }
 
             for hostname in &hostnames {
                 let hostname_lower = hostname.to_lowercase();
@@ -231,14 +283,14 @@ impl SniResolver {
                                 return Err(TlsError::ConfigBuild(format!(
                                     "Conflicting priority-hostnames: wildcard '*.{}' is claimed as priority by multiple certificates (including {:?}).",
                                     domain,
-                                    sni_config.cert_file
+                                    sni_cert_path
                                 )));
                             } else if is_priority {
                                 // New cert has priority, overwrite the existing one
                                 debug!(
                                     pattern = %hostname,
                                     domain = %domain,
-                                    cert_file = %sni_config.cert_file.display(),
+                                    cert_file = %sni_cert_path.display(),
                                     "Priority wildcard SNI certificate overwrites previous registration"
                                 );
                             } else if existing_has_priority {
@@ -246,7 +298,7 @@ impl SniResolver {
                                 debug!(
                                     pattern = %hostname,
                                     domain = %domain,
-                                    cert_file = %sni_config.cert_file.display(),
+                                    cert_file = %sni_cert_path.display(),
                                     "Skipping wildcard SNI registration, existing cert has priority"
                                 );
                                 continue;
@@ -256,7 +308,7 @@ impl SniResolver {
                                     "Ambiguous SNI configuration: wildcard '*.{}' matches multiple certificates (including {:?}). \
                                      Use explicit 'hostnames' or 'priority-hostnames' to resolve the conflict.",
                                     domain,
-                                    sni_config.cert_file
+                                    sni_cert_path
                                 )));
                             }
                         }
@@ -270,7 +322,7 @@ impl SniResolver {
                         pattern = %hostname,
                         domain = %domain,
                         priority = is_priority,
-                        cert_file = %sni_config.cert_file.display(),
+                        cert_file = %sni_cert_path.display(),
                         "Registered wildcard SNI certificate"
                     );
                 } else {
@@ -284,20 +336,20 @@ impl SniResolver {
                                 return Err(TlsError::ConfigBuild(format!(
                                     "Conflicting priority-hostnames: hostname '{}' is claimed as priority by multiple certificates (including {:?}).",
                                     hostname_lower,
-                                    sni_config.cert_file
+                                    sni_cert_path
                                 )));
                             } else if is_priority {
                                 // New cert has priority, overwrite
                                 debug!(
                                     hostname = %hostname_lower,
-                                    cert_file = %sni_config.cert_file.display(),
+                                    cert_file = %sni_cert_path.display(),
                                     "Priority SNI certificate overwrites previous registration"
                                 );
                             } else if existing_has_priority {
                                 // Existing cert has priority, skip
                                 debug!(
                                     hostname = %hostname_lower,
-                                    cert_file = %sni_config.cert_file.display(),
+                                    cert_file = %sni_cert_path.display(),
                                     "Skipping SNI registration, existing cert has priority"
                                 );
                                 continue;
@@ -307,7 +359,7 @@ impl SniResolver {
                                     "Ambiguous SNI configuration: hostname '{}' matches multiple certificates (including {:?}). \
                                      Use explicit 'hostnames' or 'priority-hostnames' to resolve the conflict.",
                                     hostname_lower,
-                                    sni_config.cert_file
+                                    sni_cert_path
                                 )));
                             }
                         }
@@ -320,7 +372,7 @@ impl SniResolver {
                     debug!(
                         hostname = %hostname_lower,
                         priority = is_priority,
-                        cert_file = %sni_config.cert_file.display(),
+                        cert_file = %sni_cert_path.display(),
                         "Registered SNI certificate"
                     );
                 }
@@ -328,6 +380,7 @@ impl SniResolver {
         }
 
         info!(
+            listener_id = %listener_id_str,
             exact_certs = sni_certs.len(),
             wildcard_certs = wildcard_certs.len(),
             "SNI resolver initialized"
@@ -401,6 +454,8 @@ pub struct HotReloadableSniResolver {
     inner: RwLock<Arc<SniResolver>>,
     /// Original config for reloading
     config: RwLock<TlsConfig>,
+    /// Listener ID for observability
+    listener_id: String,
     /// Last reload time
     last_reload: RwLock<Instant>,
 }
@@ -409,18 +464,24 @@ impl std::fmt::Debug for HotReloadableSniResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HotReloadableSniResolver")
             .field("last_reload", &*self.last_reload.read())
+            .field("listener_id", &self.listener_id)
             .finish()
     }
 }
 
 impl HotReloadableSniResolver {
     /// Create a new hot-reloadable resolver from TLS configuration
-    pub fn from_config(config: TlsConfig) -> Result<Self, TlsError> {
-        let resolver = SniResolver::from_config(&config)?;
+    pub fn from_config(
+        config: TlsConfig,
+        listener_id: impl Into<String>,
+    ) -> Result<Self, TlsError> {
+        let listener_id = listener_id.into();
+        let resolver = SniResolver::from_config(&config, Some(&listener_id))?;
 
         Ok(Self {
             inner: RwLock::new(Arc::new(resolver)),
             config: RwLock::new(config),
+            listener_id,
             last_reload: RwLock::new(Instant::now()),
         })
     }
@@ -439,33 +500,40 @@ impl HotReloadableSniResolver {
             .unwrap_or_else(|| "(acme-managed)".to_string());
 
         info!(
+            listener_id = %self.listener_id,
             cert_file = %cert_file_display,
             sni_count = config.additional_certs.len(),
             "Reloading TLS certificates"
         );
 
         // Try to load new certificates
-        let new_resolver = SniResolver::from_config(&config)?;
+        let new_resolver = SniResolver::from_config(&config, Some(&self.listener_id))?;
 
         // Swap in the new resolver atomically
         *self.inner.write() = Arc::new(new_resolver);
         *self.last_reload.write() = Instant::now();
 
-        info!("TLS certificates reloaded successfully");
+        info!(
+            listener_id = %self.listener_id,
+            "TLS certificates reloaded successfully"
+        );
         Ok(())
     }
 
     /// Update configuration and reload
     pub fn update_config(&self, new_config: TlsConfig) -> Result<(), TlsError> {
         // Load with new config first
-        let new_resolver = SniResolver::from_config(&new_config)?;
+        let new_resolver = SniResolver::from_config(&new_config, Some(&self.listener_id))?;
 
         // Update both config and resolver
         *self.config.write() = new_config;
         *self.inner.write() = Arc::new(new_resolver);
         *self.last_reload.write() = Instant::now();
 
-        info!("TLS configuration updated and certificates reloaded");
+        info!(
+            listener_id = %self.listener_id,
+            "TLS configuration updated and certificates reloaded"
+        );
         Ok(())
     }
 
@@ -1471,8 +1539,11 @@ fn resolve_cipher_suites(names: &[String]) -> Result<Vec<rustls::SupportedCipher
 /// A future update to the Pingora fork should accept a pre-built
 /// `ServerConfig` via `TlsSettings`, at which point this function's
 /// output will be wired into the listener setup.
-pub fn build_server_config(config: &TlsConfig) -> Result<ServerConfig, TlsError> {
-    let resolver = SniResolver::from_config(config)?;
+pub fn build_server_config(
+    config: &TlsConfig,
+    listener_id: &str,
+) -> Result<ServerConfig, TlsError> {
+    let resolver = SniResolver::from_config(config, Some(listener_id))?;
 
     // Resolve protocol versions from config
     let versions = resolve_protocol_versions(config);
@@ -1577,17 +1648,33 @@ pub fn validate_tls_config(config: &TlsConfig) -> Result<(), TlsError> {
 
     // Check SNI certificates
     for sni in &config.additional_certs {
-        if !sni.cert_file.exists() {
-            return Err(TlsError::CertificateLoad(format!(
-                "SNI certificate file not found: {}",
-                sni.cert_file.display()
-            )));
+        // If ACME is configured for this SNI cert, skip existence check
+        if sni.acme.is_some() {
+            trace!("Skipping manual cert validation for ACME-managed SNI certificate");
+            continue;
         }
-        if !sni.key_file.exists() {
-            return Err(TlsError::KeyLoad(format!(
-                "SNI key file not found: {}",
-                sni.key_file.display()
-            )));
+
+        // Standard certificate validation
+        match (&sni.cert_file, &sni.key_file) {
+            (Some(cert_file), Some(key_file)) => {
+                if !cert_file.exists() {
+                    return Err(TlsError::CertificateLoad(format!(
+                        "SNI certificate file not found: {}",
+                        cert_file.display()
+                    )));
+                }
+                if !key_file.exists() {
+                    return Err(TlsError::KeyLoad(format!(
+                        "SNI key file not found: {}",
+                        key_file.display()
+                    )));
+                }
+            }
+            _ => {
+                return Err(TlsError::ConfigBuild(
+                    "SNI certificate requires cert_file and key_file (or ACME block)".to_string(),
+                ));
+            }
         }
     }
 

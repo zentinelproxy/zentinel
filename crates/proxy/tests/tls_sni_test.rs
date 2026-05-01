@@ -51,14 +51,16 @@ fn multi_sni_tls_config() -> TlsConfig {
             SniCertificate {
                 hostnames: vec!["api.example.com".to_string()],
                 priority_hostnames: vec![],
-                cert_file: fixtures.join("server-api.crt"),
-                key_file: fixtures.join("server-api.key"),
+                cert_file: Some(fixtures.join("server-api.crt")),
+                key_file: Some(fixtures.join("server-api.key")),
+                acme: None,
             },
             SniCertificate {
                 hostnames: vec!["secure.example.com".to_string()],
                 priority_hostnames: vec![],
-                cert_file: fixtures.join("server-secure.crt"),
-                key_file: fixtures.join("server-secure.key"),
+                cert_file: Some(fixtures.join("server-secure.crt")),
+                key_file: Some(fixtures.join("server-secure.key")),
+                acme: None,
             },
         ],
         ca_file: None,
@@ -81,8 +83,9 @@ fn wildcard_tls_config() -> TlsConfig {
         additional_certs: vec![SniCertificate {
             hostnames: vec!["*.example.com".to_string()],
             priority_hostnames: vec![],
-            cert_file: fixtures.join("server-wildcard.crt"),
-            key_file: fixtures.join("server-wildcard.key"),
+            cert_file: Some(fixtures.join("server-wildcard.crt")),
+            key_file: Some(fixtures.join("server-wildcard.key")),
+            acme: None,
         }],
         ca_file: None,
         min_version: zentinel_common::types::TlsVersion::Tls12,
@@ -123,7 +126,7 @@ mod sni_resolver {
     #[test]
     fn test_create_from_minimal_config() {
         let config = minimal_tls_config();
-        let resolver = SniResolver::from_config(&config);
+        let resolver = SniResolver::from_config(&config, Some("test-listener"));
         assert!(
             resolver.is_ok(),
             "Failed to create resolver: {:?}",
@@ -134,7 +137,7 @@ mod sni_resolver {
     #[test]
     fn test_create_from_multi_sni_config() {
         let config = multi_sni_tls_config();
-        let resolver = SniResolver::from_config(&config);
+        let resolver = SniResolver::from_config(&config, Some("test-listener"));
         assert!(
             resolver.is_ok(),
             "Failed to create resolver: {:?}",
@@ -145,7 +148,7 @@ mod sni_resolver {
     #[test]
     fn test_create_from_wildcard_config() {
         let config = wildcard_tls_config();
-        let resolver = SniResolver::from_config(&config);
+        let resolver = SniResolver::from_config(&config, Some("test-listener"));
         assert!(
             resolver.is_ok(),
             "Failed to create resolver: {:?}",
@@ -156,7 +159,7 @@ mod sni_resolver {
     #[test]
     fn test_resolve_without_sni_returns_default() {
         let config = multi_sni_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // When no SNI is provided, should return default cert
         let cert = resolver.resolve(None);
@@ -166,7 +169,7 @@ mod sni_resolver {
     #[test]
     fn test_resolve_unknown_hostname_returns_default() {
         let config = multi_sni_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // Unknown hostname should fall back to default
         let cert = resolver.resolve(Some("unknown.example.org"));
@@ -176,7 +179,7 @@ mod sni_resolver {
     #[test]
     fn test_case_insensitive_matching() {
         let config = multi_sni_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // All these should match the same cert
         let cert1 = resolver.resolve(Some("api.example.com"));
@@ -197,7 +200,7 @@ mod sni_resolver {
     #[test]
     fn test_different_sni_hostnames_return_different_certs() {
         let config = multi_sni_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         let api_cert = resolver.resolve(Some("api.example.com"));
         let secure_cert = resolver.resolve(Some("secure.example.com"));
@@ -212,7 +215,7 @@ mod sni_resolver {
     #[test]
     fn test_wildcard_matching() {
         let config = wildcard_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // These should all match *.example.com
         let wildcard_cert = resolver.resolve(Some("foo.example.com"));
@@ -227,7 +230,7 @@ mod sni_resolver {
     #[test]
     fn test_wildcard_does_not_match_exact_domain() {
         let config = wildcard_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // *.example.com should NOT match example.com (no subdomain)
         // This should fall back to the default certificate
@@ -245,7 +248,7 @@ mod sni_resolver {
     #[test]
     fn test_multi_level_subdomain_wildcard_matching() {
         let config = wildcard_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // *.example.com should match foo.bar.example.com because we try multiple levels
         let deep_cert = resolver.resolve(Some("foo.bar.example.com"));
@@ -269,14 +272,16 @@ mod sni_resolver {
                 SniCertificate {
                     hostnames: vec!["*.example.com".to_string()],
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-wildcard.crt"),
-                    key_file: fixtures.join("server-wildcard.key"),
+                    cert_file: Some(fixtures.join("server-wildcard.crt")),
+                    key_file: Some(fixtures.join("server-wildcard.key")),
+                    acme: None,
                 },
                 SniCertificate {
                     hostnames: vec!["api.example.com".to_string()],
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-api.crt"),
-                    key_file: fixtures.join("server-api.key"),
+                    cert_file: Some(fixtures.join("server-api.crt")),
+                    key_file: Some(fixtures.join("server-api.key")),
+                    acme: None,
                 },
             ],
             ca_file: None,
@@ -289,7 +294,7 @@ mod sni_resolver {
             acme: None,
         };
 
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // api.example.com should use exact match, not wildcard
         let api_cert = resolver.resolve(Some("api.example.com"));
@@ -320,7 +325,7 @@ mod sni_resolver {
             acme: None,
         };
 
-        let result = SniResolver::from_config(&config);
+        let result = SniResolver::from_config(&config, Some("test-listener"));
         assert!(result.is_err());
         match result.unwrap_err() {
             TlsError::CertificateLoad(_) => {}
@@ -345,7 +350,7 @@ mod sni_resolver {
             acme: None,
         };
 
-        let result = SniResolver::from_config(&config);
+        let result = SniResolver::from_config(&config, Some("test-listener"));
         assert!(result.is_err());
         match result.unwrap_err() {
             TlsError::KeyLoad(_) => {}
@@ -362,8 +367,9 @@ mod sni_resolver {
             additional_certs: vec![SniCertificate {
                 hostnames: vec!["api.example.com".to_string()],
                 priority_hostnames: vec![],
-                cert_file: fixtures.join("nonexistent.crt"),
-                key_file: fixtures.join("server-api.key"),
+                cert_file: Some(fixtures.join("nonexistent.crt")),
+                key_file: Some(fixtures.join("server-api.key")),
+                acme: None,
             }],
             ca_file: None,
             min_version: zentinel_common::types::TlsVersion::Tls12,
@@ -375,7 +381,7 @@ mod sni_resolver {
             acme: None,
         };
 
-        let result = SniResolver::from_config(&config);
+        let result = SniResolver::from_config(&config, Some("test-listener"));
         assert!(result.is_err());
     }
 }
@@ -397,8 +403,9 @@ mod sni_auto_extraction {
             additional_certs: vec![SniCertificate {
                 hostnames: vec![], // Empty: auto-extract from cert
                 priority_hostnames: vec![],
-                cert_file: fixtures.join("server-api.crt"),
-                key_file: fixtures.join("server-api.key"),
+                cert_file: Some(fixtures.join("server-api.crt")),
+                key_file: Some(fixtures.join("server-api.key")),
+                acme: None,
             }],
             ca_file: None,
             min_version: zentinel_common::types::TlsVersion::Tls12,
@@ -415,7 +422,7 @@ mod sni_auto_extraction {
     fn test_auto_extract_resolves_san_hostname() {
         // server-api.crt has SAN: DNS:api.example.com, DNS:localhost
         let config = auto_extract_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         let api_cert = resolver.resolve(Some("api.example.com"));
         let default_cert = resolver.resolve(Some("unknown.example.com"));
@@ -431,7 +438,7 @@ mod sni_auto_extraction {
     fn test_auto_extract_resolves_all_san_entries() {
         // server-api.crt has SAN: DNS:api.example.com, DNS:localhost
         let config = auto_extract_tls_config();
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         let api_cert = resolver.resolve(Some("api.example.com"));
         let localhost_cert = resolver.resolve(Some("localhost"));
@@ -453,8 +460,9 @@ mod sni_auto_extraction {
             additional_certs: vec![SniCertificate {
                 hostnames: vec![], // Auto-extract
                 priority_hostnames: vec![],
-                cert_file: fixtures.join("server-wildcard.crt"),
-                key_file: fixtures.join("server-wildcard.key"),
+                cert_file: Some(fixtures.join("server-wildcard.crt")),
+                key_file: Some(fixtures.join("server-wildcard.key")),
+                acme: None,
             }],
             ca_file: None,
             min_version: zentinel_common::types::TlsVersion::Tls12,
@@ -466,7 +474,7 @@ mod sni_auto_extraction {
             acme: None,
         };
 
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // *.example.com wildcard should match subdomains
         let sub_cert = resolver.resolve(Some("foo.example.com"));
@@ -491,14 +499,16 @@ mod sni_auto_extraction {
                 SniCertificate {
                     hostnames: vec!["secure.example.com".to_string()], // Explicit
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-secure.crt"),
-                    key_file: fixtures.join("server-secure.key"),
+                    cert_file: Some(fixtures.join("server-secure.crt")),
+                    key_file: Some(fixtures.join("server-secure.key")),
+                    acme: None,
                 },
                 SniCertificate {
                     hostnames: vec![], // Auto-extract from server-api.crt
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-api.crt"),
-                    key_file: fixtures.join("server-api.key"),
+                    cert_file: Some(fixtures.join("server-api.crt")),
+                    key_file: Some(fixtures.join("server-api.key")),
+                    acme: None,
                 },
             ],
             ca_file: None,
@@ -511,7 +521,7 @@ mod sni_auto_extraction {
             acme: None,
         };
 
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         let secure_cert = resolver.resolve(Some("secure.example.com"));
         let api_cert = resolver.resolve(Some("api.example.com"));
@@ -534,14 +544,16 @@ mod sni_auto_extraction {
                 SniCertificate {
                     hostnames: vec![], // Auto-extract: SAN includes "localhost"
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-api.crt"),
-                    key_file: fixtures.join("server-api.key"),
+                    cert_file: Some(fixtures.join("server-api.crt")),
+                    key_file: Some(fixtures.join("server-api.key")),
+                    acme: None,
                 },
                 SniCertificate {
                     hostnames: vec![], // Auto-extract: SAN also includes "localhost"
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-secure.crt"),
-                    key_file: fixtures.join("server-secure.key"),
+                    cert_file: Some(fixtures.join("server-secure.crt")),
+                    key_file: Some(fixtures.join("server-secure.key")),
+                    acme: None,
                 },
             ],
             ca_file: None,
@@ -554,7 +566,7 @@ mod sni_auto_extraction {
             acme: None,
         };
 
-        let result = SniResolver::from_config(&config);
+        let result = SniResolver::from_config(&config, Some("test-listener"));
         assert!(
             result.is_err(),
             "Overlapping auto-extracted hostnames should error"
@@ -578,8 +590,9 @@ mod sni_auto_extraction {
             additional_certs: vec![SniCertificate {
                 hostnames: vec!["custom.example.com".to_string()], // Explicit, not in cert
                 priority_hostnames: vec![],
-                cert_file: fixtures.join("server-api.crt"),
-                key_file: fixtures.join("server-api.key"),
+                cert_file: Some(fixtures.join("server-api.crt")),
+                key_file: Some(fixtures.join("server-api.key")),
+                acme: None,
             }],
             ca_file: None,
             min_version: zentinel_common::types::TlsVersion::Tls12,
@@ -591,7 +604,7 @@ mod sni_auto_extraction {
             acme: None,
         };
 
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // Should match the explicit hostname
         let custom_cert = resolver.resolve(Some("custom.example.com"));
@@ -672,7 +685,7 @@ mod acme_resolver {
         .unwrap();
 
         let config = acme_tls_config(temp_dir.path().to_path_buf());
-        let resolver = SniResolver::from_config(&config);
+        let resolver = SniResolver::from_config(&config, Some("test-listener"));
         assert!(
             resolver.is_ok(),
             "SniResolver should load ACME-managed certs: {:?}",
@@ -691,7 +704,7 @@ mod acme_resolver {
         // Clear domains
         config.acme.as_mut().unwrap().domains.clear();
 
-        let result = SniResolver::from_config(&config);
+        let result = SniResolver::from_config(&config, Some("test-listener"));
         assert!(result.is_err(), "Empty domains should fail");
         match result.unwrap_err() {
             TlsError::ConfigBuild(msg) => {
@@ -721,7 +734,7 @@ mod acme_resolver {
             acme: None,
         };
 
-        let result = SniResolver::from_config(&config);
+        let result = SniResolver::from_config(&config, Some("test-listener"));
         assert!(result.is_err(), "No cert and no ACME should fail");
         match result.unwrap_err() {
             TlsError::ConfigBuild(msg) => {
@@ -744,7 +757,7 @@ mod acme_resolver {
         std::fs::create_dir_all(&domain_dir).unwrap();
 
         let config = acme_tls_config(temp_dir.path().to_path_buf());
-        let result = SniResolver::from_config(&config);
+        let result = SniResolver::from_config(&config, Some("test-listener"));
         assert!(result.is_err(), "Missing ACME cert files should fail");
         match result.unwrap_err() {
             TlsError::CertificateLoad(_) => {}
@@ -767,7 +780,7 @@ mod acme_resolver {
         std::fs::copy(fixtures.join("server-default.key"), &key_path).unwrap();
 
         let config = acme_tls_config(temp_dir.path().to_path_buf());
-        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener").unwrap();
 
         let cert_before = resolver.resolve(None);
 
@@ -788,6 +801,238 @@ mod acme_resolver {
             "Certificate should change after reload with new ACME cert files"
         );
     }
+
+    #[test]
+    fn test_from_config_with_sni_acme_implicit_hostnames() {
+        // This test verifies that an SNI block with ACME but no explicit hostnames
+        // correctly derives its routing hostnames from the ACME domain list.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let domain_dir = temp_dir.path().join("domains").join("tenant.com");
+        std::fs::create_dir_all(&domain_dir).unwrap();
+
+        let fixtures = fixtures_path();
+        std::fs::copy(fixtures.join("server-api.crt"), domain_dir.join("cert.pem")).unwrap();
+        std::fs::copy(fixtures.join("server-api.key"), domain_dir.join("key.pem")).unwrap();
+
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![SniCertificate {
+                hostnames: vec![], // Implicit: should use acme.domains
+                priority_hostnames: vec![],
+                cert_file: None,
+                key_file: None,
+                acme: Some(AcmeConfig {
+                    email: "tenant@example.com".to_string(),
+                    domains: vec!["tenant.com".to_string(), "www.tenant.com".to_string()],
+                    server_url: None,
+                    staging: true,
+                    eab: None,
+                    storage: temp_dir.path().to_path_buf(),
+                    renew_before_days: 30,
+                    challenge_type: AcmeChallengeType::Http01,
+                    key_type: AcmeKeyType::EcdsaP256,
+                    dns_provider: None,
+                }),
+            }],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
+
+        // Should resolve for both domains in the ACME list
+        let cert1 = resolver.resolve(Some("tenant.com"));
+        let cert2 = resolver.resolve(Some("www.tenant.com"));
+        let default_cert = resolver.resolve(Some("other.com"));
+
+        assert!(
+            !Arc::ptr_eq(&cert1, &default_cert),
+            "Should match tenant.com"
+        );
+        assert!(
+            Arc::ptr_eq(&cert1, &cert2),
+            "Both domains should use same cert"
+        );
+    }
+
+    #[test]
+    fn test_implicit_wildcard_derivation() {
+        // Verify that implicit derivation handles wildcards correctly.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let domain_dir = temp_dir.path().join("domains").join("*.wildcard.com");
+        std::fs::create_dir_all(&domain_dir).unwrap();
+
+        let fixtures = fixtures_path();
+        std::fs::copy(fixtures.join("server-api.crt"), domain_dir.join("cert.pem")).unwrap();
+        std::fs::copy(fixtures.join("server-api.key"), domain_dir.join("key.pem")).unwrap();
+
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![SniCertificate {
+                hostnames: vec![],
+                priority_hostnames: vec![],
+                cert_file: None,
+                key_file: None,
+                acme: Some(AcmeConfig {
+                    email: "test@example.com".to_string(),
+                    domains: vec!["*.wildcard.com".to_string()],
+                    server_url: None,
+                    staging: true,
+                    eab: None,
+                    storage: temp_dir.path().to_path_buf(),
+                    renew_before_days: 30,
+                    challenge_type: AcmeChallengeType::Http01,
+                    key_type: AcmeKeyType::EcdsaP256,
+                    dns_provider: None,
+                }),
+            }],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        let resolver = SniResolver::from_config(&config, Some("test")).unwrap();
+        let matched = resolver.resolve(Some("sub.wildcard.com"));
+        let default_cert = resolver.resolve(Some("other.com"));
+        assert!(
+            !Arc::ptr_eq(&matched, &default_cert),
+            "Wildcard SNI should match"
+        );
+    }
+
+    #[test]
+    fn test_cold_start_skip_behavior() {
+        // Verify that missing ACME files result in skipped entries instead of errors.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fixtures = fixtures_path();
+
+        let config = TlsConfig {
+            cert_file: Some(fixtures.join("server-default.crt")),
+            key_file: Some(fixtures.join("server-default.key")),
+            additional_certs: vec![SniCertificate {
+                hostnames: vec!["app.com".to_string()],
+                priority_hostnames: vec![],
+                cert_file: None,
+                key_file: None,
+                acme: Some(AcmeConfig {
+                    email: "test@example.com".to_string(),
+                    domains: vec!["app.com".to_string()],
+                    server_url: None,
+                    staging: true,
+                    eab: None,
+                    storage: temp_dir.path().to_path_buf(),
+                    renew_before_days: 30,
+                    challenge_type: AcmeChallengeType::Http01,
+                    key_type: AcmeKeyType::EcdsaP256,
+                    dns_provider: None,
+                }),
+            }],
+            ca_file: None,
+            min_version: zentinel_common::types::TlsVersion::Tls12,
+            max_version: None,
+            cipher_suites: vec![],
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        };
+
+        // This should NOT fail even though the cert file is missing
+        let resolver = SniResolver::from_config(&config, Some("test"));
+        assert!(resolver.is_ok(), "Cold start should skip, not fail");
+    }
+
+    #[test]
+    fn test_validate_acme_domains_case_insensitive() {
+        use zentinel_config::Config;
+
+        // We'll test this via the actual semantic validation logic
+        let kdl = r#"
+system {
+    worker-threads 1
+}
+listeners {
+    listener "https" {
+        address "0.0.0.0:443"
+        protocol "https"
+        tls {
+            acme {
+                email "admin@example.com"
+                domains "Example.COM"
+            }
+            sni {
+                acme {
+                    email "user@example.com"
+                    domains "example.com"
+                }
+            }
+        }
+    }
+}
+"#;
+        let config = Config::from_kdl(kdl).unwrap();
+        // We verify our logic in validation.rs works.
+        let result = config.validate();
+        assert!(
+            result.is_err(),
+            "Should have caught duplicate domain with different case"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("example.com")
+                && err_msg.contains("configured in multiple ACME blocks")
+        );
+    }
+
+    #[test]
+    fn test_sni_certificate_mutual_exclusion() {
+        use zentinel_config::Config;
+
+        // Test that specifying both manual files and acme fails
+        let kdl = r#"
+system { worker-threads 1 }
+listeners {
+    listener "https" {
+        address "0.0.0.0:443"
+        protocol "https"
+        tls {
+            cert-file "test.crt"
+            key-file "test.key"
+            sni {
+                cert-file "sni.crt"
+                key-file "sni.key"
+                acme {
+                    email "test@example.com"
+                    domains "example.com"
+                }
+            }
+        }
+    }
+}
+"#;
+        let result = Config::from_kdl(kdl);
+        assert!(
+            result.is_err(),
+            "Should fail when both manual files and acme are present"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("cannot specify both manual files and an 'acme' block"));
+    }
 }
 
 // ============================================================================
@@ -800,14 +1045,14 @@ mod hot_reload {
     #[test]
     fn test_create_hot_reloadable_resolver() {
         let config = minimal_tls_config();
-        let resolver = HotReloadableSniResolver::from_config(config);
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener");
         assert!(resolver.is_ok());
     }
 
     #[test]
     fn test_hot_reload_success() {
         let config = minimal_tls_config();
-        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener").unwrap();
 
         // Reload should succeed (certs haven't changed)
         let result = resolver.reload();
@@ -817,7 +1062,7 @@ mod hot_reload {
     #[test]
     fn test_last_reload_age() {
         let config = minimal_tls_config();
-        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener").unwrap();
 
         let age1 = resolver.last_reload_age();
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -829,7 +1074,7 @@ mod hot_reload {
     #[test]
     fn test_reload_resets_age() {
         let config = minimal_tls_config();
-        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener").unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(10));
         let age_before = resolver.last_reload_age();
@@ -843,7 +1088,7 @@ mod hot_reload {
     #[test]
     fn test_hot_reload_resolves_certificates() {
         let config = multi_sni_tls_config();
-        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener").unwrap();
 
         // Test that the hot reloadable resolver can resolve certificates
         let cert = resolver.resolve(Some("api.example.com"));
@@ -853,7 +1098,7 @@ mod hot_reload {
     #[test]
     fn test_update_config() {
         let config1 = minimal_tls_config();
-        let resolver = HotReloadableSniResolver::from_config(config1).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config1, "test-listener-1").unwrap();
 
         // Update with a multi-SNI config
         let config2 = multi_sni_tls_config();
@@ -890,7 +1135,7 @@ mod hot_reload {
             acme: None,
         };
 
-        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener").unwrap();
 
         // Get initial certificate
         let cert_before = resolver.resolve(None);
@@ -943,7 +1188,7 @@ mod hot_reload {
             acme: None,
         };
 
-        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener").unwrap();
         let cert_before = resolver.resolve(None);
 
         // Replace with invalid cert content
@@ -989,7 +1234,7 @@ mod hot_reload {
             acme: None,
         };
 
-        let resolver = HotReloadableSniResolver::from_config(config).unwrap();
+        let resolver = HotReloadableSniResolver::from_config(config, "test-listener").unwrap();
         let cert_before = resolver.resolve(None);
 
         // Delete the certificate file
@@ -1029,7 +1274,8 @@ mod certificate_reloader {
     fn test_register_single_resolver() {
         let reloader = CertificateReloader::new();
         let config = minimal_tls_config();
-        let resolver = Arc::new(HotReloadableSniResolver::from_config(config).unwrap());
+        let resolver =
+            Arc::new(HotReloadableSniResolver::from_config(config, "test-listener").unwrap());
 
         reloader.register("https-main", resolver);
 
@@ -1043,11 +1289,13 @@ mod certificate_reloader {
         let reloader = CertificateReloader::new();
 
         let config1 = minimal_tls_config();
-        let resolver1 = Arc::new(HotReloadableSniResolver::from_config(config1).unwrap());
+        let resolver1 =
+            Arc::new(HotReloadableSniResolver::from_config(config1, "test-listener-1").unwrap());
         reloader.register("https-main", resolver1);
 
         let config2 = multi_sni_tls_config();
-        let resolver2 = Arc::new(HotReloadableSniResolver::from_config(config2).unwrap());
+        let resolver2 =
+            Arc::new(HotReloadableSniResolver::from_config(config2, "test-listener-2").unwrap());
         reloader.register("https-api", resolver2);
 
         let status = reloader.status();
@@ -1061,11 +1309,13 @@ mod certificate_reloader {
         let reloader = CertificateReloader::new();
 
         let config1 = minimal_tls_config();
-        let resolver1 = Arc::new(HotReloadableSniResolver::from_config(config1).unwrap());
+        let resolver1 =
+            Arc::new(HotReloadableSniResolver::from_config(config1, "test-listener-1").unwrap());
         reloader.register("https-main", resolver1);
 
         let config2 = multi_sni_tls_config();
-        let resolver2 = Arc::new(HotReloadableSniResolver::from_config(config2).unwrap());
+        let resolver2 =
+            Arc::new(HotReloadableSniResolver::from_config(config2, "test-listener-2").unwrap());
         reloader.register("https-api", resolver2);
 
         // Reload all - should succeed
@@ -1083,7 +1333,8 @@ mod certificate_reloader {
 
         // First resolver with valid config
         let config1 = minimal_tls_config();
-        let resolver1 = Arc::new(HotReloadableSniResolver::from_config(config1).unwrap());
+        let resolver1 =
+            Arc::new(HotReloadableSniResolver::from_config(config1, "test-listener-1").unwrap());
         reloader.register("https-valid", resolver1);
 
         // Second resolver with temp files that we'll delete
@@ -1108,7 +1359,8 @@ mod certificate_reloader {
             session_resumption: true,
             acme: None,
         };
-        let resolver2 = Arc::new(HotReloadableSniResolver::from_config(config2).unwrap());
+        let resolver2 =
+            Arc::new(HotReloadableSniResolver::from_config(config2, "test-listener-2").unwrap());
         reloader.register("https-will-fail", resolver2);
 
         // Delete the cert file for the second resolver
@@ -1129,7 +1381,8 @@ mod certificate_reloader {
         let reloader = CertificateReloader::new();
 
         let config = minimal_tls_config();
-        let resolver = Arc::new(HotReloadableSniResolver::from_config(config).unwrap());
+        let resolver =
+            Arc::new(HotReloadableSniResolver::from_config(config, "test-listener").unwrap());
         reloader.register("https-main", resolver);
 
         let status_before = reloader.status();
@@ -1148,7 +1401,8 @@ mod certificate_reloader {
         let reloader = CertificateReloader::new();
 
         let config = minimal_tls_config();
-        let resolver = Arc::new(HotReloadableSniResolver::from_config(config).unwrap());
+        let resolver =
+            Arc::new(HotReloadableSniResolver::from_config(config, "test-listener").unwrap());
         reloader.register("https-main", resolver);
 
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1255,8 +1509,9 @@ mod validation {
             additional_certs: vec![SniCertificate {
                 hostnames: vec!["test.example.com".to_string()],
                 priority_hostnames: vec![],
-                cert_file: fixtures.join("nonexistent.crt"),
-                key_file: fixtures.join("server-api.key"),
+                cert_file: Some(fixtures.join("nonexistent.crt")),
+                key_file: Some(fixtures.join("server-api.key")),
+                acme: None,
             }],
             ca_file: None,
             min_version: zentinel_common::types::TlsVersion::Tls12,
@@ -1314,7 +1569,7 @@ mod server_config {
     fn test_build_server_config_minimal() {
         ensure_crypto_provider();
         let config = minimal_tls_config();
-        let result = build_server_config(&config);
+        let result = build_server_config(&config, "test-listener");
         assert!(
             result.is_ok(),
             "Failed to build server config: {:?}",
@@ -1331,7 +1586,7 @@ mod server_config {
     fn test_build_server_config_with_sni() {
         ensure_crypto_provider();
         let config = multi_sni_tls_config();
-        let result = build_server_config(&config);
+        let result = build_server_config(&config, "test-listener");
         assert!(
             result.is_ok(),
             "Failed to build server config with SNI: {:?}",
@@ -1343,7 +1598,7 @@ mod server_config {
     fn test_build_server_config_with_mtls() {
         ensure_crypto_provider();
         let config = mtls_tls_config();
-        let result = build_server_config(&config);
+        let result = build_server_config(&config, "test-listener");
         assert!(
             result.is_ok(),
             "Failed to build mTLS server config: {:?}",
@@ -1355,7 +1610,7 @@ mod server_config {
     fn test_build_server_config_with_wildcard() {
         ensure_crypto_provider();
         let config = wildcard_tls_config();
-        let result = build_server_config(&config);
+        let result = build_server_config(&config, "test-listener");
         assert!(
             result.is_ok(),
             "Failed to build wildcard server config: {:?}",
@@ -1381,14 +1636,16 @@ mod server_config {
                 SniCertificate {
                     hostnames: vec![],
                     priority_hostnames: vec!["localhost".to_string()],
-                    cert_file: fixtures.join("server-api.crt"),
-                    key_file: fixtures.join("server-api.key"),
+                    cert_file: Some(fixtures.join("server-api.crt")),
+                    key_file: Some(fixtures.join("server-api.key")),
+                    acme: None,
                 },
                 SniCertificate {
                     hostnames: vec![],
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-secure.crt"),
-                    key_file: fixtures.join("server-secure.key"),
+                    cert_file: Some(fixtures.join("server-secure.crt")),
+                    key_file: Some(fixtures.join("server-secure.key")),
+                    acme: None,
                 },
             ],
             ca_file: None,
@@ -1401,7 +1658,7 @@ mod server_config {
             acme: None,
         };
 
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // "localhost" should resolve to server-api.crt (the priority cert)
         let localhost_cert = resolver.resolve(Some("localhost"));
@@ -1430,8 +1687,9 @@ mod server_config {
             additional_certs: vec![SniCertificate {
                 hostnames: vec![],
                 priority_hostnames: vec!["localhost".to_string()],
-                cert_file: fixtures.join("server-api.crt"),
-                key_file: fixtures.join("server-api.key"),
+                cert_file: Some(fixtures.join("server-api.crt")),
+                key_file: Some(fixtures.join("server-api.key")),
+                acme: None,
             }],
             ca_file: None,
             min_version: zentinel_common::types::TlsVersion::Tls12,
@@ -1443,7 +1701,7 @@ mod server_config {
             acme: None,
         };
 
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
         let default_cert = resolver.resolve(Some("unknown.example.com"));
 
         // All SANs should be registered, not just the priority one
@@ -1470,14 +1728,16 @@ mod server_config {
                 SniCertificate {
                     hostnames: vec![],
                     priority_hostnames: vec!["localhost".to_string()],
-                    cert_file: fixtures.join("server-api.crt"),
-                    key_file: fixtures.join("server-api.key"),
+                    cert_file: Some(fixtures.join("server-api.crt")),
+                    key_file: Some(fixtures.join("server-api.key")),
+                    acme: None,
                 },
                 SniCertificate {
                     hostnames: vec![],
                     priority_hostnames: vec!["localhost".to_string()],
-                    cert_file: fixtures.join("server-secure.crt"),
-                    key_file: fixtures.join("server-secure.key"),
+                    cert_file: Some(fixtures.join("server-secure.crt")),
+                    key_file: Some(fixtures.join("server-secure.key")),
+                    acme: None,
                 },
             ],
             ca_file: None,
@@ -1490,7 +1750,7 @@ mod server_config {
             acme: None,
         };
 
-        let result = SniResolver::from_config(&config);
+        let result = SniResolver::from_config(&config, Some("test-listener"));
         assert!(
             result.is_err(),
             "Conflicting priority-hostnames should error"
@@ -1516,14 +1776,16 @@ mod server_config {
                 SniCertificate {
                     hostnames: vec![],
                     priority_hostnames: vec!["localhost".to_string()],
-                    cert_file: fixtures.join("server-wildcard.crt"),
-                    key_file: fixtures.join("server-wildcard.key"),
+                    cert_file: Some(fixtures.join("server-wildcard.crt")),
+                    key_file: Some(fixtures.join("server-wildcard.key")),
+                    acme: None,
                 },
                 SniCertificate {
                     hostnames: vec![],
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-api.crt"),
-                    key_file: fixtures.join("server-api.key"),
+                    cert_file: Some(fixtures.join("server-api.crt")),
+                    key_file: Some(fixtures.join("server-api.key")),
+                    acme: None,
                 },
             ],
             ca_file: None,
@@ -1536,7 +1798,7 @@ mod server_config {
             acme: None,
         };
 
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // "localhost" should resolve to server-wildcard.crt
         let localhost_cert = resolver.resolve(Some("localhost"));
@@ -1567,14 +1829,16 @@ mod server_config {
                 SniCertificate {
                     hostnames: vec![],
                     priority_hostnames: vec![],
-                    cert_file: fixtures.join("server-secure.crt"),
-                    key_file: fixtures.join("server-secure.key"),
+                    cert_file: Some(fixtures.join("server-secure.crt")),
+                    key_file: Some(fixtures.join("server-secure.key")),
+                    acme: None,
                 },
                 SniCertificate {
                     hostnames: vec![],
                     priority_hostnames: vec!["localhost".to_string()],
-                    cert_file: fixtures.join("server-api.crt"),
-                    key_file: fixtures.join("server-api.key"),
+                    cert_file: Some(fixtures.join("server-api.crt")),
+                    key_file: Some(fixtures.join("server-api.key")),
+                    acme: None,
                 },
             ],
             ca_file: None,
@@ -1587,7 +1851,7 @@ mod server_config {
             acme: None,
         };
 
-        let resolver = SniResolver::from_config(&config).unwrap();
+        let resolver = SniResolver::from_config(&config, Some("test-listener")).unwrap();
 
         // "localhost" should resolve to server-api.crt (priority), even though
         // server-secure.crt was registered first and also has "localhost" in SAN

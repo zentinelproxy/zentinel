@@ -643,44 +643,67 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
         ));
     }
 
-    let cert_file = get_string_entry(node, "cert-file")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "SNI certificate for listener '{}' requires 'cert-file'",
-                listener_id
-            )
-        })?;
+    // Parse acme configuration if present
+    let acme = if let Some(children) = children {
+        children
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "acme")
+            .map(|n| parse_acme_config(n, listener_id))
+            .transpose()?
+    } else {
+        None
+    };
 
-    let key_file = get_string_entry(node, "key-file")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "SNI certificate for listener '{}' requires 'key-file'",
-                listener_id
-            )
-        })?;
+    let cert_file = get_string_entry(node, "cert-file").map(PathBuf::from);
+    let key_file = get_string_entry(node, "key-file").map(PathBuf::from);
 
-    if !priority_hostnames.is_empty() {
+    // Validate mutual exclusion and completeness
+    match (&acme, &cert_file, &key_file) {
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            return Err(anyhow::anyhow!(
+                "SNI certificate for listener '{}' cannot specify both manual files and an 'acme' block",
+                listener_id
+            ));
+        }
+        (None, None, _) | (None, _, None) => {
+            return Err(anyhow::anyhow!(
+                "SNI certificate for listener '{}' requires either both 'cert-file' and 'key-file', or an 'acme' block",
+                listener_id
+            ));
+        }
+        _ => {} // Valid: either acme OR (cert_file AND key_file)
+    }
+
+    if let Some(ref acme_config) = acme {
         debug!(
             listener_id = %listener_id,
-            priority_hostnames = ?priority_hostnames,
-            cert_file = %cert_file.display(),
-            "Parsed SNI certificate (SAN auto-extraction with priority tie-breaking)"
-        );
-    } else if hostnames.is_empty() {
-        debug!(
-            listener_id = %listener_id,
-            cert_file = %cert_file.display(),
-            "Parsed SNI certificate (hostnames will be auto-extracted from CN/SAN)"
+            acme_domains = ?acme_config.domains,
+            "Parsed SNI certificate with ACME"
         );
     } else {
-        debug!(
-            listener_id = %listener_id,
-            hostnames = ?hostnames,
-            cert_file = %cert_file.display(),
-            "Parsed SNI certificate"
-        );
+        let cert_path = cert_file.as_ref().unwrap().display();
+        if !priority_hostnames.is_empty() {
+            debug!(
+                listener_id = %listener_id,
+                priority_hostnames = ?priority_hostnames,
+                cert_file = %cert_path,
+                "Parsed SNI certificate (SAN auto-extraction with priority tie-breaking)"
+            );
+        } else if hostnames.is_empty() {
+            debug!(
+                listener_id = %listener_id,
+                cert_file = %cert_path,
+                "Parsed SNI certificate (hostnames will be auto-extracted from CN/SAN)"
+            );
+        } else {
+            debug!(
+                listener_id = %listener_id,
+                hostnames = ?hostnames,
+                cert_file = %cert_path,
+                "Parsed SNI certificate"
+            );
+        }
     }
 
     Ok(SniCertificate {
@@ -688,6 +711,7 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
         priority_hostnames,
         cert_file,
         key_file,
+        acme,
     })
 }
 

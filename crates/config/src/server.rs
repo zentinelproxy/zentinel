@@ -395,11 +395,14 @@ pub struct SniCertificate {
     /// another cert also claims them. Mutually exclusive with `hostnames`.
     pub priority_hostnames: Vec<String>,
 
-    /// Certificate file path
-    pub cert_file: PathBuf,
+    /// Certificate file path (optional if acme is configured)
+    pub cert_file: Option<PathBuf>,
 
-    /// Private key file path
-    pub key_file: PathBuf,
+    /// Private key file path (optional if acme is configured)
+    pub key_file: Option<PathBuf>,
+
+    /// ACME configuration for this certificate
+    pub acme: Option<AcmeConfig>,
 }
 
 // ============================================================================
