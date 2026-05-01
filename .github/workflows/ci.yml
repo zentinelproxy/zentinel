@@ -1,5 +1,7 @@
 # CI workflow - runs on every push and pull request
-# Validates code quality: formatting, linting, tests, and documentation
+# Validates code quality: formatting, linting, and documentation.
+# The full test suite is in tests.yml (manual / weekly / push-to-main only)
+# to keep PR-trigger Action minutes low.
 
 name: CI
 
@@ -74,47 +76,6 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo build
-        uses: actions/cache@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-
-
-      - name: Install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Run tests
-        run: cargo test --workspace
 
   docs:
     name: Documentation
