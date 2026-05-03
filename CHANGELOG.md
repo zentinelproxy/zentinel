@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.05_2](#26052---2026-05-03) | 0.6.12 | 2026-05-03 | Install script provisions systemd unit, system user, and starter config |
 | [26.05_1](#26051---2026-05-01) | 0.6.11 | 2026-05-01 | Per-SNI ACME certificates for multi-tenant TLS, dependency updates |
 | [26.04_7](#26047---2026-04-28) | 0.6.10 | 2026-04-28 | Security: rand fix in `zentinel-sim` |
 | [26.04_6](#26046---2026-04-25) | 0.6.9 | 2026-04-25 | Security: openssl & rand fixes, ACME schema docs, CI update |
@@ -44,17 +45,19 @@ for details.
 
 ---
 
-## [Unreleased]
+## [26.05_2] - 2026-05-03
+
+**Crate version:** 0.6.12
 
 ### Added
-- **Systemd service bootstrap in the install script.** `curl -fsSL https://get.zentinelproxy.io | sh` now installs `/etc/systemd/system/zentinel.service`, a sysusers snippet at `/usr/lib/sysusers.d/zentinel.conf`, and a starter config at `/etc/zentinel/zentinel.kdl` on Linux hosts running systemd. Service enable and start are opt-in via `--enable-service` (or `ZENTINEL_ENABLE_SERVICE=1`). Resolves discussion #218.
-- **`deploy/zentinel.starter.kdl`** — annotated starter configuration dropped at `/etc/zentinel/zentinel.kdl`. An existing file is preserved on re-install.
-- **`deploy/sysusers.d/zentinel.conf`** — declarative system user, applied via `systemd-sysusers` with a `useradd` fallback.
-- **`crates/proxy/docs/deployment.md`** — systemd deployment reference (file layout, lifecycle, capabilities, sandboxing).
+- **Systemd service bootstrap in the install script.** `curl -fsSL https://get.zentinelproxy.io | sh` now installs `/etc/systemd/system/zentinel.service`, a sysusers snippet at `/usr/lib/sysusers.d/zentinel.conf`, and a starter config at `/etc/zentinel/zentinel.kdl` on Linux hosts running systemd. Service enable and start are opt-in via `--enable-service` (or `ZENTINEL_ENABLE_SERVICE=1`). Resolves discussion #218. (#224)
+- **`deploy/zentinel.starter.kdl`** — annotated starter configuration dropped at `/etc/zentinel/zentinel.kdl`. An existing file is preserved on re-install. (#224)
+- **`deploy/sysusers.d/zentinel.conf`** — declarative system user, applied via `systemd-sysusers` with a `useradd` fallback. (#224)
+- **`crates/proxy/docs/deployment.md`** — systemd deployment reference (file layout, lifecycle, capabilities, sandboxing). (#224)
 
 ### Changed
-- **`deploy/zentinel.service`** now passes `--config /etc/zentinel/zentinel.kdl` explicitly and grants `AmbientCapabilities=CAP_NET_BIND_SERVICE` so listeners can bind ports below 1024 without root.
-- **Canonical config path renamed `config.kdl` → `zentinel.kdl`.** Aligns the unit file, Dockerfile, `docker-compose.yml`, and `deploy/deploy.sh` with the path already documented in the README. Helm chart still uses `config.kdl` internally; tracked as a follow-up.
+- **`deploy/zentinel.service`** now passes `--config /etc/zentinel/zentinel.kdl` explicitly and grants `AmbientCapabilities=CAP_NET_BIND_SERVICE` so listeners can bind ports below 1024 without root. (#224)
+- **Canonical config path renamed `config.kdl` → `zentinel.kdl`.** Aligns the unit file, Dockerfile, `docker-compose.yml`, and `deploy/deploy.sh` with the path already documented in the README. Helm chart still uses `config.kdl` internally; tracked as a follow-up. (#224)
 
 ---
 
