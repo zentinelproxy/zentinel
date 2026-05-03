@@ -15,6 +15,18 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      # wasmtime and wasmtime-wasi must move together: their major
+      # versions are tightly coupled, and bumping one without the
+      # other produces uncompilable code (e.g. wasmtime 44 with
+      # wasmtime-wasi 43 fails to type-check ResourceTable/Linker).
+      wasmtime:
+        patterns:
+          - "wasmtime"
+          - "wasmtime-*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
     commit-message:
       prefix: "deps"
     labels:
