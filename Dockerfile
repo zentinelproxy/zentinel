@@ -95,7 +95,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot AS proxy
 COPY --from=builder /app/target/release/zentinel /zentinel
 
 # Copy default configuration
-COPY config/docker/default.kdl /etc/zentinel/config.kdl
+COPY config/docker/default.kdl /etc/zentinel/zentinel.kdl
 
 # Labels for container metadata
 LABEL org.opencontainers.image.title="Zentinel" \
@@ -125,12 +125,12 @@ USER nonroot:nonroot
 # Distroless has no shell, so HEALTHCHECK with curl/wget isn't possible.
 # Use one of these approaches:
 # 1. Kubernetes: Configure livenessProbe/readinessProbe with httpGet to /_builtin/health
-# 2. Docker Compose: Use `test: ["CMD", "/zentinel", "test", "-c", "/etc/zentinel/config.kdl"]`
+# 2. Docker Compose: Use `test: ["CMD", "/zentinel", "test", "-c", "/etc/zentinel/zentinel.kdl"]`
 # 3. External monitoring: Poll http://container:8080/_builtin/health
 
 # Zentinel handles SIGTERM/SIGHUP natively via signal_hook - no tini needed
 ENTRYPOINT ["/zentinel"]
-CMD ["-c", "/etc/zentinel/config.kdl"]
+CMD ["-c", "/etc/zentinel/zentinel.kdl"]
 
 ################################################################################
 # Debug image: Alpine with shell for troubleshooting
@@ -148,7 +148,7 @@ RUN apk add --no-cache \
 COPY --from=builder /app/target/release/zentinel /usr/local/bin/zentinel
 
 # Copy default configuration
-COPY config/docker/default.kdl /etc/zentinel/config.kdl
+COPY config/docker/default.kdl /etc/zentinel/zentinel.kdl
 
 # Create directories with correct ownership
 RUN mkdir -p /var/lib/zentinel /var/log/zentinel && \
@@ -167,7 +167,7 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -sf http://localhost:8080/_builtin/health || exit 1
 
 ENTRYPOINT ["/usr/local/bin/zentinel"]
-CMD ["-c", "/etc/zentinel/config.kdl"]
+CMD ["-c", "/etc/zentinel/zentinel.kdl"]
 
 ################################################################################
 # Pre-built binary stage (for CI multi-arch builds)
@@ -185,7 +185,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot AS proxy-prebuilt
 COPY zentinel /zentinel
 
 # Copy default configuration
-COPY config/docker/default.kdl /etc/zentinel/config.kdl
+COPY config/docker/default.kdl /etc/zentinel/zentinel.kdl
 
 LABEL org.opencontainers.image.title="Zentinel" \
       org.opencontainers.image.description="Security-first reverse proxy built on Pingora"
@@ -198,7 +198,7 @@ EXPOSE 8080 8443 9090
 USER nonroot:nonroot
 
 ENTRYPOINT ["/zentinel"]
-CMD ["-c", "/etc/zentinel/config.kdl"]
+CMD ["-c", "/etc/zentinel/zentinel.kdl"]
 
 ################################################################################
 # Echo agent image (for testing agent functionality)

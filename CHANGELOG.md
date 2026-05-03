@@ -44,6 +44,20 @@ for details.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Systemd service bootstrap in the install script.** `curl -fsSL https://get.zentinelproxy.io | sh` now installs `/etc/systemd/system/zentinel.service`, a sysusers snippet at `/usr/lib/sysusers.d/zentinel.conf`, and a starter config at `/etc/zentinel/zentinel.kdl` on Linux hosts running systemd. Service enable and start are opt-in via `--enable-service` (or `ZENTINEL_ENABLE_SERVICE=1`). Resolves discussion #218.
+- **`deploy/zentinel.starter.kdl`** — annotated starter configuration dropped at `/etc/zentinel/zentinel.kdl`. An existing file is preserved on re-install.
+- **`deploy/sysusers.d/zentinel.conf`** — declarative system user, applied via `systemd-sysusers` with a `useradd` fallback.
+- **`crates/proxy/docs/deployment.md`** — systemd deployment reference (file layout, lifecycle, capabilities, sandboxing).
+
+### Changed
+- **`deploy/zentinel.service`** now passes `--config /etc/zentinel/zentinel.kdl` explicitly and grants `AmbientCapabilities=CAP_NET_BIND_SERVICE` so listeners can bind ports below 1024 without root.
+- **Canonical config path renamed `config.kdl` → `zentinel.kdl`.** Aligns the unit file, Dockerfile, `docker-compose.yml`, and `deploy/deploy.sh` with the path already documented in the README. Helm chart still uses `config.kdl` internally; tracked as a follow-up.
+
+---
+
 ## [26.05_1] - 2026-05-01
 
 **Crate version:** 0.6.11

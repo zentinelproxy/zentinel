@@ -182,12 +182,19 @@ install_services() {
 deploy_config() {
     log_info "Deploying configuration..."
 
-    # Deploy main config
-    if [ -f "config/zentinel.kdl" ]; then
-        cp "config/zentinel.kdl" "$CONFIG_DIR/config.kdl"
-        chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_DIR/config.kdl"
-        chmod 644 "$CONFIG_DIR/config.kdl"
+    # Deploy main config (preserve user edits if the target already exists)
+    if [ -f "$CONFIG_DIR/zentinel.kdl" ]; then
+        log_info "Preserving existing $CONFIG_DIR/zentinel.kdl"
+    elif [ -f "config/zentinel.kdl" ]; then
+        cp "config/zentinel.kdl" "$CONFIG_DIR/zentinel.kdl"
+        chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_DIR/zentinel.kdl"
+        chmod 644 "$CONFIG_DIR/zentinel.kdl"
         log_info "Deployed main configuration"
+    elif [ -f "deploy/zentinel.starter.kdl" ]; then
+        cp "deploy/zentinel.starter.kdl" "$CONFIG_DIR/zentinel.kdl"
+        chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_DIR/zentinel.kdl"
+        chmod 644 "$CONFIG_DIR/zentinel.kdl"
+        log_info "Deployed starter configuration"
     else
         log_warn "No configuration file found, using defaults"
     fi
@@ -203,7 +210,7 @@ deploy_config() {
     cat > "$CONFIG_DIR/env" <<EOF
 # Zentinel Proxy Environment Variables
 RUST_LOG=info
-ZENTINEL_CONFIG=$CONFIG_DIR/config.kdl
+ZENTINEL_CONFIG=$CONFIG_DIR/zentinel.kdl
 ZENTINEL_WORKERS=0
 EOF
 
@@ -327,7 +334,7 @@ validate_config() {
     if [ -f "$INSTALL_PREFIX/bin/$PROXY_BIN" ]; then
         "$INSTALL_PREFIX/bin/$PROXY_BIN" \
             --validate \
-            --config "$CONFIG_DIR/config.kdl" || {
+            --config "$CONFIG_DIR/zentinel.kdl" || {
             log_error "Configuration validation failed"
             exit 1
         }

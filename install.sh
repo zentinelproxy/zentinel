@@ -2,15 +2,28 @@
 # Zentinel Install Script
 # Usage: curl -fsSL https://get.zentinelproxy.io | sh
 #
-# This script detects your OS and architecture, downloads the appropriate
-# pre-built binary, and installs it to /usr/local/bin (or ~/.local/bin if
+# Detects your OS and architecture, downloads the appropriate pre-built
+# binary, and installs it to /usr/local/bin (or ~/.local/bin if
 # /usr/local/bin is not writable).
 #
-# After installation, use `zentinel bundle install` to install bundled agents
-# (WAF, rate limiter, denylist). See https://zentinelproxy.io/docs/deployment/bundle/
+# On systemd hosts (when running as root or via sudo) it also installs:
+#   - /etc/systemd/system/zentinel.service
+#   - /usr/lib/sysusers.d/zentinel.conf
+#   - /etc/zentinel/zentinel.kdl  (starter config; preserved if present)
+#
+# Service enable and start are opt-in. Pass --enable-service to enable
+# and start zentinel.service after install. Pass --skip-service to skip
+# all systemd setup.
+#
+# After installation, use `zentinel bundle install` to install bundled
+# agents (WAF, rate limiter, denylist).
+# See https://zentinelproxy.io/docs/deployment/bundle/
 #
 # Options:
-#   --help      Show help message
+#   --help              Show help message
+#   --enable-service    Enable and start zentinel.service after install
+#   --skip-service      Skip systemd unit, sysusers, and starter config
+#   --binary-only       Alias for --skip-service
 
 set -e
 
@@ -19,6 +32,16 @@ REPO="zentinelproxy/zentinel"
 BINARY_NAME="zentinel"
 INSTALL_DIR="/usr/local/bin"
 FALLBACK_DIR="$HOME/.local/bin"
+
+# Systemd / config layout
+SYSTEMD_UNIT_PATH="/etc/systemd/system/zentinel.service"
+SYSUSERS_PATH="/usr/lib/sysusers.d/zentinel.conf"
+CONFIG_DIR="/etc/zentinel"
+CONFIG_FILE="${CONFIG_DIR}/zentinel.kdl"
+
+# Flags
+ENABLE_SERVICE=0
+SKIP_SERVICE=0
 
 # Colors for output
 RED='\033[0;31m'
@@ -236,15 +259,188 @@ check_path() {
     esac
 }
 
+# Run a command as root, using sudo if available and not already root.
+# Returns non-zero if elevation is impossible.
+as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        return 1
+    fi
+}
+
+# Fetch a file from the repo at $version (or main as fallback) into $1.
+# $1 = destination path
+# $2 = repo-relative source path
+fetch_repo_file() {
+    local dest="$1"
+    local src="$2"
+    local version="$3"
+
+    local tag_url="https://raw.githubusercontent.com/${REPO}/${version}/${src}"
+    local main_url="https://raw.githubusercontent.com/${REPO}/main/${src}"
+
+    if curl -fsSL "$tag_url" -o "$dest" 2>/dev/null; then
+        return 0
+    fi
+    if curl -fsSL "$main_url" -o "$dest" 2>/dev/null; then
+        warn "Using ${src} from main branch (release tag ${version} did not include it)"
+        return 0
+    fi
+    return 1
+}
+
+# Set up the systemd unit, sysusers snippet, and starter config.
+# Skips with a clear message when systemd is unavailable, the user is not
+# root and cannot escalate, or --skip-service was passed.
+setup_systemd() {
+    local version="$1"
+    local tmp_dir="$2"
+
+    if [ "$SKIP_SERVICE" = 1 ]; then
+        info "Skipping systemd setup (--skip-service)"
+        return 0
+    fi
+
+    if [ "$(uname -s)" != "Linux" ]; then
+        return 0
+    fi
+
+    if ! command -v systemctl >/dev/null 2>&1; then
+        info "systemd not detected; skipping service setup"
+        return 0
+    fi
+
+    # We need to be able to write to /etc, /usr/lib, and run systemctl.
+    if [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
+        warn "Cannot configure systemd unit (not root and sudo unavailable)"
+        warn "Re-run as root or with sudo to install the zentinel.service unit"
+        return 0
+    fi
+
+    info "Configuring systemd unit and starter config..."
+
+    # Stage files in tmp dir, then copy under sudo in a single batch.
+    local stage_unit="${tmp_dir}/zentinel.service"
+    local stage_sysusers="${tmp_dir}/zentinel.sysusers.conf"
+    local stage_starter="${tmp_dir}/zentinel.starter.kdl"
+
+    if ! fetch_repo_file "$stage_unit" "deploy/zentinel.service" "$version"; then
+        warn "Failed to fetch deploy/zentinel.service; skipping systemd setup"
+        return 0
+    fi
+    if ! fetch_repo_file "$stage_sysusers" "deploy/sysusers.d/zentinel.conf" "$version"; then
+        warn "Failed to fetch deploy/sysusers.d/zentinel.conf; skipping systemd setup"
+        return 0
+    fi
+    if ! fetch_repo_file "$stage_starter" "deploy/zentinel.starter.kdl" "$version"; then
+        warn "Failed to fetch deploy/zentinel.starter.kdl; skipping systemd setup"
+        return 0
+    fi
+
+    if [ "$(id -u)" -ne 0 ]; then
+        info "systemd setup requires administrator privileges; you may be prompted."
+    fi
+
+    # Drop the sysusers snippet, then apply via systemd-sysusers when
+    # available. Verify the user exists afterwards and fall back to useradd
+    # if needed.
+    as_root install -D -m 0644 "$stage_sysusers" "$SYSUSERS_PATH" \
+        || error "Failed to install ${SYSUSERS_PATH}"
+
+    if as_root sh -c 'command -v systemd-sysusers >/dev/null 2>&1'; then
+        as_root systemd-sysusers || warn "systemd-sysusers exited non-zero; will verify user separately"
+    fi
+
+    if ! getent passwd zentinel >/dev/null 2>&1; then
+        info "Creating zentinel system user via useradd..."
+        as_root useradd --system --shell /usr/sbin/nologin \
+            --home-dir /var/lib/zentinel --comment "Zentinel reverse proxy" \
+            zentinel || warn "Failed to create zentinel user; service will not start"
+    fi
+
+    # Install the unit file.
+    as_root install -D -m 0644 "$stage_unit" "$SYSTEMD_UNIT_PATH" \
+        || error "Failed to install ${SYSTEMD_UNIT_PATH}"
+
+    # Install the starter config (preserve any existing edits).
+    as_root install -d -m 0755 "$CONFIG_DIR"
+    if [ -e "$CONFIG_FILE" ]; then
+        info "Preserving existing ${CONFIG_FILE}"
+    else
+        as_root install -m 0644 "$stage_starter" "$CONFIG_FILE" \
+            || error "Failed to install ${CONFIG_FILE}"
+    fi
+
+    # Reload systemd to pick up the new unit.
+    as_root systemctl daemon-reload \
+        || warn "systemctl daemon-reload failed; you may need to reload manually"
+
+    if [ "$ENABLE_SERVICE" = 1 ]; then
+        info "Enabling and starting zentinel.service..."
+        if as_root systemctl enable --now zentinel.service; then
+            success "zentinel.service is active"
+        else
+            warn "Failed to enable/start zentinel.service. Check: journalctl -u zentinel"
+        fi
+    fi
+}
+
+# Print next-step hints once the install is complete.
+print_next_steps() {
+    local final_dir="$1"
+    local version="$2"
+
+    echo ""
+    if [ -e "$SYSTEMD_UNIT_PATH" ]; then
+        if [ "$ENABLE_SERVICE" = 1 ]; then
+            printf "${GREEN}zentinel.service${NC} is enabled and running.\n"
+            printf "  Logs:    ${BLUE}journalctl -u zentinel -f${NC}\n"
+            printf "  Status:  ${BLUE}systemctl status zentinel${NC}\n"
+            printf "  Config:  ${BLUE}%s${NC}\n" "$CONFIG_FILE"
+        else
+            printf "${YELLOW}Next steps${NC} (service is installed but not started):\n"
+            printf "  1. Edit config:   ${BLUE}sudoedit %s${NC}\n" "$CONFIG_FILE"
+            printf "  2. Validate:      ${BLUE}zentinel test --config %s${NC}\n" "$CONFIG_FILE"
+            printf "  3. Enable+start:  ${BLUE}sudo systemctl enable --now zentinel${NC}\n"
+            printf "  4. Tail logs:     ${BLUE}journalctl -u zentinel -f${NC}\n"
+        fi
+    else
+        printf "${YELLOW}Next steps${NC}:\n"
+        printf "  1. Run the proxy:    ${BLUE}zentinel${NC}            # uses embedded default config\n"
+        printf "  2. With your config: ${BLUE}zentinel --config zentinel.kdl${NC}\n"
+        printf "  3. Validate config:  ${BLUE}zentinel test --config zentinel.kdl${NC}\n"
+    fi
+    echo ""
+    printf "Documentation: ${BLUE}https://docs.zentinelproxy.io${NC}\n"
+    printf "GitHub:        ${BLUE}https://github.com/${REPO}${NC}\n"
+    echo ""
+    printf "${YELLOW}Tip:${NC} To install bundled agents (WAF, rate limiter, denylist):\n"
+    printf "     ${GREEN}sudo zentinel bundle install${NC}\n"
+    echo ""
+}
+
 # Show help message
 show_help() {
     cat << EOF
 Zentinel Install Script
 
-Usage: curl -fsSL https://raw.githubusercontent.com/zentinelproxy/zentinel/main/install.sh | sh
+Usage: curl -fsSL https://get.zentinelproxy.io | sh
+       curl -fsSL https://get.zentinelproxy.io | sh -s -- [options]
 
 Options:
-    --help      Show this help message
+    --help              Show this help message
+    --enable-service    Enable and start zentinel.service after install
+                        (also accepts ZENTINEL_ENABLE_SERVICE=1)
+    --skip-service      Skip systemd unit, sysusers, and starter config
+    --binary-only       Alias for --skip-service
+
+Default behavior on systemd hosts:
+    Installs the systemd unit, sysusers snippet, and starter config at
+    /etc/zentinel/zentinel.kdl, but does not enable or start the service.
+    Pass --enable-service for Caddy/Nginx-style auto-start.
 
 After installing Zentinel, you can install bundled agents using:
 
@@ -258,7 +454,7 @@ This downloads and installs:
 See the bundle command documentation:
     https://zentinelproxy.io/docs/deployment/bundle/
 
-For more information: https://zentinelproxy.io/docs
+For more information: https://docs.zentinelproxy.io
 EOF
 }
 
@@ -270,12 +466,23 @@ parse_args() {
                 show_help
                 exit 0
                 ;;
+            --enable-service)
+                ENABLE_SERVICE=1
+                ;;
+            --skip-service|--binary-only)
+                SKIP_SERVICE=1
+                ;;
             *)
                 warn "Unknown option: $1"
                 ;;
         esac
         shift
     done
+
+    # Environment variable opt-in
+    case "${ZENTINEL_ENABLE_SERVICE:-}" in
+        1|true|yes) ENABLE_SERVICE=1 ;;
+    esac
 }
 
 # Main installation
@@ -296,9 +503,6 @@ main() {
     local os=$(detect_os)
     local arch=$(detect_arch)
     info "Detected platform: ${os}-${arch}"
-
-    # Check for unsupported combinations
-    # (all four platform/arch combos are now built in CI)
 
     # Create temporary directory
     local tmp_dir=$(mktemp -d)
@@ -321,7 +525,7 @@ main() {
 
     # Success!
     echo ""
-    success "Zentinel ${version} installed successfully!"
+    success "Zentinel ${version} installed to ${final_dir}/${BINARY_NAME}"
     echo ""
 
     # Check if in PATH
@@ -344,19 +548,12 @@ main() {
     if command -v zentinel >/dev/null 2>&1; then
         info "Verifying installation..."
         zentinel --version 2>/dev/null || true
-    else
-        echo "Run 'zentinel --help' to get started"
     fi
 
-    echo ""
-    printf "Documentation: ${BLUE}https://zentinelproxy.io${NC}\n"
-    printf "GitHub: ${BLUE}https://github.com/${REPO}${NC}\n"
-    echo ""
+    # Optional systemd setup (Linux + systemd only)
+    setup_systemd "$version" "$tmp_dir"
 
-    # Hint about bundled agents
-    printf "${YELLOW}Tip:${NC} To install bundled agents (WAF, rate limiter, denylist):\n"
-    printf "     ${GREEN}sudo zentinel bundle install${NC}\n"
-    echo ""
+    print_next_steps "$final_dir" "$version"
 }
 
 # Run main

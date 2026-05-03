@@ -397,4 +397,16 @@ mod tests {
         assert!(config.routes.iter().any(|r| r.id == "cache-stats"));
         assert!(config.routes.iter().any(|r| r.id == "cache-purge"));
     }
+
+    /// Guard the starter config dropped by the installer at
+    /// /etc/zentinel/zentinel.kdl. Breaking its syntax breaks first-run UX
+    /// for `curl | sh` users, so we parse and validate it in tests.
+    #[test]
+    fn test_starter_config_parses_and_validates() {
+        const STARTER: &str = include_str!("../../../deploy/zentinel.starter.kdl");
+        let config = Config::from_kdl(STARTER).expect("starter config must parse as valid KDL");
+        config
+            .validate()
+            .expect("starter config must pass schema validation");
+    }
 }

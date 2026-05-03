@@ -1,6 +1,6 @@
 [Unit]
 Description=Zentinel Security-First Reverse Proxy
-Documentation=https://github.com/zentinelproxy/zentinel
+Documentation=https://docs.zentinelproxy.io https://github.com/zentinelproxy/zentinel
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60
@@ -8,7 +8,7 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/zentinel
+ExecStart=/usr/local/bin/zentinel --config /etc/zentinel/zentinel.kdl
 ExecReload=/bin/kill -HUP $MAINPID
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
@@ -18,17 +18,19 @@ TimeoutStopSec=30
 KillMode=mixed
 KillSignal=SIGTERM
 
-# User and permissions
+# User and permissions. The system user is declared in
+# /usr/lib/sysusers.d/zentinel.conf and created via systemd-sysusers.
 User=zentinel
 Group=zentinel
 UMask=0077
 
 # Environment
 Environment="RUST_LOG=info"
-Environment="ZENTINEL_CONFIG=/etc/zentinel/config.kdl"
+Environment="ZENTINEL_CONFIG=/etc/zentinel/zentinel.kdl"
 EnvironmentFile=-/etc/zentinel/env
 
-# Working directory
+# Working directory and managed directories.
+# systemd creates and chowns these to User= on each start.
 WorkingDirectory=/var/lib/zentinel
 RuntimeDirectory=zentinel
 RuntimeDirectoryMode=0755
@@ -56,7 +58,6 @@ LockPersonality=true
 ProtectClock=true
 ProtectHostname=true
 ProtectKernelLogs=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
@@ -70,23 +71,19 @@ CPUWeight=100
 MemoryMax=2G
 MemoryHigh=1500M
 
-# IO limits (optional, adjust as needed)
-# IOWeight=100
-# IOReadBandwidthMax=/dev/sda 100M
-# IOWriteBandwidthMax=/dev/sda 50M
-
-# Network
-# Uncomment to bind to specific capabilities
-# AmbientCapabilities=CAP_NET_BIND_SERVICE
-# CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# Network capabilities.
+# CAP_NET_BIND_SERVICE lets the proxy bind to ports < 1024 (e.g. 80, 443)
+# without running as root. Edit listener addresses in /etc/zentinel/zentinel.kdl
+# to use them.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 # Logging
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=zentinel
 
-# Process management
-# Set OOM score to avoid being killed
+# OOM behavior: stay alive when the host is under memory pressure.
 OOMScoreAdjust=-500
 
 # Watchdog (optional, requires implementation in proxy)

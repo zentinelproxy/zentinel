@@ -12,13 +12,13 @@ services:
       - "8443:8443"   # HTTPS
       - "9090:9090"   # Health/Metrics
     volumes:
-      - ./config/docker/proxy.kdl:/etc/zentinel/config.kdl:ro
+      - ./config/docker/proxy.kdl:/etc/zentinel/zentinel.kdl:ro
       - proxy-data:/var/lib/zentinel
       - proxy-logs:/var/log/zentinel
       - agent-sockets:/var/run/zentinel
     environment:
       RUST_LOG: info,zentinel_proxy=debug
-      ZENTINEL_CONFIG: /etc/zentinel/config.kdl
+      ZENTINEL_CONFIG: /etc/zentinel/zentinel.kdl
     networks:
       - zentinel
     depends_on:

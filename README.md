@@ -50,8 +50,11 @@ Production-ready core (proxy, routing, TLS, caching, load balancing). Agents are
 ## Quick Start
 
 ```bash
-# Install
+# Install (binary only)
 curl -fsSL https://get.zentinelproxy.io | sh
+
+# Install and start as a systemd service (Linux, root or sudo)
+curl -fsSL https://get.zentinelproxy.io | sh -s -- --enable-service
 
 # Or via Cargo
 cargo install zentinel-proxy
@@ -60,6 +63,8 @@ cargo install zentinel-proxy
 docker run -v $(pwd)/zentinel.kdl:/etc/zentinel/zentinel.kdl \
   ghcr.io/zentinelproxy/zentinel --config /etc/zentinel/zentinel.kdl
 ```
+
+On systemd hosts the install script also drops `/etc/systemd/system/zentinel.service`, a sysusers snippet, and a starter config at `/etc/zentinel/zentinel.kdl`. Service enable and start are opt-in via `--enable-service`. See [`crates/proxy/docs/deployment.md`](crates/proxy/docs/deployment.md).
 
 Save this as `zentinel.kdl` — it proxies `localhost:8080` to a backend on port `8081`:
 

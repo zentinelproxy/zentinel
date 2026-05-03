@@ -10,7 +10,7 @@ services:
   proxy:
     environment:
       RUST_LOG: debug,zentinel_proxy=trace
-      ZENTINEL_CONFIG: /etc/zentinel/config.kdl
+      ZENTINEL_CONFIG: /etc/zentinel/zentinel.kdl
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 5s
