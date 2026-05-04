@@ -3,13 +3,13 @@
 //! Verifies that TXT records have propagated to authoritative nameservers
 //! before notifying the ACME server.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
-use hickory_resolver::name_server::TokioConnectionProvider;
-use hickory_resolver::proto::xfer::Protocol;
-use hickory_resolver::{Resolver, TokioResolver};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::proto::rr::RData;
+use hickory_resolver::TokioResolver;
 use tokio::time::Instant;
 use tracing::{debug, trace, warn};
 
@@ -70,12 +70,9 @@ impl PropagationChecker {
         let resolver_config = if config.nameservers.is_empty() {
             ResolverConfig::default()
         } else {
-            let mut resolver_config = ResolverConfig::new();
+            let mut resolver_config = ResolverConfig::from_parts(None, vec![], vec![]);
             for ip in &config.nameservers {
-                resolver_config.add_name_server(NameServerConfig::new(
-                    SocketAddr::new(*ip, 53),
-                    Protocol::Udp,
-                ));
+                resolver_config.add_name_server(NameServerConfig::udp(*ip));
             }
             resolver_config
         };
@@ -85,12 +82,10 @@ impl PropagationChecker {
         opts.attempts = 3;
         opts.cache_size = 0; // Disable caching for propagation checks
 
-        // hickory-resolver 0.25 uses builder pattern
-        let resolver =
-            Resolver::builder_with_config(resolver_config, TokioConnectionProvider::default())
-                .with_options(opts)
-                .build();
-        Ok(resolver)
+        TokioResolver::builder_with_config(resolver_config, TokioRuntimeProvider::default())
+            .with_options(opts)
+            .build()
+            .map_err(|e| DnsProviderError::Configuration(format!("DNS resolver build failed: {e}")))
     }
 
     /// Wait for a TXT record to propagate
@@ -161,10 +156,14 @@ impl PropagationChecker {
 
         match lookup {
             Ok(records) => {
-                for record in records.iter() {
+                for record in records.answers() {
+                    let RData::TXT(txt) = &record.data else {
+                        continue;
+                    };
+
                     // TXT records can have multiple strings, join them
-                    let value: String = record
-                        .txt_data()
+                    let value: String = txt
+                        .txt_data
                         .iter()
                         .map(|data| String::from_utf8_lossy(data))
                         .collect();
