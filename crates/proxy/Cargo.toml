@@ -165,7 +165,7 @@ instant-acme = "0.8"
 rcgen = "0.14"
 
 # DNS resolution for DNS-01 challenge propagation checking
-hickory-resolver = "0.25"
+hickory-resolver = "0.26"
 
 [features]
 default = []
