@@ -47,6 +47,33 @@ Zentinel is a high-performance reverse proxy built on [Cloudflare Pingora](https
 
 Production-ready core (proxy, routing, TLS, caching, load balancing). Agents are individually versioned — WAF, Auth, and AI Gateway are stable; others are beta or alpha. See [zentinelproxy.io/agents](https://zentinelproxy.io/agents/) for per-agent status.
 
+## Request Flow
+
+```
+   ┌────────┐                                       ┌──────────┐
+   │ Client │                                       │ Upstream │
+   └────┬───┘                                       └─────▲────┘
+        │                                                 │
+        ▼                                                 │
+   ╔═══════════ Zentinel (core, single binary) ══════════╤════╗
+   ║                                                     │    ║
+   ║  Listener ─▶ Routing ─▶ Filter chain ─▶ Forward ────┘    ║
+   ║  TLS, H2     priority   rate-limit,     LB,              ║
+   ║              + LRU      cache, hooks    retries          ║
+   ║                              │                           ║
+   ╚══════════════════════════════╪═══════════════════════════╝
+                                  │ UDS / gRPC (v2 agent protocol)
+                                  ▼
+          ╔═══════ External agents (separate processes) ═══════╗
+          ║   WAF · Auth · Rate-limit · …                      ║
+          ║   crash-isolated, any language                     ║
+          ╚════════════════════════════════════════════════════╝
+```
+
+> *Response retraces the filter chain back to the Client. Access logs and metrics emit at completion.*
+
+The dataplane runs as a single binary. Security and policy logic that is parsing-heavy or operationally risky lives in **external agents** behind UDS or gRPC, so a buggy agent cannot take the proxy down with it. See the [Manifesto](MANIFESTO.md) for the reasoning, and [`crates/proxy/docs/architecture.md`](crates/proxy/docs/architecture.md) for the per-phase details.
+
 ## Quick Start
 
 ```bash
