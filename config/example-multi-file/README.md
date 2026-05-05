@@ -83,7 +83,7 @@ The main file contains global settings and defaults:
 
 ```kdl
 // zentinel.kdl - Core server configuration
-server {
+system {
     worker-threads 4
     graceful-shutdown-timeout "30s"
 }
@@ -189,7 +189,7 @@ Production-specific settings that override defaults:
 // environments/production.kdl
 // These settings override base configuration when --environment=production
 
-server {
+system {
     worker-threads 16  // More workers for production
 }
 

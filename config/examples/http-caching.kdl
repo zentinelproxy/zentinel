@@ -3,7 +3,7 @@
 // This example demonstrates how to configure HTTP response caching
 // with different storage backends (memory, disk, hybrid).
 
-server {
+system {
     worker-threads 4
     max-connections 10000
 }

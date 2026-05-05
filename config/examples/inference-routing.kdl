@@ -3,7 +3,7 @@
 // This example demonstrates how to configure Zentinel for LLM/AI inference
 // endpoints with token-based rate limiting, model routing, and cost tracking.
 
-server {
+system {
     worker-threads 4
     max-connections 5000
     graceful-shutdown-timeout-secs 30

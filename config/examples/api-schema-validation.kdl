@@ -7,7 +7,7 @@
 //  - Inline JSON schema definitions (request-schema/response-schema)
 
 // Server Configuration
-server {
+system {
     workers 4
     daemon #false
 }
