@@ -18,7 +18,7 @@ pub const DEFAULT_CONFIG_KDL: &str = r#"
 // Configuration schema version - used for compatibility checking
 schema-version "1.0"
 
-server {
+system {
     worker-threads 0  // Auto-detect CPU cores
     max-connections 10000
     graceful-shutdown-timeout-secs 30
