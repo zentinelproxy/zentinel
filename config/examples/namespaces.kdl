@@ -7,7 +7,7 @@
 // - Resource exports for sharing across namespaces
 // - Hierarchical scope resolution (service → namespace → global)
 
-server {
+system {
     worker-threads 4
     max-connections 20000
 }

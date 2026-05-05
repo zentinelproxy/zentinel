@@ -3,7 +3,7 @@
 // This example demonstrates how to configure semantic guardrails for
 // LLM/AI endpoints including prompt injection detection and PII protection.
 
-server {
+system {
     worker-threads 4
     max-connections 5000
 }

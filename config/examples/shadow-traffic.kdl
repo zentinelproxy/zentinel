@@ -6,7 +6,7 @@
 // - Load testing without affecting production
 // - Debugging and comparison testing
 
-server {
+system {
     worker-threads 4
     max-connections 10000
 }
