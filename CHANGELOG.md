@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.05_3](#26053---2026-05-05) | 0.6.13 | 2026-05-05 | Embedded and bundled KDL configs use `system` block; ACME hickory-resolver 0.26 fix |
 | [26.05_2](#26052---2026-05-03) | 0.6.12 | 2026-05-03 | Install script provisions systemd unit, system user, and starter config |
 | [26.05_1](#26051---2026-05-01) | 0.6.11 | 2026-05-01 | Per-SNI ACME certificates for multi-tenant TLS, dependency updates |
 | [26.04_7](#26047---2026-04-28) | 0.6.10 | 2026-04-28 | Security: rand fix in `zentinel-sim` |
@@ -42,6 +43,23 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.05_3] - 2026-05-05
+
+**Crate version:** 0.6.13
+
+### Fixed
+- **Embedded `DEFAULT_CONFIG_KDL` no longer emits a deprecation warning on first run.** The fallback configuration baked into the binary still declared a `server { ... }` block, which the parser accepts but warns against. Switched to `system { ... }` so fresh Docker containers and binaries with no external config file start cleanly. Resolves #231. (#232)
+- **ACME DNS propagation checker** adapted to the `hickory-resolver` 0.26 API, restoring DNS-01 challenge verification after the upstream major bump. (#229)
+
+### Changed
+- **Bump `hickory-resolver` 0.25.2 → 0.26.1.** (#228)
+- **Bundled KDL configurations use `system` block.** Sweeps the deprecated `server { ... }` keyword in `deploy/zentinel.starter.kdl` (the installer drop-in at `/etc/zentinel/zentinel.kdl`), the eight `config/examples/*.kdl` files, and `config/example-multi-file/README.md` so users copying or following these examples no longer hit the deprecation warning. Pure keyword rename — fields inside the block are unchanged and the parser still accepts both. Resolves #233. (#234)
+
+### Docs
+- **README request-flow diagram** added between the Status and Quick Start sections to illustrate how a request traverses the proxy. (#230)
 
 ---
 
