@@ -138,7 +138,7 @@ async-memcached = { version = "0.6", optional = true }
 opentelemetry = { version = "0.31", optional = true }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"], optional = true }
-opentelemetry-semantic-conventions = { version = "0.31", optional = true }
+opentelemetry-semantic-conventions = { version = "0.32", optional = true }
 
 # Hashing
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
