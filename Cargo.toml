@@ -42,7 +42,7 @@ pingora-memory-cache = { version = "0.8.0", git = "https://github.com/zentinelpr
 
 # Async runtime
 # Minimal feature set for proxy workloads (trimmed from "full" for smaller binary)
-tokio = { version = "1.51", features = [
+tokio = { version = "1.52", features = [
     "rt-multi-thread",  # Multi-threaded runtime
     "net",              # TCP/UDP networking
     "io-util",          # AsyncRead/AsyncWrite utilities
