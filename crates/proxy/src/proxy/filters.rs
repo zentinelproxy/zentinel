@@ -36,18 +36,14 @@ pub async fn apply_request_filters(
         };
 
         match &filter_config.filter {
-            Filter::Redirect(redirect) => {
-                if apply_redirect(session, ctx, redirect).await? {
-                    return Ok(true); // Redirect sent, short-circuit
-                }
+            Filter::Redirect(redirect) if apply_redirect(session, ctx, redirect).await? => {
+                return Ok(true); // Redirect sent, short-circuit
             }
             Filter::UrlRewrite(rewrite) => {
                 apply_url_rewrite(session, ctx, rewrite);
             }
-            Filter::Cors(cors) => {
-                if apply_cors_preflight(session, ctx, cors).await? {
-                    return Ok(true); // Preflight handled, short-circuit
-                }
+            Filter::Cors(cors) if apply_cors_preflight(session, ctx, cors).await? => {
+                return Ok(true); // Preflight handled, short-circuit
             }
             Filter::Timeout(timeout) => {
                 apply_timeout_override(ctx, timeout);

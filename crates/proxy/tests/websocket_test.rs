@@ -87,6 +87,8 @@ async fn handle_connection(stream: TcpStream) {
         match msg_result {
             Ok(msg) => {
                 // Echo back non-close messages
+                #[allow(clippy::collapsible_match)]
+                // collapsed form moves bound values consumed in arm body
                 match msg {
                     Message::Text(_) | Message::Binary(_) => {
                         if write.send(msg).await.is_err() {

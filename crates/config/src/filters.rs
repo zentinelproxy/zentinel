@@ -183,15 +183,11 @@ impl Filter {
     /// Validate the filter configuration
     pub fn validate(&self, available_agents: &[String]) -> Result<(), String> {
         match self {
-            Filter::RateLimit(r) => {
-                if r.max_rps == 0 {
-                    return Err("rate-limit max-rps must be > 0".into());
-                }
+            Filter::RateLimit(r) if r.max_rps == 0 => {
+                return Err("rate-limit max-rps must be > 0".into());
             }
-            Filter::Compress(c) => {
-                if c.algorithms.is_empty() {
-                    return Err("compress filter requires at least one algorithm".into());
-                }
+            Filter::Compress(c) if c.algorithms.is_empty() => {
+                return Err("compress filter requires at least one algorithm".into());
             }
             Filter::Geo(g) => {
                 if g.database_path.is_empty() {
@@ -207,13 +203,11 @@ impl Filter {
                     }
                 }
             }
-            Filter::Agent(a) => {
-                if !available_agents.contains(&a.agent) {
-                    return Err(format!(
-                        "agent filter references unknown agent '{}'. Available: {:?}",
-                        a.agent, available_agents
-                    ));
-                }
+            Filter::Agent(a) if !available_agents.contains(&a.agent) => {
+                return Err(format!(
+                    "agent filter references unknown agent '{}'. Available: {:?}",
+                    a.agent, available_agents
+                ));
             }
             _ => {}
         }

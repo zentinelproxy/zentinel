@@ -1,7 +1,7 @@
 # Rust Coding Standards
 
-> Minimum Rust version: **1.94.0** (Edition 2021)
-> Last updated: 2026-01-13
+> Minimum Rust version: **1.95.0** (Edition 2021)
+> Last updated: 2026-05-12
 
 These standards apply to all Rust code in Zentinel. They enforce the [Manifesto](../../MANIFESTO.md) principles of **explicit behavior**, **bounded resources**, and **production correctness**.
 
@@ -507,6 +507,7 @@ let handler = async |request: Request| {
 
 | Date | Rust Version | Changes |
 |------|--------------|---------|
+| 2026-05-12 | 1.95.0 | Bumped toolchain to unblock sysinfo 0.39 (requires 1.95) |
 | 2026-03-06 | 1.94.0 | Bumped toolchain; added array_windows, LazyLock::get |
 | 2026-01-13 | 1.92.0 | Integrated with Zentinel rules structure |
 | 2026-01-10 | 1.92.0 | Initial standards, added div_ceil, or_default, RwLock::downgrade |
