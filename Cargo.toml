@@ -20,13 +20,13 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.6.13"
+version = "0.6.14"
 edition = "2021"
 authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zentinelproxy/zentinel"
 homepage = "https://github.com/zentinelproxy/zentinel"
-rust-version = "1.94.1"
+rust-version = "1.95.0"
 
 [workspace.dependencies]
 # Core dependencies (using our fork with security fixes, rebased on 0.8.0)

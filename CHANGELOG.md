@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.05_4](#26054---2026-05-12) | 0.6.14 | 2026-05-12 | Dependency maintenance: OpenTelemetry 0.32, sysinfo 0.39, Rust toolchain 1.95 |
 | [26.05_3](#26053---2026-05-05) | 0.6.13 | 2026-05-05 | Embedded and bundled KDL configs use `system` block; ACME hickory-resolver 0.26 fix |
 | [26.05_2](#26052---2026-05-03) | 0.6.12 | 2026-05-03 | Install script provisions systemd unit, system user, and starter config |
 | [26.05_1](#26051---2026-05-01) | 0.6.11 | 2026-05-01 | Per-SNI ACME certificates for multi-tenant TLS, dependency updates |
@@ -43,6 +44,20 @@ for details.
 | [26.01_0](#26010---2026-01-01) | 0.2.0 | 2026-01-01 | First CalVer release |
 | [25.12](#2512) | 0.1.x | 2025-12 | Initial public releases |
 | [24.12](#2412) | 0.1.0 | 2024-12 | Initial development |
+
+---
+
+## [26.05_4] - 2026-05-12
+
+**Crate version:** 0.6.14
+
+### Changed
+- **Bump `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` 0.31 → 0.32** as a coordinated stack. Bumping individually leaves the workspace with two versions of `opentelemetry` in the dependency graph, breaking trait resolution at the proxy boundary. (#244, supersedes #238 #239 #241)
+- **Bump `opentelemetry-semantic-conventions` 0.31 → 0.32.** (#240)
+- **Bump `sysinfo` 0.38.4 → 0.39.1.** Requires `rustc >= 1.95`, paired with the toolchain bump below. (#246, supersedes #242)
+- **Bump Rust toolchain 1.94.1 → 1.95.0** in `rust-toolchain.toml` and the workspace `rust-version`. Fixes three new `collapsible_match` lints surfaced by Clippy 1.95 in `crates/config/src/filters.rs` and `crates/proxy/src/proxy/filters.rs`. (#246)
+- **Bump `openssl` 0.10.78 → 0.10.79.** (#236)
+- **Bump rust-minor group.** Two batches of patch/minor bumps from the `rust-minor` Dependabot group. (#237, #245)
 
 ---
 
