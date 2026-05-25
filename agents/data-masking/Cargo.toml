@@ -41,7 +41,7 @@ regex = "1.11"
 sha2 = "0.11"
 
 # Token storage
-dashmap = "6.1"
+dashmap = "6.2"
 uuid = { version = "1.23", features = ["v4", "serde"] }
 
 # Base64 encoding for body chunks
