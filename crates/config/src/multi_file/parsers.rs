@@ -5,7 +5,6 @@
 
 use anyhow::{anyhow, Result};
 use kdl::KdlNode;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use zentinel_common::TraceIdFormat;
@@ -183,42 +182,8 @@ pub(super) fn parse_route(node: &KdlNode) -> Result<RouteConfig> {
 pub(super) fn parse_upstream(node: &KdlNode) -> Result<(String, UpstreamConfig)> {
     let name = get_first_arg_string(node).ok_or_else(|| anyhow!("Upstream requires a name"))?;
 
-    let mut targets = Vec::new();
-
-    // Parse targets from children
-    if let Some(children) = node.children() {
-        if let Some(targets_node) = children.get("targets") {
-            if let Some(target_children) = targets_node.children() {
-                for target_node in target_children.nodes() {
-                    if target_node.name().value() == "target" {
-                        let address = get_string_entry(target_node, "address")
-                            .unwrap_or_else(|| "127.0.0.1:8080".to_string());
-                        let weight = get_int_entry(target_node, "weight")
-                            .map(|v| v as u32)
-                            .unwrap_or(1);
-                        targets.push(crate::UpstreamTarget {
-                            address,
-                            weight,
-                            max_requests: None,
-                            metadata: HashMap::new(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // If no targets defined, use address from node directly
-    if targets.is_empty() {
-        if let Some(address) = get_string_entry(node, "address") {
-            targets.push(crate::UpstreamTarget {
-                address,
-                weight: 1,
-                max_requests: None,
-                metadata: HashMap::new(),
-            });
-        }
-    }
+    // Shared with the single-file parser so both accept the same target syntax.
+    let targets = crate::kdl::parse_upstream_targets(node);
 
     Ok((
         name.clone(),
@@ -587,4 +552,44 @@ fn parse_exports(node: &KdlNode) -> Result<ExportConfig> {
     }
 
     Ok(exports)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upstream_from(kdl: &str) -> UpstreamConfig {
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+        parse_upstream(node).unwrap().1
+    }
+
+    #[test]
+    fn multi_file_accepts_target_shorthand() {
+        // Previously the multi-file parser only accepted the `targets { ... }`
+        // block form; the `target "addr"` shorthand now works too, matching the
+        // single-file parser (zentinelproxy/zentinel#254).
+        let u = upstream_from(r#"upstream "b" { target "127.0.0.1:8081" weight=2 }"#);
+        assert_eq!(u.targets.len(), 1);
+        assert_eq!(u.targets[0].address, "127.0.0.1:8081");
+        assert_eq!(u.targets[0].weight, 2);
+    }
+
+    #[test]
+    fn multi_file_accepts_targets_block() {
+        let u = upstream_from(
+            r#"
+            upstream "b" {
+                targets {
+                    target { address "127.0.0.1:3000"; weight 3 }
+                    target "127.0.0.1:3001"
+                }
+            }
+            "#,
+        );
+        assert_eq!(u.targets.len(), 2);
+        assert_eq!(u.targets[0].address, "127.0.0.1:3000");
+        assert_eq!(u.targets[0].weight, 3);
+        assert_eq!(u.targets[1].address, "127.0.0.1:3001");
+    }
 }

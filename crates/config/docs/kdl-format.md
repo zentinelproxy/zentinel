@@ -346,6 +346,38 @@ upstreams {
 }
 ```
 
+#### Target syntax
+
+Targets accept several equivalent forms — use whichever reads best. The
+shorthand (`target "host:port"`) is recommended:
+
+```kdl
+upstream "backend" {
+    // Shorthand: address as the first argument (recommended)
+    target "127.0.0.1:8081"
+    target "127.0.0.1:8082" weight=2
+
+    // Block form: address (and weight) as child nodes
+    target { address "127.0.0.1:8083"; weight 3 }
+
+    // Property form
+    target address="127.0.0.1:8084" weight=4
+
+    // Optional `targets { ... }` wrapper around any of the above
+    targets {
+        target "127.0.0.1:8085"
+    }
+}
+
+// Single-target shorthand on the upstream itself
+upstream "single" {
+    address "127.0.0.1:8086"
+}
+```
+
+All forms are accepted identically whether the config is a single file or
+split across multiple files.
+
 ### Filters Block
 
 ```kdl

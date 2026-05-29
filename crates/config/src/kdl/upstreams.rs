@@ -9,7 +9,7 @@ use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 
 use crate::upstreams::*;
 
-use super::helpers::{get_first_arg_string, get_int_entry};
+use super::helpers::{get_first_arg_string, get_int_entry, parse_upstream_targets};
 
 /// Parse upstreams configuration block
 pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamConfig>> {
@@ -27,37 +27,9 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
 
                 trace!(upstream_id = %id, "Parsing upstream");
 
-                // Parse targets
-                let mut targets = Vec::new();
-                if let Some(upstream_children) = child.children() {
-                    for target_node in upstream_children.nodes() {
-                        if target_node.name().value() == "target" {
-                            if let Some(address) = get_first_arg_string(target_node) {
-                                let weight = target_node
-                                    .entries()
-                                    .iter()
-                                    .find(|e| e.name().map(|n| n.value()) == Some("weight"))
-                                    .and_then(|e| e.value().as_integer())
-                                    .map(|v| v as u32)
-                                    .unwrap_or(1);
-
-                                trace!(
-                                    upstream_id = %id,
-                                    address = %address,
-                                    weight = weight,
-                                    "Parsed target"
-                                );
-
-                                targets.push(UpstreamTarget {
-                                    address,
-                                    weight,
-                                    max_requests: None,
-                                    metadata: HashMap::new(),
-                                });
-                            }
-                        }
-                    }
-                }
+                // Parse targets (accepts every supported syntax; see
+                // `parse_upstream_targets`).
+                let targets = parse_upstream_targets(child);
 
                 if targets.is_empty() {
                     return Err(anyhow::anyhow!(
@@ -724,6 +696,87 @@ mod tests {
         let doc: kdl::KdlDocument = input.parse().unwrap();
         let node = doc.nodes().first().unwrap();
         parse_upstreams(node)
+    }
+
+    fn targets_of(kdl: &str, id: &str) -> Vec<UpstreamTarget> {
+        parse_kdl_upstreams(kdl)
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .targets
+            .clone()
+    }
+
+    #[test]
+    fn test_target_shorthand_first_arg() {
+        let t = targets_of(
+            r#"upstreams { upstream "b" { target "127.0.0.1:8081" weight=2 } }"#,
+            "b",
+        );
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].address, "127.0.0.1:8081");
+        assert_eq!(t[0].weight, 2);
+    }
+
+    #[test]
+    fn test_target_block_form_inside_targets() {
+        // The form the quickstart docs showed — previously rejected by the
+        // single-file parser (zentinelproxy/zentinel#254).
+        let t = targets_of(
+            r#"
+            upstreams {
+                upstream "b" {
+                    targets {
+                        target { address "127.0.0.1:3000"; weight 3 }
+                        target { address "127.0.0.1:3001" }
+                    }
+                }
+            }
+            "#,
+            "b",
+        );
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].address, "127.0.0.1:3000");
+        assert_eq!(t[0].weight, 3);
+        assert_eq!(t[1].address, "127.0.0.1:3001");
+        assert_eq!(t[1].weight, 1);
+    }
+
+    #[test]
+    fn test_target_block_form_without_wrapper() {
+        let t = targets_of(
+            r#"upstreams { upstream "b" { target { address "10.0.0.1:80" } } }"#,
+            "b",
+        );
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].address, "10.0.0.1:80");
+    }
+
+    #[test]
+    fn test_target_address_property_form() {
+        let t = targets_of(
+            r#"upstreams { upstream "b" { target address="10.0.0.1:80" weight=5 } }"#,
+            "b",
+        );
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].address, "10.0.0.1:80");
+        assert_eq!(t[0].weight, 5);
+    }
+
+    #[test]
+    fn test_upstream_address_shorthand() {
+        let t = targets_of(
+            r#"upstreams { upstream "b" { address "10.0.0.1:80" } }"#,
+            "b",
+        );
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].address, "10.0.0.1:80");
+    }
+
+    #[test]
+    fn test_upstream_no_target_errors() {
+        let err = parse_kdl_upstreams(r#"upstreams { upstream "b" { } }"#).unwrap_err();
+        assert!(err.to_string().contains("at least one target"));
     }
 
     #[test]

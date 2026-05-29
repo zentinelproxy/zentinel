@@ -1869,9 +1869,6 @@ mod tests {
         // max_concurrent_streams (unwired — Pingora H2 per-listener config)
         config.listeners[0].max_concurrent_streams = 200; // non-default → produces warning
 
-        // Metrics address (unwired — no dedicated HTTP server yet)
-        config.observability.metrics.address = "0.0.0.0:9191".to_string(); // non-default → warning
-
         // Logging file (unwired — goes to stdout/stderr)
         config.observability.logging.file = Some("/var/log/zentinel/app.log".into());
 
@@ -1894,7 +1891,6 @@ mod tests {
             "min_version",
             "max_version",
             "max_concurrent_streams",
-            "Metrics endpoint address",
             "logging.file",
             "Logging level",
         ];

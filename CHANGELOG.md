@@ -54,6 +54,7 @@ for details.
 
 ### Fixed
 - **Default Docker image starts cleanly as a non-root user.** The distroless `proxy` and `proxy-prebuilt` images now ship `/var/log/zentinel` and `/var/lib/zentinel` owned by uid/gid 65532, and the bundled container config logs to stdout/stderr rather than a file. Previously the default config failed to initialize file logging under `/var/log/zentinel` (not writable by the non-root user), and a `tmpfs` mount did not resolve it. (#255)
+- **Upstream `target` syntax is now identical across single-file and multi-file configs.** The two KDL parsers previously accepted *disjoint* target syntaxes — the single-file parser only took the `target "host:port"` shorthand while the multi-file parser only took the `targets { target { address … } }` block form — so a config copied between layouts (or from the docs) could fail with "requires at least one target". A single shared parser now accepts the shorthand, block form, property form, the `targets { … }` wrapper, and the top-level `address` shorthand in both. This was the root cause behind #254. (#254)
 
 ---
 
