@@ -83,11 +83,7 @@ async fn handle_connection(
     let request = String::from_utf8_lossy(&buf[..n]);
 
     // Parse the request line: "GET /metrics?foo=bar HTTP/1.1"
-    let mut request_line = request
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace();
+    let mut request_line = request.lines().next().unwrap_or("").split_whitespace();
     let _method = request_line.next().unwrap_or("");
     let raw_target = request_line.next().unwrap_or("/");
     let req_path = raw_target.split('?').next().unwrap_or(raw_target);
