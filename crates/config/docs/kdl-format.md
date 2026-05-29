@@ -196,8 +196,51 @@ listeners {
         protocol "h2"
         max-concurrent-streams 100
     }
+
+    // Internal listener that serves a *separate* route set: requests here are
+    // matched only against the "ops" namespace's routes, never the global ones.
+    listener "admin" {
+        address "127.0.0.1:9000"
+        protocol "http"
+        namespace "ops"
+    }
 }
 ```
+
+#### Per-listener route sets
+
+By default every listener serves the global top-level `routes`. Set `namespace`
+on a listener to make it serve **only** that namespace's routes in isolation
+(no fallback to the global set) — useful for exposing an admin/metrics surface
+on a separate, internal port:
+
+```kdl
+listeners {
+    // Serves the global routes (default)
+    listener "public" {
+        address "0.0.0.0:8080"
+    }
+    // Serves only the "ops" namespace's routes
+    listener "admin" {
+        address "127.0.0.1:9000"
+        namespace "ops"
+    }
+}
+
+namespace "ops" {
+    routes {
+        route "metrics" {
+            matches { path "/metrics" }
+            service-type "builtin"
+            builtin-handler "metrics"
+        }
+    }
+}
+```
+
+A request on `127.0.0.1:9000` matches only `ops` routes; a request on `:8080`
+matches only the global `routes`. The referenced namespace must exist or
+configuration validation fails.
 
 ### Routes Block
 

@@ -243,6 +243,7 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
         protocol,
         tls,
         default_route: get_string_entry(node, "default-route"),
+        namespace: get_string_entry(node, "namespace"),
         request_timeout_secs: get_int_entry(node, "request-timeout-secs")
             .map(|v| v as u64)
             .unwrap_or(60),

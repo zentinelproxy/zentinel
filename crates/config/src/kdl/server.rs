@@ -119,6 +119,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                     protocol,
                     tls,
                     default_route: get_string_entry(child, "default-route"),
+                    namespace: get_string_entry(child, "namespace"),
                     request_timeout_secs: get_int_entry(child, "request-timeout-secs")
                         .map(|v| v as u64)
                         .unwrap_or_else(default_request_timeout),
@@ -723,5 +724,40 @@ fn parse_tls_version(s: &str) -> TlsVersion {
         "1.3" | "tls1.3" | "tlsv1.3" => TlsVersion::Tls13,
         // All other values default to TLS 1.2
         _ => TlsVersion::Tls12,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(input: &str) -> Vec<ListenerConfig> {
+        let doc: kdl::KdlDocument = input.parse().unwrap();
+        let node = doc.nodes().first().unwrap();
+        parse_listeners(node).unwrap()
+    }
+
+    #[test]
+    fn parses_listener_namespace_reference() {
+        let listeners = parse(
+            r#"
+            listeners {
+                listener "public" {
+                    address "0.0.0.0:8080"
+                }
+                listener "admin" {
+                    address "127.0.0.1:9000"
+                    namespace "ops"
+                }
+            }
+            "#,
+        );
+
+        let public = listeners.iter().find(|l| l.id == "public").unwrap();
+        let admin = listeners.iter().find(|l| l.id == "admin").unwrap();
+
+        assert_eq!(public.namespace, None);
+        assert_eq!(admin.namespace, Some("ops".to_string()));
+        assert_eq!(admin.address, "127.0.0.1:9000");
     }
 }

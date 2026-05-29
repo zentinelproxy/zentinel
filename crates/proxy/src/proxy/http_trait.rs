@@ -43,6 +43,25 @@ impl HeaderAccessor for NoHeaderAccessor {
     }
 }
 
+impl ZentinelProxy {
+    /// Route matcher for the listener a request arrived on.
+    ///
+    /// Returns `Some` only when the arrival listener is bound to a namespace
+    /// route set; that matcher serves the namespace's routes in isolation.
+    /// Returns `None` for ordinary listeners, which use the global matcher.
+    fn listener_matcher_for(
+        &self,
+        session: &Session,
+    ) -> Option<std::sync::Arc<crate::routing::RouteMatcher>> {
+        let matchers = self.listener_matchers.read();
+        if matchers.is_empty() {
+            return None;
+        }
+        let addr = session.downstream_session.server_addr()?.to_string();
+        matchers.get(&addr).cloned()
+    }
+}
+
 #[async_trait]
 impl ProxyHttp for ZentinelProxy {
     type CTX = RequestContext;
@@ -130,18 +149,31 @@ impl ProxyHttp for ZentinelProxy {
         ctx.path = path.to_string();
         ctx.host = Some(host.to_string());
 
+        // Select the matcher for the listener this request arrived on. A
+        // namespace-bound listener matches only its own route set (isolated);
+        // every other listener uses the global matcher.
+        let listener_matcher = self.listener_matcher_for(session);
+
         // Match route to determine service type
         let route_match = {
-            let route_matcher = self.route_matcher.read();
             let mut request_info = RequestInfo::new(method, path, host);
+            let matched = if let Some(ref matcher) = listener_matcher {
+                // Include headers for header-based route matching (Gateway API)
+                if matcher.needs_headers() {
+                    request_info = request_info
+                        .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
+                }
+                matcher.match_request(&request_info)
+            } else {
+                let route_matcher = self.route_matcher.read();
+                if route_matcher.needs_headers() {
+                    request_info = request_info
+                        .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
+                }
+                route_matcher.match_request(&request_info)
+            };
 
-            // Include headers for header-based route matching (Gateway API)
-            if route_matcher.needs_headers() {
-                request_info = request_info
-                    .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
-            }
-
-            match route_matcher.match_request(&request_info) {
+            match matched {
                 Some(m) => m,
                 None => return Ok(()), // No matching route, let upstream_peer handle it
             }
@@ -244,36 +276,43 @@ impl ProxyHttp for ZentinelProxy {
                 config: route_config.clone(),
             }
         } else {
-            // Match route using sync RwLock (scoped to ensure lock is released before async ops)
+            // Match route using sync RwLock (scoped to ensure lock is released before async ops).
+            // Namespace-bound listeners match only their own route set (isolated);
+            // all others use the global matcher.
+            let listener_matcher = self.listener_matcher_for(session);
             let (match_result, route_duration) = {
-                let route_matcher = self.route_matcher.read();
                 let host = ctx.host.as_deref().unwrap_or("");
 
                 // Build request info (zero-copy for common case)
                 let mut request_info = RequestInfo::new(&ctx.method, &ctx.path, host);
 
-                // Only build headers HashMap if any route needs header matching
-                if route_matcher.needs_headers() {
-                    request_info = request_info
-                        .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
-                }
-
-                // Only parse query params if any route needs query param matching
-                if route_matcher.needs_query_params() {
-                    request_info =
-                        request_info.with_query_params(RequestInfo::parse_query_params(&ctx.path));
-                }
-
-                trace!(
-                    correlation_id = %ctx.trace_id,
-                    method = %request_info.method,
-                    path = %request_info.path,
-                    host = %request_info.host,
-                    "Built request info for route matching"
-                );
-
                 let route_start = std::time::Instant::now();
-                let route_match = route_matcher.match_request(&request_info).ok_or_else(|| {
+                let matched = if let Some(ref matcher) = listener_matcher {
+                    if matcher.needs_headers() {
+                        request_info = request_info
+                            .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
+                    }
+                    if matcher.needs_query_params() {
+                        request_info = request_info
+                            .with_query_params(RequestInfo::parse_query_params(&ctx.path));
+                    }
+                    matcher.match_request(&request_info)
+                } else {
+                    let route_matcher = self.route_matcher.read();
+                    // Only build headers HashMap if any route needs header matching
+                    if route_matcher.needs_headers() {
+                        request_info = request_info
+                            .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
+                    }
+                    // Only parse query params if any route needs query param matching
+                    if route_matcher.needs_query_params() {
+                        request_info = request_info
+                            .with_query_params(RequestInfo::parse_query_params(&ctx.path));
+                    }
+                    route_matcher.match_request(&request_info)
+                };
+
+                let route_match = matched.ok_or_else(|| {
                     warn!(
                         correlation_id = %ctx.trace_id,
                         method = %request_info.method,

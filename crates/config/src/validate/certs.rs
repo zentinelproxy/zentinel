@@ -225,6 +225,7 @@ mod tests {
             protocol: ListenerProtocol::Https,
             tls: Some(test_tls_config()),
             default_route: None,
+            namespace: None,
             request_timeout_secs: 60,
             keepalive_timeout_secs: 75,
             max_concurrent_streams: 100,

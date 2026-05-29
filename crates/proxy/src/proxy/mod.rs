@@ -67,6 +67,11 @@ pub struct ZentinelProxy {
     pub config_manager: Arc<ConfigManager>,
     /// Route matcher (global routes only, for backward compatibility)
     pub(super) route_matcher: Arc<RwLock<RouteMatcher>>,
+    /// Per-listener route matchers for listeners bound to a namespace route set,
+    /// keyed by the listener's bound address. A request arriving on one of these
+    /// listeners is matched only against its namespace's routes (isolated from
+    /// the global set). Listeners absent from this map use [`Self::route_matcher`].
+    pub(super) listener_matchers: Arc<RwLock<HashMap<String, Arc<RouteMatcher>>>>,
     /// Scoped route matcher (namespace/service aware)
     pub(super) scoped_route_matcher: Arc<tokio::sync::RwLock<ScopedRouteMatcher>>,
     /// Upstream pools (keyed by upstream ID, global only)
@@ -169,6 +174,10 @@ impl ZentinelProxy {
         // Create route matcher (global routes only)
         let route_matcher = Arc::new(RwLock::new(RouteMatcher::new(config.routes.clone(), None)?));
 
+        // Build per-listener route matchers for listeners bound to a namespace
+        // route set (empty unless any listener references a namespace).
+        let listener_matchers = Arc::new(RwLock::new(Self::build_listener_matchers(&config)));
+
         // Flatten config for namespace/service resources
         let flattened = config.flatten();
 
@@ -230,6 +239,7 @@ impl ZentinelProxy {
         Self::setup_reload_handler(
             config_manager.clone(),
             route_matcher.clone(),
+            listener_matchers.clone(),
             upstream_pools.clone(),
             scoped_route_matcher.clone(),
             scoped_upstream_pools.clone(),
@@ -340,6 +350,7 @@ impl ZentinelProxy {
         Ok(Self {
             config_manager,
             route_matcher,
+            listener_matchers,
             scoped_route_matcher,
             upstream_pools,
             scoped_upstream_pools,
@@ -376,10 +387,58 @@ impl ZentinelProxy {
         self.cache_manager.stats()
     }
 
+    /// Build per-listener route matchers for listeners that reference a
+    /// namespace route set.
+    ///
+    /// Listeners without a `namespace` reference are omitted (they fall back to
+    /// the global matcher at request time). Unknown namespace references are
+    /// skipped with a warning — config validation rejects them before startup,
+    /// so this only guards against a reload racing a bad config.
+    fn build_listener_matchers(
+        config: &zentinel_config::Config,
+    ) -> HashMap<String, Arc<RouteMatcher>> {
+        let mut matchers = HashMap::new();
+        for listener in &config.listeners {
+            let Some(ns_id) = listener.namespace.as_ref() else {
+                continue;
+            };
+            let Some(ns) = config.namespaces.iter().find(|n| &n.id == ns_id) else {
+                warn!(
+                    listener_id = %listener.id,
+                    namespace = %ns_id,
+                    "Listener references unknown namespace; no routes will match on this listener"
+                );
+                continue;
+            };
+            match RouteMatcher::new(ns.routes.clone(), None) {
+                Ok(matcher) => {
+                    info!(
+                        listener_id = %listener.id,
+                        address = %listener.address,
+                        namespace = %ns_id,
+                        routes = ns.routes.len(),
+                        "Listener bound to namespace route set"
+                    );
+                    matchers.insert(listener.address.clone(), Arc::new(matcher));
+                }
+                Err(e) => {
+                    error!(
+                        listener_id = %listener.id,
+                        namespace = %ns_id,
+                        error = %e,
+                        "Failed to compile route matcher for listener namespace"
+                    );
+                }
+            }
+        }
+        matchers
+    }
+
     /// Setup the configuration reload handler
     async fn setup_reload_handler(
         config_manager: Arc<ConfigManager>,
         route_matcher: Arc<RwLock<RouteMatcher>>,
+        listener_matchers: Arc<RwLock<HashMap<String, Arc<RouteMatcher>>>>,
         upstream_pools: Registry<UpstreamPool>,
         scoped_route_matcher: Arc<tokio::sync::RwLock<ScopedRouteMatcher>>,
         scoped_upstream_pools: ScopedRegistry<UpstreamPool>,
@@ -416,6 +475,9 @@ impl ZentinelProxy {
                             error!(error = %e, "Failed to compile route matcher");
                         }
                     }
+
+                    // Rebuild per-listener (namespace-bound) route matchers
+                    *listener_matchers.write() = Self::build_listener_matchers(&new_config);
 
                     // Update scoped route matcher
                     if let Err(e) = scoped_route_matcher
@@ -919,5 +981,90 @@ impl ZentinelProxy {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod listener_matcher_tests {
+    use super::*;
+    use crate::routing::RequestInfo;
+
+    const KDL: &str = r#"
+        schema-version "1.0"
+        system { worker-threads 0 }
+        listeners {
+            listener "public" { address "0.0.0.0:8080" }
+            listener "admin" {
+                address "127.0.0.1:9000"
+                namespace "ops"
+            }
+        }
+        routes {
+            route "api" {
+                matches { path-prefix "/api" }
+                upstream "backend"
+            }
+        }
+        upstreams {
+            upstream "backend" { target "127.0.0.1:3000" }
+        }
+        namespace "ops" {
+            routes {
+                route "metrics" {
+                    matches { path "/metrics" }
+                    service-type "builtin"
+                    builtin-handler "metrics"
+                }
+            }
+        }
+    "#;
+
+    #[test]
+    fn namespace_listener_matches_only_its_own_routes() {
+        let config = zentinel_config::Config::from_kdl(KDL).expect("config parses");
+        let matchers = ZentinelProxy::build_listener_matchers(&config);
+
+        // Only the namespace-bound listener gets a dedicated matcher.
+        assert_eq!(matchers.len(), 1);
+        assert!(!matchers.contains_key("0.0.0.0:8080"));
+        let admin = matchers
+            .get("127.0.0.1:9000")
+            .expect("admin listener bound to namespace");
+
+        // Isolated: the admin listener serves the namespace route...
+        assert!(admin
+            .match_request(&RequestInfo::new("GET", "/metrics", "x"))
+            .is_some());
+        // ...but NOT the global route.
+        assert!(admin
+            .match_request(&RequestInfo::new("GET", "/api/users", "x"))
+            .is_none());
+    }
+
+    #[test]
+    fn no_namespace_listeners_yields_empty_map() {
+        let kdl = r#"
+            schema-version "1.0"
+            system { worker-threads 0 }
+            listeners {
+                listener "public" {
+                    address "0.0.0.0:8080"
+                }
+            }
+            routes {
+                route "api" {
+                    matches { path-prefix "/api" }
+                    upstream "backend"
+                }
+            }
+            upstreams {
+                upstream "backend" {
+                    target "127.0.0.1:3000"
+                }
+            }
+        "#;
+        let config = zentinel_config::Config::from_kdl(kdl).expect("config parses");
+        let matchers = ZentinelProxy::build_listener_matchers(&config);
+        assert!(matchers.is_empty());
     }
 }

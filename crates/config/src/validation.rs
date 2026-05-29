@@ -579,6 +579,32 @@ fn validate_listeners(config: &Config, route_ids: &HashSet<&str>, errors: &mut V
                 ));
             }
         }
+
+        if let Some(ref namespace) = listener.namespace {
+            if !config.namespaces.iter().any(|ns| &ns.id == namespace) {
+                warn!(
+                    listener_id = %listener.id,
+                    namespace = %namespace,
+                    "Listener references non-existent namespace route set"
+                );
+                let available: Vec<&str> =
+                    config.namespaces.iter().map(|ns| ns.id.as_str()).collect();
+                errors.push(format!(
+                    "Listener '{}' references namespace '{}' which doesn't exist.\n\
+                     Define a `namespace \"{}\" {{ routes {{ ... }} }}` block, \
+                     or remove the reference to serve the global routes.\n\
+                     Available namespaces: {}",
+                    listener.id,
+                    namespace,
+                    namespace,
+                    if available.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                ));
+            }
+        }
     }
 }
 
@@ -1098,6 +1124,78 @@ mod tests {
         UpstreamConfig, UpstreamTarget, UpstreamTimeouts,
     };
     use zentinel_common::types::LoadBalancingAlgorithm;
+
+    #[test]
+    fn listener_referencing_unknown_namespace_fails_validation() {
+        let kdl = r#"
+            schema-version "1.0"
+            system { worker-threads 0 }
+            listeners {
+                listener "admin" {
+                    address "127.0.0.1:9000"
+                    namespace "ghost"
+                }
+            }
+            routes {
+                route "api" {
+                    matches { path-prefix "/" }
+                    upstream "backend"
+                }
+            }
+            upstreams {
+                upstream "backend" {
+                    target "127.0.0.1:3000"
+                }
+            }
+        "#;
+        let config = crate::Config::from_kdl(kdl).expect("config parses");
+        assert!(
+            config.validate().is_err(),
+            "listener referencing an undefined namespace must fail validation"
+        );
+    }
+
+    #[test]
+    fn listener_with_defined_namespace_passes_validation() {
+        let kdl = r#"
+            schema-version "1.0"
+            system { worker-threads 0 }
+            listeners {
+                listener "public" {
+                    address "0.0.0.0:8080"
+                }
+                listener "admin" {
+                    address "127.0.0.1:9000"
+                    namespace "ops"
+                }
+            }
+            routes {
+                route "api" {
+                    matches { path-prefix "/" }
+                    upstream "backend"
+                }
+            }
+            upstreams {
+                upstream "backend" {
+                    target "127.0.0.1:3000"
+                }
+            }
+            namespace "ops" {
+                routes {
+                    route "metrics" {
+                        matches { path "/metrics" }
+                        service-type "builtin"
+                        builtin-handler "metrics"
+                    }
+                }
+            }
+        "#;
+        let config = crate::Config::from_kdl(kdl).expect("config parses");
+        assert!(
+            config.validate().is_ok(),
+            "listener referencing a defined namespace must pass validation"
+        );
+    }
 
     fn test_upstream(id: &str) -> UpstreamConfig {
         UpstreamConfig {
@@ -1631,6 +1729,7 @@ mod tests {
             protocol: ListenerProtocol::Http,
             tls: None,
             default_route: Some("default".to_string()),
+            namespace: None,
             request_timeout_secs: 60,
             keepalive_timeout_secs: 75,
             max_concurrent_streams: 100,

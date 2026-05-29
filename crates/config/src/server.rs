@@ -82,6 +82,16 @@ pub struct ListenerConfig {
     /// Default route if no other matches
     pub default_route: Option<String>,
 
+    /// Route set this listener serves, by namespace name.
+    ///
+    /// When set, requests arriving on this listener are matched **only** against
+    /// the named namespace's routes (no fallback to the global route set), so a
+    /// listener can expose a distinct set of routes — e.g. an internal admin port
+    /// serving only `/metrics`. When unset, the listener serves the global
+    /// top-level `routes` (the default).
+    #[serde(default)]
+    pub namespace: Option<String>,
+
     /// Request timeout
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,

@@ -128,6 +128,7 @@ pub(super) fn parse_listener(node: &KdlNode) -> Result<ListenerConfig> {
         },
         tls: None, // TLS config would need more complex parsing
         default_route: get_string_entry(node, "default-route"),
+        namespace: get_string_entry(node, "namespace"),
         request_timeout_secs: get_int_entry(node, "request-timeout-secs")
             .map(|v| v as u64)
             .unwrap_or(60),

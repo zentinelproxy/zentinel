@@ -826,6 +826,7 @@ impl Config {
                 protocol: ListenerProtocol::Http,
                 tls: None,
                 default_route: Some("default".to_string()),
+                namespace: None,
                 request_timeout_secs: 60,
                 keepalive_timeout_secs: 75,
                 max_concurrent_streams: 100,
