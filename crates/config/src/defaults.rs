@@ -131,14 +131,17 @@ limits {
 
 // Observability uses defaults:
 // - Metrics enabled at /metrics
-// - JSON logging at info level
-// - Error log enabled at /var/log/zentinel/error.log (level: warn)
+// - JSON logging at info level to stdout/stderr
+//
+// File logging is left disabled in the embedded default so `zentinel` with no
+// config file starts cleanly for any user — writing to /var/log/zentinel
+// requires a writable directory the process may not own. Enable the error/
+// access/audit logs explicitly (and ensure the directory is writable) to get
+// on-disk logs; the systemd unit provisions /var/log/zentinel via LogsDirectory.
 observability {
     logging {
         error-log {
-            enabled #true
-            file "/var/log/zentinel/error.log"
-            level "warn"
+            enabled #false
         }
     }
 }
