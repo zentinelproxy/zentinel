@@ -80,6 +80,19 @@ RUN find . -name "main.rs" -exec touch {} \; && \
 RUN cargo build --release --package zentinel-proxy --package zentinel-echo-agent --package zentinel-gateway
 
 ################################################################################
+# Runtime directory stage
+#
+# Distroless images have no shell, so we cannot mkdir/chown inside them at build
+# time. This tiny stage materializes the runtime state and log directories so
+# they can be COPYed into the distroless stages with the correct non-root
+# ownership (uid/gid 65532). Without these, the default config cannot open its
+# error log under /var/log/zentinel as the non-root user. See
+# zentinelproxy/zentinel#255.
+################################################################################
+FROM busybox:1.37 AS runtime-dirs
+RUN mkdir -p /var/log/zentinel /var/lib/zentinel
+
+################################################################################
 # Production image: Distroless (smallest, most secure)
 #
 # Uses gcr.io/distroless/cc-debian12 which includes:
@@ -96,6 +109,10 @@ COPY --from=builder /app/target/release/zentinel /zentinel
 
 # Copy default configuration
 COPY config/docker/default.kdl /etc/zentinel/zentinel.kdl
+
+# Writable runtime directories owned by the non-root user (uid/gid 65532).
+COPY --from=runtime-dirs --chown=65532:65532 /var/log/zentinel /var/log/zentinel
+COPY --from=runtime-dirs --chown=65532:65532 /var/lib/zentinel /var/lib/zentinel
 
 # Labels for container metadata
 LABEL org.opencontainers.image.title="Zentinel" \
@@ -186,6 +203,10 @@ COPY zentinel /zentinel
 
 # Copy default configuration
 COPY config/docker/default.kdl /etc/zentinel/zentinel.kdl
+
+# Writable runtime directories owned by the non-root user (uid/gid 65532).
+COPY --from=runtime-dirs --chown=65532:65532 /var/log/zentinel /var/log/zentinel
+COPY --from=runtime-dirs --chown=65532:65532 /var/lib/zentinel /var/lib/zentinel
 
 LABEL org.opencontainers.image.title="Zentinel" \
       org.opencontainers.image.description="Security-first reverse proxy built on Pingora"

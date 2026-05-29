@@ -54,9 +54,9 @@ impl MetricsManager {
 
     /// Create from metrics configuration.
     ///
-    /// Applies `enabled` and `path` from the config.
-    /// The `address` field determines which listener serves the metrics
-    /// endpoint but is handled at the listener level, not here.
+    /// Applies `enabled` and `path` from the config. The `address` field is
+    /// consumed separately by the standalone metrics server (see
+    /// [`crate::metrics_server`]), which binds the dedicated scrape listener.
     pub fn from_config(
         config: &zentinel_config::MetricsConfig,
         service_name: impl Into<String>,

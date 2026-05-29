@@ -61,5 +61,13 @@ observability {
     logging {
         level "info"
         format "json"
+        // Containers log to stdout/stderr by default; `docker logs` and
+        // Kubernetes capture that stream. File logging is left disabled so the
+        // default config starts cleanly even when /var/log is read-only or a
+        // tmpfs/volume owned by root. To keep on-disk logs, enable this and
+        // mount a writable volume at /var/log/zentinel.
+        error-log {
+            enabled #false
+        }
     }
 }

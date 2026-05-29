@@ -229,73 +229,87 @@ fn health_handler(request_id: &str) -> Response<Full<Bytes>> {
         .expect("static response builder with valid headers cannot fail")
 }
 
+/// Content type for the Prometheus text exposition format.
+pub(crate) const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// Render the Prometheus exposition body.
+///
+/// Shared by the builtin `/metrics` route handler and the standalone metrics
+/// server (see [`crate::metrics_server`]) so both expose identical output.
+///
+/// # Errors
+///
+/// Returns an error if the Prometheus encoder fails to serialize the gathered
+/// metric families (in practice this does not happen for the text encoder).
+pub(crate) fn render_prometheus_metrics(
+    cache_stats: Option<&Arc<HttpCacheStats>>,
+) -> Result<Vec<u8>, prometheus::Error> {
+    use prometheus::{Encoder, TextEncoder};
+
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+
+    let mut buffer = Vec::new();
+    encoder.encode(&metric_families, &mut buffer)?;
+
+    // Add zentinel_up and build_info metrics
+    let extra_metrics = format!(
+        "# HELP zentinel_up Zentinel proxy is up and running\n\
+         # TYPE zentinel_up gauge\n\
+         zentinel_up 1\n\
+         # HELP zentinel_build_info Build information\n\
+         # TYPE zentinel_build_info gauge\n\
+         zentinel_build_info{{version=\"{}\"}} 1\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    buffer.extend_from_slice(extra_metrics.as_bytes());
+
+    // Add HTTP cache metrics if available
+    if let Some(stats) = cache_stats {
+        let cache_metrics = format!(
+            "# HELP zentinel_cache_hits_total Total number of cache hits\n\
+             # TYPE zentinel_cache_hits_total counter\n\
+             zentinel_cache_hits_total {}\n\
+             # HELP zentinel_cache_misses_total Total number of cache misses\n\
+             # TYPE zentinel_cache_misses_total counter\n\
+             zentinel_cache_misses_total {}\n\
+             # HELP zentinel_cache_stores_total Total number of cache stores\n\
+             # TYPE zentinel_cache_stores_total counter\n\
+             zentinel_cache_stores_total {}\n\
+             # HELP zentinel_cache_hit_ratio Cache hit ratio (0.0 to 1.0)\n\
+             # TYPE zentinel_cache_hit_ratio gauge\n\
+             zentinel_cache_hit_ratio {:.4}\n\
+             # HELP zentinel_cache_memory_hits_total Cache hits from memory tier\n\
+             # TYPE zentinel_cache_memory_hits_total counter\n\
+             zentinel_cache_memory_hits_total {}\n\
+             # HELP zentinel_cache_disk_hits_total Cache hits from disk tier\n\
+             # TYPE zentinel_cache_disk_hits_total counter\n\
+             zentinel_cache_disk_hits_total {}\n",
+            stats.hits(),
+            stats.misses(),
+            stats.stores(),
+            stats.hit_ratio(),
+            stats.memory_hits(),
+            stats.disk_hits()
+        );
+        buffer.extend_from_slice(cache_metrics.as_bytes());
+    }
+
+    Ok(buffer)
+}
+
 /// Prometheus metrics handler
 fn metrics_handler(
     request_id: &str,
     cache_stats: Option<&Arc<HttpCacheStats>>,
 ) -> Response<Full<Bytes>> {
-    use prometheus::{Encoder, TextEncoder};
-
-    // Create encoder for Prometheus text format
-    let encoder = TextEncoder::new();
-
-    // Gather all metrics from the default registry
-    let metric_families = prometheus::gather();
-
-    // Encode metrics to text format
-    let mut buffer = Vec::new();
-    match encoder.encode(&metric_families, &mut buffer) {
-        Ok(()) => {
-            // Add zentinel_up and build_info metrics
-            let extra_metrics = format!(
-                "# HELP zentinel_up Zentinel proxy is up and running\n\
-                 # TYPE zentinel_up gauge\n\
-                 zentinel_up 1\n\
-                 # HELP zentinel_build_info Build information\n\
-                 # TYPE zentinel_build_info gauge\n\
-                 zentinel_build_info{{version=\"{}\"}} 1\n",
-                env!("CARGO_PKG_VERSION")
-            );
-            buffer.extend_from_slice(extra_metrics.as_bytes());
-
-            // Add HTTP cache metrics if available
-            if let Some(stats) = cache_stats {
-                let cache_metrics = format!(
-                    "# HELP zentinel_cache_hits_total Total number of cache hits\n\
-                     # TYPE zentinel_cache_hits_total counter\n\
-                     zentinel_cache_hits_total {}\n\
-                     # HELP zentinel_cache_misses_total Total number of cache misses\n\
-                     # TYPE zentinel_cache_misses_total counter\n\
-                     zentinel_cache_misses_total {}\n\
-                     # HELP zentinel_cache_stores_total Total number of cache stores\n\
-                     # TYPE zentinel_cache_stores_total counter\n\
-                     zentinel_cache_stores_total {}\n\
-                     # HELP zentinel_cache_hit_ratio Cache hit ratio (0.0 to 1.0)\n\
-                     # TYPE zentinel_cache_hit_ratio gauge\n\
-                     zentinel_cache_hit_ratio {:.4}\n\
-                     # HELP zentinel_cache_memory_hits_total Cache hits from memory tier\n\
-                     # TYPE zentinel_cache_memory_hits_total counter\n\
-                     zentinel_cache_memory_hits_total {}\n\
-                     # HELP zentinel_cache_disk_hits_total Cache hits from disk tier\n\
-                     # TYPE zentinel_cache_disk_hits_total counter\n\
-                     zentinel_cache_disk_hits_total {}\n",
-                    stats.hits(),
-                    stats.misses(),
-                    stats.stores(),
-                    stats.hit_ratio(),
-                    stats.memory_hits(),
-                    stats.disk_hits()
-                );
-                buffer.extend_from_slice(cache_metrics.as_bytes());
-            }
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", encoder.format_type())
-                .header("X-Request-Id", request_id)
-                .body(Full::new(Bytes::from(buffer)))
-                .expect("static response builder with valid headers cannot fail")
-        }
+    match render_prometheus_metrics(cache_stats) {
+        Ok(buffer) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", PROMETHEUS_CONTENT_TYPE)
+            .header("X-Request-Id", request_id)
+            .body(Full::new(Bytes::from(buffer)))
+            .expect("static response builder with valid headers cannot fail"),
         Err(e) => {
             tracing::error!(error = %e, "Failed to encode Prometheus metrics");
             let error_body = format!("# ERROR: Failed to encode metrics: {}\n", e);

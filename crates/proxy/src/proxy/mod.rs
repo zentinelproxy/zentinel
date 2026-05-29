@@ -368,6 +368,14 @@ impl ZentinelProxy {
         })
     }
 
+    /// Shared HTTP cache statistics.
+    ///
+    /// Exposed so the standalone metrics server can include cache counters in
+    /// its Prometheus output, matching the builtin `/metrics` route handler.
+    pub fn http_cache_stats(&self) -> Arc<crate::cache::HttpCacheStats> {
+        self.cache_manager.stats()
+    }
+
     /// Setup the configuration reload handler
     async fn setup_reload_handler(
         config_manager: Arc<ConfigManager>,

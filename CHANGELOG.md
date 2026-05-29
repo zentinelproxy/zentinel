@@ -47,6 +47,16 @@ for details.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Standalone Prometheus metrics server.** When `observability.metrics.enabled` is set, the proxy binds a dedicated HTTP listener on `observability.metrics.address` (default `0.0.0.0:9090`) and serves the Prometheus exposition format at `observability.metrics.path` (default `/metrics`), logging a `Metrics server listening` line at startup. Previously `address` was parsed but never consumed, so nothing bound the port — a silent failure that violated the "fail loudly" principle. (#256)
+
+### Fixed
+- **Default Docker image starts cleanly as a non-root user.** The distroless `proxy` and `proxy-prebuilt` images now ship `/var/log/zentinel` and `/var/lib/zentinel` owned by uid/gid 65532, and the bundled container config logs to stdout/stderr rather than a file. Previously the default config failed to initialize file logging under `/var/log/zentinel` (not writable by the non-root user), and a `tmpfs` mount did not resolve it. (#255)
+
+---
+
 ## [26.05_4] - 2026-05-12
 
 **Crate version:** 0.6.14

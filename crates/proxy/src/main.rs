@@ -600,6 +600,27 @@ fn run_server(
     // Get initial config for server setup
     let config = proxy.config_manager.current();
 
+    // Start the standalone Prometheus metrics server if enabled.
+    // `observability.metrics.address` is a dedicated listener, separate from the
+    // data-plane listeners, so the scrape endpoint is never exposed to client
+    // traffic by accident.
+    {
+        let metrics_cfg = config.observability.metrics.clone();
+        if metrics_cfg.enabled {
+            let cache_stats = Some(proxy.http_cache_stats());
+            runtime.spawn(async move {
+                zentinel_proxy::metrics_server::run_metrics_server(
+                    metrics_cfg.address,
+                    metrics_cfg.path,
+                    cache_stats,
+                )
+                .await;
+            });
+        } else {
+            info!("Metrics server disabled (observability.metrics.enabled = false)");
+        }
+    }
+
     // Setup signal handlers (runs in separate thread, needs config for shutdown timeout)
     setup_signal_handlers(
         signal_manager.sender(),

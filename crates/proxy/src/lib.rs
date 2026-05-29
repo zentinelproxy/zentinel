@@ -66,6 +66,7 @@ pub mod kubeconfig;
 pub mod logging;
 pub mod memory_cache;
 pub mod metrics;
+pub mod metrics_server;
 pub mod otel;
 pub mod proxy;
 pub mod rate_limit;
