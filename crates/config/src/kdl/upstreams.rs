@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::{trace, warn};
+use tracing::trace;
 
 use zentinel_common::{CircuitBreakerConfig, types::{HealthCheckType, LoadBalancingAlgorithm}};
 
@@ -133,16 +133,21 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                         "Parsed TLS configuration"
                     );
                 }
-
-                let circuit_breaker = child
+                
+                let cb_node = child
                     .children()
                     .and_then(|c| {
                         c.nodes()
                             .iter()
                             .find(|n| n.name().value() == "circuit-breaker")
-                    })
-                    .map(parse_circuit_breaker)
-                    .unwrap_or(None);
+                    });
+
+                let circuit_breaker = match cb_node{
+                    Some(cb) => {
+                        Some(parse_circuit_breaker(cb)?) //Parse failure dropout handled by the ? and anyhow crate
+                    }
+                    None => None, //No config present, upstream cb config will apply defaults
+                };
 
                 trace!(
                     upstream_id = %id,
@@ -295,38 +300,71 @@ fn parse_duration_string(s: &str) -> Option<u64> {
 }
 
 /// Parse circuit breaker configuration
-fn parse_circuit_breaker(node: &kdl::KdlNode) -> Option<CircuitBreakerConfig> {
-    let mut config = CircuitBreakerConfig::default();
+fn parse_circuit_breaker(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
+    let default_config = CircuitBreakerConfig::default();
 
-    if let Some(v) = get_int_entry(node, "failure-threshold") {
-        config.failure_threshold = v as u32;
-    }else{
-        warn!("While parsing circuit-breaker clause in upstream, did not find failure-threshold. Default failure-threshold of {} will be used."
-        , config.failure_threshold);
+    fn cb_config_map(mut cfg: CircuitBreakerConfig, node: &kdl::KdlNode)-> Result<CircuitBreakerConfig>{
+
+        fn extract_u32_with_limits(node: &kdl::KdlNode) -> Result<u32>{
+            let first_value = match node.entries().first(){
+                Some(v) => v,
+                None => return Err(anyhow::anyhow!("Tried to parse u32 for key {} but did not find a value", node.name())),
+            };
+            let u32_val = match first_value.value().as_integer(){
+                Some(v) => u32::try_from(v).map_err(anyhow::Error::msg)?,
+                None => return Err(anyhow::anyhow!("Tried to convert value in {} to u32, but failed", node.name())), 
+            };
+
+            if u32_val == 0 {
+                return Err(anyhow::anyhow!("Implausible value for {}", node.name()))
+            }
+
+            Ok(u32_val)
+        }
+
+        fn extract_u64_with_limits(node: &kdl::KdlNode) -> Result<u64>{
+            let first_value = match node.entries().first(){
+                Some(v) => v,
+                None => return Err(anyhow::anyhow!("Tried to parse u64 for key {} but did not find a value", node.name())),
+            };
+            let u64_val = match first_value.value().as_integer(){
+                Some(v) => u64::try_from(v).map_err(anyhow::Error::msg)?,
+                None => return Err(anyhow::anyhow!("Tried to convert value in {} to u64, but failed", node.name())), 
+            };
+
+            if u64_val == 0 {
+                return Err(anyhow::anyhow!("Implausible value for {}", node.name()))
+            }
+
+            Ok(u64_val)
+        }
+        
+        match node.name().to_string().as_str() {
+            "failure-threshold" => {
+                cfg.failure_threshold = extract_u32_with_limits(node)?;
+            },
+            "success-threshold" => {
+                cfg.success_threshold = extract_u32_with_limits(node)?;
+            },
+            "timeout-seconds" => {
+                cfg.timeout_seconds = extract_u64_with_limits(node)?;
+            },
+            "half-open-max-requests" => {
+                cfg.half_open_max_requests = extract_u32_with_limits(node)?;
+            },
+            d => {
+                return Err(anyhow::anyhow!("Got unknown key {}", d));
+            },
+        }
+        
+        Ok(cfg)
     }
 
-    if let Some(v) = get_int_entry(node, "success-threshold") {
-        config.success_threshold = v as u32;
-    }else{
-        warn!("While parsing circuit-breaker clause in upstream, did not find success-threshold. Default success-threshold of {} will be used."
-        , config.success_threshold);
-    }
 
-    if let Some(v) = get_int_entry(node, "timeout-seconds") {
-        config.timeout_seconds = v as u64;
-    }else{
-        warn!("While parsing circuit-breaker clause in upstream, did not find timeout-seconds. Default timeout-seconds of {} will be used."
-        , config.timeout_seconds);
-    }
+     node.iter_children()
+    .try_fold(default_config, cb_config_map)
 
-    if let Some(v) = get_int_entry(node, "half-open-max-requests") {
-        config.half_open_max_requests = v as u32;
-    }else{
-        warn!("While parsing circuit-breaker clause in upstream, did not find half-open-max-requests. Default half-open-max-requests of {} will be used."
-        , config.half_open_max_requests);
-    }
 
-    Some(config)
 }
 
 
