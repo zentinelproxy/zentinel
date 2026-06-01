@@ -1002,4 +1002,183 @@ mod tests {
         assert!(tls.sni.is_none());
         assert!(tls.ca_cert.is_none());
     }
+
+    /// circuit-breaker stanza present, all values normally set, use those values
+    #[test]
+    fn test_parse_circuit_breaker_normal() {
+        let kdl = r#"
+        upstreams {
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+                circuit-breaker {
+                    failure-threshold 1
+                    success-threshold 2
+                    timeout-seconds 4
+                    half-open-max-requests 8
+                }
+            }
+        } 
+        "#;
+
+        let upstreams = parse_kdl_upstreams(kdl).unwrap();
+        let upstream = upstreams.get("test-cb").unwrap();
+
+        let cbconfig = upstream.circuit_breaker.unwrap();
+
+        assert_eq!(cbconfig.failure_threshold, 1);
+        assert_eq!(cbconfig.success_threshold, 2);
+        assert_eq!(cbconfig.timeout_seconds, 4);
+        assert_eq!(cbconfig.half_open_max_requests, 8);
+    }
+
+    /// circuit-breaker stanza present, one key unrecognized, expect to Err and crash
+    #[test]
+    fn test_parse_circuit_breaker_badkey() {
+        let kdl = r#"
+        upstreams {
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+                circuit-breaker {
+                    failure-threshold 1
+                    success-threshold 2
+                    timeout-sekonds 4
+                    half-open-max-requests 8
+                }
+            }
+        } 
+        "#;
+
+        let upstreams = parse_kdl_upstreams(kdl);
+        let err_msg = upstreams.unwrap_err();
+
+        assert_eq!(format!("{}", err_msg), "Got unknown key timeout-sekonds");
+    }
+
+    /// circuit-breaker stanza present, new key unrecognized, expect to Err and crash
+    #[test]
+    fn test_parse_circuit_breaker_badnewkey() {
+        let kdl = r#"
+        upstreams {
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+                circuit-breaker {
+                    failure-threshold 1
+                    success-threshold 2
+                    timeout-seconds 4
+                    half-open-max-requests 8
+                    reticulate 24
+                }
+            }
+        } 
+        "#;
+
+        let upstreams = parse_kdl_upstreams(kdl);
+        let err_msg = upstreams.unwrap_err();
+
+        assert_eq!(format!("{}", err_msg), "Got unknown key reticulate");
+    }
+
+    /// circuit-breaker stanza present, one value unrecognized, expect to Err and crash
+    #[test]
+    fn test_parse_circuit_breaker_badval() {
+        let kdl = r#"
+        upstreams {
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+                circuit-breaker {
+                    failure-threshold 1
+                    success-threshold 2
+                    timeout-seconds 4
+                    half-open-max-requests 'aaa'
+                }
+            }
+        } 
+        "#;
+
+        let upstreams = parse_kdl_upstreams(kdl);
+        let err_msg = upstreams.unwrap_err();
+
+        assert_eq!(
+            format!("{}", err_msg),
+            "Tried to convert value in half-open-max-requests to u32, but failed"
+        );
+    }
+
+    /// circuit-breaker stanza present, all values missing, defaults should be used
+    #[test]
+    fn test_parse_circuit_breaker_fields_missing() {
+        let kdl = r#"
+        upstreams {
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+                circuit-breaker {
+                }
+            }
+        } 
+        "#;
+
+        let upstreams = parse_kdl_upstreams(kdl).unwrap();
+        let upstream = upstreams.get("test-cb").unwrap();
+
+        let cbconfig = upstream.circuit_breaker.unwrap();
+
+        let cb_default = CircuitBreakerConfig::default();
+
+        assert_eq!(cbconfig.failure_threshold, cb_default.failure_threshold);
+        assert_eq!(cbconfig.success_threshold, cb_default.success_threshold);
+        assert_eq!(cbconfig.timeout_seconds, cb_default.timeout_seconds);
+        assert_eq!(
+            cbconfig.half_open_max_requests,
+            cb_default.half_open_max_requests
+        );
+    }
+
+    /// circuit-breaker stanza present, some values missing, defaults should be used fpr missing
+    #[test]
+    fn test_parse_circuit_breaker_some_fields_missing() {
+        let kdl = r#"
+        upstreams {
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+                circuit-breaker {
+                    timeout-seconds 4
+                }
+            }
+        } 
+        "#;
+
+        let upstreams = parse_kdl_upstreams(kdl).unwrap();
+        let upstream = upstreams.get("test-cb").unwrap();
+
+        let cbconfig = upstream.circuit_breaker.unwrap();
+
+        let cb_default = CircuitBreakerConfig::default();
+
+        assert_eq!(cbconfig.failure_threshold, cb_default.failure_threshold);
+        assert_eq!(cbconfig.success_threshold, cb_default.success_threshold);
+        assert_eq!(cbconfig.timeout_seconds, 4);
+        assert_eq!(
+            cbconfig.half_open_max_requests,
+            cb_default.half_open_max_requests
+        );
+    }
+
+    /// circuit-breaker stanza missing, Option<CircuitBreakerConfig> will be None, upstream to set defaults
+    #[test]
+    fn test_parse_circuit_breaker_stanza_missing() {
+        let kdl = r#"
+        upstreams {
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+            }
+        } 
+        "#;
+
+        let upstreams = parse_kdl_upstreams(kdl).unwrap();
+        let upstream = upstreams.get("test-cb").unwrap();
+
+        let cbconfig = upstream.circuit_breaker;
+
+        assert!(cbconfig.is_none());
+    }
 }
