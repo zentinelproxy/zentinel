@@ -101,7 +101,7 @@ arc-swap = "1.9"
 base64 = "0.22"
 
 # Memory allocator (better performance for allocation-heavy workloads)
-tikv-jemallocator = "0.6"
+tikv-jemallocator = "0.7"
 
 [profile.release]
 opt-level = 3
