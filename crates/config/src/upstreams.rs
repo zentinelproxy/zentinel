@@ -8,7 +8,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use validator::Validate;
 
-use zentinel_common::{CircuitBreakerConfig, types::{HealthCheckType, LoadBalancingAlgorithm}};
+use zentinel_common::{
+    types::{HealthCheckType, LoadBalancingAlgorithm},
+    CircuitBreakerConfig,
+};
 
 // ============================================================================
 // Sticky Session Configuration

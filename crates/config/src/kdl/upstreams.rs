@@ -5,7 +5,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::trace;
 
-use zentinel_common::{CircuitBreakerConfig, types::{HealthCheckType, LoadBalancingAlgorithm}};
+use zentinel_common::{
+    types::{HealthCheckType, LoadBalancingAlgorithm},
+    CircuitBreakerConfig,
+};
 
 use crate::upstreams::*;
 
@@ -133,16 +136,14 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
                         "Parsed TLS configuration"
                     );
                 }
-                
-                let cb_node = child
-                    .children()
-                    .and_then(|c| {
-                        c.nodes()
-                            .iter()
-                            .find(|n| n.name().value() == "circuit-breaker")
-                    });
 
-                let circuit_breaker = match cb_node{
+                let cb_node = child.children().and_then(|c| {
+                    c.nodes()
+                        .iter()
+                        .find(|n| n.name().value() == "circuit-breaker")
+                });
+
+                let circuit_breaker = match cb_node {
                     Some(cb) => {
                         Some(parse_circuit_breaker(cb)?) //Parse failure dropout handled by the ? and anyhow crate
                     }
@@ -303,70 +304,87 @@ fn parse_duration_string(s: &str) -> Option<u64> {
 fn parse_circuit_breaker(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
     let default_config = CircuitBreakerConfig::default();
 
-    fn cb_config_map(mut cfg: CircuitBreakerConfig, node: &kdl::KdlNode)-> Result<CircuitBreakerConfig>{
-
-        fn extract_u32_with_limits(node: &kdl::KdlNode) -> Result<u32>{
-            let first_value = match node.entries().first(){
+    fn cb_config_map(
+        mut cfg: CircuitBreakerConfig,
+        node: &kdl::KdlNode,
+    ) -> Result<CircuitBreakerConfig> {
+        fn extract_u32_with_limits(node: &kdl::KdlNode) -> Result<u32> {
+            let first_value = match node.entries().first() {
                 Some(v) => v,
-                None => return Err(anyhow::anyhow!("Tried to parse u32 for key {} but did not find a value", node.name())),
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Tried to parse u32 for key {} but did not find a value",
+                        node.name()
+                    ))
+                }
             };
-            let u32_val = match first_value.value().as_integer(){
+            let u32_val = match first_value.value().as_integer() {
                 Some(v) => u32::try_from(v).map_err(anyhow::Error::msg)?,
-                None => return Err(anyhow::anyhow!("Tried to convert value in {} to u32, but failed", node.name())), 
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Tried to convert value in {} to u32, but failed",
+                        node.name()
+                    ))
+                }
             };
 
             if u32_val == 0 {
-                return Err(anyhow::anyhow!("Implausible value for {}", node.name()))
+                return Err(anyhow::anyhow!("Implausible value for {}", node.name()));
             }
 
             Ok(u32_val)
         }
 
-        fn extract_u64_with_limits(node: &kdl::KdlNode) -> Result<u64>{
-            let first_value = match node.entries().first(){
+        fn extract_u64_with_limits(node: &kdl::KdlNode) -> Result<u64> {
+            let first_value = match node.entries().first() {
                 Some(v) => v,
-                None => return Err(anyhow::anyhow!("Tried to parse u64 for key {} but did not find a value", node.name())),
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Tried to parse u64 for key {} but did not find a value",
+                        node.name()
+                    ))
+                }
             };
-            let u64_val = match first_value.value().as_integer(){
+            let u64_val = match first_value.value().as_integer() {
                 Some(v) => u64::try_from(v).map_err(anyhow::Error::msg)?,
-                None => return Err(anyhow::anyhow!("Tried to convert value in {} to u64, but failed", node.name())), 
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Tried to convert value in {} to u64, but failed",
+                        node.name()
+                    ))
+                }
             };
 
             if u64_val == 0 {
-                return Err(anyhow::anyhow!("Implausible value for {}", node.name()))
+                return Err(anyhow::anyhow!("Implausible value for {}", node.name()));
             }
 
             Ok(u64_val)
         }
-        
+
         match node.name().to_string().as_str() {
             "failure-threshold" => {
                 cfg.failure_threshold = extract_u32_with_limits(node)?;
-            },
+            }
             "success-threshold" => {
                 cfg.success_threshold = extract_u32_with_limits(node)?;
-            },
+            }
             "timeout-seconds" => {
                 cfg.timeout_seconds = extract_u64_with_limits(node)?;
-            },
+            }
             "half-open-max-requests" => {
                 cfg.half_open_max_requests = extract_u32_with_limits(node)?;
-            },
+            }
             d => {
                 return Err(anyhow::anyhow!("Got unknown key {}", d));
-            },
+            }
         }
-        
+
         Ok(cfg)
     }
 
-
-     node.iter_children()
-    .try_fold(default_config, cb_config_map)
-
-
+    node.iter_children().try_fold(default_config, cb_config_map)
 }
-
 
 /// Parse HTTP version configuration
 ///

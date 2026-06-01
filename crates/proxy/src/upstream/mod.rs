@@ -903,11 +903,8 @@ impl UpstreamPool {
                 "Initializing circuit breaker for target, configuration {:?}",
                 cb_config
             );
-            
-            circuit_breakers.insert(
-                target.full_address(),
-                CircuitBreaker::new(cb_config),
-            );
+
+            circuit_breakers.insert(target.full_address(), CircuitBreaker::new(cb_config));
         }
 
         let pool = Self {
