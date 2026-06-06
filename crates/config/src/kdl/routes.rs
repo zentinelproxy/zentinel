@@ -9,7 +9,7 @@ use zentinel_common::budget::{
     BudgetPeriod, CostAttributionConfig, ModelPricing, TokenBudgetConfig,
 };
 
-use crate::routes::*;
+use crate::{kdl::circuitbreaker_helper::parse_circuit_breaker_faildefault, routes::*};
 
 use super::helpers::{
     get_bool_entry, get_first_arg_string, get_float_entry, get_int_entry, get_string_entry,
@@ -34,6 +34,7 @@ const RECOGNIZED_ROUTE_CHILDREN: &[&str] = &[
     "fallback",
     "policies",
     "service-type",
+    "circuit-breaker",
 ];
 
 /// Parse routes configuration block
@@ -70,6 +71,20 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
 
                 // Parse filters
                 let filters = parse_route_filter_refs(child)?;
+
+                let cb_node = child.children().and_then(|c| {
+                    c.nodes()
+                        .iter()
+                        .find(|n| n.name().value() == "circuit-breaker")
+                });
+
+                // Parse circuit breaker
+                let circuit_breaker = match cb_node {
+                    Some(cb) => {
+                        Some(parse_circuit_breaker_faildefault(cb)?) //Parse failure dropout handled by the ? and anyhow crate
+                    }
+                    None => None, //No config present, upstream cb config will apply defaults
+                };
 
                 // Parse builtin-handler
                 let builtin_handler =
@@ -150,7 +165,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     filters,
                     builtin_handler,
                     waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
-                    circuit_breaker: None,
+                    circuit_breaker: circuit_breaker,
                     retry_policy: None,
                     static_files,
                     api_schema,
@@ -1657,7 +1672,7 @@ fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zentinel_common::types::Priority;
+    use zentinel_common::{CircuitBreakerConfig, types::Priority};
 
     /// Parse a KDL fragment like `route "test" { priority ... }` and return
     /// the resulting `Priority`. The parser expects a `route` parent node, so
@@ -1754,4 +1769,139 @@ mod tests {
         assert!(Priority::NORMAL > Priority(25));
         assert!(Priority(25) > Priority::LOW);
     }
+
+
+    /// circuit-breaker stanza present, all values normally set, use those values
+    #[test]
+    fn test_parse_circuit_breaker_normal() {
+        let kdl = r#"
+        routes {
+            route "test-cb" {
+                upstream "backend"
+                circuit-breaker {
+                    failure-threshold 1
+                    success-threshold 2
+                    timeout-seconds 4
+                    half-open-max-requests 8
+                }
+            }
+        } 
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+        let routes = parse_routes(routes_node).unwrap();
+        let route = routes.get(0).unwrap();
+
+        let cbconfig = route.circuit_breaker.unwrap();
+
+        assert_eq!(cbconfig.failure_threshold, 1);
+        assert_eq!(cbconfig.success_threshold, 2);
+        assert_eq!(cbconfig.timeout_seconds, 4);
+        assert_eq!(cbconfig.half_open_max_requests, 8);
+    }
+
+    /// circuit-breaker stanza present, one key unrecognized, expect to Err and panic out
+    #[test]
+    fn test_parse_circuit_breaker_badkey() {
+        let kdl = r#"
+        routes {
+            route "test-cb" {
+                upstream "backend"
+                circuit-breaker {
+                    failure-threshold 1
+                    success-threshold 2
+                    timeout-sekonds 4
+                    half-open-max-requests 8
+                }
+            }
+        } 
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+        let routes = parse_routes(routes_node);
+
+        let err_msg = routes.unwrap_err();
+
+        assert_eq!(format!("{}", err_msg), "Got unknown key timeout-sekonds");
+    }
+
+/// circuit-breaker stanza present, new key unrecognized, expect to Err and panic out
+    #[test]
+    fn test_parse_circuit_breaker_badnewkey() {
+        let kdl = r#"
+        routes {
+            route "test-cb" {
+                upstream "backend"
+                circuit-breaker {
+                    failure-threshold 1
+                    success-threshold 2
+                    timeout-seconds 4
+                    half-open-max-requests 8
+                    reticulate 24
+                }
+            }
+        } 
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+        let routes = parse_routes(routes_node);
+
+        let err_msg = routes.unwrap_err();
+
+
+        assert_eq!(format!("{}", err_msg), "Got unknown key reticulate");
+    }
+
+    /// circuit-breaker stanza present, all values missing, defaults should be used
+    #[test]
+    fn test_parse_circuit_breaker_fields_missing() {
+        let kdl = r#"
+        routes {
+            route "test-cb" {
+                upstream "backend"
+                circuit-breaker {
+                }
+            }
+        } 
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+        let routes = parse_routes(routes_node).unwrap();
+        let route = routes.get(0).unwrap();
+
+        let cbconfig = route.circuit_breaker.unwrap();
+
+        let cb_default = CircuitBreakerConfig::default();
+
+        assert_eq!(cbconfig.failure_threshold, cb_default.failure_threshold);
+        assert_eq!(cbconfig.success_threshold, cb_default.success_threshold);
+        assert_eq!(cbconfig.timeout_seconds, cb_default.timeout_seconds);
+        assert_eq!(
+            cbconfig.half_open_max_requests,
+            cb_default.half_open_max_requests
+        );
+    }
+
+        /// circuit-breaker stanza missing, Option<CircuitBreakerConfig> will be None, upstream to set defaults
+    #[test]
+    fn test_parse_circuit_breaker_stanza_missing() {
+        let kdl = r#"
+        routes {
+            route "test-cb" {
+                upstream "backend"
+            }
+        } 
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+        let routes = parse_routes(routes_node).unwrap();
+
+        let cbconfig = routes.get(0).unwrap().circuit_breaker;
+
+        assert!(cbconfig.is_none());
+    }
+
 }
