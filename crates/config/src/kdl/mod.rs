@@ -613,8 +613,7 @@ fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
 }
 
 /// Parse circuit breaker configuration
-/// TODO: introduce tests for legacy parser configuration, and migrate to
-/// parse_circuit_breaker_faildefault when possible
+/// TODO: migrate to parse_circuit_breaker_faildefault when possible
 fn parse_circuit_breaker(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
     let mut config = CircuitBreakerConfig::default();
 
@@ -1373,6 +1372,8 @@ fn parse_tracing_backend(node: &kdl::KdlNode) -> Result<crate::observability::Tr
 
 #[cfg(test)]
 mod tests {
+    use zentinel_common::CircuitBreaker;
+
     use super::*;
     use crate::filters::RateLimitKey;
 
@@ -2829,5 +2830,107 @@ mod tests {
         assert!(waf.audit_log);
         assert_eq!(waf.ruleset.paranoia_level, 1);
         assert_eq!(waf.ruleset.anomaly_threshold, 5);
+    }
+
+    #[test]
+    fn test_parse_single_agent_config() {
+        let kdl = r#"
+        agent "waf-agent" type="waf" {
+            unix-socket path="/var/run/waf.sock"
+            timeout-ms 200
+            events "request_headers" "request_body"
+            failure-mode "fail_open"
+        }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let agent_node = doc.get("agent").unwrap();
+
+        let agent = parse_single_agent(agent_node).unwrap();
+
+        let _target_sock_path = PathBuf::from("/var/run/waf.sock");
+
+        assert!(matches!(agent.agent_type, AgentType::Waf));
+        assert!(matches!(
+            agent.transport,
+            AgentTransport::UnixSocket {
+                path: _target_sock_path
+            }
+        ));
+        assert_eq!(
+            agent.events,
+            [AgentEvent::RequestHeaders, AgentEvent::RequestBody]
+        );
+        assert_eq!(agent.failure_mode, FailureMode::Open);
+        assert!(matches!(agent.circuit_breaker, None));
+    }
+
+    #[test]
+    fn test_parse_single_agent_config_default() {
+        let kdl = r#"
+        agent "waf-agent" type="waf" {
+            unix-socket path="/var/run/waf.sock"
+        }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let agent_node = doc.get("agent").unwrap();
+
+        let agent = parse_single_agent(agent_node).unwrap();
+
+        let _target_sock_path = PathBuf::from("/var/run/waf.sock");
+
+        assert!(matches!(agent.agent_type, AgentType::Waf));
+        assert!(matches!(
+            agent.transport,
+            AgentTransport::UnixSocket {
+                path: _target_sock_path
+            }
+        ));
+        assert_eq!(agent.events, [AgentEvent::RequestHeaders]);
+        assert_eq!(agent.failure_mode, FailureMode::Open);
+        assert!(matches!(agent.circuit_breaker, None));
+    }
+
+    #[test]
+    fn test_parse_single_agent_config_missing_transport() {
+        let kdl = r#"
+        agent "waf-agent" type="waf" {
+        }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let agent_node = doc.get("agent").unwrap();
+
+        let agent = parse_single_agent(agent_node);
+        let err_msg = agent.unwrap_err();
+
+        assert_eq!(
+            format!("{}", err_msg),
+            "Agent 'waf-agent' requires a transport (unix-socket, grpc, or http)"
+        );
+    }
+
+    #[test]
+    fn test_parse_single_agent_config_circuit_breaker() {
+        let kdl = r#"
+        agent "waf-agent" type="waf" {
+            unix-socket path="/var/run/waf.sock"
+            circuit-breaker {
+            }
+        }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let agent_node = doc.get("agent").unwrap();
+
+        let agent = parse_single_agent(agent_node).unwrap();
+        let cbconfig = agent.circuit_breaker.unwrap();
+
+        let cb_default = CircuitBreakerConfig::default();
+
+        assert_eq!(cbconfig.failure_threshold, cb_default.failure_threshold);
+        assert_eq!(cbconfig.success_threshold, cb_default.success_threshold);
+        assert_eq!(cbconfig.timeout_seconds, cb_default.timeout_seconds);
+        assert_eq!(
+            cbconfig.half_open_max_requests,
+            cb_default.half_open_max_requests
+        );
     }
 }
