@@ -1372,8 +1372,6 @@ fn parse_tracing_backend(node: &kdl::KdlNode) -> Result<crate::observability::Tr
 
 #[cfg(test)]
 mod tests {
-    use zentinel_common::CircuitBreaker;
-
     use super::*;
     use crate::filters::RateLimitKey;
 
