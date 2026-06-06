@@ -4,12 +4,14 @@
 //! into Zentinel configuration structures. It is organized into submodules:
 //!
 //! - `helpers`: Common parsing utility functions
+//! - `circuitbreaker_helper`: Helper functions to parse circuit-breaker stanzas with fail-to-default
 //! - `server`: Server and listener parsing
 //! - `routes`: Route and static file parsing
 //! - `upstreams`: Upstream target parsing
 //! - `filters`: Filter definition parsing
 //! - `namespace`: Namespace and service parsing
 
+mod circuitbreaker_helper;
 mod filters;
 mod helpers;
 mod namespace;
@@ -611,6 +613,8 @@ fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
 }
 
 /// Parse circuit breaker configuration
+/// TODO: introduce tests for legacy parser configuration, and migrate to
+/// parse_circuit_breaker_faildefault when possible
 fn parse_circuit_breaker(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
     let mut config = CircuitBreakerConfig::default();
 
