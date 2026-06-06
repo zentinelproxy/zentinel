@@ -165,7 +165,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     filters,
                     builtin_handler,
                     waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
-                    circuit_breaker: circuit_breaker,
+                    circuit_breaker,
                     retry_policy: None,
                     static_files,
                     api_schema,
@@ -1672,7 +1672,7 @@ fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zentinel_common::{CircuitBreakerConfig, types::Priority};
+    use zentinel_common::{types::Priority, CircuitBreakerConfig};
 
     /// Parse a KDL fragment like `route "test" { priority ... }` and return
     /// the resulting `Priority`. The parser expects a `route` parent node, so
@@ -1770,7 +1770,6 @@ mod tests {
         assert!(Priority(25) > Priority::LOW);
     }
 
-
     /// circuit-breaker stanza present, all values normally set, use those values
     #[test]
     fn test_parse_circuit_breaker_normal() {
@@ -1825,7 +1824,7 @@ mod tests {
         assert_eq!(format!("{}", err_msg), "Got unknown key timeout-sekonds");
     }
 
-/// circuit-breaker stanza present, new key unrecognized, expect to Err and panic out
+    /// circuit-breaker stanza present, new key unrecognized, expect to Err and panic out
     #[test]
     fn test_parse_circuit_breaker_badnewkey() {
         let kdl = r#"
@@ -1848,7 +1847,6 @@ mod tests {
         let routes = parse_routes(routes_node);
 
         let err_msg = routes.unwrap_err();
-
 
         assert_eq!(format!("{}", err_msg), "Got unknown key reticulate");
     }
@@ -1884,7 +1882,7 @@ mod tests {
         );
     }
 
-        /// circuit-breaker stanza missing, Option<CircuitBreakerConfig> will be None, upstream to set defaults
+    /// circuit-breaker stanza missing, Option<CircuitBreakerConfig> will be None, upstream to set defaults
     #[test]
     fn test_parse_circuit_breaker_stanza_missing() {
         let kdl = r#"
@@ -1903,5 +1901,4 @@ mod tests {
 
         assert!(cbconfig.is_none());
     }
-
 }
