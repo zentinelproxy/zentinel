@@ -330,10 +330,10 @@ Backend server pool configuration.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-|`failure-threshold` | `u32` | `5` | Threshold before error is considered failed |
-|`success-threshold` | `u32` | `2` | Threshold before retry is considered successful |
-|`timeout-seconds` | `u64` | `30` | Timeout before going into half-open mode |
-|`half-open-max-requests` | `u32` | `1` | Allowed half-open requests |
+|`failure-threshold` | `u32` | `5` | Failures before opening circuit |
+|`success-threshold` | `u32` | `2` | Successes to close circuit |
+|`timeout-seconds` | `u64` | `30` | Time before trying half-open mode |
+|`half-open-max-requests` | `u32` | `1` | Requests allowed in half-open |
 
 ---
 
