@@ -1,13 +1,5 @@
-/* Sample policy
-        retry-policy {
-            max-attempts 3
-            timeout-ms 30000
-            backoff-base-ms 100
-            backoff-max-ms 10000
-            retryable-status-codes 502 503 504
-        }
-*/
 use anyhow::{Context, Result};
+use tracing::warn;
 use zentinel_common::types::RetryPolicy;
 
 pub fn parse_retry_policy(node: &kdl::KdlNode) -> Result<RetryPolicy> {
@@ -20,16 +12,19 @@ pub fn parse_retry_policy(node: &kdl::KdlNode) -> Result<RetryPolicy> {
             }
             "timeout-ms" => {
                 cfg.timeout_ms = extract_u64_with_limits(node)?;
+                warn!("timeout-ms setting is parsed, but not implemented");
             }
             "backoff-base-ms" => {
                 cfg.backoff_base_ms = extract_u64_with_limits(node)?;
+                warn!("backoff-base-ms setting is parsed, but not implemented");
             }
             "backoff-max-ms" => {
                 cfg.backoff_max_ms = extract_u64_with_limits(node)?;
+                warn!("backoff-max-ms setting is parsed, but not implemented");
             }
             "retryable-status-codes" => {
                 cfg.retryable_status_codes = extract_vec_u16_statuscodes(node)?;
-                //TODO: implement parser
+                warn!("retryable-status-codes setting is parsed, but not implemented");
             }
             d => {
                 return Err(anyhow::anyhow!("Got unknown key {}", d));
