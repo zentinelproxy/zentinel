@@ -142,7 +142,6 @@ Request routing configuration.
 | `filters` | `[string]` | `[]` | Filter IDs to apply |
 | `builtin-handler` | `string` | - | Built-in handler (for `builtin` service type) |
 | `waf-enabled` | `bool` | `false` | Enable WAF for this route |
-| `circuit-breaker` | `CircuitBreakerConfig` | - | Circuit breaker settings |
 | `retry-policy` | `RetryPolicy` | - | Retry policy |
 | `static-files` | `StaticFileConfig` | - | Static file config (for `static` type) |
 | `api-schema` | `ApiSchemaConfig` | - | API schema validation |
@@ -277,6 +276,7 @@ Backend server pool configuration.
 | `timeouts` | `UpstreamTimeouts` | `{}` | Timeout settings |
 | `tls` | `UpstreamTlsConfig` | - | TLS configuration |
 | `http-version` | `HttpVersionConfig` | `{}` | HTTP version settings |
+| `circuit-breaker` | `CircuitBreakerConfig` | - | Circuit breaker settings |
 
 ### UpstreamTarget
 
@@ -325,6 +325,15 @@ Backend server pool configuration.
 | `request-secs` | `u64` | `60` | Request timeout |
 | `read-secs` | `u64` | `30` | Read timeout |
 | `write-secs` | `u64` | `30` | Write timeout |
+
+### CircuitBreakerConfig
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+|`failure-threshold` | `u32` | `5` | Threshold before error is considered failed |
+|`success-threshold` | `u32` | `2` | Threshold before retry is considered successful |
+|`timeout-seconds` | `u64` | `30` | Timeout before going into half-open mode |
+|`half-open-max-requests` | `u32` | `1` | Allowed half-open requests |
 
 ---
 
