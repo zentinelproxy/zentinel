@@ -15,6 +15,7 @@ mod circuitbreaker_helper;
 mod filters;
 mod helpers;
 mod namespace;
+mod retrypolicy_helper;
 mod routes;
 mod server;
 mod upstreams;

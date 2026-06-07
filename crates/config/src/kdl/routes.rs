@@ -9,7 +9,13 @@ use zentinel_common::budget::{
     BudgetPeriod, CostAttributionConfig, ModelPricing, TokenBudgetConfig,
 };
 
-use crate::{kdl::circuitbreaker_helper::parse_circuit_breaker_faildefault, routes::*};
+use crate::{
+    kdl::{
+        circuitbreaker_helper::parse_circuit_breaker_faildefault,
+        retrypolicy_helper::parse_retry_policy,
+    },
+    routes::*,
+};
 
 use super::helpers::{
     get_bool_entry, get_first_arg_string, get_float_entry, get_int_entry, get_string_entry,
@@ -72,18 +78,32 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 // Parse filters
                 let filters = parse_route_filter_refs(child)?;
 
+                // Parse circuit breaker
                 let cb_node = child.children().and_then(|c| {
                     c.nodes()
                         .iter()
                         .find(|n| n.name().value() == "circuit-breaker")
                 });
 
-                // Parse circuit breaker
                 let circuit_breaker = match cb_node {
                     Some(cb) => {
                         Some(parse_circuit_breaker_faildefault(cb)?) //Parse failure dropout handled by the ? and anyhow crate
                     }
-                    None => None, //No config present, upstream cb config will apply defaults
+                    None => None, //No config present
+                };
+
+                let rp_node = child.children().and_then(|c| {
+                    c.nodes()
+                        .iter()
+                        .find(|n| n.name().value() == "retry-policy")
+                });
+
+                // Parse retry-policy
+                let retry_policy = match rp_node {
+                    Some(rp) => {
+                        Some(parse_retry_policy(rp)?) //Parse failure dropout handled by the ? and anyhow crate
+                    }
+                    None => None, //No config present
                 };
 
                 // Parse builtin-handler
@@ -166,7 +186,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     builtin_handler,
                     waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
                     circuit_breaker,
-                    retry_policy: None,
+                    retry_policy,
                     static_files,
                     api_schema,
                     inference,
@@ -1800,7 +1820,7 @@ mod tests {
         assert_eq!(cbconfig.half_open_max_requests, 8);
     }
 
-    /// circuit-breaker stanza missing, Option<CircuitBreakerConfig> will be None, upstream to set defaults
+    /// circuit-breaker stanza missing, Option<CircuitBreakerConfig> will be None
     #[test]
     fn test_parse_circuit_breaker_stanza_missing() {
         let kdl = r#"
@@ -1818,5 +1838,58 @@ mod tests {
         let cbconfig = routes.get(0).unwrap().circuit_breaker;
 
         assert!(cbconfig.is_none());
+    }
+
+    /// retry-policy stanza present, all values normally set, use those values
+    /// Retain this test here to ensure block parser works
+    #[test]
+    fn test_parse_retry_policy_normal() {
+        let kdl = r#"
+        routes {
+            route "test-rp" {
+                upstream "backend";
+                retry-policy {
+                    max-attempts 10
+                    timeout-ms 20
+                    backoff-base-ms 30
+                    backoff-max-ms 40
+                    retryable-status-codes 550 551 552
+                }
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+
+        let routes = parse_routes(routes_node).unwrap();
+
+        let rp = routes.get(0).unwrap().retry_policy.as_ref().unwrap();
+
+        assert_eq!(rp.max_attempts, 10);
+        assert_eq!(rp.timeout_ms, 20);
+        assert_eq!(rp.backoff_base_ms, 30);
+        assert_eq!(rp.backoff_max_ms, 40);
+        assert_eq!(rp.retryable_status_codes, vec![550, 551, 552]);
+    }
+
+    /// retry-policy stanza missing, Option<RetryPolicy> will be None
+    #[test]
+    fn test_parse_retry_policy_stanza_missing() {
+        let kdl = r#"
+        routes {
+            route "test-rp" {
+                upstream "backend";
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+        let routes = parse_routes(routes_node).unwrap();
+
+        let rp = routes.get(0).unwrap().retry_policy.as_ref();
+
+        assert!(rp.is_none());
     }
 }
