@@ -89,7 +89,7 @@ RUN cargo build --release --package zentinel-proxy --package zentinel-echo-agent
 # error log under /var/log/zentinel as the non-root user. See
 # zentinelproxy/zentinel#255.
 ################################################################################
-FROM busybox:1.37 AS runtime-dirs
+FROM busybox:1.38 AS runtime-dirs
 RUN mkdir -p /var/log/zentinel /var/lib/zentinel
 
 ################################################################################
