@@ -11,7 +11,6 @@ use zentinel_common::budget::{
 
 use crate::{
     kdl::{
-        circuitbreaker_helper::parse_circuit_breaker_faildefault,
         retrypolicy_helper::parse_retry_policy,
     },
     routes::*,
@@ -40,7 +39,6 @@ const RECOGNIZED_ROUTE_CHILDREN: &[&str] = &[
     "fallback",
     "policies",
     "service-type",
-    "circuit-breaker",
 ];
 
 /// Parse routes configuration block
@@ -1692,6 +1690,7 @@ fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zentinel_common::types::Priority;
     use zentinel_common::types::Priority;
 
     /// Parse a KDL fragment like `route "test" { priority ... }` and return
