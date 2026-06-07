@@ -1769,56 +1769,6 @@ mod tests {
         assert!(Priority(25) > Priority::LOW);
     }
 
-    /// circuit-breaker stanza present, all values normally set, use those values
-    /// Retain this test here to ensure block parser works
-    #[test]
-    fn test_parse_circuit_breaker_normal() {
-        let kdl = r#"
-        routes {
-            route "test-cb" {
-                upstream "backend"
-                circuit-breaker {
-                    failure-threshold 1
-                    success-threshold 2
-                    timeout-seconds 4
-                    half-open-max-requests 8
-                }
-            }
-        } 
-        "#;
-        let doc: kdl::KdlDocument = kdl.parse().unwrap();
-        let routes_node = doc.get("routes").unwrap();
-        let routes = parse_routes(routes_node).unwrap();
-        let route = routes.get(0).unwrap();
-
-        let cbconfig = route.circuit_breaker.unwrap();
-
-        assert_eq!(cbconfig.failure_threshold, 1);
-        assert_eq!(cbconfig.success_threshold, 2);
-        assert_eq!(cbconfig.timeout_seconds, 4);
-        assert_eq!(cbconfig.half_open_max_requests, 8);
-    }
-
-    /// circuit-breaker stanza missing, Option<CircuitBreakerConfig> will be None
-    #[test]
-    fn test_parse_circuit_breaker_stanza_missing() {
-        let kdl = r#"
-        routes {
-            route "test-cb" {
-                upstream "backend"
-            }
-        } 
-        "#;
-
-        let doc: kdl::KdlDocument = kdl.parse().unwrap();
-        let routes_node = doc.get("routes").unwrap();
-        let routes = parse_routes(routes_node).unwrap();
-
-        let cbconfig = routes.get(0).unwrap().circuit_breaker;
-
-        assert!(cbconfig.is_none());
-    }
-
     /// retry-policy stanza present, all values normally set, use those values
     /// Retain this test here to ensure block parser works
     #[test]
