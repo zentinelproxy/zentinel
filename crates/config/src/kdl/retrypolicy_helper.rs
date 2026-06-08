@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use tracing::warn;
 use zentinel_common::types::RetryPolicy;
 
+use crate::kdl::helpers::{extract_u32_with_limits, extract_u64_with_limits};
+
 pub fn parse_retry_policy(node: &kdl::KdlNode) -> Result<RetryPolicy> {
     let default_config = RetryPolicy::default();
 
@@ -37,60 +39,8 @@ pub fn parse_retry_policy(node: &kdl::KdlNode) -> Result<RetryPolicy> {
     node.iter_children().try_fold(default_config, rp_config_map)
 }
 
-fn extract_u32_with_limits(node: &kdl::KdlNode) -> Result<u32> {
-    let first_value = match node.entries().first() {
-        Some(v) => v,
-        None => {
-            return Err(anyhow::anyhow!(
-                "Tried to parse u32 for key {} but did not find a value",
-                node.name()
-            ))
-        }
-    };
-    let u32_val = match first_value.value().as_integer() {
-        Some(v) => u32::try_from(v).map_err(anyhow::Error::msg)?,
-        None => {
-            return Err(anyhow::anyhow!(
-                "Tried to convert value in {} to u32, but failed",
-                node.name()
-            ))
-        }
-    };
-
-    if u32_val == 0 {
-        return Err(anyhow::anyhow!("Implausible value for {}", node.name()));
-    }
-
-    Ok(u32_val)
-}
-
-fn extract_u64_with_limits(node: &kdl::KdlNode) -> Result<u64> {
-    let first_value = match node.entries().first() {
-        Some(v) => v,
-        None => {
-            return Err(anyhow::anyhow!(
-                "Tried to parse u64 for key {} but did not find a value",
-                node.name()
-            ))
-        }
-    };
-    let u64_val = match first_value.value().as_integer() {
-        Some(v) => u64::try_from(v).map_err(anyhow::Error::msg)?,
-        None => {
-            return Err(anyhow::anyhow!(
-                "Tried to convert value in {} to u64, but failed",
-                node.name()
-            ))
-        }
-    };
-
-    if u64_val == 0 {
-        return Err(anyhow::anyhow!("Implausible value for {}", node.name()));
-    }
-
-    Ok(u64_val)
-}
-
+/// Extract vec of status codes from kdl entry. Statuscodes are assumed to
+/// be 100..=599
 fn extract_vec_u16_statuscodes(node: &kdl::KdlNode) -> Result<Vec<u16>> {
     let statuscode_range = 100..=599;
     let mut statuscodes: Vec<u16> = vec![];
