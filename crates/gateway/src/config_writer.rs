@@ -619,7 +619,6 @@ mod tests {
                 filters: vec!["redir-0".to_string()],
                 builtin_handler: None,
                 waf_enabled: false,
-                circuit_breaker: None,
                 retry_policy: None,
                 static_files: None,
                 api_schema: None,

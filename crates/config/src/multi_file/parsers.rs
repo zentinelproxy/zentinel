@@ -167,7 +167,6 @@ pub(super) fn parse_route(node: &KdlNode) -> Result<RouteConfig> {
         filters: Vec::new(),
         builtin_handler: None,
         waf_enabled: get_bool_entry(node, "waf-enabled").unwrap_or(false),
-        circuit_breaker: None,
         retry_policy: None,
         static_files: None,
         api_schema: None,

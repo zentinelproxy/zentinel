@@ -165,7 +165,6 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     filters,
                     builtin_handler,
                     waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
-                    circuit_breaker: None,
                     retry_policy,
                     static_files,
                     api_schema,
