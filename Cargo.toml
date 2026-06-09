@@ -29,16 +29,16 @@ homepage = "https://github.com/zentinelproxy/zentinel"
 rust-version = "1.95.0"
 
 [workspace.dependencies]
-# Core dependencies (using our fork with security fixes, rebased on 0.8.0)
-pingora = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3", features = ["proxy", "lb", "rustls"] }
-pingora-core = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3", features = ["rustls"] }
-pingora-http = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
-pingora-proxy = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
-pingora-load-balancing = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
-pingora-timeout = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
-pingora-limits = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
-pingora-cache = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
-pingora-memory-cache = { version = "0.8.0", git = "https://github.com/zentinelproxy/pingora.git", rev = "f351da3" }
+# Core dependencies (using our fork with security fixes, rebased on 0.8.1)
+pingora = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00", features = ["proxy", "lb", "rustls"] }
+pingora-core = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00", features = ["rustls"] }
+pingora-http = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00" }
+pingora-proxy = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00" }
+pingora-load-balancing = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00" }
+pingora-timeout = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00" }
+pingora-limits = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00" }
+pingora-cache = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00" }
+pingora-memory-cache = { version = "0.8.1", git = "https://github.com/zentinelproxy/pingora.git", rev = "b8d0c00" }
 
 # Async runtime
 # Minimal feature set for proxy workloads (trimmed from "full" for smaller binary)
