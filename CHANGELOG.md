@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.06_2](#26062---2026-06-09) | 0.6.16 | 2026-06-09 | Security: Pingora 0.8.0 → 0.8.1 (HTTP/2 memory-exhaustion bound, rustls-webpki advisory fixes) |
 | [26.06_1](#26061---2026-06-07) | 0.6.15 | 2026-06-07 | Standalone Prometheus metrics server, per-listener route sets, quickstart fixes, dep maintenance (tikv-jemallocator 0.7, openssl 0.10.80, rust-minor batches) |
 | [26.05_4](#26054---2026-05-12) | 0.6.14 | 2026-05-12 | Dependency maintenance: OpenTelemetry 0.32, sysinfo 0.39, Rust toolchain 1.95 |
 | [26.05_3](#26053---2026-05-05) | 0.6.13 | 2026-05-05 | Embedded and bundled KDL configs use `system` block; ACME hickory-resolver 0.26 fix |
@@ -50,8 +51,14 @@ for details.
 
 ## [Unreleased]
 
+---
+
+## [26.06_2] - 2026-06-09
+
+**Crate version:** 0.6.16
+
 ### Security
-- **Bump Pingora 0.8.0 → 0.8.1** ([cloudflare/pingora release](https://github.com/cloudflare/pingora/releases/tag/0.8.1)). Brings in two security-relevant changes: bounded default HTTP/2 server limits to mitigate memory exhaustion, and the upstream dev-dep bumps that resolve `RUSTSEC-2026-0098` / `RUSTSEC-2026-0099` (`rustls-webpki`). Fork rev bumped to `b8d0c00` via [zentinelproxy/pingora#4](https://github.com/zentinelproxy/pingora/pull/4).
+- **Bump Pingora 0.8.0 → 0.8.1** ([cloudflare/pingora release](https://github.com/cloudflare/pingora/releases/tag/0.8.1)). Brings in two security-relevant changes: bounded default HTTP/2 server limits to mitigate memory exhaustion, and the upstream dev-dep bumps that resolve `RUSTSEC-2026-0098` / `RUSTSEC-2026-0099` (`rustls-webpki`). Fork rev bumped to `b8d0c00` via [zentinelproxy/pingora#4](https://github.com/zentinelproxy/pingora/pull/4). (#270)
 
 ---
 
