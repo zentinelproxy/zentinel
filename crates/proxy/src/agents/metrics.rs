@@ -24,6 +24,8 @@ pub struct AgentMetrics {
     pub decisions_block: AtomicU64,
     pub decisions_redirect: AtomicU64,
     pub decisions_challenge: AtomicU64,
+    /// Bodies that exceeded an agent's inspection limit and skipped it (fail-open)
+    pub body_size_skips: AtomicU64,
 }
 
 impl AgentMetrics {
@@ -50,6 +52,11 @@ impl AgentMetrics {
     pub fn record_timeout(&self) {
         self.calls_total.fetch_add(1, Ordering::Relaxed);
         self.calls_timeout.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a body that exceeded an agent's inspection limit (fail-open skip).
+    pub fn record_body_size_skip(&self) {
+        self.body_size_skips.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get average call duration in microseconds.

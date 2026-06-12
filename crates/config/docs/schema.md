@@ -244,6 +244,18 @@ Per-route cache configuration, nested under `policies.cache`.
 | `burst-tokens` | `u64` | `10000` | Burst token allowance |
 | `estimation-method` | `string` | `"chars"` | Token estimation: `chars`, `words`, `tiktoken` |
 
+### TokenBudgetConfig
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `period` | `string` | `"daily"` | Budget period: `hourly`, `daily`, `monthly`, or seconds |
+| `limit` | `u64` | **required** | Total tokens allowed in the period |
+| `alert-thresholds` | `[f64]` | `[0.80, 0.90, 0.95]` | Usage fractions that fire alerts |
+| `enforce` | `bool` | `true` | Block requests when exhausted |
+| `rollover` | `bool` | `false` | Carry unused tokens into the next period |
+| `burst-allowance` | `f64` | - | Soft-limit burst fraction above the limit |
+| `max-tenants` | `usize` | `10000` | Max distinct tenants tracked in memory; expired tenants are evicted at the cap (see `zentinel_inference_budget_tenants` / `zentinel_inference_budget_tenant_evictions_total` metrics) |
+
 ### GuardrailsConfig
 
 | Property | Type | Description |
@@ -352,6 +364,7 @@ Reusable filter definitions.
 | `on-limit` | `string` | `"reject"` | Action: `reject`, `delay`, `log-only` |
 | `status-code` | `u16` | `429` | Response status when limited |
 | `backend` | `string` | `"local"` | Storage: `local`, `redis`, `memcached` |
+| `max-keys` | `usize` | `100000` | Max distinct keys tracked in memory; idle keys are evicted at the cap (see `zentinel_rate_limit_keys` / `zentinel_rate_limit_key_evictions_total` metrics) |
 
 #### headers
 
@@ -418,11 +431,11 @@ External processing agent configuration.
 | `type` | `string` | **required** | Agent type: `waf`, `auth`, `rate-limit`, `custom` |
 | `transport` | `AgentTransport` | **required** | Transport configuration |
 | `events` | `[string]` | **required** | Events to handle |
-| `timeout-ms` | `u64` | `1000` | Call timeout |
-| `failure-mode` | `string` | `"closed"` | Failure mode |
+| `timeout-ms` | `u64` | `1000` | Call timeout (must be > 0) |
+| `failure-mode` | `string` | `"open"` | Failure mode (`open` allows on agent failure, `closed` blocks) |
 | `circuit-breaker` | `CircuitBreakerConfig` | - | Circuit breaker |
-| `max-request-body-bytes` | `u64` | - | Max request body to send |
-| `max-response-body-bytes` | `u64` | - | Max response body to send |
+| `max-request-body-bytes` | `u64` | `1048576` (1 MiB) | Max request body inspected by this agent. Larger bodies follow `failure-mode`: `closed` blocks with 413, `open` skips this agent with a warning and metric |
+| `max-response-body-bytes` | `u64` | `1048576` (1 MiB) | Max response body inspected by this agent (same failure-mode semantics) |
 | `request-body-mode` | `string` | `"buffer"` | Body mode: `buffer`, `stream`, `hybrid` |
 | `max-concurrent-calls` | `u32` | `100` | Max concurrent calls |
 

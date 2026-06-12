@@ -3805,6 +3805,7 @@ impl ZentinelProxy {
                 if !decision.needs_more && !decision.is_allow() {
                     warn!(
                         correlation_id = %ctx.trace_id,
+                        agent_id = decision.decided_by.as_deref().unwrap_or("unknown"),
                         action = ?decision.action,
                         "Agent blocked request body"
                     );
@@ -4001,6 +4002,7 @@ impl ZentinelProxy {
                 if !decision.is_allow() {
                     warn!(
                         correlation_id = %ctx.trace_id,
+                        agent_id = decision.decided_by.as_deref().unwrap_or("unknown"),
                         action = ?decision.action,
                         "Agent blocked request body"
                     );

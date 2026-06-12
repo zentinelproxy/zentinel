@@ -112,6 +112,9 @@ fn parse_rate_limit_filter(node: &kdl::KdlNode) -> Result<Filter> {
         max_delay_ms: get_int_entry(node, "max-delay-ms")
             .map(|v| v as u64)
             .unwrap_or(5000),
+        max_keys: get_int_entry(node, "max-keys")
+            .map(|v| v as usize)
+            .unwrap_or_else(crate::filters::default_max_keys),
     }))
 }
 
@@ -426,5 +429,50 @@ fn parse_path_modifier(node: &kdl::KdlNode) -> Option<PathModifier> {
     } else {
         get_string_entry(node, "replace-prefix-match")
             .map(|prefix| PathModifier::ReplacePrefixMatch { value: prefix })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_filter(kdl: &str) -> Filter {
+        let doc: kdl::KdlDocument = kdl.parse().expect("kdl parses");
+        let node = doc.nodes().first().expect("one node");
+        parse_single_filter_definition(node).expect("filter parses")
+    }
+
+    #[test]
+    fn rate_limit_filter_parses_max_keys() {
+        let filter = parse_filter(
+            r#"filter "rl" {
+    type "rate-limit"
+    max-rps 50
+    max-keys 5000
+}"#,
+        );
+        match filter {
+            Filter::RateLimit(rl) => {
+                assert_eq!(rl.max_rps, 50);
+                assert_eq!(rl.max_keys, 5000);
+            }
+            other => panic!("expected rate-limit filter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rate_limit_filter_defaults_max_keys() {
+        let filter = parse_filter(
+            r#"filter "rl" {
+    type "rate-limit"
+    max-rps 50
+}"#,
+        );
+        match filter {
+            Filter::RateLimit(rl) => {
+                assert_eq!(rl.max_keys, crate::filters::default_max_keys());
+            }
+            other => panic!("expected rate-limit filter, got {other:?}"),
+        }
     }
 }

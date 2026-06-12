@@ -459,6 +459,7 @@ mod tests {
                 enforce: true,
                 rollover: false,
                 burst_allowance: None,
+                max_tenants: 10_000,
             }),
             cost_attribution: None,
             routing: None,

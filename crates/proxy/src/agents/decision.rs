@@ -9,6 +9,12 @@ use zentinel_agent_protocol::{AgentResponse, AuditMetadata, BodyMutation, Decisi
 pub struct AgentDecision {
     /// Final decision action
     pub action: AgentAction,
+    /// ID of the agent that produced the deciding (non-allow) action
+    ///
+    /// `None` for allow decisions and for decisions not attributable to a
+    /// specific agent. Preserved through [`AgentDecision::merge`] so block
+    /// logs can always answer "which agent blocked this request".
+    pub decided_by: Option<String>,
     /// Header modifications for request
     pub request_headers: Vec<HeaderOp>,
     /// Header modifications for response
@@ -50,6 +56,7 @@ impl AgentDecision {
     pub fn default_allow() -> Self {
         Self {
             action: AgentAction::Allow,
+            decided_by: None,
             request_headers: Vec::new(),
             response_headers: Vec::new(),
             audit: Vec::new(),
@@ -68,6 +75,7 @@ impl AgentDecision {
                 body: Some(message.to_string()),
                 headers: None,
             },
+            decided_by: None,
             request_headers: Vec::new(),
             response_headers: Vec::new(),
             audit: Vec::new(),
@@ -76,6 +84,19 @@ impl AgentDecision {
             request_body_mutation: None,
             response_body_mutation: None,
         }
+    }
+
+    /// Attribute this decision to the agent that produced it.
+    pub fn with_decided_by(mut self, agent_id: impl Into<String>) -> Self {
+        self.decided_by = Some(agent_id.into());
+        self
+    }
+
+    /// Convert an agent response into a decision attributed to `agent_id`.
+    pub fn from_response(response: AgentResponse, agent_id: &str) -> Self {
+        let mut decision: Self = response.into();
+        decision.decided_by = Some(agent_id.to_string());
+        decision
     }
 
     /// Check if decision is to allow.
@@ -88,9 +109,10 @@ impl AgentDecision {
     /// If other decision is not allow, use it as the action.
     /// Header modifications, audit metadata, and routing metadata are merged.
     pub fn merge(&mut self, other: AgentDecision) {
-        // If other decision is not allow, use it
+        // If other decision is not allow, use it (and keep its attribution)
         if !other.is_allow() {
             self.action = other.action;
+            self.decided_by = other.decided_by;
         }
 
         // Merge header modifications
@@ -143,6 +165,7 @@ impl From<AgentResponse> for AgentDecision {
 
         Self {
             action,
+            decided_by: None,
             request_headers: response.request_headers,
             response_headers: response.response_headers,
             audit: vec![response.audit],
@@ -170,5 +193,34 @@ mod tests {
 
         decision1.merge(decision2);
         assert!(!decision1.is_allow());
+    }
+
+    #[test]
+    fn merge_preserves_blocking_agent_attribution() {
+        let mut combined = AgentDecision::default_allow().with_decided_by("auth");
+        // Allow decisions carry no attribution worth keeping
+        assert!(combined.is_allow());
+
+        let block = AgentDecision::block(403, "Forbidden").with_decided_by("waf");
+        combined.merge(block);
+
+        assert!(!combined.is_allow());
+        assert_eq!(combined.decided_by.as_deref(), Some("waf"));
+    }
+
+    #[test]
+    fn merge_with_allow_keeps_existing_attribution() {
+        let mut combined = AgentDecision::block(403, "Forbidden").with_decided_by("waf");
+        combined.merge(AgentDecision::default_allow());
+
+        assert_eq!(combined.decided_by.as_deref(), Some("waf"));
+    }
+
+    #[test]
+    fn from_response_sets_decided_by() {
+        let response = AgentResponse::block(403, None);
+        let decision = AgentDecision::from_response(response, "waf");
+        assert!(!decision.is_allow());
+        assert_eq!(decision.decided_by.as_deref(), Some("waf"));
     }
 }
