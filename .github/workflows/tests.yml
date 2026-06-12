@@ -1,5 +1,8 @@
 # Tests workflow - runs the full workspace test suite.
 #
+# Unit (lib) tests run on every PR via ci.yml; this workflow covers the
+# rest (integration tests, doc tests, binaries).
+#
 # Not run on every PR (would burn through Action minutes — `cargo test
 # --workspace` takes 20+ minutes on this codebase). Instead:
 #

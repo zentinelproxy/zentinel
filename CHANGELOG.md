@@ -51,6 +51,38 @@ for details.
 
 ## [Unreleased]
 
+### Changed
+- **⚠️ Behavior change: oversized bodies no longer bypass agent inspection.**
+  Request/response bodies larger than an agent's `max-request-body-bytes` /
+  `max-response-body-bytes` (default 1 MiB; previously a hardcoded request-only
+  1 MB) now follow the agent's `failure-mode`: `closed` blocks the request with
+  **413**, `open` skips that agent loudly (warn log + `body_size_skips` metric)
+  while other agents still inspect. Previously oversized bodies were silently
+  allowed past all agents, and streaming bodies had no limit at all. Set
+  `failure-mode "open"` and/or raise the body limits on an agent to retain the
+  old (insecure) behavior explicitly.
+
+### Added
+- Per-agent `max-request-body-bytes` / `max-response-body-bytes` are now
+  enforced (the fields previously parsed but had no effect) and covered by the
+  multi-file config parser.
+- `max-keys` on rate-limit filters (default `100000`) bounds the in-memory
+  per-key limiter map with idle-aware eviction, replacing the unbounded growth
+  between periodic sweeps. New metrics: `zentinel_rate_limit_keys{scope}`,
+  `zentinel_rate_limit_key_evictions_total{scope}`.
+- `max-tenants` on inference token budgets (default `10000`) bounds per-tenant
+  budget state with expired-period-first eviction. New metrics:
+  `zentinel_inference_budget_tenants{route}`,
+  `zentinel_inference_budget_tenant_evictions_total{route}`.
+- `AgentDecision.decided_by` records which agent produced a block/redirect/
+  challenge (including synthetic fail-closed blocks from timeouts, circuit
+  breakers, and body-size limits); block logs carry `agent_id` and audit
+  entries gain an `agent:<id>` tag.
+- Config validation now rejects duplicate agent IDs, zero agent timeouts
+  (`timeout-ms`, `chunk-timeout-ms`), and zero body limits.
+- CI: workspace unit tests (`cargo test --workspace --lib`) now run on every
+  pull request; the full suite remains in the Tests workflow.
+
 ---
 
 ## [26.06_2] - 2026-06-09

@@ -715,6 +715,7 @@ impl ZentinelProxy {
                     message: None,
                     backend: zentinel_config::RateLimitBackend::Local,
                     max_delay_ms: 5000, // Default for policy-based rate limits
+                    max_keys: crate::rate_limit::DEFAULT_MAX_RATE_LIMIT_KEYS,
                 };
                 manager.register_route(&route.id, rl_config);
                 info!(
@@ -740,6 +741,7 @@ impl ZentinelProxy {
                             message: rl_filter.limit_message.clone(),
                             backend: rl_filter.backend.clone(),
                             max_delay_ms: rl_filter.max_delay_ms,
+                            max_keys: rl_filter.max_keys,
                         };
                         manager.register_route(&route.id, rl_config);
                         info!(

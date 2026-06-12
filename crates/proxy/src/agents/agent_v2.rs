@@ -108,6 +108,20 @@ impl AgentV2 {
         self.config.timeout_ms
     }
 
+    /// Maximum request body size (bytes) this agent will inspect.
+    pub fn max_request_body_bytes(&self) -> usize {
+        self.config
+            .max_request_body_bytes
+            .unwrap_or(super::DEFAULT_AGENT_MAX_BODY_BYTES)
+    }
+
+    /// Maximum response body size (bytes) this agent will inspect.
+    pub fn max_response_body_bytes(&self) -> usize {
+        self.config
+            .max_response_body_bytes
+            .unwrap_or(super::DEFAULT_AGENT_MAX_BODY_BYTES)
+    }
+
     /// Get the agent's metrics.
     pub fn metrics(&self) -> &AgentMetrics {
         &self.metrics

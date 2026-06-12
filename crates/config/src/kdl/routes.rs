@@ -1345,6 +1345,9 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
     let enforce = get_bool_entry(node, "enforce").unwrap_or(true);
     let rollover = get_bool_entry(node, "rollover").unwrap_or(false);
     let burst_allowance = get_float_entry(node, "burst-allowance");
+    let max_tenants = get_int_entry(node, "max-tenants")
+        .map(|v| v as usize)
+        .unwrap_or_else(zentinel_common::budget::default_max_tenants);
 
     trace!(
         period = ?period,
@@ -1353,6 +1356,7 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
         enforce = enforce,
         rollover = rollover,
         burst_allowance = ?burst_allowance,
+        max_tenants = max_tenants,
         "Parsed token budget configuration"
     );
 
@@ -1363,6 +1367,7 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
         enforce,
         rollover,
         burst_allowance,
+        max_tenants,
     })
 }
 

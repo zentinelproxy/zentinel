@@ -39,6 +39,14 @@ mod decision;
 mod manager;
 mod metrics;
 
+/// Default maximum body size (in bytes) sent to an agent for inspection.
+///
+/// Applies when `max-request-body-bytes` / `max-response-body-bytes` are not
+/// set on the agent. Bodies larger than the effective limit are handled
+/// according to the agent's failure mode: fail-closed blocks the request,
+/// fail-open skips that agent's inspection (loudly).
+pub const DEFAULT_AGENT_MAX_BODY_BYTES: usize = 1024 * 1024;
+
 pub use agent_v2::AgentV2;
 pub use context::AgentCallContext;
 pub use decision::{AgentAction, AgentDecision};

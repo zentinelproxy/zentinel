@@ -395,6 +395,10 @@ pub fn validate_config_semantics(config: &Config) -> Result<(), validator::Valid
     trace!("Validating upstreams");
     validate_upstreams(config, &mut errors);
 
+    // Validate agents
+    trace!("Validating agents");
+    validate_agents(config, &mut errors);
+
     // Validate duplicates
     trace!("Checking for duplicates");
     validate_duplicates(config, &mut errors);
@@ -723,6 +727,44 @@ fn validate_upstreams(config: &Config, errors: &mut Vec<String>) {
     }
 }
 
+fn validate_agents(config: &Config, errors: &mut Vec<String>) {
+    trace!(agent_count = config.agents.len(), "Validating agents");
+
+    for agent in &config.agents {
+        if agent.timeout_ms == 0 {
+            warn!(agent_id = %agent.id, "Agent has zero timeout");
+            errors.push(format!(
+                "Agent '{}' has timeout_ms 0. Timeouts must be greater than 0.",
+                agent.id
+            ));
+        }
+
+        if agent.chunk_timeout_ms == 0 {
+            warn!(agent_id = %agent.id, "Agent has zero chunk timeout");
+            errors.push(format!(
+                "Agent '{}' has chunk_timeout_ms 0. Timeouts must be greater than 0.",
+                agent.id
+            ));
+        }
+
+        if agent.max_request_body_bytes == Some(0) {
+            warn!(agent_id = %agent.id, "Agent has zero request body limit");
+            errors.push(format!(
+                "Agent '{}' has max_request_body_bytes 0. Use a positive limit, or omit the field for the default.",
+                agent.id
+            ));
+        }
+
+        if agent.max_response_body_bytes == Some(0) {
+            warn!(agent_id = %agent.id, "Agent has zero response body limit");
+            errors.push(format!(
+                "Agent '{}' has max_response_body_bytes 0. Use a positive limit, or omit the field for the default.",
+                agent.id
+            ));
+        }
+    }
+}
+
 fn validate_duplicates(config: &Config, errors: &mut Vec<String>) {
     trace!("Checking for duplicate identifiers");
 
@@ -734,6 +776,18 @@ fn validate_duplicates(config: &Config, errors: &mut Vec<String>) {
             errors.push(format!(
                 "Duplicate route ID '{}'. Each route must have a unique identifier.",
                 route.id
+            ));
+        }
+    }
+
+    // Duplicate agent IDs
+    let mut seen_agents = HashSet::new();
+    for agent in &config.agents {
+        if !seen_agents.insert(&agent.id) {
+            warn!(agent_id = %agent.id, "Duplicate agent ID found");
+            errors.push(format!(
+                "Duplicate agent ID '{}'. Each agent must have a unique identifier.",
+                agent.id
             ));
         }
     }
@@ -1238,6 +1292,134 @@ mod tests {
             shadow: None,
             fallback: None,
         }
+    }
+
+    fn config_with_agent_block(agent_block: &str) -> crate::Config {
+        let kdl = format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{
+                listener "public" {{
+                    address "0.0.0.0:8080"
+                }}
+            }}
+            routes {{
+                route "api" {{
+                    matches {{ path-prefix "/" }}
+                    upstream "backend"
+                }}
+            }}
+            upstreams {{
+                upstream "backend" {{
+                    target "127.0.0.1:3000"
+                }}
+            }}
+            agents {{
+                {agent_block}
+            }}
+        "#
+        );
+        crate::Config::from_kdl(&kdl).expect("config parses")
+    }
+
+    fn validation_errors(config: &crate::Config) -> String {
+        match config.validate() {
+            Ok(()) => String::new(),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn duplicate_agent_ids_fail_validation() {
+        let config = config_with_agent_block(
+            r#"
+            agent "waf" type="waf" {
+                unix-socket path="/tmp/waf-a.sock"
+            }
+            agent "waf" type="waf" {
+                unix-socket path="/tmp/waf-b.sock"
+            }
+            "#,
+        );
+        let errors = validation_errors(&config);
+        assert!(
+            errors.contains("Duplicate agent ID 'waf'"),
+            "expected duplicate agent ID error, got: {errors}"
+        );
+    }
+
+    #[test]
+    fn agent_zero_timeout_fails_validation() {
+        let config = config_with_agent_block(
+            r#"
+            agent "waf" type="waf" {
+                unix-socket path="/tmp/waf.sock"
+                timeout-ms 0
+            }
+            "#,
+        );
+        let errors = validation_errors(&config);
+        assert!(
+            errors.contains("Agent 'waf' has timeout_ms 0"),
+            "expected zero timeout error, got: {errors}"
+        );
+    }
+
+    #[test]
+    fn agent_zero_chunk_timeout_fails_validation() {
+        let config = config_with_agent_block(
+            r#"
+            agent "waf" type="waf" {
+                unix-socket path="/tmp/waf.sock"
+                chunk-timeout-ms 0
+            }
+            "#,
+        );
+        let errors = validation_errors(&config);
+        assert!(
+            errors.contains("Agent 'waf' has chunk_timeout_ms 0"),
+            "expected zero chunk timeout error, got: {errors}"
+        );
+    }
+
+    #[test]
+    fn agent_zero_body_limits_fail_validation() {
+        let config = config_with_agent_block(
+            r#"
+            agent "waf" type="waf" {
+                unix-socket path="/tmp/waf.sock"
+                max-request-body-bytes 0
+                max-response-body-bytes 0
+            }
+            "#,
+        );
+        let errors = validation_errors(&config);
+        assert!(
+            errors.contains("Agent 'waf' has max_request_body_bytes 0"),
+            "expected zero request body limit error, got: {errors}"
+        );
+        assert!(
+            errors.contains("Agent 'waf' has max_response_body_bytes 0"),
+            "expected zero response body limit error, got: {errors}"
+        );
+    }
+
+    #[test]
+    fn valid_agent_passes_validation() {
+        let config = config_with_agent_block(
+            r#"
+            agent "waf" type="waf" {
+                unix-socket path="/tmp/waf.sock"
+                timeout-ms 500
+            }
+            "#,
+        );
+        let errors = validation_errors(&config);
+        assert!(
+            errors.is_empty(),
+            "valid agent config must pass validation, got: {errors}"
+        );
     }
 
     #[test]

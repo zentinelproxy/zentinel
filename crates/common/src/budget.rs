@@ -53,6 +53,14 @@ pub struct TokenBudgetConfig {
     /// E.g., 0.10 allows 10% burst above the limit
     #[serde(default)]
     pub burst_allowance: Option<f64>,
+
+    /// Maximum number of distinct tenants tracked in memory
+    ///
+    /// Bounds per-tenant budget state. When the cap is reached, tenants
+    /// whose period has expired are evicted first; if none are expired,
+    /// the tenants with the oldest periods are evicted.
+    #[serde(default = "default_max_tenants")]
+    pub max_tenants: usize,
 }
 
 fn default_alert_thresholds() -> Vec<f64> {
@@ -61,6 +69,11 @@ fn default_alert_thresholds() -> Vec<f64> {
 
 fn default_true() -> bool {
     true
+}
+
+/// Default bound on distinct tenants tracked per budget tracker.
+pub fn default_max_tenants() -> usize {
+    10_000
 }
 
 impl Default for TokenBudgetConfig {
@@ -72,6 +85,7 @@ impl Default for TokenBudgetConfig {
             enforce: true,
             rollover: false,
             burst_allowance: None,
+            max_tenants: default_max_tenants(),
         }
     }
 }
