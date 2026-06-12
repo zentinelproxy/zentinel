@@ -170,6 +170,7 @@ pub fn create_default_config() -> Config {
             working_directory: None,
             trace_id_format: Default::default(),
             auto_reload: false,
+            route_cache_size: 1000,
         },
         listeners: vec![
             ListenerConfig {

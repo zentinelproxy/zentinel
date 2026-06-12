@@ -570,6 +570,7 @@ mod tests {
                 working_directory: None,
                 trace_id_format: Default::default(),
                 auto_reload: true,
+                route_cache_size: 1000,
             },
             listeners: vec![ListenerConfig {
                 id: "http".to_string(),

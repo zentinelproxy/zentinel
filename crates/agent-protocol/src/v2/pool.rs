@@ -1789,9 +1789,11 @@ impl AgentPool {
         loop {
             interval.tick().await;
 
-            // Clean up expired sticky sessions and correlation affinities
+            // Clean up expired sticky sessions, correlation affinities, and
+            // stale agent-reported metric series
             self.cleanup_expired_sessions();
             self.cleanup_expired_affinities();
+            self.metrics_collector.expire_old_metrics();
 
             // Iterate without holding a long-lived lock
             let agent_ids: Vec<String> = self.agents.iter().map(|e| e.key().clone()).collect();
