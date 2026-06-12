@@ -317,6 +317,7 @@ impl ActiveHealthChecker {
     /// Spawn health check task for a target
     fn spawn_check_task(&self, target: String) -> tokio::task::JoinHandle<()> {
         let interval = Duration::from_secs(self.config.interval_secs);
+        let check_timeout = Duration::from_secs(self.config.timeout_secs);
         let checker = Arc::clone(&self.checker);
         let health_status = Arc::clone(&self.health_status);
         let healthy_threshold = self.config.healthy_threshold;
@@ -345,7 +346,17 @@ impl ActiveHealthChecker {
                             "Performing health check"
                         );
                         let start = Instant::now();
-                        let result = checker.check(&target).await;
+                        // Outer timeout bounds the WHOLE check (connect + write
+                        // + read). Checker impls bound the connect themselves,
+                        // but a backend that accepts then hangs would otherwise
+                        // stall this target's check loop forever.
+                        let result = match time::timeout(check_timeout, checker.check(&target)).await {
+                            Ok(r) => r,
+                            Err(_) => Err(format!(
+                                "Health check timed out after {:?} (timeout-secs)",
+                                check_timeout
+                            )),
+                        };
                         let check_duration = start.elapsed();
 
                         // Update health status

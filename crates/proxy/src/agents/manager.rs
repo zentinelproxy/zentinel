@@ -1228,6 +1228,18 @@ impl AgentManager {
         info!("Agent manager shutdown complete");
     }
 
+    /// Release per-request agent state after a request completes.
+    ///
+    /// Clears the correlation affinity (headers → body chunk connection
+    /// pinning) on every agent pool. Affinities that are never released here
+    /// are reclaimed by the pool maintenance TTL sweep.
+    pub async fn end_request(&self, correlation_id: &str) {
+        let agents = self.agents.read().await;
+        for agent in agents.values() {
+            agent.clear_correlation_affinity(correlation_id);
+        }
+    }
+
     /// Get agent metrics.
     pub fn metrics(&self) -> &AgentMetrics {
         &self.metrics

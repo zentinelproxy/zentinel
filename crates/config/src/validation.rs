@@ -375,6 +375,15 @@ pub fn validate_config_semantics(config: &Config) -> Result<(), validator::Valid
         "Collected IDs for cross-reference validation"
     );
 
+    // Validate server-wide settings
+    if config.server.route_cache_size == 0 {
+        errors.push(
+            "server.route-cache-size must be greater than 0 (the route cache cannot be disabled \
+             by setting it to zero)"
+                .to_string(),
+        );
+    }
+
     // Validate routes
     trace!("Validating routes");
     validate_routes(config, &route_ids, &upstream_ids, &filter_ids, &mut errors);
@@ -1902,6 +1911,7 @@ mod tests {
             working_directory: None,
             trace_id_format: Default::default(),
             auto_reload: false,
+            route_cache_size: 1000,
         };
 
         // --- ListenerConfig ---

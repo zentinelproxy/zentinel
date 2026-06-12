@@ -35,6 +35,12 @@ Global server configuration.
 | `working-directory` | `string` | - | Working directory |
 | `trace-id-format` | `string` | `"tinyflake"` | Trace ID format (`tinyflake` or `uuid`) |
 | `auto-reload` | `bool` | `false` | Auto-reload config on file changes |
+| `route-cache-size` | `u32` | `1000` | Max entries in the route-match cache (per route set); must be > 0. Evictions counted in `zentinel_route_cache_evictions_total` |
+
+> **Hot reload caveat:** routes, upstreams, filters, and agents are applied by
+> hot reload (SIGHUP / auto-reload). Listener bindings and `system` settings
+> are **not** — the proxy logs a warning if they changed and keeps the running
+> values until restart.
 
 ---
 

@@ -172,7 +172,11 @@ impl ZentinelProxy {
             .await;
 
         // Create route matcher (global routes only)
-        let route_matcher = Arc::new(RwLock::new(RouteMatcher::new(config.routes.clone(), None)?));
+        let route_matcher = Arc::new(RwLock::new(RouteMatcher::with_cache_size(
+            config.routes.clone(),
+            None,
+            config.server.route_cache_size,
+        )?));
 
         // Build per-listener route matchers for listeners bound to a namespace
         // route set (empty unless any listener references a namespace).
@@ -410,7 +414,11 @@ impl ZentinelProxy {
                 );
                 continue;
             };
-            match RouteMatcher::new(ns.routes.clone(), None) {
+            match RouteMatcher::with_cache_size(
+                ns.routes.clone(),
+                None,
+                config.server.route_cache_size,
+            ) {
                 Ok(matcher) => {
                     info!(
                         listener_id = %listener.id,

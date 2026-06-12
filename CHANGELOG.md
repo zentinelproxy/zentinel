@@ -82,6 +82,42 @@ for details.
   (`timeout-ms`, `chunk-timeout-ms`), and zero body limits.
 - CI: workspace unit tests (`cargo test --workspace --lib`) now run on every
   pull request; the full suite remains in the Tests workflow.
+- `system { route-cache-size N }` (default `1000`) exposes the previously
+  hardcoded route-match cache size; evictions are now visible via
+  `zentinel_route_cache_evictions_total` and a debug log.
+- Agent pool correlation affinities are bounded (`max_correlation_affinities`,
+  default `100000`) with idle-TTL reclamation (default 5 min) and explicit
+  release at request completion. New metrics: `correlation_affinities` gauge,
+  `affinity_evictions_total`, `affinity_rejections_total`.
+
+### Fixed
+- **Agent pool maintenance now actually runs.** `AgentPool::run_maintenance`
+  (connection health re-checks, reconnection, sticky-session cleanup) existed
+  but was never spawned: a crashed-and-restarted agent stayed permanently
+  unhealthy until proxy restart. It is now spawned per agent on initialize.
+- Correlation affinity entries leaked once per request (inserted on every
+  request-headers call, never cleared anywhere).
+- Reverse-connection clients leaked pending-response entries on
+  serialization/send failure and on timeout under lock contention; the
+  `in_flight` gauge also drifted upward on every error.
+- Agent metrics collector: `max_series` was configured but never enforced and
+  `expire_old_metrics` was never called, so agent-reported series accumulated
+  without bound. New series are dropped at the limit (warn + counter) and
+  stale series expire via pool maintenance.
+- Consistent-hash lookup cache grew without bound on request-derived key
+  hashes (`with_capacity(1000)` was only an allocation hint); now hard-bounded
+  at 10k entries.
+- Active health checks now bound the WHOLE probe (connect + write + read) with
+  `timeout-secs`; previously only the connect was bounded, so a backend that
+  accepted then hung froze that target's check loop forever.
+- Disk-cache in-flight write tracking could silently skip cleanup when a
+  handler was dropped under lock contention; moved to a lock-free map. Startup
+  now probes cache-dir writability once with an actionable error.
+- Hot reload warns explicitly when listener or `system` settings changed in
+  the new config (they are not hot-reloadable and were previously ignored
+  silently).
+- README no longer claims S3-FIFO/TinyLFU cache eviction (it is LRU) or
+  WebSocket traffic mirroring (frame inspection + session affinity).
 
 ---
 
