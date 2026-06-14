@@ -50,6 +50,9 @@ for details.
 
 ## [Unreleased]
 
+### Security
+- **Bump Pingora 0.8.0 → 0.8.1** ([cloudflare/pingora release](https://github.com/cloudflare/pingora/releases/tag/0.8.1)). Brings in two security-relevant changes: bounded default HTTP/2 server limits to mitigate memory exhaustion, and the upstream dev-dep bumps that resolve `RUSTSEC-2026-0098` / `RUSTSEC-2026-0099` (`rustls-webpki`). Fork rev bumped to `b8d0c00` via [zentinelproxy/pingora#4](https://github.com/zentinelproxy/pingora/pull/4).
+
 ---
 
 ## [26.06_1] - 2026-06-07

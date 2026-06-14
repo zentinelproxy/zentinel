@@ -4,8 +4,8 @@ version = 4
 
 [[package]]
 name = "TinyUFO"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "ahash",
  "crossbeam-queue",
@@ -165,7 +165,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -176,7 +176,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -735,27 +735,27 @@ dependencies = [
 
 [[package]]
 name = "cf-rustracing"
-version = "1.3.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6565523d8145e63e0cf1b397a5f1bd4e90d5652a7dffb2de8cec460ff23ef6b1"
+checksum = "93f85c3824e4191621dec0551e3cef3d511f329da9a8990bf3e450a85651d97e"
 dependencies = [
  "backtrace",
- "rand 0.10.1",
+ "rand 0.8.6",
  "tokio",
  "trackable",
 ]
 
 [[package]]
 name = "cf-rustracing-jaeger"
-version = "1.3.0"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16c0e4d8cce27f6a6eaff58d2b66f063a18b8ed0d6ef0947ae7a263afa3b7c08"
+checksum = "a6a5f80d44c257c3300a7f45ada676c211e64bbbac591bbec19344a8f61fbcab"
 dependencies = [
  "cf-rustracing",
  "hostname",
  "local-ip-address",
  "percent-encoding",
- "rand 0.10.1",
+ "rand 0.9.4",
  "thrift_codec",
  "tokio",
  "trackable",
@@ -1600,7 +1600,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1752,7 +1752,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2233,6 +2233,10 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+ "allocator-api2",
+]
 
 [[package]]
 name = "hashbrown"
@@ -2260,8 +2264,6 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.2.0",
  "serde",
  "serde_core",
@@ -2573,7 +2575,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -3675,7 +3677,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4231,8 +4233,8 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pingora"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "pingora-cache",
  "pingora-core",
@@ -4244,8 +4246,8 @@ dependencies = [
 
 [[package]]
 name = "pingora-cache"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "ahash",
  "async-trait",
@@ -4269,7 +4271,7 @@ dependencies = [
  "pingora-http",
  "pingora-lru",
  "pingora-timeout",
- "rand 0.9.4",
+ "rand 0.8.6",
  "regex",
  "rmp",
  "rmp-serde",
@@ -4280,8 +4282,8 @@ dependencies = [
 
 [[package]]
 name = "pingora-core"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "ahash",
  "async-trait",
@@ -4314,12 +4316,12 @@ dependencies = [
  "pingora-rustls",
  "pingora-timeout",
  "prometheus 0.13.4",
- "rand 0.9.4",
+ "rand 0.8.6",
  "regex",
  "serde",
  "serde_yaml",
  "sfv",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "strum",
  "strum_macros",
  "tokio",
@@ -4333,13 +4335,13 @@ dependencies = [
 
 [[package]]
 name = "pingora-error"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 
 [[package]]
 name = "pingora-header-serde"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "bytes",
  "http 1.4.1",
@@ -4353,8 +4355,8 @@ dependencies = [
 
 [[package]]
 name = "pingora-http"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "bytes",
  "http 1.4.1",
@@ -4363,24 +4365,24 @@ dependencies = [
 
 [[package]]
 name = "pingora-ketama"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "crc32fast",
 ]
 
 [[package]]
 name = "pingora-limits"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "ahash",
 ]
 
 [[package]]
 name = "pingora-load-balancing"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -4394,25 +4396,25 @@ dependencies = [
  "pingora-http",
  "pingora-ketama",
  "pingora-runtime",
- "rand 0.9.4",
+ "rand 0.8.6",
  "tokio",
 ]
 
 [[package]]
 name = "pingora-lru"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "arrayvec",
- "hashbrown 0.17.0",
+ "hashbrown 0.14.5",
  "parking_lot",
- "rand 0.9.4",
+ "rand 0.8.6",
 ]
 
 [[package]]
 name = "pingora-memory-cache"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "TinyUFO",
  "ahash",
@@ -4426,8 +4428,8 @@ dependencies = [
 
 [[package]]
 name = "pingora-pool"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "crossbeam-queue",
  "log",
@@ -4440,8 +4442,8 @@ dependencies = [
 
 [[package]]
 name = "pingora-proxy"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4455,26 +4457,26 @@ dependencies = [
  "pingora-core",
  "pingora-error",
  "pingora-http",
- "rand 0.9.4",
+ "rand 0.8.6",
  "regex",
  "tokio",
 ]
 
 [[package]]
 name = "pingora-runtime"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "once_cell",
- "rand 0.9.4",
+ "rand 0.8.6",
  "thread_local",
  "tokio",
 ]
 
 [[package]]
 name = "pingora-rustls"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "log",
  "no_debug",
@@ -4489,8 +4491,8 @@ dependencies = [
 
 [[package]]
 name = "pingora-timeout"
-version = "0.8.0"
-source = "git+https://github.com/zentinelproxy/pingora.git?rev=f351da3#f351da3fc235b1aee49de3fd44610c244b356fea"
+version = "0.8.1"
+source = "git+https://github.com/zentinelproxy/pingora.git?rev=b8d0c00#b8d0c006629cfb91a64f0749a7d260d5bc0be31f"
 dependencies = [
  "once_cell",
  "parking_lot",
@@ -4695,7 +4697,7 @@ dependencies = [
  "bitflags 2.11.1",
  "num-traits",
  "rand 0.9.4",
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_xorshift",
  "regex-syntax",
  "rusty-fork",
@@ -4848,7 +4850,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.2",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4886,7 +4888,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -4914,11 +4916,22 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+dependencies = [
+ "libc",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
 dependencies = [
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_core 0.9.5",
 ]
 
@@ -4935,12 +4948,31 @@ dependencies = [
 
 [[package]]
 name = "rand_chacha"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand_chacha"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+dependencies = [
+ "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -5332,7 +5364,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5432,7 +5464,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5883,7 +5915,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6091,7 +6123,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6110,7 +6142,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7567,7 +7599,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
