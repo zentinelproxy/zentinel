@@ -129,18 +129,15 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
             );
         }
 
-        let cb_node = child.children().and_then(|c| {
-            c.nodes()
-                .iter()
-                .find(|n| n.name().value() == "circuit-breaker")
-        });
-
-        let circuit_breaker = match cb_node {
-            Some(cb) => {
-                Some(parse_circuit_breaker_faildefault(cb)?) //Parse failure dropout handled by the ? and anyhow crate
-            }
-            None => None, //No config present, upstream cb config will apply defaults
-        };
+        let circuit_breaker = child
+            .children()
+            .and_then(|c| {
+                c.nodes()
+                    .iter()
+                    .find(|n| n.name().value() == "circuit-breaker")
+            })
+            .map(parse_circuit_breaker_faildefault)
+            .transpose()?;
 
         trace!(
             upstream_id = %id,

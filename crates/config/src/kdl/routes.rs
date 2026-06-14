@@ -72,19 +72,15 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 // Parse filters
                 let filters = parse_route_filter_refs(child)?;
 
-                let rp_node = child.children().and_then(|c| {
-                    c.nodes()
-                        .iter()
-                        .find(|n| n.name().value() == "retry-policy")
-                });
-
-                // Parse retry-policy
-                let retry_policy = match rp_node {
-                    Some(rp) => {
-                        Some(parse_retry_policy(rp)?) //Parse failure dropout handled by the ? and anyhow crate
-                    }
-                    None => None, //No config present
-                };
+                let retry_policy = child
+                    .children()
+                    .and_then(|c| {
+                        c.nodes()
+                            .iter()
+                            .find(|n| n.name().value() == "retry-policy")
+                    })
+                    .map(parse_retry_policy)
+                    .transpose()?;
 
                 // Parse builtin-handler
                 let builtin_handler =
