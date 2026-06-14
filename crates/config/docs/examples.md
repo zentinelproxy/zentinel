@@ -142,7 +142,6 @@ routes {
         upstream "api-cluster"
         retry-policy {
             max-retries 2
-            retry-on ["5xx" "connection-error"]
         }
     }
 }
