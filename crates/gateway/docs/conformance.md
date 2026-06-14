@@ -75,6 +75,24 @@ go test ./... -run TestConformance \
 | Cross-namespace references with ReferenceGrant | Implemented |
 | Status condition updates | Implemented |
 
+
+***Note that circuit_breaker configuration is currently *not* parsed, and defaults to (because of None)***
+
+```
+failure_threshold: 5 
+success_threshold: 2
+timeout_seconds: 30
+half_open_max_requests: 1
+```
+
+***Note that retry_policy configuration is currently *not* parsed, and defaults to (because of None)***
+
+```
+max_attempts: 3
+```
+
+
+
 ### Extended
 
 | Feature | Status |
