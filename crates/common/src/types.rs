@@ -226,9 +226,7 @@ pub struct RetryPolicy {
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self {
-            max_attempts: 3,
-        }
+        Self { max_attempts: 3 }
     }
 }
 

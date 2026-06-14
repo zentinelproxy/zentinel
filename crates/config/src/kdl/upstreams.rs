@@ -1,6 +1,6 @@
 //! Upstream KDL parsing.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::trace;
@@ -11,6 +11,166 @@ use crate::{kdl::circuitbreaker_helper::parse_circuit_breaker_faildefault, upstr
 
 use super::helpers::{get_first_arg_string, get_int_entry, parse_upstream_targets};
 
+//Parse a single upstream block
+pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
+    if child.name().value() == "upstream" {
+        let id = get_first_arg_string(child).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Upstream requires an ID argument, e.g., upstream \"backend\" {{ ... }}"
+            )
+        })?;
+
+        trace!(upstream_id = %id, "Parsing upstream");
+
+        // Parse targets (accepts every supported syntax; see
+        // `parse_upstream_targets`).
+        let targets = parse_upstream_targets(child);
+
+        if targets.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Upstream '{}' requires at least one target, e.g., target \"127.0.0.1:8081\"",
+                id
+            ));
+        }
+
+        // Parse load balancing algorithm and sticky session config
+        let load_balancing_node = child.children().and_then(|c| {
+            c.nodes()
+                .iter()
+                .find(|n| n.name().value() == "load-balancing")
+        });
+
+        let load_balancing = load_balancing_node
+            .and_then(get_first_arg_string)
+            .map(|s| parse_load_balancing(&s))
+            .unwrap_or(LoadBalancingAlgorithm::RoundRobin);
+
+        // Parse sticky session config (if load-balancing is "sticky" with children)
+        let sticky_session = if load_balancing == LoadBalancingAlgorithm::Sticky {
+            load_balancing_node
+                .and_then(|n| n.children())
+                .map(parse_sticky_session_config)
+        } else {
+            None
+        };
+
+        if sticky_session.is_some() {
+            trace!(
+                upstream_id = %id,
+                cookie_name = ?sticky_session.as_ref().map(|s| &s.cookie_name),
+                "Parsed sticky session configuration"
+            );
+        }
+
+        // Parse health check configuration
+        let health_check = child
+            .children()
+            .and_then(|c| {
+                c.nodes()
+                    .iter()
+                    .find(|n| n.name().value() == "health-check")
+            })
+            .and_then(|n| parse_health_check(n).ok());
+
+        if health_check.is_some() {
+            trace!(
+                upstream_id = %id,
+                "Parsed health check configuration"
+            );
+        }
+
+        // Parse HTTP version configuration
+        let http_version = child
+            .children()
+            .and_then(|c| {
+                c.nodes()
+                    .iter()
+                    .find(|n| n.name().value() == "http-version")
+            })
+            .map(parse_http_version)
+            .unwrap_or_default();
+
+        if http_version.max_version >= 2 {
+            trace!(
+                upstream_id = %id,
+                max_version = http_version.max_version,
+                "HTTP/2 enabled for upstream"
+            );
+        }
+
+        // Parse connection pool configuration
+        let connection_pool = child
+            .children()
+            .and_then(|c| {
+                c.nodes()
+                    .iter()
+                    .find(|n| n.name().value() == "connection-pool")
+            })
+            .map(parse_connection_pool)
+            .unwrap_or_default();
+
+        // Parse timeouts configuration
+        let timeouts = child
+            .children()
+            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "timeouts"))
+            .map(parse_upstream_timeouts)
+            .unwrap_or_default();
+
+        // Parse TLS configuration
+        let tls = child
+            .children()
+            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "tls"))
+            .map(parse_upstream_tls);
+
+        if tls.is_some() {
+            trace!(
+                upstream_id = %id,
+                "Parsed TLS configuration"
+            );
+        }
+
+        let cb_node = child.children().and_then(|c| {
+            c.nodes()
+                .iter()
+                .find(|n| n.name().value() == "circuit-breaker")
+        });
+
+        let circuit_breaker = match cb_node {
+            Some(cb) => {
+                Some(parse_circuit_breaker_faildefault(cb)?) //Parse failure dropout handled by the ? and anyhow crate
+            }
+            None => None, //No config present, upstream cb config will apply defaults
+        };
+
+        trace!(
+            upstream_id = %id,
+            target_count = targets.len(),
+            load_balancing = ?load_balancing,
+            has_health_check = health_check.is_some(),
+            has_tls = tls.is_some(),
+            http_version = http_version.max_version,
+            max_connections = connection_pool.max_connections,
+            connect_timeout = timeouts.connect_secs,
+            "Parsed upstream"
+        );
+
+        Ok(UpstreamConfig {
+            id,
+            targets,
+            load_balancing,
+            sticky_session,
+            health_check,
+            circuit_breaker,
+            connection_pool,
+            timeouts,
+            tls,
+            http_version,
+        })
+    } else {
+        Err(anyhow!("Child is not upstream stanza"))
+    }
+}
+
 /// Parse upstreams configuration block
 pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamConfig>> {
     trace!("Parsing upstreams configuration block");
@@ -19,161 +179,12 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
     if let Some(children) = node.children() {
         for child in children.nodes() {
             if child.name().value() == "upstream" {
-                let id = get_first_arg_string(child).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Upstream requires an ID argument, e.g., upstream \"backend\" {{ ... }}"
-                    )
-                })?;
-
-                trace!(upstream_id = %id, "Parsing upstream");
-
-                // Parse targets (accepts every supported syntax; see
-                // `parse_upstream_targets`).
-                let targets = parse_upstream_targets(child);
-
-                if targets.is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "Upstream '{}' requires at least one target, e.g., target \"127.0.0.1:8081\"",
-                        id
-                    ));
-                }
-
-                // Parse load balancing algorithm and sticky session config
-                let load_balancing_node = child.children().and_then(|c| {
-                    c.nodes()
-                        .iter()
-                        .find(|n| n.name().value() == "load-balancing")
-                });
-
-                let load_balancing = load_balancing_node
-                    .and_then(get_first_arg_string)
-                    .map(|s| parse_load_balancing(&s))
-                    .unwrap_or(LoadBalancingAlgorithm::RoundRobin);
-
-                // Parse sticky session config (if load-balancing is "sticky" with children)
-                let sticky_session = if load_balancing == LoadBalancingAlgorithm::Sticky {
-                    load_balancing_node
-                        .and_then(|n| n.children())
-                        .map(parse_sticky_session_config)
-                } else {
-                    None
-                };
-
-                if sticky_session.is_some() {
-                    trace!(
-                        upstream_id = %id,
-                        cookie_name = ?sticky_session.as_ref().map(|s| &s.cookie_name),
-                        "Parsed sticky session configuration"
-                    );
-                }
-
-                // Parse health check configuration
-                let health_check = child
-                    .children()
-                    .and_then(|c| {
-                        c.nodes()
-                            .iter()
-                            .find(|n| n.name().value() == "health-check")
-                    })
-                    .and_then(|n| parse_health_check(n).ok());
-
-                if health_check.is_some() {
-                    trace!(
-                        upstream_id = %id,
-                        "Parsed health check configuration"
-                    );
-                }
-
-                // Parse HTTP version configuration
-                let http_version = child
-                    .children()
-                    .and_then(|c| {
-                        c.nodes()
-                            .iter()
-                            .find(|n| n.name().value() == "http-version")
-                    })
-                    .map(parse_http_version)
-                    .unwrap_or_default();
-
-                if http_version.max_version >= 2 {
-                    trace!(
-                        upstream_id = %id,
-                        max_version = http_version.max_version,
-                        "HTTP/2 enabled for upstream"
-                    );
-                }
-
-                // Parse connection pool configuration
-                let connection_pool = child
-                    .children()
-                    .and_then(|c| {
-                        c.nodes()
-                            .iter()
-                            .find(|n| n.name().value() == "connection-pool")
-                    })
-                    .map(parse_connection_pool)
-                    .unwrap_or_default();
-
-                // Parse timeouts configuration
-                let timeouts = child
-                    .children()
-                    .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "timeouts"))
-                    .map(parse_upstream_timeouts)
-                    .unwrap_or_default();
-
-                // Parse TLS configuration
-                let tls = child
-                    .children()
-                    .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "tls"))
-                    .map(parse_upstream_tls);
-
-                if tls.is_some() {
-                    trace!(
-                        upstream_id = %id,
-                        "Parsed TLS configuration"
-                    );
-                }
-
-                let cb_node = child.children().and_then(|c| {
-                    c.nodes()
-                        .iter()
-                        .find(|n| n.name().value() == "circuit-breaker")
-                });
-
-                let circuit_breaker = match cb_node {
-                    Some(cb) => {
-                        Some(parse_circuit_breaker_faildefault(cb)?) //Parse failure dropout handled by the ? and anyhow crate
+                match parse_upstream(child) {
+                    Ok(config) => {
+                        upstreams.insert(config.id.clone(), config);
                     }
-                    None => None, //No config present, upstream cb config will apply defaults
-                };
-
-                trace!(
-                    upstream_id = %id,
-                    target_count = targets.len(),
-                    load_balancing = ?load_balancing,
-                    has_health_check = health_check.is_some(),
-                    has_tls = tls.is_some(),
-                    http_version = http_version.max_version,
-                    max_connections = connection_pool.max_connections,
-                    connect_timeout = timeouts.connect_secs,
-                    "Parsed upstream"
-                );
-
-                upstreams.insert(
-                    id.clone(),
-                    UpstreamConfig {
-                        id,
-                        targets,
-                        load_balancing,
-                        sticky_session,
-                        health_check,
-                        circuit_breaker,
-                        connection_pool,
-                        timeouts,
-                        tls,
-                        http_version,
-                    },
-                );
+                    Err(e) => return Err(e),
+                }
             }
         }
     }
