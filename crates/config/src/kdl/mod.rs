@@ -4,15 +4,18 @@
 //! into Zentinel configuration structures. It is organized into submodules:
 //!
 //! - `helpers`: Common parsing utility functions
+//! - `circuitbreaker_helper`: Helper functions to parse circuit-breaker stanzas with fail-to-default
 //! - `server`: Server and listener parsing
 //! - `routes`: Route and static file parsing
 //! - `upstreams`: Upstream target parsing
 //! - `filters`: Filter definition parsing
 //! - `namespace`: Namespace and service parsing
 
+mod circuitbreaker_helper;
 mod filters;
 mod helpers;
 mod namespace;
+mod retrypolicy_helper;
 mod routes;
 mod server;
 mod upstreams;
@@ -22,19 +25,19 @@ use tracing::{debug, trace, warn};
 // Re-export commonly used items
 pub use helpers::{
     get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, offset_to_line_col,
-    parse_upstream_targets,
 };
 
 pub use filters::parse_filter_definitions;
 pub use routes::parse_routes;
 pub use server::{parse_listeners, parse_server_config};
-pub use upstreams::parse_upstreams;
+pub use upstreams::{parse_upstream, parse_upstreams};
 
 use anyhow::Result;
 use std::collections::HashMap;
 
 use zentinel_common::limits::Limits;
 
+pub use crate::kdl::circuitbreaker_helper::parse_circuit_breaker_faildefault;
 use crate::observability::ObservabilityConfig;
 use crate::waf::WafConfig;
 use crate::{AgentConfig, Config, CURRENT_SCHEMA_VERSION};
@@ -206,7 +209,6 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
 use crate::agents::{AgentEvent, AgentTlsConfig, AgentTransport, AgentType, BodyStreamingMode};
 use crate::routes::FailureMode;
 use std::path::PathBuf;
-use zentinel_common::types::CircuitBreakerConfig;
 
 /// Parse agents configuration block
 ///
@@ -437,7 +439,7 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 }
             }
             "circuit-breaker" => {
-                circuit_breaker = Some(parse_circuit_breaker(child)?);
+                circuit_breaker = Some(parse_circuit_breaker_faildefault(child)?);
             }
             "max-request-body-bytes" => {
                 if let Some(entry) = child.entries().first() {
@@ -608,26 +610,6 @@ fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
     } else {
         Ok(None)
     }
-}
-
-/// Parse circuit breaker configuration
-fn parse_circuit_breaker(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
-    let mut config = CircuitBreakerConfig::default();
-
-    if let Some(v) = get_int_entry(node, "failure-threshold") {
-        config.failure_threshold = v as u32;
-    }
-    if let Some(v) = get_int_entry(node, "success-threshold") {
-        config.success_threshold = v as u32;
-    }
-    if let Some(v) = get_int_entry(node, "timeout-seconds") {
-        config.timeout_seconds = v as u64;
-    }
-    if let Some(v) = get_int_entry(node, "half-open-max-requests") {
-        config.half_open_max_requests = v as u32;
-    }
-
-    Ok(config)
 }
 
 // ============================================================================
@@ -1369,6 +1351,8 @@ fn parse_tracing_backend(node: &kdl::KdlNode) -> Result<crate::observability::Tr
 
 #[cfg(test)]
 mod tests {
+    use zentinel_common::CircuitBreakerConfig;
+
     use super::*;
     use crate::filters::RateLimitKey;
 
@@ -2825,5 +2809,109 @@ mod tests {
         assert!(waf.audit_log);
         assert_eq!(waf.ruleset.paranoia_level, 1);
         assert_eq!(waf.ruleset.anomaly_threshold, 5);
+    }
+
+    #[test]
+    fn test_parse_single_agent_config() {
+        let kdl = r#"
+        agent "waf-agent" type="waf" {
+            unix-socket path="/var/run/waf.sock"
+            timeout-ms 200
+            events "request_headers" "request_body"
+            failure-mode "fail_open"
+        }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let agent_node = doc.get("agent").unwrap();
+
+        let agent = parse_single_agent(agent_node).unwrap();
+
+        let _target_sock_path = PathBuf::from("/var/run/waf.sock");
+
+        assert!(matches!(agent.agent_type, AgentType::Waf));
+        assert!(matches!(
+            agent.transport,
+            AgentTransport::UnixSocket {
+                path: _target_sock_path
+            }
+        ));
+        assert_eq!(
+            agent.events,
+            [AgentEvent::RequestHeaders, AgentEvent::RequestBody]
+        );
+        assert_eq!(agent.failure_mode, FailureMode::Open);
+        assert!(agent.circuit_breaker.is_none());
+    }
+
+    //Check if we get None when no CB stanza is specified
+    #[test]
+    fn test_parse_single_agent_config_default() {
+        let kdl = r#"
+        agent "waf-agent" type="waf" {
+            unix-socket path="/var/run/waf.sock"
+        }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let agent_node = doc.get("agent").unwrap();
+
+        let agent = parse_single_agent(agent_node).unwrap();
+
+        let _target_sock_path = PathBuf::from("/var/run/waf.sock");
+
+        assert!(matches!(agent.agent_type, AgentType::Waf));
+        assert!(matches!(
+            agent.transport,
+            AgentTransport::UnixSocket {
+                path: _target_sock_path
+            }
+        ));
+        assert_eq!(agent.events, [AgentEvent::RequestHeaders]);
+        assert_eq!(agent.failure_mode, FailureMode::Open);
+        assert!(agent.circuit_breaker.is_none());
+    }
+
+    #[test]
+    fn test_parse_single_agent_config_missing_transport() {
+        let kdl = r#"
+        agent "waf-agent" type="waf" {
+        }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let agent_node = doc.get("agent").unwrap();
+
+        let agent = parse_single_agent(agent_node);
+        let err_msg = agent.unwrap_err();
+
+        assert_eq!(
+            format!("{}", err_msg),
+            "Agent 'waf-agent' requires a transport (unix-socket, grpc, or http)"
+        );
+    }
+
+    ///Check if we have a CBconfig when one is specified
+    #[test]
+    fn test_parse_single_agent_config_circuit_breaker() {
+        let kdl = r#"
+        agent "waf-agent" type="waf" {
+            unix-socket path="/var/run/waf.sock"
+            circuit-breaker {
+            }
+        }
+        "#;
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let agent_node = doc.get("agent").unwrap();
+
+        let agent = parse_single_agent(agent_node).unwrap();
+        let cbconfig = agent.circuit_breaker.unwrap();
+
+        let cb_default = CircuitBreakerConfig::default();
+
+        assert_eq!(cbconfig.failure_threshold, cb_default.failure_threshold);
+        assert_eq!(cbconfig.success_threshold, cb_default.success_threshold);
+        assert_eq!(cbconfig.timeout_seconds, cb_default.timeout_seconds);
+        assert_eq!(
+            cbconfig.half_open_max_requests,
+            cb_default.half_open_max_requests
+        );
     }
 }

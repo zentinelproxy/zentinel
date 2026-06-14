@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use validator::Validate;
 
 use zentinel_common::budget::{CostAttributionConfig, TokenBudgetConfig};
-use zentinel_common::types::{ByteSize, CircuitBreakerConfig, Priority, RetryPolicy};
+use zentinel_common::types::{ByteSize, Priority, RetryPolicy};
 
 use crate::filters::RateLimitKey;
 
@@ -53,10 +53,6 @@ pub struct RouteConfig {
     /// WAF enabled for this route (shorthand for adding WAF agent filter)
     #[serde(default)]
     pub waf_enabled: bool,
-
-    /// Circuit breaker configuration
-    #[serde(default)]
-    pub circuit_breaker: Option<CircuitBreakerConfig>,
 
     /// Retry policy
     #[serde(default)]

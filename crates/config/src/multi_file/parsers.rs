@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use zentinel_common::TraceIdFormat;
 
+use crate::kdl::parse_circuit_breaker_faildefault;
 use crate::namespace::ExportConfig;
 use crate::{
     AgentConfig, Limits, ListenerConfig, NamespaceConfig, ObservabilityConfig, RouteConfig,
@@ -167,7 +168,6 @@ pub(super) fn parse_route(node: &KdlNode) -> Result<RouteConfig> {
         filters: Vec::new(),
         builtin_handler: None,
         waf_enabled: get_bool_entry(node, "waf-enabled").unwrap_or(false),
-        circuit_breaker: None,
         retry_policy: None,
         static_files: None,
         api_schema: None,
@@ -181,33 +181,11 @@ pub(super) fn parse_route(node: &KdlNode) -> Result<RouteConfig> {
 }
 
 pub(super) fn parse_upstream(node: &KdlNode) -> Result<(String, UpstreamConfig)> {
-    let name = get_first_arg_string(node).ok_or_else(|| anyhow!("Upstream requires a name"))?;
-
-    // Shared with the single-file parser so both accept the same target syntax.
-    let targets = crate::kdl::parse_upstream_targets(node);
-
-    Ok((
-        name.clone(),
-        UpstreamConfig {
-            id: name,
-            targets,
-            load_balancing: get_string_entry(node, "load-balancing")
-                .map(|s| match s.as_str() {
-                    "round_robin" => crate::LoadBalancingAlgorithm::RoundRobin,
-                    "least_connections" => crate::LoadBalancingAlgorithm::LeastConnections,
-                    "ip_hash" => crate::LoadBalancingAlgorithm::IpHash,
-                    "random" => crate::LoadBalancingAlgorithm::Random,
-                    _ => crate::LoadBalancingAlgorithm::RoundRobin,
-                })
-                .unwrap_or(crate::LoadBalancingAlgorithm::RoundRobin),
-            sticky_session: None,
-            health_check: None,
-            connection_pool: crate::ConnectionPoolConfig::default(),
-            timeouts: crate::UpstreamTimeouts::default(),
-            tls: None,
-            http_version: crate::HttpVersionConfig::default(),
-        },
-    ))
+    // Use the same single-upstream parser refactored in upstreams.rs
+    match crate::kdl::parse_upstream(node) {
+        Ok(config) => Ok((config.id.clone(), config)),
+        Err(e) => Err(e),
+    }
 }
 
 pub(super) fn parse_agent(node: &KdlNode) -> Result<AgentConfig> {
@@ -228,6 +206,16 @@ pub(super) fn parse_agent(node: &KdlNode) -> Result<AgentConfig> {
         path: PathBuf::from(socket_path),
     };
 
+    let circuit_breaker = node
+        .children()
+        .and_then(|c| {
+            c.nodes()
+                .iter()
+                .find(|n| n.name().value() == "circuit-breaker")
+        })
+        .map(parse_circuit_breaker_faildefault)
+        .transpose()?;
+
     Ok(AgentConfig {
         id,
         agent_type,
@@ -243,7 +231,7 @@ pub(super) fn parse_agent(node: &KdlNode) -> Result<AgentConfig> {
         },
         max_request_body_bytes: get_int_entry(node, "max-request-body-bytes").map(|v| v as usize),
         max_response_body_bytes: None,
-        circuit_breaker: None,
+        circuit_breaker,
         request_body_mode: Default::default(),
         response_body_mode: Default::default(),
         chunk_timeout_ms: 5000,
@@ -592,5 +580,45 @@ mod tests {
         assert_eq!(u.targets[0].address, "127.0.0.1:3000");
         assert_eq!(u.targets[0].weight, 3);
         assert_eq!(u.targets[1].address, "127.0.0.1:3001");
+    }
+
+    /// circuit-breaker stanza present, all values normally set, use those values
+    /// Retain this test here to ensure block parser works
+    #[test]
+    fn test_parse_circuit_breaker_normal() {
+        let kdl = r#"
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+                circuit-breaker {
+                    failure-threshold 1
+                    success-threshold 2
+                    timeout-seconds 4
+                    half-open-max-requests 8
+                }
+            }
+        "#;
+        let upstream = upstream_from(kdl);
+        let cbconfig = upstream.circuit_breaker.unwrap();
+
+        assert_eq!(cbconfig.failure_threshold, 1);
+        assert_eq!(cbconfig.success_threshold, 2);
+        assert_eq!(cbconfig.timeout_seconds, 4);
+        assert_eq!(cbconfig.half_open_max_requests, 8);
+    }
+
+    /// circuit-breaker stanza missing, Option<CircuitBreakerConfig> will be None, upstream to set defaults
+    #[test]
+    fn test_parse_circuit_breaker_stanza_missing() {
+        let kdl = r#"
+            upstream "test-cb" {
+                target "10.0.0.1:80"
+            }
+        "#;
+
+        let upstream = upstream_from(kdl);
+
+        let cbconfig = upstream.circuit_breaker;
+
+        assert!(cbconfig.is_none());
     }
 }

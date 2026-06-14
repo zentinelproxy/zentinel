@@ -413,6 +413,7 @@ mod tests {
                 unhealthy_threshold: 3,
             }),
             connection_pool: ConnectionPoolConfig::default(),
+            circuit_breaker: None,
             timeouts: UpstreamTimeouts::default(),
             tls: None,
             http_version: HttpVersionConfig::default(),

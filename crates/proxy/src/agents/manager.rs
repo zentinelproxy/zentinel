@@ -67,10 +67,7 @@ impl AgentManager {
             let semaphore = Arc::new(Semaphore::new(config.max_concurrent_calls));
 
             let circuit_breaker = Arc::new(CircuitBreaker::new(
-                config
-                    .circuit_breaker
-                    .clone()
-                    .unwrap_or_else(CircuitBreakerConfig::default),
+                config.circuit_breaker.unwrap_or_default(),
             ));
 
             trace!(
