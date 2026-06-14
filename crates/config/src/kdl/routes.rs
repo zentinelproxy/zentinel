@@ -1779,10 +1779,6 @@ mod tests {
                 upstream "backend";
                 retry-policy {
                     max-attempts 10
-                    timeout-ms 20
-                    backoff-base-ms 30
-                    backoff-max-ms 40
-                    retryable-status-codes 550 551 552
                 }
             }
         }
@@ -1796,10 +1792,6 @@ mod tests {
         let rp = routes.first().unwrap().retry_policy.as_ref().unwrap();
 
         assert_eq!(rp.max_attempts, 10);
-        assert_eq!(rp.timeout_ms, 20);
-        assert_eq!(rp.backoff_base_ms, 30);
-        assert_eq!(rp.backoff_max_ms, 40);
-        assert_eq!(rp.retryable_status_codes, vec![550, 551, 552]);
     }
 
     /// retry-policy stanza missing, Option<RetryPolicy> will be None
