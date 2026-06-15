@@ -34,6 +34,9 @@ impl ZentinelProxy {
         ctx: &mut RequestContext,
         route_match: &RouteMatch,
     ) -> Result<bool, Box<Error>> {
+        // Track active request (matched in logging() via dec_requests)
+        self.reload_coordinator.inc_requests();
+
         ctx.route_id = Some(route_match.route_id.to_string());
         ctx.trace_id = self.get_trace_id(session);
         let route_id = route_match.route_id.as_str();
