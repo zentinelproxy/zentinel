@@ -1157,4 +1157,192 @@ include "nonexistent/*.kdl"
         let config = Config::from_file(&config_path).unwrap();
         assert_eq!(config.listeners.len(), 1);
     }
+
+    #[test]
+    fn test_multi_file_routes_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let vhosts_dir = dir.path().join("vhosts");
+        std::fs::create_dir(&vhosts_dir).unwrap();
+
+        // First vhost file with routes and upstreams
+        std::fs::write(
+            vhosts_dir.join("api.kdl"),
+            r#"
+upstreams {
+    upstream "api-backend" {
+        target "127.0.0.1:3000"
+    }
+}
+routes {
+    route "api" {
+        match { path-prefix "/api" }
+        upstream "api-backend"
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        // Second vhost file with routes and upstreams
+        std::fs::write(
+            vhosts_dir.join("web.kdl"),
+            r#"
+upstreams {
+    upstream "web-backend" {
+        target "127.0.0.1:3001"
+    }
+}
+routes {
+    route "web" {
+        match { path-prefix "/" }
+        upstream "web-backend"
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        let main_config = dir.path().join("zentinel.kdl");
+        std::fs::write(
+            &main_config,
+            r#"
+schema-version "1.0"
+system {
+    worker-threads 4
+}
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+    }
+}
+include "vhosts/*.kdl"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::from_file(&main_config).unwrap();
+        assert_eq!(config.routes.len(), 2, "Should merge routes from both files");
+        assert_eq!(config.upstreams.len(), 2, "Should merge upstreams from both files");
+        assert!(config.routes.iter().any(|r| r.id == "api"));
+        assert!(config.routes.iter().any(|r| r.id == "web"));
+        assert!(config.upstreams.contains_key("api-backend"));
+        assert!(config.upstreams.contains_key("web-backend"));
+    }
+
+    #[test]
+    fn test_multi_file_duplicate_route_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let vhosts_dir = dir.path().join("vhosts");
+        std::fs::create_dir(&vhosts_dir).unwrap();
+
+        // Both files define the same route ID
+        std::fs::write(
+            vhosts_dir.join("a.kdl"),
+            r#"
+routes {
+    route "same-id" {
+        match { path-prefix "/a" }
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            vhosts_dir.join("b.kdl"),
+            r#"
+routes {
+    route "same-id" {
+        match { path-prefix "/b" }
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        let main_config = dir.path().join("zentinel.kdl");
+        std::fs::write(
+            &main_config,
+            r#"
+schema-version "1.0"
+system {
+    worker-threads 4
+}
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+    }
+}
+include "vhosts/*.kdl"
+"#,
+        )
+        .unwrap();
+
+        let err = Config::from_file(&main_config).unwrap_err();
+        assert!(
+            err.to_string().contains("Duplicate route ID 'same-id'"),
+            "Should reject duplicate route IDs, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_multi_file_duplicate_upstream_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let vhosts_dir = dir.path().join("vhosts");
+        std::fs::create_dir(&vhosts_dir).unwrap();
+
+        // Both files define the same upstream ID
+        std::fs::write(
+            vhosts_dir.join("a.kdl"),
+            r#"
+upstreams {
+    upstream "backend" {
+        target "127.0.0.1:3000"
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            vhosts_dir.join("b.kdl"),
+            r#"
+upstreams {
+    upstream "backend" {
+        target "127.0.0.1:3001"
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        let main_config = dir.path().join("zentinel.kdl");
+        std::fs::write(
+            &main_config,
+            r#"
+schema-version "1.0"
+system {
+    worker-threads 4
+}
+listeners {
+    listener "http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+    }
+}
+include "vhosts/*.kdl"
+"#,
+        )
+        .unwrap();
+
+        let err = Config::from_file(&main_config).unwrap_err();
+        assert!(
+            err.to_string().contains("Duplicate upstream ID 'backend'"),
+            "Should reject duplicate upstream IDs, got: {}",
+            err
+        );
+    }
 }
