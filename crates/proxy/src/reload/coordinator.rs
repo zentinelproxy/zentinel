@@ -42,8 +42,14 @@ impl GracefulReloadCoordinator {
 
     /// Decrement active request count
     pub fn dec_requests(&self) {
-        let count = self.active_requests.fetch_sub(1, Ordering::Relaxed) - 1;
-        trace!(active_requests = count, "Request completed");
+        let prev = self.active_requests.fetch_sub(1, Ordering::Relaxed);
+        if prev == 0 {
+            // Counter was already 0 — restore and warn
+            self.active_requests.fetch_add(1, Ordering::Relaxed);
+            warn!("Attempted to decrement active request count below zero");
+            return;
+        }
+        trace!(active_requests = prev - 1, "Request completed");
     }
 
     /// Wait for active requests to drain
