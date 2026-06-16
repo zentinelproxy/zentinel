@@ -830,7 +830,6 @@ mod tests {
             filters: vec![],
             builtin_handler: None,
             waf_enabled: false,
-            circuit_breaker: None,
             retry_policy: None,
             static_files: None,
             api_schema: None,

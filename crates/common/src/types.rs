@@ -222,26 +222,16 @@ pub enum HealthCheckType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryPolicy {
     pub max_attempts: u32,
-    pub timeout_ms: u64,
-    pub backoff_base_ms: u64,
-    pub backoff_max_ms: u64,
-    pub retryable_status_codes: Vec<u16>,
 }
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self {
-            max_attempts: 3,
-            timeout_ms: 30000,
-            backoff_base_ms: 100,
-            backoff_max_ms: 10000,
-            retryable_status_codes: vec![502, 503, 504],
-        }
+        Self { max_attempts: 3 }
     }
 }
 
 /// Circuit breaker configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,
     pub success_threshold: u32,

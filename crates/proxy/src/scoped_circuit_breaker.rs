@@ -74,10 +74,10 @@ impl ScopedCircuitBreakerManager {
     fn get_effective_config(&self, scope: &Scope) -> CircuitBreakerConfig {
         for s in scope.chain() {
             if let Some(config) = self.scope_configs.get(&s) {
-                return config.clone();
+                return *config;
             }
         }
-        self.default_config.clone()
+        self.default_config
     }
 
     /// Get or create a circuit breaker for a scope and upstream.
