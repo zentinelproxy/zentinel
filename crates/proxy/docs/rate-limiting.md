@@ -39,6 +39,25 @@ routes {
 }
 ```
 
+### Key-Map Bounds
+
+Per-key limiter state is bounded by `max-keys` (default `100000`) on
+rate-limit filters. When a new key arrives at the cap, idle keys (not seen
+for 10s — stale for 1-second windows) are swept first; if all keys are
+active, the longest-idle entries are evicted down to 90% of the cap with a
+warning log and an eviction counter. The current key count is exported as
+`zentinel_rate_limit_keys{scope}`.
+
+```kdl
+filters {
+    filter "api-limit" {
+        type "rate-limit"
+        max-rps 100
+        max-keys 50000
+    }
+}
+```
+
 ### Rate Limit Keys
 
 | Key Type | Description | Example |
@@ -415,6 +434,10 @@ Content-Type: application/json
 # Request counts
 zentinel_rate_limit_allowed_total{route="api", key="client-ip"} 100000
 zentinel_rate_limit_limited_total{route="api", key="client-ip"} 500
+
+# Key-map bounds (scope is the route ID, or "global")
+zentinel_rate_limit_keys{scope="api"} 1532
+zentinel_rate_limit_key_evictions_total{scope="api"} 0
 
 # Current state
 zentinel_rate_limit_current_requests{route="api"} 75

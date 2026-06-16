@@ -156,10 +156,10 @@ More examples: [`config/examples/`](config/examples/) covers API gateways, load 
 | **Load Balancing** | 14 algorithms: round-robin, weighted, least connections, Maglev, Peak EWMA, and more |
 | **Security** | TLS/mTLS, rate limiting, GeoIP filtering, WAF, zip bomb protection |
 | **Agent Protocol** | External agents for WAF, auth, and custom logic — crash-isolated, any language |
-| **HTTP Caching** | Pingora-based response caching with stampede prevention and S3-FIFO + TinyLFU eviction |
-| **WebSocket Proxying** | RFC 6455 compliant with frame inspection and traffic mirroring |
+| **HTTP Caching** | Pingora-based response caching with stampede prevention and LRU eviction (memory, disk, or hybrid backends) |
+| **WebSocket Proxying** | RFC 6455 compliant with per-frame agent inspection and session affinity |
 | **Observability** | Prometheus metrics, structured logging, OpenTelemetry tracing |
-| **Hot Reload** | Zero-downtime config updates via SIGHUP with validation and atomic swap |
+| **Hot Reload** | Zero-downtime config updates via SIGHUP with validation and atomic swap (routes, upstreams, agents; listener changes require a restart) |
 
 See the full feature breakdown at [zentinelproxy.io/features](https://zentinelproxy.io/features/).
 

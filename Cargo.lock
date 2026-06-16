@@ -8261,7 +8261,7 @@ dependencies = [
 
 [[package]]
 name = "zentinel-agent-protocol"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8301,7 +8301,7 @@ dependencies = [
 
 [[package]]
 name = "zentinel-common"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8323,7 +8323,7 @@ dependencies = [
 
 [[package]]
 name = "zentinel-config"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -8402,7 +8402,7 @@ dependencies = [
 
 [[package]]
 name = "zentinel-gateway"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -8433,7 +8433,7 @@ dependencies = [
 
 [[package]]
 name = "zentinel-proxy"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -8524,7 +8524,7 @@ dependencies = [
 
 [[package]]
 name = "zentinel-stack"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8541,7 +8541,7 @@ dependencies = [
 
 [[package]]
 name = "zentinel-wasm-runtime"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "anyhow",
  "async-trait",

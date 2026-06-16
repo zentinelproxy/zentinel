@@ -527,6 +527,7 @@ impl ZentinelProxy {
                         AgentAction::Block { status, body, .. } => {
                             warn!(
                                 correlation_id = %ctx.trace_id,
+                                agent_id = decision.decided_by.as_deref().unwrap_or("unknown"),
                                 status = status,
                                 "Request blocked by agent"
                             );
@@ -534,11 +535,14 @@ impl ZentinelProxy {
 
                             // Audit log the block decision
                             // Collect tags and rule_ids from all audit metadata
-                            let all_tags: Vec<String> = decision
+                            let mut all_tags: Vec<String> = decision
                                 .audit
                                 .iter()
                                 .flat_map(|a| a.tags.iter().cloned())
                                 .collect();
+                            if let Some(ref agent_id) = decision.decided_by {
+                                all_tags.push(format!("agent:{agent_id}"));
+                            }
                             let all_rule_ids: Vec<String> = decision
                                 .audit
                                 .iter()

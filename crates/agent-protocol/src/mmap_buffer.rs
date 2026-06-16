@@ -249,10 +249,13 @@ impl LargeBodyBuffer {
         // If in mmap mode, convert to memory first
         self.convert_mmap_to_memory()?;
 
-        if let BufferStorage::Memory(ref mut vec) = self.storage {
-            Ok(vec.as_mut_slice())
-        } else {
-            unreachable!("convert_mmap_to_memory should have converted to Memory")
+        match self.storage {
+            BufferStorage::Memory(ref mut vec) => Ok(vec.as_mut_slice()),
+            // convert_mmap_to_memory guarantees Memory on Ok; return an error
+            // rather than panicking in the dataplane if that ever regresses
+            BufferStorage::Mmap { .. } => Err(io::Error::other(
+                "mmap buffer was not converted to memory storage",
+            )),
         }
     }
 

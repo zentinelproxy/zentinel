@@ -31,10 +31,17 @@ pub struct ProtocolMetrics {
     pub flow_control_resumes_total: AtomicU64,
     /// Requests rejected due to flow control
     pub flow_control_rejections_total: AtomicU64,
+    /// Correlation affinities reclaimed by TTL sweep (requests that ended
+    /// without explicit cleanup)
+    pub affinity_evictions_total: AtomicU64,
+    /// Affinities dropped because the affinity map was at capacity
+    pub affinity_rejections_total: AtomicU64,
 
     // Gauges
     /// Current in-flight requests
     pub in_flight_requests: AtomicU64,
+    /// Current correlation affinity entries
+    pub correlation_affinities: AtomicU64,
     /// Current buffer utilization (0-100)
     pub buffer_utilization_percent: AtomicU64,
     /// Number of healthy connections
@@ -107,6 +114,26 @@ impl ProtocolMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment affinity TTL evictions.
+    #[inline]
+    pub fn inc_affinity_evictions(&self, count: u64) {
+        self.affinity_evictions_total
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Increment affinity at-capacity rejections.
+    #[inline]
+    pub fn inc_affinity_rejections(&self) {
+        self.affinity_rejections_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Set correlation affinities gauge.
+    #[inline]
+    pub fn set_correlation_affinities(&self, count: u64) {
+        self.correlation_affinities.store(count, Ordering::Relaxed);
+    }
+
     /// Set in-flight requests gauge.
     #[inline]
     pub fn set_in_flight(&self, count: u64) {
@@ -169,7 +196,10 @@ impl ProtocolMetrics {
             flow_control_rejections_total: self
                 .flow_control_rejections_total
                 .load(Ordering::Relaxed),
+            affinity_evictions_total: self.affinity_evictions_total.load(Ordering::Relaxed),
+            affinity_rejections_total: self.affinity_rejections_total.load(Ordering::Relaxed),
             in_flight_requests: self.in_flight_requests.load(Ordering::Relaxed),
+            correlation_affinities: self.correlation_affinities.load(Ordering::Relaxed),
             buffer_utilization_percent: self.buffer_utilization_percent.load(Ordering::Relaxed),
             healthy_connections: self.healthy_connections.load(Ordering::Relaxed),
             paused_connections: self.paused_connections.load(Ordering::Relaxed),
@@ -226,12 +256,33 @@ impl ProtocolMetrics {
             snap.flow_control_rejections_total
         ));
 
+        output.push_str(&format!(
+            "# HELP {prefix}_affinity_evictions_total Correlation affinities reclaimed by TTL sweep\n\
+             # TYPE {prefix}_affinity_evictions_total counter\n\
+             {prefix}_affinity_evictions_total {}\n\n",
+            snap.affinity_evictions_total
+        ));
+
+        output.push_str(&format!(
+            "# HELP {prefix}_affinity_rejections_total Affinities dropped because the map was at capacity\n\
+             # TYPE {prefix}_affinity_rejections_total counter\n\
+             {prefix}_affinity_rejections_total {}\n\n",
+            snap.affinity_rejections_total
+        ));
+
         // Gauges
         output.push_str(&format!(
             "# HELP {prefix}_in_flight_requests Current in-flight requests\n\
              # TYPE {prefix}_in_flight_requests gauge\n\
              {prefix}_in_flight_requests {}\n\n",
             snap.in_flight_requests
+        ));
+
+        output.push_str(&format!(
+            "# HELP {prefix}_correlation_affinities Current correlation affinity entries\n\
+             # TYPE {prefix}_correlation_affinities gauge\n\
+             {prefix}_correlation_affinities {}\n\n",
+            snap.correlation_affinities
         ));
 
         output.push_str(&format!(
@@ -431,9 +482,12 @@ pub struct ProtocolMetricsSnapshot {
     pub flow_control_pauses_total: u64,
     pub flow_control_resumes_total: u64,
     pub flow_control_rejections_total: u64,
+    pub affinity_evictions_total: u64,
+    pub affinity_rejections_total: u64,
 
     // Gauges
     pub in_flight_requests: u64,
+    pub correlation_affinities: u64,
     pub buffer_utilization_percent: u64,
     pub healthy_connections: u64,
     pub paused_connections: u64,

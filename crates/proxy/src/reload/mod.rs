@@ -451,6 +451,28 @@ impl ConfigManager {
             "Preparing configuration swap"
         );
 
+        // Listeners are bound at startup and are NOT hot-reloadable. Say so
+        // loudly instead of silently ignoring the change.
+        let old_listeners = serde_json::to_value(&old_config.listeners).ok();
+        let new_listeners = serde_json::to_value(&new_config.listeners).ok();
+        if old_listeners != new_listeners {
+            warn!(
+                "Listener configuration changed in the new config, but listeners \
+                 (addresses, ports, TLS bindings) are NOT applied by hot reload. \
+                 The proxy continues serving on the previously bound listeners; \
+                 restart zentinel to apply listener changes."
+            );
+        }
+        if serde_json::to_value(&old_config.server).ok()
+            != serde_json::to_value(&new_config.server).ok()
+        {
+            warn!(
+                "system/server configuration changed in the new config, but \
+                 worker threads and process-level settings are NOT applied by \
+                 hot reload; restart zentinel to apply them."
+            );
+        }
+
         // Run pre-reload hooks
         let hooks = self.reload_hooks.read().await;
         for hook in hooks.iter() {

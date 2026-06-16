@@ -113,6 +113,9 @@ pub(super) fn parse_server(node: &KdlNode) -> Result<ServerConfig> {
             .map(|s| TraceIdFormat::from_str_loose(&s))
             .unwrap_or_default(),
         auto_reload: get_bool_entry(node, "auto-reload").unwrap_or(false),
+        route_cache_size: get_int_entry(node, "route-cache-size")
+            .map(|v| v as usize)
+            .unwrap_or_else(crate::server::default_route_cache_size),
     })
 }
 
@@ -242,7 +245,7 @@ pub(super) fn parse_agent(node: &KdlNode) -> Result<AgentConfig> {
             _ => crate::FailureMode::Open,
         },
         max_request_body_bytes: get_int_entry(node, "max-request-body-bytes").map(|v| v as usize),
-        max_response_body_bytes: None,
+        max_response_body_bytes: get_int_entry(node, "max-response-body-bytes").map(|v| v as usize),
         circuit_breaker: None,
         request_body_mode: Default::default(),
         response_body_mode: Default::default(),

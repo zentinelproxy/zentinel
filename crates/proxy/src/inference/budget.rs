@@ -4,13 +4,39 @@
 //! over longer periods (hourly, daily, monthly) with optional enforcement.
 
 use dashmap::DashMap;
+use prometheus::{register_int_counter_vec, register_int_gauge_vec, IntCounterVec, IntGaugeVec};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, trace, warn};
 
 use zentinel_common::budget::{
     BudgetAlert, BudgetCheckResult, BudgetPeriod, TenantBudgetStatus, TokenBudgetConfig,
 };
+
+/// Prometheus metrics for tenant budget maps.
+struct BudgetTrackerMetrics {
+    /// Distinct tenants currently tracked, per route
+    tenants: IntGaugeVec,
+    /// Tenants evicted to enforce the max-tenants bound, per route
+    evictions: IntCounterVec,
+}
+
+static TRACKER_METRICS: LazyLock<Option<BudgetTrackerMetrics>> = LazyLock::new(|| {
+    let tenants = register_int_gauge_vec!(
+        "zentinel_inference_budget_tenants",
+        "Distinct tenants currently tracked by token budget trackers",
+        &["route"]
+    )
+    .ok()?;
+    let evictions = register_int_counter_vec!(
+        "zentinel_inference_budget_tenant_evictions_total",
+        "Tenant budget states evicted to enforce the max-tenants bound",
+        &["route"]
+    )
+    .ok()?;
+    Some(BudgetTrackerMetrics { tenants, evictions })
+});
 
 /// Per-tenant budget state tracking
 struct TenantBudgetState {
@@ -325,10 +351,73 @@ impl TokenBudgetTracker {
         &self,
         tenant: &str,
     ) -> dashmap::mapref::one::Ref<'_, String, TenantBudgetState> {
+        if !self.tenants.contains_key(tenant) && self.tenants.len() >= self.config.max_tenants {
+            self.evict_tenants();
+        }
+
         self.tenants
             .entry(tenant.to_string())
             .or_insert_with(TenantBudgetState::new);
+
+        if let Some(metrics) = TRACKER_METRICS.as_ref() {
+            metrics
+                .tenants
+                .with_label_values(&[&self.route_id])
+                .set(self.tenants.len() as i64);
+        }
+
         self.tenants.get(tenant).expect("Just inserted")
+    }
+
+    /// Evict tenant state so a new tenant can be admitted without unbounded growth.
+    ///
+    /// Tenants whose period has expired are dropped first — their state is
+    /// equivalent to a fresh one (with rollover enabled, one extra period is
+    /// kept so unused tokens can still roll over on next access). If the map
+    /// is still at capacity, the tenants with the oldest periods are evicted
+    /// down to 90% of the bound.
+    fn evict_tenants(&self) {
+        let period_secs = self.config.period.as_secs();
+        let keep_secs = if self.config.rollover {
+            period_secs.saturating_mul(2)
+        } else {
+            period_secs
+        };
+
+        let before = self.tenants.len();
+        self.tenants
+            .retain(|_, state| state.elapsed().as_secs() < keep_secs);
+
+        if self.tenants.len() >= self.config.max_tenants {
+            let target = (self.config.max_tenants * 9).div_ceil(10);
+            let mut entries: Vec<(String, u64)> = self
+                .tenants
+                .iter()
+                .map(|e| (e.key().clone(), e.value().period_start_unix))
+                .collect();
+            entries.sort_by_key(|(_, start)| *start);
+            let excess = self.tenants.len().saturating_sub(target);
+            for (tenant, _) in entries.iter().take(excess) {
+                self.tenants.remove(tenant);
+            }
+        }
+
+        let evicted = before.saturating_sub(self.tenants.len());
+        if evicted > 0 {
+            warn!(
+                route_id = %self.route_id,
+                evicted = evicted,
+                remaining = self.tenants.len(),
+                max_tenants = self.config.max_tenants,
+                "Tenant budget map at capacity, evicted tenant state"
+            );
+            if let Some(metrics) = TRACKER_METRICS.as_ref() {
+                metrics
+                    .evictions
+                    .with_label_values(&[&self.route_id])
+                    .inc_by(evicted as u64);
+            }
+        }
     }
 }
 
@@ -348,6 +437,7 @@ mod tests {
             enforce: true,
             rollover: false,
             burst_allowance: None,
+            max_tenants: 10_000,
         }
     }
 
@@ -496,5 +586,42 @@ mod tests {
         assert_eq!(tracker.status("tenant-1").tokens_used, 500);
         assert_eq!(tracker.status("tenant-2").tokens_used, 200);
         assert_eq!(tracker.tenant_count(), 2);
+    }
+
+    #[test]
+    fn tenant_map_never_exceeds_max_tenants() {
+        let mut config = test_config();
+        config.max_tenants = 10;
+        let tracker = TokenBudgetTracker::new(config, "test-route");
+
+        for i in 0..100 {
+            tracker.record(&format!("tenant-{i}"), 1);
+        }
+
+        assert!(
+            tracker.tenant_count() <= 10,
+            "tenant map grew past max_tenants: {}",
+            tracker.tenant_count()
+        );
+    }
+
+    #[test]
+    fn tracker_still_enforces_budget_after_eviction() {
+        let mut config = test_config();
+        config.max_tenants = 5;
+        let tracker = TokenBudgetTracker::new(config, "test-route");
+
+        // Force evictions with many distinct tenants
+        for i in 0..50 {
+            tracker.record(&format!("tenant-{i}"), 1);
+        }
+
+        // A fresh tenant must still get correct budget accounting
+        tracker.record("fresh", 1000);
+        let result = tracker.check("fresh", 100);
+        assert!(
+            !result.is_allowed(),
+            "exhausted tenant must still be blocked after evictions"
+        );
     }
 }

@@ -3346,6 +3346,15 @@ impl ProxyHttp for ZentinelProxy {
         // Decrement active requests
         self.reload_coordinator.dec_requests();
 
+        // Release per-request agent state (correlation affinity) now that the
+        // request is complete; the pool TTL sweep is only the backstop.
+        if !ctx.route_agent_ids.is_empty()
+            || !ctx.body_inspection_agents.is_empty()
+            || !ctx.websocket_inspection_agents.is_empty()
+        {
+            self.agent_manager.end_request(&ctx.trace_id).await;
+        }
+
         // === Fire pending shadow request (if body buffering was enabled) ===
         if !ctx.shadow_sent {
             if let Some(shadow_pending) = ctx.shadow_pending.take() {
@@ -3805,6 +3814,7 @@ impl ZentinelProxy {
                 if !decision.needs_more && !decision.is_allow() {
                     warn!(
                         correlation_id = %ctx.trace_id,
+                        agent_id = decision.decided_by.as_deref().unwrap_or("unknown"),
                         action = ?decision.action,
                         "Agent blocked request body"
                     );
@@ -4001,6 +4011,7 @@ impl ZentinelProxy {
                 if !decision.is_allow() {
                     warn!(
                         correlation_id = %ctx.trace_id,
+                        agent_id = decision.decided_by.as_deref().unwrap_or("unknown"),
                         action = ?decision.action,
                         "Agent blocked request body"
                     );

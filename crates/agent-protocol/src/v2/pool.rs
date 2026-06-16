@@ -155,6 +155,22 @@ pub struct AgentPoolConfig {
     ///
     /// Default: 5 minutes
     pub sticky_session_timeout: Option<Duration>,
+    /// Idle TTL for correlation affinity entries (headers → body chunk routing).
+    ///
+    /// Affinities are cleared explicitly when a request completes; this TTL is
+    /// the backstop that reclaims entries for requests that never complete
+    /// (client disconnects, cancellations, proxy-side errors).
+    ///
+    /// Default: 5 minutes
+    pub correlation_affinity_ttl: Duration,
+    /// Maximum number of correlation affinity entries.
+    ///
+    /// When the map is full, new affinities are dropped (counted in
+    /// `affinity_rejections_total`); body chunks for those requests fall back
+    /// to normal connection selection instead of pinned routing.
+    ///
+    /// Default: 100_000
+    pub max_correlation_affinities: usize,
 }
 
 impl Default for AgentPoolConfig {
@@ -173,7 +189,39 @@ impl Default for AgentPoolConfig {
             flow_control_mode: FlowControlMode::FailClosed,
             flow_control_wait_timeout: Duration::from_millis(100),
             sticky_session_timeout: Some(Duration::from_secs(5 * 60)), // 5 minutes
+            correlation_affinity_ttl: Duration::from_secs(5 * 60),
+            max_correlation_affinities: 100_000,
         }
+    }
+}
+
+/// Connection affinity entry: pins body chunks of a request to the same
+/// connection that received its headers.
+struct AffinityEntry {
+    connection: Arc<PooledConnection>,
+    created_at: Instant,
+    /// Milliseconds since `created_at` of the last access.
+    last_accessed: AtomicU64,
+}
+
+impl AffinityEntry {
+    fn new(connection: Arc<PooledConnection>) -> Self {
+        Self {
+            connection,
+            created_at: Instant::now(),
+            last_accessed: AtomicU64::new(0),
+        }
+    }
+
+    fn touch(&self) {
+        let offset = self.created_at.elapsed().as_millis() as u64;
+        self.last_accessed.store(offset, Ordering::Relaxed);
+    }
+
+    fn is_expired(&self, ttl: Duration) -> bool {
+        let last =
+            self.created_at + Duration::from_millis(self.last_accessed.load(Ordering::Relaxed));
+        last.elapsed() > ttl
     }
 }
 
@@ -583,7 +631,11 @@ pub struct AgentPool {
     protocol_metrics: Arc<ProtocolMetrics>,
     /// Connection affinity: correlation_id → connection used for headers.
     /// Ensures body chunks go to the same connection as headers for streaming.
-    correlation_affinity: DashMap<String, Arc<PooledConnection>>,
+    /// Bounded by `max_correlation_affinities`; idle entries reclaimed by the
+    /// maintenance task after `correlation_affinity_ttl`.
+    correlation_affinity: DashMap<String, AffinityEntry>,
+    /// Whether the affinity map is currently at capacity (for one-shot warn).
+    affinity_at_capacity: AtomicBool,
     /// Sticky sessions: session_id → session info for long-lived streams.
     /// Used for WebSocket, SSE, and long-polling connections.
     sticky_sessions: DashMap<String, StickySession>,
@@ -632,6 +684,7 @@ impl AgentPool {
             config_update_callback,
             protocol_metrics: Arc::new(ProtocolMetrics::new()),
             correlation_affinity: DashMap::new(),
+            affinity_at_capacity: AtomicBool::new(false),
             sticky_sessions: DashMap::new(),
         }
     }
@@ -666,10 +719,70 @@ impl AgentPool {
     /// Clear connection affinity for a correlation ID.
     ///
     /// Call this when a request is complete (after receiving final response)
-    /// to free the affinity mapping. Not strictly necessary (affinities are
-    /// cheap), but good practice for long-running proxies.
+    /// to free the affinity mapping. Entries that are never cleared are
+    /// reclaimed by the maintenance task after `correlation_affinity_ttl`.
     pub fn clear_correlation_affinity(&self, correlation_id: &str) {
-        self.correlation_affinity.remove(correlation_id);
+        if self.correlation_affinity.remove(correlation_id).is_some() {
+            self.protocol_metrics
+                .set_correlation_affinities(self.correlation_affinity.len() as u64);
+        }
+    }
+
+    /// Store connection affinity for a correlation ID, enforcing the
+    /// `max_correlation_affinities` bound.
+    ///
+    /// When the map is at capacity the affinity is dropped (body chunks fall
+    /// back to normal connection selection) and the rejection is counted.
+    fn store_correlation_affinity(&self, correlation_id: &str, conn: &Arc<PooledConnection>) {
+        let at_capacity = self.correlation_affinity.len() >= self.config.max_correlation_affinities
+            && !self.correlation_affinity.contains_key(correlation_id);
+
+        if at_capacity {
+            self.protocol_metrics.inc_affinity_rejections();
+            if !self.affinity_at_capacity.swap(true, Ordering::Relaxed) {
+                warn!(
+                    max = self.config.max_correlation_affinities,
+                    "Correlation affinity map at capacity; new requests fall back to \
+                     normal connection selection for body chunks (counted in \
+                     zentinel_agent_affinity_rejections_total)"
+                );
+            }
+            return;
+        }
+        self.affinity_at_capacity.store(false, Ordering::Relaxed);
+
+        self.correlation_affinity.insert(
+            correlation_id.to_string(),
+            AffinityEntry::new(Arc::clone(conn)),
+        );
+        self.protocol_metrics
+            .set_correlation_affinities(self.correlation_affinity.len() as u64);
+    }
+
+    /// Remove correlation affinities idle longer than `correlation_affinity_ttl`.
+    ///
+    /// Returns the number of entries removed. Called by the maintenance task;
+    /// removals indicate requests that ended without explicit cleanup.
+    pub fn cleanup_expired_affinities(&self) -> usize {
+        let ttl = self.config.correlation_affinity_ttl;
+        let before = self.correlation_affinity.len();
+        self.correlation_affinity
+            .retain(|_, entry| !entry.is_expired(ttl));
+        let removed = before - self.correlation_affinity.len();
+
+        if removed > 0 {
+            debug!(
+                removed = removed,
+                remaining = self.correlation_affinity.len(),
+                ttl_secs = ttl.as_secs(),
+                "Reclaimed expired correlation affinities"
+            );
+            self.protocol_metrics.inc_affinity_evictions(removed as u64);
+            self.protocol_metrics
+                .set_correlation_affinities(self.correlation_affinity.len() as u64);
+        }
+
+        removed
     }
 
     /// Get the number of active correlation affinities.
@@ -845,8 +958,7 @@ impl AgentPool {
         conn.touch();
 
         // Store correlation affinity
-        self.correlation_affinity
-            .insert(correlation_id.to_string(), Arc::clone(&conn));
+        self.store_correlation_affinity(correlation_id, &conn);
 
         let result = conn
             .client
@@ -1222,8 +1334,7 @@ impl AgentPool {
         conn.touch(); // Atomic, no lock
 
         // Store connection affinity for body chunk routing
-        self.correlation_affinity
-            .insert(correlation_id.to_string(), Arc::clone(&conn));
+        self.store_correlation_affinity(correlation_id, &conn);
 
         let result = conn
             .client
@@ -1283,8 +1394,9 @@ impl AgentPool {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
 
         // Try to use affinity (same connection as headers), fall back to selection
-        let conn = if let Some(affinity_conn) = self.correlation_affinity.get(correlation_id) {
-            Arc::clone(&affinity_conn)
+        let conn = if let Some(entry) = self.correlation_affinity.get(correlation_id) {
+            entry.touch();
+            Arc::clone(&entry.connection)
         } else {
             // No affinity found, use normal selection (shouldn't happen in normal flow)
             trace!(correlation_id = %correlation_id, "No affinity found for body chunk, using selection");
@@ -1677,8 +1789,11 @@ impl AgentPool {
         loop {
             interval.tick().await;
 
-            // Clean up expired sticky sessions
+            // Clean up expired sticky sessions, correlation affinities, and
+            // stale agent-reported metric series
             self.cleanup_expired_sessions();
+            self.cleanup_expired_affinities();
+            self.metrics_collector.expire_old_metrics();
 
             // Iterate without holding a long-lived lock
             let agent_ids: Vec<String> = self.agents.iter().map(|e| e.key().clone()).collect();
@@ -1991,6 +2106,103 @@ mod tests {
         assert!(!is_uds_endpoint("http://localhost:8080"));
         assert!(!is_uds_endpoint("localhost:50051"));
         assert!(!is_uds_endpoint("127.0.0.1:8080"));
+    }
+
+    async fn test_conn() -> Arc<PooledConnection> {
+        // AgentClientV2Uds::new performs no I/O, so the socket need not exist
+        let client = AgentClientV2Uds::new(
+            "test-agent",
+            "/tmp/zentinel-test-nonexistent.sock",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("client created");
+        Arc::new(PooledConnection::new(V2Transport::Uds(client), 4))
+    }
+
+    #[tokio::test]
+    async fn affinity_map_enforces_capacity_bound() {
+        let config = AgentPoolConfig {
+            max_correlation_affinities: 3,
+            ..Default::default()
+        };
+        let pool = AgentPool::with_config(config);
+        let conn = test_conn().await;
+
+        for i in 0..10 {
+            pool.store_correlation_affinity(&format!("corr-{i}"), &conn);
+        }
+
+        assert_eq!(pool.correlation_affinity_count(), 3);
+        assert_eq!(
+            pool.protocol_metrics()
+                .affinity_rejections_total
+                .load(Ordering::Relaxed),
+            7
+        );
+    }
+
+    #[tokio::test]
+    async fn affinity_reinsert_for_existing_key_allowed_at_capacity() {
+        let config = AgentPoolConfig {
+            max_correlation_affinities: 1,
+            ..Default::default()
+        };
+        let pool = AgentPool::with_config(config);
+        let conn = test_conn().await;
+
+        pool.store_correlation_affinity("corr-a", &conn);
+        // Same key again: not a rejection, map stays at 1
+        pool.store_correlation_affinity("corr-a", &conn);
+
+        assert_eq!(pool.correlation_affinity_count(), 1);
+        assert_eq!(
+            pool.protocol_metrics()
+                .affinity_rejections_total
+                .load(Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn affinity_cleared_on_request_end() {
+        let pool = AgentPool::new();
+        let conn = test_conn().await;
+
+        pool.store_correlation_affinity("corr-1", &conn);
+        assert_eq!(pool.correlation_affinity_count(), 1);
+
+        pool.clear_correlation_affinity("corr-1");
+        assert_eq!(pool.correlation_affinity_count(), 0);
+        assert_eq!(
+            pool.protocol_metrics()
+                .correlation_affinities
+                .load(Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_affinities_are_reclaimed() {
+        let config = AgentPoolConfig {
+            correlation_affinity_ttl: Duration::ZERO,
+            ..Default::default()
+        };
+        let pool = AgentPool::with_config(config);
+        let conn = test_conn().await;
+
+        pool.store_correlation_affinity("corr-1", &conn);
+        pool.store_correlation_affinity("corr-2", &conn);
+
+        let removed = pool.cleanup_expired_affinities();
+        assert_eq!(removed, 2);
+        assert_eq!(pool.correlation_affinity_count(), 0);
+        assert_eq!(
+            pool.protocol_metrics()
+                .affinity_evictions_total
+                .load(Ordering::Relaxed),
+            2
+        );
     }
 
     #[test]

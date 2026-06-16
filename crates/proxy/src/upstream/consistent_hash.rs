@@ -12,6 +12,25 @@ use async_trait::async_trait;
 use tracing::{debug, info, trace, warn};
 use zentinel_common::errors::{ZentinelError, ZentinelResult};
 
+/// Hard bound for the lookup cache. Key hashes come from request data, so the
+/// cache must not grow with attacker-controlled cardinality. When full it is
+/// cleared (cheap: entries are rebuilt from the ring on demand).
+const LOOKUP_CACHE_MAX: usize = 10_000;
+
+/// Insert into the bounded lookup cache, clearing it first if at capacity.
+async fn bounded_cache_insert(cache: &RwLock<HashMap<u64, usize>>, key_hash: u64, idx: usize) {
+    let mut cache = cache.write().await;
+    if cache.len() >= LOOKUP_CACHE_MAX {
+        debug!(
+            size = cache.len(),
+            max = LOOKUP_CACHE_MAX,
+            "Consistent-hash lookup cache full; clearing"
+        );
+        cache.clear();
+    }
+    cache.insert(key_hash, idx);
+}
+
 /// Hash function types supported by the consistent hash balancer
 #[derive(Debug, Clone, Copy)]
 pub enum HashFunction {
@@ -92,7 +111,9 @@ pub struct ConsistentHashBalancer {
     connection_counts: Vec<Arc<AtomicU64>>,
     /// Total active connections
     total_connections: Arc<AtomicU64>,
-    /// Cache for recent hash lookups (hash -> target_index)
+    /// Cache for recent hash lookups (hash -> target_index).
+    /// Bounded at [`LOOKUP_CACHE_MAX`]: key hashes are request-derived
+    /// (client IP, headers), so unbounded growth would be attacker-steerable.
     lookup_cache: Arc<RwLock<HashMap<u64, usize>>>,
     /// Generation counter for detecting ring changes
     generation: Arc<AtomicUsize>,
@@ -302,7 +323,7 @@ impl ConsistentHashBalancer {
 
             // Update cache
             if let Some(idx) = target_index {
-                self.lookup_cache.write().await.insert(key_hash, idx);
+                bounded_cache_insert(&self.lookup_cache, key_hash, idx).await;
                 trace!(
                     hash_key = %hash_key,
                     target_index = idx,
@@ -337,10 +358,7 @@ impl ConsistentHashBalancer {
 
             if current_load <= max_load {
                 // Update cache
-                self.lookup_cache
-                    .write()
-                    .await
-                    .insert(key_hash, vnode.target_index);
+                bounded_cache_insert(&self.lookup_cache, key_hash, vnode.target_index).await;
                 debug!(
                     hash_key = %hash_key,
                     target_index = vnode.target_index,
@@ -607,6 +625,15 @@ impl LoadBalancer for ConsistentHashBalancer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lookup_cache_never_exceeds_bound() {
+        let cache = RwLock::new(HashMap::new());
+        for i in 0..(LOOKUP_CACHE_MAX as u64 + 500) {
+            bounded_cache_insert(&cache, i, 0).await;
+            assert!(cache.read().await.len() <= LOOKUP_CACHE_MAX);
+        }
+    }
 
     fn create_test_targets(count: usize) -> Vec<UpstreamTarget> {
         (0..count)
