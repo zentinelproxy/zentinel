@@ -322,12 +322,18 @@ rust-lldb target/debug/deps/zentinel_proxy-xxx specific_test
 ### Validate Config
 
 ```bash
-# Check config syntax
-cargo run --bin zentinel -- --config config/zentinel.kdl --check
+# Check config syntax and schema (parse + validate, don't start)
+cargo run --bin zentinel -- test --config config/zentinel.kdl
 
-# Dry run (parse and validate, don't start)
-cargo run --bin zentinel -- --config config/zentinel.kdl --dry-run
+# Validate with connectivity checks (network, agents, certificates)
+cargo run --bin zentinel -- validate --config config/zentinel.kdl
+
+# Lint for best practices
+cargo run --bin zentinel -- lint --config config/zentinel.kdl
 ```
+
+> There are no `--check`/`--dry-run` flags; use the `test`/`validate`/`lint`
+> subcommands (or the `-t/--test` flag, equivalent to `test`).
 
 ### Config Examples
 
@@ -336,7 +342,7 @@ Test against example configs:
 ```bash
 for config in config/examples/*.kdl; do
     echo "Testing $config"
-    cargo run --bin zentinel -- --config "$config" --check
+    cargo run --bin zentinel -- test --config "$config"
 done
 ```
 

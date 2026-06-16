@@ -167,6 +167,19 @@ route "/v1/chat/completions" {
 }
 ```
 
+### Tenant Bounds
+
+Per-tenant budget state is bounded by `max-tenants` (default `10000`).
+When a new tenant arrives at the cap, tenants whose period has expired are
+evicted first (with `rollover`, one extra period is kept); if all tenants
+are active, the oldest periods are evicted down to 90% of the cap with a
+warning log. Observability:
+
+```
+zentinel_inference_budget_tenants{route="chat"} 4210
+zentinel_inference_budget_tenant_evictions_total{route="chat"} 0
+```
+
 ### Budget Tracking
 
 ```rust

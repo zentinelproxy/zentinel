@@ -5,11 +5,21 @@
 //! with support for priority-based evaluation.
 
 use dashmap::DashMap;
+use prometheus::{register_int_counter, IntCounter};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tracing::{debug, info, trace, warn};
+
+/// Entries evicted from the route-match cache to enforce `route-cache-size`.
+static ROUTE_CACHE_EVICTIONS: LazyLock<Option<IntCounter>> = LazyLock::new(|| {
+    register_int_counter!(
+        "zentinel_route_cache_evictions_total",
+        "Route-match cache entries evicted to enforce route-cache-size"
+    )
+    .ok()
+});
 
 use zentinel_common::types::Priority;
 use zentinel_common::RouteId;
@@ -84,10 +94,21 @@ struct RouteCache {
 }
 
 impl RouteMatcher {
-    /// Create a new route matcher from configuration
+    /// Create a new route matcher from configuration with the default
+    /// route-cache size (1000 entries).
     pub fn new(
         routes: Vec<RouteConfig>,
         default_route: Option<String>,
+    ) -> Result<Self, RouteError> {
+        Self::with_cache_size(routes, default_route, 1000)
+    }
+
+    /// Create a new route matcher with an explicit route-cache size
+    /// (`system { route-cache-size N }`).
+    pub fn with_cache_size(
+        routes: Vec<RouteConfig>,
+        default_route: Option<String>,
+        cache_size: usize,
     ) -> Result<Self, RouteError> {
         info!(
             route_count = routes.len(),
@@ -146,7 +167,7 @@ impl RouteMatcher {
         Ok(Self {
             routes: compiled_routes,
             default_route: default_route.map(RouteId::new),
-            cache: Arc::new(RouteCache::new(1000)),
+            cache: Arc::new(RouteCache::new(cache_size)),
             needs_headers,
             needs_query_params,
         })
@@ -557,7 +578,7 @@ impl RouteCache {
 
     /// Evict random entries when cache is full
     fn evict_random(&self) {
-        let to_evict = self.max_size / 10; // Evict ~10%
+        let to_evict = (self.max_size / 10).max(1); // Evict ~10%
         let mut evicted = 0;
 
         // Iterate and remove some entries
@@ -573,6 +594,16 @@ impl RouteCache {
         // Update count (approximate)
         self.entry_count
             .store(self.entries.len(), Ordering::Relaxed);
+
+        debug!(
+            evicted = evicted,
+            remaining = self.entries.len(),
+            max_size = self.max_size,
+            "Route cache at capacity; evicted entries"
+        );
+        if let Some(counter) = ROUTE_CACHE_EVICTIONS.as_ref() {
+            counter.inc_by(evicted as u64);
+        }
     }
 
     /// Get current cache size
@@ -774,6 +805,19 @@ mod tests {
     use super::*;
     use zentinel_common::types::Priority;
     use zentinel_config::{MatchCondition, RouteConfig};
+
+    #[test]
+    fn route_cache_never_exceeds_max_size() {
+        let cache = RouteCache::new(10);
+        for i in 0..100 {
+            cache.insert(format!("key-{i}"), RouteId::new(format!("route-{i}")));
+            assert!(
+                cache.len() <= 10,
+                "route cache grew past max_size: {}",
+                cache.len()
+            );
+        }
+    }
 
     fn create_test_route(id: &str, matches: Vec<MatchCondition>) -> RouteConfig {
         RouteConfig {

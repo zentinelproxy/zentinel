@@ -89,6 +89,9 @@ Minimum supported: `1.0`
 |----------|------------|
 | `id` | Non-empty, unique |
 | `timeout-ms` | `> 0` |
+| `chunk-timeout-ms` | `> 0` |
+| `max-request-body-bytes` | `> 0` when set (omit for the 1 MiB default) |
+| `max-response-body-bytes` | `> 0` when set (omit for the 1 MiB default) |
 | `transport.unix-socket` | Parent directory must exist |
 | `transport.grpc.address` | Valid address format |
 | `events` | At least one event |

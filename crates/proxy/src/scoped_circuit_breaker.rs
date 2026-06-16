@@ -18,7 +18,7 @@
 
 use dashmap::DashMap;
 use std::sync::Arc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use zentinel_common::ids::Scope;
 use zentinel_common::types::{CircuitBreakerConfig, CircuitBreakerState};
@@ -150,17 +150,30 @@ impl ScopedCircuitBreakerManager {
             .map(|entry| entry.key().clone())
             .collect();
 
+        let reset_count = keys_to_reset.len();
         for key in keys_to_reset {
             if let Some(breaker) = self.breakers.get(&key) {
                 breaker.reset(); // Lock-free, no await needed
             }
         }
+        info!(
+            scope = ?scope,
+            reset = reset_count,
+            "Reset all circuit breakers in scope"
+        );
     }
 
     /// Clear all circuit breakers (for reload).
     pub fn clear(&self) {
+        let breakers = self.breakers.len();
+        let scopes = self.scope_configs.len();
         self.breakers.clear();
         self.scope_configs.clear();
+        info!(
+            breakers = breakers,
+            scope_configs = scopes,
+            "Cleared all scoped circuit breakers (config reload); failure history reset"
+        );
     }
 
     /// Get the number of circuit breakers currently tracked.

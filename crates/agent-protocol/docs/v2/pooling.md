@@ -816,6 +816,24 @@ let config = AgentPoolConfig {
 
 The maintenance task (`run_maintenance()`) automatically cleans up expired sessions.
 
+### Correlation Affinity Bounds
+
+Connection affinity (headers → body chunk routing, keyed by correlation ID) is
+bounded and self-cleaning:
+
+- `max_correlation_affinities` (default `100_000`): when the map is full, new
+  affinities are dropped (`affinity_rejections_total` counter) and body chunks
+  for those requests fall back to normal connection selection.
+- `correlation_affinity_ttl` (default 5 minutes): idle entries are reclaimed by
+  the maintenance task (`affinity_evictions_total` counter) as a backstop for
+  requests that never complete. The proxy releases affinities explicitly at
+  request completion.
+- Current entry count is exported as the `correlation_affinities` gauge.
+
+> `run_maintenance()` must be running for TTL cleanup, health re-checks, and
+> reconnection. The proxy spawns it per agent in `AgentV2::initialize` and
+> aborts it on shutdown.
+
 ### When to Use Sticky Sessions
 
 | Scenario | Use Sticky Sessions? |

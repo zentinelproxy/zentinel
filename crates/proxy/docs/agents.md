@@ -69,6 +69,11 @@ agents {
             recovery-timeout-secs 30
         }
     }
+    // Body inspection limits: bodies larger than max-request-body-bytes /
+    // max-response-body-bytes (default 1 MiB each) follow the agent's
+    // failure-mode — "closed" blocks the request with 413, "open" skips
+    // this agent's inspection with a warning and a body_size_skips metric.
+    // Agents whose limit accommodates the body still inspect it.
 
     // gRPC transport
     agent "auth-agent" {
@@ -435,6 +440,11 @@ Request
 - **First BLOCK wins** - Pipeline stops at first blocking decision
 - **Mutations merge** - Header mutations from all agents are combined
 - **Tags accumulate** - All agent tags are collected
+- **Attribution survives merging** - `AgentDecision.decided_by` records which
+  agent produced the deciding (non-allow) action, including synthetic blocks
+  from fail-closed timeouts, circuit breakers, and body-size limits. Block
+  logs carry it as `agent_id`, and audit log entries get an `agent:<id>` tag,
+  so every block can answer *which agent decided, and why*.
 
 ```rust
 pub fn merge_decisions(decisions: Vec<AgentDecision>) -> AgentDecision {

@@ -10,7 +10,9 @@ use crate::v2::control::{ConfigUpdateRequest, ConfigUpdateResponse, ConfigUpdate
 use crate::v2::metrics::{HistogramBucket, MetricsReport};
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 /// Metrics collector that receives and aggregates metrics from agents.
 #[derive(Debug)]
@@ -23,6 +25,10 @@ pub struct MetricsCollector {
     histograms: RwLock<HashMap<MetricKey, AggregatedHistogram>>,
     /// Last report time per agent
     last_report: RwLock<HashMap<String, Instant>>,
+    /// Series dropped because `max_series` was reached
+    dropped_series: AtomicU64,
+    /// Whether the collector is currently at capacity (for one-shot warn)
+    at_capacity: AtomicBool,
     /// Configuration
     config: MetricsCollectorConfig,
 }
@@ -122,7 +128,30 @@ impl MetricsCollector {
             gauges: RwLock::new(HashMap::new()),
             histograms: RwLock::new(HashMap::new()),
             last_report: RwLock::new(HashMap::new()),
+            dropped_series: AtomicU64::new(0),
+            at_capacity: AtomicBool::new(false),
             config,
+        }
+    }
+
+    /// Number of series dropped because `max_series` was reached.
+    pub fn dropped_series(&self) -> u64 {
+        self.dropped_series.load(Ordering::Relaxed)
+    }
+
+    /// Record that a new series was dropped due to `max_series`, warning once
+    /// per at-capacity episode.
+    fn record_series_drop(&self, agent_id: &str, name: &str) {
+        self.dropped_series.fetch_add(1, Ordering::Relaxed);
+        if !self.at_capacity.swap(true, Ordering::Relaxed) {
+            warn!(
+                agent_id = %agent_id,
+                metric = %name,
+                max_series = self.config.max_series,
+                "Agent metrics collector at max_series; dropping new series \
+                 (existing series still update). Check agents for \
+                 high-cardinality labels."
+            );
         }
     }
 
@@ -144,7 +173,15 @@ impl MetricsCollector {
 
             let key = MetricKey::new(&report.agent_id, &counter.name, &labels);
 
+            let gauges_len = self.gauges.read().len();
+            let histograms_len = self.histograms.read().len();
             let mut counters = self.counters.write();
+            if !counters.contains_key(&key)
+                && counters.len() + gauges_len + histograms_len >= self.config.max_series
+            {
+                self.record_series_drop(&report.agent_id, &counter.name);
+                continue;
+            }
             counters.insert(
                 key,
                 AggregatedCounter {
@@ -166,7 +203,15 @@ impl MetricsCollector {
 
             let key = MetricKey::new(&report.agent_id, &gauge.name, &labels);
 
+            let counters_len = self.counters.read().len();
+            let histograms_len = self.histograms.read().len();
             let mut gauges = self.gauges.write();
+            if !gauges.contains_key(&key)
+                && counters_len + gauges.len() + histograms_len >= self.config.max_series
+            {
+                self.record_series_drop(&report.agent_id, &gauge.name);
+                continue;
+            }
             gauges.insert(
                 key,
                 AggregatedGauge {
@@ -188,7 +233,15 @@ impl MetricsCollector {
 
             let key = MetricKey::new(&report.agent_id, &histogram.name, &labels);
 
+            let counters_len = self.counters.read().len();
+            let gauges_len = self.gauges.read().len();
             let mut histograms = self.histograms.write();
+            if !histograms.contains_key(&key)
+                && counters_len + gauges_len + histograms.len() >= self.config.max_series
+            {
+                self.record_series_drop(&report.agent_id, &histogram.name);
+                continue;
+            }
             histograms.insert(
                 key,
                 AggregatedHistogram {
@@ -218,6 +271,12 @@ impl MetricsCollector {
         self.histograms
             .write()
             .retain(|_, v| now.duration_since(v.last_updated) < max_age);
+
+        // Expiry may have freed capacity; allow the at-capacity warn to fire
+        // again on the next saturation episode.
+        if self.series_count() < self.config.max_series {
+            self.at_capacity.store(false, Ordering::Relaxed);
+        }
     }
 
     /// Get the number of active metric series.
@@ -1201,6 +1260,58 @@ mod tests {
 
         assert_eq!(collector.series_count(), 2);
         assert_eq!(collector.active_agents(), vec!["test-agent"]);
+    }
+
+    #[test]
+    fn max_series_drops_new_series_but_updates_existing() {
+        let collector = MetricsCollector::with_config(MetricsCollectorConfig {
+            max_age: Duration::from_secs(300),
+            max_series: 2,
+            include_agent_id_label: true,
+        });
+
+        let mut report = MetricsReport::new("agent-1", 10_000);
+        report.counters.push(CounterMetric::new("a_total", 1));
+        report.counters.push(CounterMetric::new("b_total", 1));
+        report.counters.push(CounterMetric::new("c_total", 1)); // over limit
+        collector.record(&report);
+
+        assert_eq!(collector.series_count(), 2);
+        assert_eq!(collector.dropped_series(), 1);
+
+        // Existing series still update at capacity
+        let mut update = MetricsReport::new("agent-1", 10_000);
+        update.counters.push(CounterMetric::new("a_total", 42));
+        collector.record(&update);
+
+        assert_eq!(collector.series_count(), 2);
+        assert_eq!(collector.dropped_series(), 1);
+        let prometheus = collector.export_prometheus();
+        assert!(prometheus.contains("42"));
+    }
+
+    #[test]
+    fn expired_series_free_capacity_for_new_ones() {
+        let collector = MetricsCollector::with_config(MetricsCollectorConfig {
+            max_age: Duration::ZERO,
+            max_series: 1,
+            include_agent_id_label: false,
+        });
+
+        let mut report = MetricsReport::new("agent-1", 10_000);
+        report.counters.push(CounterMetric::new("a_total", 1));
+        collector.record(&report);
+        assert_eq!(collector.series_count(), 1);
+
+        // max_age == 0 expires everything
+        collector.expire_old_metrics();
+        assert_eq!(collector.series_count(), 0);
+
+        let mut report2 = MetricsReport::new("agent-1", 10_000);
+        report2.counters.push(CounterMetric::new("b_total", 1));
+        collector.record(&report2);
+        assert_eq!(collector.series_count(), 1);
+        assert_eq!(collector.dropped_series(), 0);
     }
 
     #[test]

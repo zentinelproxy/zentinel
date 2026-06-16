@@ -92,6 +92,9 @@ impl BufferPool {
 
 /// A pooled buffer that returns to the pool on drop.
 pub struct PooledBuffer {
+    /// Invariant: always `Some` while the wrapper is accessible. The only
+    /// `take()`s are in `Self::take` (consumes `self`) and `Drop`, so the
+    /// `expect`s in the accessors below cannot fire.
     buffer: Option<BytesMut>,
 }
 

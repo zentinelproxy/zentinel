@@ -44,6 +44,9 @@ pub struct AgentV2 {
     last_success_ns: AtomicU64,
     /// Consecutive failures
     consecutive_failures: AtomicU32,
+    /// Background pool maintenance task (health checks, reconnection,
+    /// affinity/session cleanup). Spawned by `initialize`, aborted by `shutdown`.
+    maintenance_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl AgentV2 {
@@ -85,6 +88,7 @@ impl AgentV2 {
             base_instant: Instant::now(),
             last_success_ns: AtomicU64::new(NO_TIMESTAMP),
             consecutive_failures: AtomicU32::new(0),
+            maintenance_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -106,6 +110,20 @@ impl AgentV2 {
     /// Get the agent's timeout in milliseconds.
     pub fn timeout_ms(&self) -> u64 {
         self.config.timeout_ms
+    }
+
+    /// Maximum request body size (bytes) this agent will inspect.
+    pub fn max_request_body_bytes(&self) -> usize {
+        self.config
+            .max_request_body_bytes
+            .unwrap_or(super::DEFAULT_AGENT_MAX_BODY_BYTES)
+    }
+
+    /// Maximum response body size (bytes) this agent will inspect.
+    pub fn max_response_body_bytes(&self) -> usize {
+        self.config
+            .max_response_body_bytes
+            .unwrap_or(super::DEFAULT_AGENT_MAX_BODY_BYTES)
     }
 
     /// Get the agent's metrics.
@@ -165,12 +183,33 @@ impl AgentV2 {
             "V2 agent pool initialized"
         );
 
+        // Spawn pool maintenance: periodic health checks (with recovery of
+        // connections marked unhealthy), reconnection of failed connections,
+        // and cleanup of expired sticky sessions / correlation affinities.
+        // Without this, a crashed-and-restarted agent would stay unreachable.
+        {
+            let pool = Arc::clone(&self.pool);
+            let handle = tokio::spawn(async move { pool.run_maintenance().await });
+            let mut guard = self
+                .maintenance_handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(old) = guard.replace(handle) {
+                old.abort();
+            }
+        }
+
         // Send configuration if present
         if let Some(config_value) = &self.config.config {
             self.send_configure(config_value.clone()).await?;
         }
 
         Ok(())
+    }
+
+    /// Clear the connection affinity for a completed request.
+    pub fn clear_correlation_affinity(&self, correlation_id: &str) {
+        self.pool.clear_correlation_affinity(correlation_id);
     }
 
     /// Get endpoint from transport config.
@@ -660,6 +699,16 @@ impl AgentV2 {
             agent_id = %self.config.id,
             "Shutting down v2 agent"
         );
+
+        // Stop background pool maintenance
+        if let Some(handle) = self
+            .maintenance_handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            handle.abort();
+        }
 
         // Remove from pool - this gracefully closes connections
         if let Err(e) = self.pool.remove_agent(&self.config.id).await {
