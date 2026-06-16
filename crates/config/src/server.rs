@@ -57,6 +57,13 @@ pub struct ServerConfig {
     /// and automatically reload when modifications are detected.
     #[serde(default)]
     pub auto_reload: bool,
+
+    /// Maximum entries in the route-match cache (per route set).
+    ///
+    /// When full, ~10% of entries are evicted (counted in
+    /// `zentinel_route_cache_evictions_total`). Default: 1000.
+    #[serde(default = "default_route_cache_size")]
+    pub route_cache_size: usize,
 }
 
 // ============================================================================
@@ -425,6 +432,10 @@ pub(crate) fn default_worker_threads() -> usize {
 
 pub(crate) fn default_max_connections() -> usize {
     10000
+}
+
+pub(crate) fn default_route_cache_size() -> usize {
+    1000
 }
 
 pub(crate) fn default_graceful_shutdown_timeout() -> u64 {

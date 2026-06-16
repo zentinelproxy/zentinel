@@ -169,16 +169,14 @@ impl AgentManager {
         is_last: bool,
         route_agents: &[String],
     ) -> ZentinelResult<AgentDecision> {
-        // Check body size limits
-        let max_size = 1024 * 1024; // 1MB default
-        if data.len() > max_size {
-            warn!(
-                correlation_id = %ctx.correlation_id,
-                size = data.len(),
-                "Request body exceeds agent inspection limit"
-            );
-            return Ok(AgentDecision::default_allow());
-        }
+        // Enforce per-agent body inspection limits before dispatch
+        let inspecting_agents = match self
+            .apply_body_limits(ctx, route_agents, data.len(), EventType::RequestBodyChunk)
+            .await
+        {
+            BodyLimitsResult::Block(decision) => return Ok(*decision),
+            BodyLimitsResult::Proceed(agents) => agents,
+        };
 
         let event = RequestBodyChunkEvent {
             correlation_id: ctx.correlation_id.to_string(),
@@ -189,7 +187,7 @@ impl AgentManager {
             bytes_received: data.len(),
         };
 
-        self.process_event(EventType::RequestBodyChunk, &event, route_agents, ctx)
+        self.process_event(EventType::RequestBodyChunk, &event, &inspecting_agents, ctx)
             .await
     }
 
@@ -216,6 +214,20 @@ impl AgentManager {
             "Processing streaming request body chunk"
         );
 
+        // Enforce per-agent body inspection limits on the cumulative size
+        let inspecting_agents = match self
+            .apply_body_limits(
+                ctx,
+                route_agents,
+                bytes_received,
+                EventType::RequestBodyChunk,
+            )
+            .await
+        {
+            BodyLimitsResult::Block(decision) => return Ok(*decision),
+            BodyLimitsResult::Proceed(agents) => agents,
+        };
+
         let event = RequestBodyChunkEvent {
             correlation_id: ctx.correlation_id.to_string(),
             data: STANDARD.encode(data),
@@ -225,7 +237,7 @@ impl AgentManager {
             bytes_received,
         };
 
-        self.process_event(EventType::RequestBodyChunk, &event, route_agents, ctx)
+        self.process_event(EventType::RequestBodyChunk, &event, &inspecting_agents, ctx)
             .await
     }
 
@@ -249,6 +261,15 @@ impl AgentManager {
             "Processing streaming response body chunk"
         );
 
+        // Enforce per-agent body inspection limits on the cumulative size
+        let inspecting_agents = match self
+            .apply_body_limits(ctx, route_agents, bytes_sent, EventType::ResponseBodyChunk)
+            .await
+        {
+            BodyLimitsResult::Block(decision) => return Ok(*decision),
+            BodyLimitsResult::Proceed(agents) => agents,
+        };
+
         let event = ResponseBodyChunkEvent {
             correlation_id: ctx.correlation_id.to_string(),
             data: STANDARD.encode(data),
@@ -258,8 +279,13 @@ impl AgentManager {
             bytes_sent,
         };
 
-        self.process_event(EventType::ResponseBodyChunk, &event, route_agents, ctx)
-            .await
+        self.process_event(
+            EventType::ResponseBodyChunk,
+            &event,
+            &inspecting_agents,
+            ctx,
+        )
+        .await
     }
 
     /// Process response headers through agents.
@@ -528,7 +554,8 @@ impl AgentManager {
                         agent_id = %agent.id(),
                         "Blocking request due to circuit breaker (fail-closed mode)"
                     );
-                    return Ok(AgentDecision::block(503, "Service unavailable"));
+                    return Ok(AgentDecision::block(503, "Service unavailable")
+                        .with_decided_by(agent.id()));
                 }
                 continue;
             }
@@ -557,8 +584,8 @@ impl AgentManager {
                         "Agent call succeeded"
                     );
 
-                    // Merge response into combined decision
-                    combined_decision.merge(response.into());
+                    // Merge response into combined decision (attributed to this agent)
+                    combined_decision.merge(AgentDecision::from_response(response, agent.id()));
 
                     // If decision is to block/redirect/challenge, stop processing
                     if !combined_decision.is_allow() {
@@ -602,7 +629,8 @@ impl AgentManager {
                             agent_id = %agent.id(),
                             "Blocking request due to timeout (fail-closed mode)"
                         );
-                        return Ok(AgentDecision::block(504, "Gateway timeout"));
+                        return Ok(AgentDecision::block(504, "Gateway timeout")
+                            .with_decided_by(agent.id()));
                     }
                 }
             }
@@ -723,7 +751,8 @@ impl AgentManager {
                         agent_id = %agent.id(),
                         "Blocking request due to circuit breaker (filter fail-closed mode)"
                     );
-                    return Ok(AgentDecision::block(503, "Service unavailable"));
+                    return Ok(AgentDecision::block(503, "Service unavailable")
+                        .with_decided_by(agent.id()));
                 }
                 // Fail-open: continue to next agent
                 continue;
@@ -753,8 +782,8 @@ impl AgentManager {
                         "Agent call succeeded"
                     );
 
-                    // Merge response into combined decision
-                    combined_decision.merge(response.into());
+                    // Merge response into combined decision (attributed to this agent)
+                    combined_decision.merge(AgentDecision::from_response(response, agent.id()));
 
                     // If decision is to block/redirect/challenge, stop processing
                     if !combined_decision.is_allow() {
@@ -785,7 +814,8 @@ impl AgentManager {
                             agent_id = %agent.id(),
                             "Blocking request due to agent failure (filter fail-closed mode)"
                         );
-                        return Ok(AgentDecision::block(503, "Agent unavailable"));
+                        return Ok(AgentDecision::block(503, "Agent unavailable")
+                            .with_decided_by(agent.id()));
                     }
                     // Fail-open: continue to next agent (or proceed without this agent)
                     debug!(
@@ -811,7 +841,8 @@ impl AgentManager {
                             agent_id = %agent.id(),
                             "Blocking request due to timeout (filter fail-closed mode)"
                         );
-                        return Ok(AgentDecision::block(504, "Gateway timeout"));
+                        return Ok(AgentDecision::block(504, "Gateway timeout")
+                            .with_decided_by(agent.id()));
                     }
                     // Fail-open: continue to next agent
                     debug!(
@@ -1007,7 +1038,7 @@ impl AgentManager {
         for result in results {
             match result {
                 Ok((agent_id, response)) => {
-                    let decision: AgentDecision = response.into();
+                    let decision = AgentDecision::from_response(response, &agent_id);
 
                     // Check for blocking decision
                     if !decision.is_allow() {
@@ -1040,7 +1071,8 @@ impl AgentManager {
                         } else {
                             "Service unavailable"
                         };
-                        blocking_error = Some(AgentDecision::block(status, message));
+                        blocking_error =
+                            Some(AgentDecision::block(status, message).with_decided_by(&agent_id));
                     } else {
                         // Fail-open: log and continue
                         debug!(
@@ -1196,6 +1228,18 @@ impl AgentManager {
         info!("Agent manager shutdown complete");
     }
 
+    /// Release per-request agent state after a request completes.
+    ///
+    /// Clears the correlation affinity (headers → body chunk connection
+    /// pinning) on every agent pool. Affinities that are never released here
+    /// are reclaimed by the pool maintenance TTL sweep.
+    pub async fn end_request(&self, correlation_id: &str) {
+        let agents = self.agents.read().await;
+        for agent in agents.values() {
+            agent.clear_correlation_affinity(correlation_id);
+        }
+    }
+
     /// Get agent metrics.
     pub fn metrics(&self) -> &AgentMetrics {
         &self.metrics
@@ -1258,5 +1302,158 @@ impl AgentManager {
         agents
             .get(agent_id)
             .map(|agent| agent.pool_metrics_collector_arc())
+    }
+
+    /// Enforce per-agent body inspection limits for a body of `body_size` bytes.
+    ///
+    /// Agents whose limit is exceeded are handled according to their failure
+    /// mode: fail-closed produces a 413 Block decision, fail-open skips that
+    /// agent loudly (warn + metric) while agents within their limit still
+    /// inspect the body.
+    async fn apply_body_limits(
+        &self,
+        ctx: &AgentCallContext,
+        route_agents: &[String],
+        body_size: usize,
+        event_type: EventType,
+    ) -> BodyLimitsResult {
+        let agents = self.agents.read().await;
+        let limits: Vec<(String, FailureMode, usize)> = route_agents
+            .iter()
+            .filter_map(|id| agents.get(id))
+            .filter(|agent| agent.handles_event(event_type))
+            .map(|agent| {
+                let limit = if event_type == EventType::ResponseBodyChunk {
+                    agent.max_response_body_bytes()
+                } else {
+                    agent.max_request_body_bytes()
+                };
+                (agent.id().to_string(), agent.failure_mode(), limit)
+            })
+            .collect();
+
+        let outcome = evaluate_body_limits(&limits, body_size);
+
+        for (agent_id, limit) in &outcome.skipped {
+            warn!(
+                correlation_id = %ctx.correlation_id,
+                agent_id = %agent_id,
+                body_size = body_size,
+                limit = limit,
+                event_type = ?event_type,
+                "Body exceeds agent inspection limit, skipping agent (fail-open)"
+            );
+            if let Some(agent) = agents.get(agent_id) {
+                agent.metrics().record_body_size_skip();
+            }
+        }
+
+        if let Some((agent_id, limit)) = outcome.blocked_by {
+            warn!(
+                correlation_id = %ctx.correlation_id,
+                agent_id = %agent_id,
+                body_size = body_size,
+                limit = limit,
+                event_type = ?event_type,
+                "Body exceeds agent inspection limit, blocking request (fail-closed)"
+            );
+            return BodyLimitsResult::Block(Box::new(
+                AgentDecision::block(413, "Payload too large for security inspection")
+                    .with_decided_by(agent_id),
+            ));
+        }
+
+        BodyLimitsResult::Proceed(outcome.allowed)
+    }
+}
+
+/// Result of enforcing body inspection limits.
+enum BodyLimitsResult {
+    /// Agents (within their limits) that may inspect the body.
+    Proceed(Vec<String>),
+    /// A fail-closed agent's limit was exceeded; the request must be blocked.
+    Block(Box<AgentDecision>),
+}
+
+/// Outcome of evaluating a body size against per-agent inspection limits.
+#[derive(Debug)]
+struct BodyLimitOutcome {
+    /// Agents whose limit accommodates the body
+    allowed: Vec<String>,
+    /// Fail-open agents skipped because the body exceeds their limit (id, limit)
+    skipped: Vec<(String, usize)>,
+    /// First fail-closed agent whose limit was exceeded (id, limit)
+    blocked_by: Option<(String, usize)>,
+}
+
+/// Evaluate a body size against per-agent `(id, failure_mode, limit)` entries.
+fn evaluate_body_limits(
+    agents: &[(String, FailureMode, usize)],
+    body_size: usize,
+) -> BodyLimitOutcome {
+    let mut outcome = BodyLimitOutcome {
+        allowed: Vec::new(),
+        skipped: Vec::new(),
+        blocked_by: None,
+    };
+
+    for (id, failure_mode, limit) in agents {
+        if body_size <= *limit {
+            outcome.allowed.push(id.clone());
+        } else if *failure_mode == FailureMode::Closed {
+            outcome.blocked_by = Some((id.clone(), *limit));
+            break;
+        } else {
+            outcome.skipped.push((id.clone(), *limit));
+        }
+    }
+
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn limits() -> Vec<(String, FailureMode, usize)> {
+        vec![
+            ("waf".to_string(), FailureMode::Closed, 1024),
+            ("audit".to_string(), FailureMode::Open, 512),
+            ("dlp".to_string(), FailureMode::Open, 4096),
+        ]
+    }
+
+    #[test]
+    fn body_within_all_limits_allows_all_agents() {
+        let outcome = evaluate_body_limits(&limits(), 256);
+        assert_eq!(outcome.allowed, vec!["waf", "audit", "dlp"]);
+        assert!(outcome.skipped.is_empty());
+        assert!(outcome.blocked_by.is_none());
+    }
+
+    #[test]
+    fn oversized_body_blocks_on_fail_closed_agent() {
+        let outcome = evaluate_body_limits(&limits(), 2048);
+        assert_eq!(
+            outcome.blocked_by,
+            Some(("waf".to_string(), 1024)),
+            "fail-closed agent over its limit must block"
+        );
+    }
+
+    #[test]
+    fn oversized_body_skips_fail_open_agent_and_keeps_others() {
+        let outcome = evaluate_body_limits(&limits(), 600);
+        assert_eq!(outcome.allowed, vec!["waf", "dlp"]);
+        assert_eq!(outcome.skipped, vec![("audit".to_string(), 512)]);
+        assert!(outcome.blocked_by.is_none());
+    }
+
+    #[test]
+    fn no_agents_yields_empty_outcome() {
+        let outcome = evaluate_body_limits(&[], 1_000_000);
+        assert!(outcome.allowed.is_empty());
+        assert!(outcome.skipped.is_empty());
+        assert!(outcome.blocked_by.is_none());
     }
 }

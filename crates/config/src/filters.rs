@@ -253,10 +253,22 @@ pub struct RateLimitFilter {
     /// Maximum delay in milliseconds before rejecting (for Delay action)
     #[serde(default = "default_max_delay_ms", rename = "max-delay-ms")]
     pub max_delay_ms: u64,
+
+    /// Maximum number of distinct rate-limit keys tracked in memory
+    ///
+    /// Bounds per-key limiter state (e.g. one entry per client IP). When the
+    /// cap is reached, idle entries are evicted; if none are idle, the oldest
+    /// entries are evicted and an eviction metric is incremented.
+    #[serde(default = "default_max_keys", rename = "max-keys")]
+    pub max_keys: usize,
 }
 
 fn default_max_delay_ms() -> u64 {
     5000 // 5 seconds max delay
+}
+
+pub(crate) fn default_max_keys() -> usize {
+    100_000
 }
 
 // =============================================================================
@@ -857,6 +869,7 @@ mod tests {
                 limit_message: None,
                 backend: RateLimitBackend::Local,
                 max_delay_ms: 5000,
+                max_keys: 100_000,
             })
             .phase(),
             FilterPhase::Request
@@ -893,6 +906,7 @@ mod tests {
                 limit_message: None,
                 backend: RateLimitBackend::Local,
                 max_delay_ms: 5000,
+                max_keys: 100_000,
             }),
         );
 
@@ -955,6 +969,7 @@ mod tests {
             limit_message: None,
             backend: RateLimitBackend::Local,
             max_delay_ms: 3000,
+            max_keys: 100_000,
         };
 
         assert_eq!(filter.max_delay_ms, 3000);
@@ -973,6 +988,7 @@ mod tests {
             limit_message: None,
             backend: RateLimitBackend::Local,
             max_delay_ms: 5000, // default value
+            max_keys: 100_000,
         };
 
         assert_eq!(filter.max_delay_ms, 5000);

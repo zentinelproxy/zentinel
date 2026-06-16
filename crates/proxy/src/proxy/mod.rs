@@ -172,7 +172,11 @@ impl ZentinelProxy {
             .await;
 
         // Create route matcher (global routes only)
-        let route_matcher = Arc::new(RwLock::new(RouteMatcher::new(config.routes.clone(), None)?));
+        let route_matcher = Arc::new(RwLock::new(RouteMatcher::with_cache_size(
+            config.routes.clone(),
+            None,
+            config.server.route_cache_size,
+        )?));
 
         // Build per-listener route matchers for listeners bound to a namespace
         // route set (empty unless any listener references a namespace).
@@ -410,7 +414,11 @@ impl ZentinelProxy {
                 );
                 continue;
             };
-            match RouteMatcher::new(ns.routes.clone(), None) {
+            match RouteMatcher::with_cache_size(
+                ns.routes.clone(),
+                None,
+                config.server.route_cache_size,
+            ) {
                 Ok(matcher) => {
                     info!(
                         listener_id = %listener.id,
@@ -715,6 +723,7 @@ impl ZentinelProxy {
                     message: None,
                     backend: zentinel_config::RateLimitBackend::Local,
                     max_delay_ms: 5000, // Default for policy-based rate limits
+                    max_keys: crate::rate_limit::DEFAULT_MAX_RATE_LIMIT_KEYS,
                 };
                 manager.register_route(&route.id, rl_config);
                 info!(
@@ -740,6 +749,7 @@ impl ZentinelProxy {
                             message: rl_filter.limit_message.clone(),
                             backend: rl_filter.backend.clone(),
                             max_delay_ms: rl_filter.max_delay_ms,
+                            max_keys: rl_filter.max_keys,
                         };
                         manager.register_route(&route.id, rl_config);
                         info!(

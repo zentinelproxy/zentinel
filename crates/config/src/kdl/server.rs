@@ -41,6 +41,9 @@ pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
         working_directory: get_string_entry(node, "working-directory").map(PathBuf::from),
         trace_id_format,
         auto_reload: get_bool_entry(node, "auto-reload").unwrap_or(false),
+        route_cache_size: get_int_entry(node, "route-cache-size")
+            .map(|v| v as usize)
+            .unwrap_or_else(crate::server::default_route_cache_size),
     };
 
     trace!(

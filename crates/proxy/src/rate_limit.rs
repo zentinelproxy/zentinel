@@ -17,7 +17,9 @@
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use pingora_limits::rate::Rate;
-use std::sync::Arc;
+use prometheus::{register_int_counter_vec, register_int_gauge_vec, IntCounterVec, IntGaugeVec};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, trace, warn};
 
@@ -69,7 +71,16 @@ pub struct RateLimitConfig {
     pub backend: RateLimitBackend,
     /// Maximum delay in milliseconds for Delay action
     pub max_delay_ms: u64,
+    /// Maximum number of distinct keys tracked in memory
+    pub max_keys: usize,
 }
+
+/// Default bound on distinct rate-limit keys tracked per pool.
+pub const DEFAULT_MAX_RATE_LIMIT_KEYS: usize = 100_000;
+
+/// Keys not seen within this many seconds are considered idle and evictable.
+/// Rate windows are 1 second, so any state older than this is meaningless.
+const IDLE_KEY_TTL_SECS: u64 = 10;
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
@@ -82,6 +93,7 @@ impl Default for RateLimitConfig {
             message: None,
             backend: RateLimitBackend::Local,
             max_delay_ms: 5000,
+            max_keys: DEFAULT_MAX_RATE_LIMIT_KEYS,
         }
     }
 }
@@ -94,6 +106,8 @@ struct KeyRateLimiter {
     rate: Rate,
     /// Maximum requests per window
     max_requests: isize,
+    /// Unix timestamp (seconds) of the last check, for idle eviction
+    last_seen: AtomicU64,
 }
 
 impl KeyRateLimiter {
@@ -101,7 +115,17 @@ impl KeyRateLimiter {
         Self {
             rate: Rate::new(Duration::from_secs(1)),
             max_requests: max_rps as isize,
+            last_seen: AtomicU64::new(current_unix_timestamp()),
         }
+    }
+
+    fn touch(&self) {
+        self.last_seen
+            .store(current_unix_timestamp(), Ordering::Relaxed);
+    }
+
+    fn idle_secs(&self, now: u64) -> u64 {
+        now.saturating_sub(self.last_seen.load(Ordering::Relaxed))
     }
 
     /// Check if a request should be allowed
@@ -140,7 +164,35 @@ pub struct RateLimiterPool {
     backend: RateLimitBackendType,
     /// Configuration
     config: RwLock<RateLimitConfig>,
+    /// Scope label for metrics (route ID or "global")
+    scope: String,
+    /// Guard so only one task sweeps the key map at a time
+    sweeping: AtomicBool,
 }
+
+/// Prometheus metrics for rate limiter key maps.
+struct RateLimitPoolMetrics {
+    /// Distinct keys currently tracked, per scope
+    keys: IntGaugeVec,
+    /// Keys evicted to enforce the max-keys bound, per scope
+    evictions: IntCounterVec,
+}
+
+static POOL_METRICS: LazyLock<Option<RateLimitPoolMetrics>> = LazyLock::new(|| {
+    let keys = register_int_gauge_vec!(
+        "zentinel_rate_limit_keys",
+        "Distinct rate-limit keys currently tracked in memory",
+        &["scope"]
+    )
+    .ok()?;
+    let evictions = register_int_counter_vec!(
+        "zentinel_rate_limit_key_evictions_total",
+        "Rate-limit keys evicted to enforce the max-keys bound",
+        &["scope"]
+    )
+    .ok()?;
+    Some(RateLimitPoolMetrics { keys, evictions })
+});
 
 /// Get current unix timestamp in seconds
 fn current_unix_timestamp() -> u64 {
@@ -158,11 +210,18 @@ fn calculate_reset_timestamp() -> u64 {
 impl RateLimiterPool {
     /// Create a new rate limiter pool with the given configuration (local backend)
     pub fn new(config: RateLimitConfig) -> Self {
+        Self::with_scope(config, "default")
+    }
+
+    /// Create a new rate limiter pool with a metrics scope (route ID or "global")
+    pub fn with_scope(config: RateLimitConfig, scope: impl Into<String>) -> Self {
         Self {
             backend: RateLimitBackendType::Local {
                 limiters: DashMap::new(),
             },
             config: RwLock::new(config),
+            scope: scope.into(),
+            sweeping: AtomicBool::new(false),
         }
     }
 
@@ -175,6 +234,8 @@ impl RateLimiterPool {
                 local_fallback: DashMap::new(),
             },
             config: RwLock::new(config),
+            scope: "default".to_string(),
+            sweeping: AtomicBool::new(false),
         }
     }
 
@@ -185,6 +246,7 @@ impl RateLimiterPool {
     pub fn check(&self, key: &str) -> RateLimitCheckInfo {
         let config = self.config.read();
         let max_rps = config.max_rps;
+        let max_keys = config.max_keys;
         drop(config);
 
         let limiters = match &self.backend {
@@ -193,12 +255,10 @@ impl RateLimiterPool {
             RateLimitBackendType::Distributed { local_fallback, .. } => local_fallback,
         };
 
-        // Get or create limiter for this key
-        let limiter = limiters
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(KeyRateLimiter::new(max_rps)))
-            .clone();
+        // Get or create limiter for this key, enforcing the key-map bound
+        let limiter = self.get_or_create_limiter(limiters, key, max_rps, max_keys);
 
+        limiter.touch();
         let outcome = limiter.check();
         let count = limiter.rate.observe(&(), 0); // Get current count without incrementing
         let remaining = if count >= max_rps as isize {
@@ -255,11 +315,11 @@ impl RateLimiterPool {
 
                         // Fallback to local
                         if redis.fallback_enabled() {
-                            let limiter = local_fallback
-                                .entry(key.to_string())
-                                .or_insert_with(|| Arc::new(KeyRateLimiter::new(max_rps)))
-                                .clone();
+                            let max_keys = self.config.read().max_keys;
+                            let limiter =
+                                self.get_or_create_limiter(local_fallback, key, max_rps, max_keys);
 
+                            limiter.touch();
                             let outcome = limiter.check();
                             let count = limiter.rate.observe(&(), 0);
                             let remaining = if count >= max_rps as isize {
@@ -364,34 +424,126 @@ impl RateLimiterPool {
         }
     }
 
-    /// Clean up expired entries (call periodically)
-    pub fn cleanup(&self) {
-        // Remove entries that haven't been accessed recently
-        // In practice, Rate handles its own window cleanup, so this is mainly
-        // for memory management when many unique keys are seen
-        let max_entries = 100_000; // Prevent unbounded growth
+    /// Get or create the limiter for a key, enforcing the `max_keys` bound.
+    ///
+    /// When the map is at capacity and a new key arrives, idle entries (not
+    /// seen within [`IDLE_KEY_TTL_SECS`]) are swept first; if the map is still
+    /// at capacity, the longest-idle entries are evicted down to 90% of the
+    /// bound and an eviction metric is incremented.
+    fn get_or_create_limiter(
+        &self,
+        limiters: &DashMap<String, Arc<KeyRateLimiter>>,
+        key: &str,
+        max_rps: u32,
+        max_keys: usize,
+    ) -> Arc<KeyRateLimiter> {
+        if let Some(limiter) = limiters.get(key) {
+            return limiter.clone();
+        }
 
+        if limiters.len() >= max_keys {
+            self.evict_keys(limiters, max_keys);
+        }
+
+        let limiter = limiters
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(KeyRateLimiter::new(max_rps)))
+            .clone();
+
+        if let Some(metrics) = POOL_METRICS.as_ref() {
+            metrics
+                .keys
+                .with_label_values(&[&self.scope])
+                .set(limiters.len() as i64);
+        }
+
+        limiter
+    }
+
+    /// Evict entries so a new key can be admitted without exceeding `max_keys`.
+    fn evict_keys(&self, limiters: &DashMap<String, Arc<KeyRateLimiter>>, max_keys: usize) {
+        // Only one task sweeps at a time; concurrent inserts may briefly
+        // overshoot the bound by the number of racing requests.
+        if self
+            .sweeping
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        let now = current_unix_timestamp();
+        let before = limiters.len();
+
+        // First pass: drop idle entries (their 1s window state is stale anyway)
+        limiters.retain(|_, limiter| limiter.idle_secs(now) <= IDLE_KEY_TTL_SECS);
+
+        // Second pass: still at capacity means all keys are active; evict the
+        // longest-idle entries down to 90% so inserts don't thrash the sweep.
+        if limiters.len() >= max_keys {
+            // Floor and stay below the cap so the pending insert never pushes
+            // the map past max_keys (div_ceil would leave target == max_keys
+            // for small caps and evict nothing).
+            let target = ((max_keys * 9) / 10).min(max_keys.saturating_sub(1));
+            let mut entries: Vec<(String, u64)> = limiters
+                .iter()
+                .map(|e| (e.key().clone(), e.value().idle_secs(now)))
+                .collect();
+            // Most idle first
+            entries.sort_by_key(|e| std::cmp::Reverse(e.1));
+            for (key, _) in entries.iter().take(limiters.len().saturating_sub(target)) {
+                limiters.remove(key);
+            }
+        }
+
+        let evicted = before.saturating_sub(limiters.len());
+        if evicted > 0 {
+            warn!(
+                scope = %self.scope,
+                evicted = evicted,
+                remaining = limiters.len(),
+                max_keys = max_keys,
+                "Rate limiter key map at capacity, evicted entries"
+            );
+            if let Some(metrics) = POOL_METRICS.as_ref() {
+                metrics
+                    .evictions
+                    .with_label_values(&[&self.scope])
+                    .inc_by(evicted as u64);
+                metrics
+                    .keys
+                    .with_label_values(&[&self.scope])
+                    .set(limiters.len() as i64);
+            }
+        }
+
+        self.sweeping.store(false, Ordering::Release);
+    }
+
+    /// Clean up idle entries (call periodically)
+    pub fn cleanup(&self) {
         let limiters = match &self.backend {
             RateLimitBackendType::Local { limiters } => limiters,
             #[cfg(feature = "distributed-rate-limit")]
             RateLimitBackendType::Distributed { local_fallback, .. } => local_fallback,
         };
 
-        if limiters.len() > max_entries {
-            // Simple eviction: clear half
-            let to_remove: Vec<_> = limiters
-                .iter()
-                .take(max_entries / 2)
-                .map(|e| e.key().clone())
-                .collect();
+        let now = current_unix_timestamp();
+        let before = limiters.len();
+        limiters.retain(|_, limiter| limiter.idle_secs(now) <= IDLE_KEY_TTL_SECS);
 
-            for key in to_remove {
-                limiters.remove(&key);
-            }
+        if let Some(metrics) = POOL_METRICS.as_ref() {
+            metrics
+                .keys
+                .with_label_values(&[&self.scope])
+                .set(limiters.len() as i64);
+        }
 
+        if before != limiters.len() {
             debug!(
-                entries_before = max_entries,
-                entries_after = limiters.len(),
+                scope = %self.scope,
+                removed = before - limiters.len(),
+                remaining = limiters.len(),
                 "Rate limiter pool cleanup completed"
             );
         }
@@ -431,10 +583,11 @@ impl RateLimitManager {
             message: None,
             backend: RateLimitBackend::Local,
             max_delay_ms: 5000,
+            max_keys: DEFAULT_MAX_RATE_LIMIT_KEYS,
         };
         Self {
             route_limiters: DashMap::new(),
-            global_limiter: Some(Arc::new(RateLimiterPool::new(config))),
+            global_limiter: Some(Arc::new(RateLimiterPool::with_scope(config, "global"))),
         }
     }
 
@@ -448,8 +601,10 @@ impl RateLimitManager {
             "Registering rate limiter for route"
         );
 
-        self.route_limiters
-            .insert(route_id.to_string(), Arc::new(RateLimiterPool::new(config)));
+        self.route_limiters.insert(
+            route_id.to_string(),
+            Arc::new(RateLimiterPool::with_scope(config, route_id)),
+        );
     }
 
     /// Check if a request should be rate limited
@@ -995,5 +1150,69 @@ mod tests {
             },
         );
         assert!(route_manager.is_enabled());
+    }
+
+    fn pool_key_count(pool: &RateLimiterPool) -> usize {
+        pool.local_limiter_count()
+    }
+
+    #[test]
+    fn key_map_never_exceeds_max_keys() {
+        let config = RateLimitConfig {
+            max_rps: 100,
+            max_keys: 10,
+            ..Default::default()
+        };
+        let pool = RateLimiterPool::new(config);
+
+        for i in 0..100 {
+            pool.check(&format!("client-{i}"));
+        }
+
+        // Active keys force second-pass eviction down to ~90% of the cap, so
+        // the map may hold at most max_keys entries (cap + the new insert - evictions)
+        assert!(
+            pool_key_count(&pool) <= 10,
+            "key map grew past max_keys: {}",
+            pool_key_count(&pool)
+        );
+    }
+
+    #[test]
+    fn eviction_keeps_recently_seen_keys_usable() {
+        let config = RateLimitConfig {
+            max_rps: 2,
+            max_keys: 5,
+            ..Default::default()
+        };
+        let pool = RateLimiterPool::new(config);
+
+        // Saturate one key to its limit
+        pool.check("hot");
+        pool.check("hot");
+        assert_eq!(pool.check("hot").outcome, RateLimitOutcome::Limited);
+
+        // Flood with new keys to force eviction; limiter must keep functioning
+        for i in 0..50 {
+            let info = pool.check(&format!("cold-{i}"));
+            assert_eq!(info.outcome, RateLimitOutcome::Allowed);
+        }
+        assert!(pool_key_count(&pool) <= 5);
+    }
+
+    #[test]
+    fn cleanup_retains_active_keys() {
+        let config = RateLimitConfig {
+            max_rps: 100,
+            max_keys: 100,
+            ..Default::default()
+        };
+        let pool = RateLimiterPool::new(config);
+
+        pool.check("active");
+        pool.cleanup();
+
+        // Key was just seen, so periodic cleanup must not remove it
+        assert_eq!(pool_key_count(&pool), 1);
     }
 }
