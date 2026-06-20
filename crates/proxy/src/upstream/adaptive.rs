@@ -626,10 +626,21 @@ impl LoadBalancer for AdaptiveBalancer {
     async fn release(&self, selection: &TargetSelection) {
         if let Some(index_str) = selection.metadata.get("target_index") {
             if let Ok(index) = index_str.parse::<usize>() {
-                let connections = self.metrics[index]
+                let prev = self.metrics[index]
                     .active_connections
-                    .fetch_sub(1, Ordering::Relaxed)
-                    - 1;
+                    .fetch_sub(1, Ordering::Relaxed);
+                let connections = if prev == 0 {
+                    self.metrics[index]
+                        .active_connections
+                        .fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        "Attempted to decrement active connections below zero for target {}",
+                        index
+                    );
+                    return;
+                } else {
+                    prev - 1
+                };
                 trace!(
                     target_index = index,
                     address = %selection.address,

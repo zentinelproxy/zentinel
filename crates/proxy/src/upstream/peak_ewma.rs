@@ -110,7 +110,11 @@ impl TargetStats {
     }
 
     fn decrement_connections(&self) {
-        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+        let prev = self.active_connections.fetch_sub(1, Ordering::Relaxed);
+        if prev == 0 {
+            self.active_connections.fetch_add(1, Ordering::Relaxed);
+            warn!("Attempted to decrement active connections below zero");
+        }
     }
 }
 

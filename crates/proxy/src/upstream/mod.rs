@@ -1614,7 +1614,11 @@ impl UpstreamPool {
     /// Decrement the active request counter. Called when a request completes
     /// (success or failure).
     pub fn decrement_active(&self) {
-        self.stats.active_requests.fetch_sub(1, Ordering::Relaxed);
+        let prev = self.stats.active_requests.fetch_sub(1, Ordering::Relaxed);
+        if prev == 0 {
+            self.stats.active_requests.fetch_add(1, Ordering::Relaxed);
+            warn!("Attempted to decrement active request count below zero");
+        }
     }
 
     /// Shutdown the pool

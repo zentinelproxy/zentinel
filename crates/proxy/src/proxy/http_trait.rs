@@ -104,6 +104,10 @@ impl ProxyHttp for ZentinelProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<Error>> {
+        // Track active request - single increment point for all request types
+        // (proxied, builtin, static, rejected). Paired with dec_requests() in logging().
+        self.reload_coordinator.inc_requests();
+
         // Extract request info for routing
         let req_header = session.req_header();
         let method = req_header.method.as_str();
@@ -226,9 +230,6 @@ impl ProxyHttp for ZentinelProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>, Box<Error>> {
-        // Track active request
-        self.reload_coordinator.inc_requests();
-
         // Cache global config once per request (avoids repeated Arc clones)
         if ctx.config.is_none() {
             ctx.config = Some(self.config_manager.current());

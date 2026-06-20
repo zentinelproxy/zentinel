@@ -323,10 +323,20 @@ impl P2cBalancer {
 
     /// Track connection release
     pub fn release_connection(&self, target_index: usize) {
-        let connections = self.metrics[target_index]
+        let prev = self.metrics[target_index]
             .connections
-            .fetch_sub(1, Ordering::Relaxed)
-            - 1;
+            .fetch_sub(1, Ordering::Relaxed);
+        if prev == 0 {
+            self.metrics[target_index]
+                .connections
+                .fetch_add(1, Ordering::Relaxed);
+            warn!(
+                "Attempted to decrement connection count below zero for target {}",
+                target_index
+            );
+            return;
+        }
+        let connections = prev - 1;
 
         trace!(
             target_index = target_index,

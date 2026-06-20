@@ -489,8 +489,24 @@ impl ConsistentHashBalancer {
 
     /// Track connection release
     pub fn release_connection(&self, target_index: usize) {
-        let count = self.connection_counts[target_index].fetch_sub(1, Ordering::Relaxed) - 1;
-        let total = self.total_connections.fetch_sub(1, Ordering::Relaxed) - 1;
+        let prev_count = self.connection_counts[target_index].fetch_sub(1, Ordering::Relaxed);
+        if prev_count == 0 {
+            self.connection_counts[target_index].fetch_add(1, Ordering::Relaxed);
+            warn!(
+                "Attempted to decrement connection count below zero for target {}",
+                target_index
+            );
+            return;
+        }
+        let count = prev_count - 1;
+        let prev_total = self.total_connections.fetch_sub(1, Ordering::Relaxed);
+        let total = if prev_total == 0 {
+            self.total_connections.fetch_add(1, Ordering::Relaxed);
+            warn!("Attempted to decrement total connections below zero");
+            return;
+        } else {
+            prev_total - 1
+        };
         trace!(
             target_index = target_index,
             target_connections = count,
