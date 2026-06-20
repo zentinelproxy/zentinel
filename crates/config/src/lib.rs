@@ -799,6 +799,7 @@ impl Config {
                 load_balancing: LoadBalancingAlgorithm::RoundRobin,
                 sticky_session: None,
                 health_check: None,
+                circuit_breaker: None,
                 connection_pool: ConnectionPoolConfig::default(),
                 timeouts: UpstreamTimeouts::default(),
                 tls: None,
@@ -819,6 +820,7 @@ impl Config {
                 working_directory: None,
                 trace_id_format: Default::default(),
                 auto_reload: false,
+                route_cache_size: 1000,
             },
             listeners: vec![ListenerConfig {
                 id: "http".to_string(),
@@ -842,7 +844,6 @@ impl Config {
                 filters: vec![],
                 builtin_handler: None,
                 waf_enabled: false,
-                circuit_breaker: None,
                 retry_policy: None,
                 static_files: None,
                 api_schema: None,

@@ -344,6 +344,7 @@ mod tests {
             load_balancing: LoadBalancingAlgorithm::RoundRobin,
             sticky_session: None,
             health_check: None,
+            circuit_breaker: None,
             connection_pool: ConnectionPoolConfig::default(),
             timeouts: UpstreamTimeouts::default(),
             tls: None,

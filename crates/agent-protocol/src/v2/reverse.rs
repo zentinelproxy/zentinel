@@ -549,13 +549,8 @@ impl ReverseConnectionClient {
         correlation_id: &str,
         event: &T,
     ) -> Result<AgentResponse, AgentProtocolError> {
-        let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .await
-            .insert(correlation_id.to_string(), tx);
-
-        // Serialize event with correlation ID
+        // Serialize event with correlation ID (before registering the pending
+        // entry, so serialization failures cannot leak it)
         let mut payload = serde_json::to_value(event)
             .map_err(|e| AgentProtocolError::Serialization(e.to_string()))?;
 
@@ -569,37 +564,49 @@ impl ReverseConnectionClient {
         let payload_bytes = serde_json::to_vec(&payload)
             .map_err(|e| AgentProtocolError::Serialization(e.to_string()))?;
 
-        // Send message
+        let (tx, rx) = oneshot::channel();
+        self.pending
+            .lock()
+            .await
+            .insert(correlation_id.to_string(), tx);
+
+        // Send message; on failure remove the pending entry we just registered
         {
             let outbound = self.outbound_tx.lock().await;
-            if let Some(tx) = outbound.as_ref() {
-                tx.send((msg_type, payload_bytes))
+            let send_result = match outbound.as_ref() {
+                Some(tx) => tx
+                    .send((msg_type, payload_bytes))
                     .await
-                    .map_err(|_| AgentProtocolError::ConnectionClosed)?;
-            } else {
-                return Err(AgentProtocolError::ConnectionClosed);
+                    .map_err(|_| AgentProtocolError::ConnectionClosed),
+                None => Err(AgentProtocolError::ConnectionClosed),
+            };
+            drop(outbound);
+            if let Err(e) = send_result {
+                self.pending.lock().await.remove(correlation_id);
+                return Err(e);
             }
         }
 
         self.in_flight
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // Wait for response with timeout
-        let response = tokio::time::timeout(self.timeout, rx)
-            .await
-            .map_err(|_| {
-                self.pending
-                    .try_lock()
-                    .ok()
-                    .map(|mut p| p.remove(correlation_id));
-                AgentProtocolError::Timeout(self.timeout)
-            })?
-            .map_err(|_| AgentProtocolError::ConnectionClosed)?;
+        // Wait for response with timeout. Every exit path below must remove
+        // the pending entry and decrement in_flight, or the map leaks and the
+        // gauge drifts.
+        let result = match tokio::time::timeout(self.timeout, rx).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(_)) => Err(AgentProtocolError::ConnectionClosed),
+            Err(_) => Err(AgentProtocolError::Timeout(self.timeout)),
+        };
 
         self.in_flight
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 
-        Ok(response)
+        if result.is_err() {
+            self.pending.lock().await.remove(correlation_id);
+        }
+
+        result
     }
 
     /// Cancel a specific request.

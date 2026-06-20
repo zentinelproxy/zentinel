@@ -891,17 +891,21 @@ impl UpstreamPool {
         }
 
         // Initialize circuit breakers for each target
+
+        // Assigns default CB config if not configured, such as when the stanza is missing
+        // (and None is set for CircuitBreakerConfig)
+        let cb_config = config.circuit_breaker.unwrap_or_default();
+
         let mut circuit_breakers = HashMap::new();
         for target in &targets {
             trace!(
                 upstream_id = %config.id,
                 target = %target.full_address(),
-                "Initializing circuit breaker for target"
+                "Initializing circuit breaker for target, configuration {:?}",
+                cb_config
             );
-            circuit_breakers.insert(
-                target.full_address(),
-                CircuitBreaker::new(CircuitBreakerConfig::default()),
-            );
+
+            circuit_breakers.insert(target.full_address(), CircuitBreaker::new(cb_config));
         }
 
         let pool = Self {
@@ -1438,13 +1442,13 @@ impl UpstreamPool {
                     false
                 };
 
-            // Only mark the target unhealthy in the load balancer when the
-            // circuit breaker has actually opened (failure threshold reached).
-            // Individual failures are tracked by the circuit breaker; the
-            // upstream_peer selection loop already checks breaker state.
-            if breaker_opened {
-                self.load_balancer.report_health(target, false).await;
-            }
+            // Do NOT mark the target down in the load balancer when the breaker
+            // opens. The circuit breaker is the single availability gate — the
+            // upstream_peer selection loop checks `is_closed()`, which also runs
+            // the timed Open->HalfOpen transition and lets a probe through after
+            // `timeout_seconds`. Removing the target from the load balancer here
+            // would prevent it from ever being selected again, so that probe
+            // would never run and the target could not recover (#261).
 
             self.stats.failures.fetch_add(1, Ordering::Relaxed);
             warn!(
@@ -1487,23 +1491,15 @@ impl UpstreamPool {
                 .report_result_with_latency(target, true, latency)
                 .await;
         } else {
-            let breaker_opened =
-                if let Some(breaker) = self.circuit_breakers.read().await.get(target) {
-                    breaker.record_failure()
-                } else {
-                    false
-                };
-            self.stats.failures.fetch_add(1, Ordering::Relaxed);
-
-            // Only propagate failure to the load balancer when the circuit
-            // breaker has opened. This ensures adaptive LBs record the
-            // health change and individual failures don't prematurely
-            // remove targets from the healthy pool.
-            if breaker_opened {
-                self.load_balancer
-                    .report_result_with_latency(target, false, latency)
-                    .await;
+            // Record the failure in the circuit breaker (this may open it). We
+            // do NOT propagate a health-down to the load balancer on open: the
+            // selection loop's `is_closed()` check is the sole availability gate
+            // and runs the timed half-open recovery probe. Marking the target
+            // down here would remove it from selection and block recovery (#261).
+            if let Some(breaker) = self.circuit_breakers.read().await.get(target) {
+                breaker.record_failure();
             }
+            self.stats.failures.fetch_add(1, Ordering::Relaxed);
         }
     }
 

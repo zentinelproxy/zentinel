@@ -9,7 +9,7 @@ use zentinel_common::budget::{
     BudgetPeriod, CostAttributionConfig, ModelPricing, TokenBudgetConfig,
 };
 
-use crate::routes::*;
+use crate::{kdl::retrypolicy_helper::parse_retry_policy, routes::*};
 
 use super::helpers::{
     get_bool_entry, get_first_arg_string, get_float_entry, get_int_entry, get_string_entry,
@@ -34,6 +34,7 @@ const RECOGNIZED_ROUTE_CHILDREN: &[&str] = &[
     "fallback",
     "policies",
     "service-type",
+    "retry-policy",
 ];
 
 /// Parse routes configuration block
@@ -70,6 +71,16 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
 
                 // Parse filters
                 let filters = parse_route_filter_refs(child)?;
+
+                let retry_policy = child
+                    .children()
+                    .and_then(|c| {
+                        c.nodes()
+                            .iter()
+                            .find(|n| n.name().value() == "retry-policy")
+                    })
+                    .map(parse_retry_policy)
+                    .transpose()?;
 
                 // Parse builtin-handler
                 let builtin_handler =
@@ -150,8 +161,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     filters,
                     builtin_handler,
                     waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
-                    circuit_breaker: None,
-                    retry_policy: None,
+                    retry_policy,
                     static_files,
                     api_schema,
                     inference,
@@ -1345,6 +1355,9 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
     let enforce = get_bool_entry(node, "enforce").unwrap_or(true);
     let rollover = get_bool_entry(node, "rollover").unwrap_or(false);
     let burst_allowance = get_float_entry(node, "burst-allowance");
+    let max_tenants = get_int_entry(node, "max-tenants")
+        .map(|v| v as usize)
+        .unwrap_or_else(zentinel_common::budget::default_max_tenants);
 
     trace!(
         period = ?period,
@@ -1353,6 +1366,7 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
         enforce = enforce,
         rollover = rollover,
         burst_allowance = ?burst_allowance,
+        max_tenants = max_tenants,
         "Parsed token budget configuration"
     );
 
@@ -1363,6 +1377,7 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
         enforce,
         rollover,
         burst_allowance,
+        max_tenants,
     })
 }
 
@@ -1753,5 +1768,50 @@ mod tests {
         assert!(Priority(75) > Priority::NORMAL);
         assert!(Priority::NORMAL > Priority(25));
         assert!(Priority(25) > Priority::LOW);
+    }
+
+    /// retry-policy stanza present, all values normally set, use those values
+    /// Retain this test here to ensure block parser works
+    #[test]
+    fn test_parse_retry_policy_normal() {
+        let kdl = r#"
+        routes {
+            route "test-rp" {
+                upstream "backend";
+                retry-policy {
+                    max-attempts 10
+                }
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+
+        let routes = parse_routes(routes_node).unwrap();
+
+        let rp = routes.first().unwrap().retry_policy.as_ref().unwrap();
+
+        assert_eq!(rp.max_attempts, 10);
+    }
+
+    /// retry-policy stanza missing, Option<RetryPolicy> will be None
+    #[test]
+    fn test_parse_retry_policy_stanza_missing() {
+        let kdl = r#"
+        routes {
+            route "test-rp" {
+                upstream "backend";
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let routes_node = doc.get("routes").unwrap();
+        let routes = parse_routes(routes_node).unwrap();
+
+        let rp = routes.first().unwrap().retry_policy.as_ref();
+
+        assert!(rp.is_none());
     }
 }

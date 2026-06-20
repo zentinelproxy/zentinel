@@ -19,6 +19,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use dashmap::DashMap;
 use pingora_cache::eviction::EvictionManager;
 use pingora_cache::key::{CacheHashKey, CacheKey, CompactCacheKey};
 use pingora_cache::meta::CacheMeta;
@@ -28,11 +29,10 @@ use pingora_cache::storage::{
 use pingora_cache::trace::SpanHandle;
 use pingora_core::{Error, ErrorType, Result};
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 // ============================================================================
@@ -48,8 +48,10 @@ pub struct DiskCacheStorage {
     num_shards: u32,
     #[allow(dead_code)]
     max_size_bytes: usize,
-    /// Tracks in-flight writes: combined_hash -> set of temp_ids
-    inflight: Arc<RwLock<HashMap<String, HashSet<u64>>>>,
+    /// Tracks in-flight writes: combined_hash -> set of temp_ids.
+    /// Lock-free so `DiskMissHandler::drop` can always clean up its entry
+    /// (an async lock's `try_write` could silently leak under contention).
+    inflight: Arc<DashMap<String, HashSet<u64>>>,
     next_temp_id: AtomicU64,
 }
 
@@ -60,6 +62,23 @@ impl DiskCacheStorage {
     /// files left behind by interrupted writes.
     pub fn new(path: &Path, shards: u32, max_size: usize) -> Self {
         let base = path.to_path_buf();
+
+        // Probe writability once up front so a misconfigured cache directory
+        // produces a single actionable error instead of one per subdirectory
+        // (and later, one per failed cache write).
+        if let Err(e) = std::fs::create_dir_all(&base).and_then(|()| {
+            let probe = base.join(".zentinel-write-probe");
+            std::fs::write(&probe, b"probe")?;
+            std::fs::remove_file(&probe)
+        }) {
+            error!(
+                path = %base.display(),
+                error = %e,
+                "Disk cache directory is not writable; cache writes WILL fail \
+                 (requests still proxied, uncached). Fix permissions or change \
+                 cache disk-path."
+            );
+        }
 
         // Create shard dirs, hex-prefix subdirs, and tmp dirs
         for shard in 0..shards {
@@ -93,7 +112,7 @@ impl DiskCacheStorage {
             base_path: base,
             num_shards: shards,
             max_size_bytes: max_size,
-            inflight: Arc::new(RwLock::new(HashMap::new())),
+            inflight: Arc::new(DashMap::new()),
             next_temp_id: AtomicU64::new(1),
         }
     }
@@ -281,8 +300,21 @@ pub struct DiskMissHandler {
     body_path: PathBuf,
     tmp_dir: PathBuf,
     temp_id: u64,
-    inflight: Arc<RwLock<HashMap<String, HashSet<u64>>>>,
+    inflight: Arc<DashMap<String, HashSet<u64>>>,
     finished: bool,
+}
+
+impl DiskMissHandler {
+    /// Remove this handler's temp_id from inflight tracking.
+    fn release_inflight(&self) {
+        if let Some(mut set) = self.inflight.get_mut(&self.combined) {
+            set.remove(&self.temp_id);
+            if set.is_empty() {
+                drop(set);
+                self.inflight.remove_if(&self.combined, |_, s| s.is_empty());
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -362,15 +394,7 @@ impl HandleMiss for DiskMissHandler {
         })??;
 
         // Remove from inflight tracking
-        {
-            let mut inflight = self.inflight.write().await;
-            if let Some(set) = inflight.get_mut(&self.combined) {
-                set.remove(&self.temp_id);
-                if set.is_empty() {
-                    inflight.remove(&self.combined);
-                }
-            }
-        }
+        self.release_inflight();
 
         debug!(combined = %self.combined, size, "Disk cache entry written");
         Ok(MissFinishType::Created(size))
@@ -380,16 +404,10 @@ impl HandleMiss for DiskMissHandler {
 impl Drop for DiskMissHandler {
     fn drop(&mut self) {
         if !self.finished {
-            // Clean up inflight tracking if finish() was never called.
-            // We can't do async in Drop, so use try_write.
-            if let Ok(mut inflight) = self.inflight.try_write() {
-                if let Some(set) = inflight.get_mut(&self.combined) {
-                    set.remove(&self.temp_id);
-                    if set.is_empty() {
-                        inflight.remove(&self.combined);
-                    }
-                }
-            }
+            // Clean up inflight tracking if finish() was never called
+            // (aborted/cancelled write). DashMap removal is lock-free, so
+            // unlike an async lock this can never silently skip cleanup.
+            self.release_inflight();
         }
     }
 }
@@ -475,13 +493,10 @@ impl Storage for DiskCacheStorage {
         let temp_id = self.next_temp_id.fetch_add(1, Ordering::Relaxed);
 
         // Register in inflight tracking
-        {
-            let mut inflight = self.inflight.write().await;
-            inflight
-                .entry(combined.clone())
-                .or_default()
-                .insert(temp_id);
-        }
+        self.inflight
+            .entry(combined.clone())
+            .or_default()
+            .insert(temp_id);
 
         Ok(Box::new(DiskMissHandler {
             body_buffer: Vec::new(),
@@ -520,10 +535,7 @@ impl Storage for DiskCacheStorage {
         })?;
 
         // Also remove from inflight tracking
-        {
-            let mut inflight = self.inflight.write().await;
-            inflight.remove(&combined);
-        }
+        self.inflight.remove(&combined);
 
         Ok(removed)
     }
@@ -909,7 +921,7 @@ mod tests {
         assert!(STORAGE.lookup(&key, trace).await.unwrap().is_none());
 
         // Verify inflight tracking was cleaned up
-        assert!(STORAGE.inflight.read().await.is_empty());
+        assert!(STORAGE.inflight.is_empty());
 
         // Cleanup
         let _ = std::fs::remove_dir_all(
