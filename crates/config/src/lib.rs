@@ -1176,7 +1176,7 @@ upstreams {
 }
 routes {
     route "api" {
-        match { path-prefix "/api" }
+        matches { path-prefix "/api" }
         upstream "api-backend"
     }
 }
@@ -1195,7 +1195,7 @@ upstreams {
 }
 routes {
     route "web" {
-        match { path-prefix "/" }
+        matches { path-prefix "/" }
         upstream "web-backend"
     }
 }
@@ -1251,7 +1251,7 @@ include "vhosts/*.kdl"
             r#"
 routes {
     route "same-id" {
-        match { path-prefix "/a" }
+        matches { path-prefix "/a" }
     }
 }
 "#,
@@ -1263,7 +1263,7 @@ routes {
             r#"
 routes {
     route "same-id" {
-        match { path-prefix "/b" }
+        matches { path-prefix "/b" }
     }
 }
 "#,
@@ -1370,7 +1370,7 @@ include "vhosts/*.kdl"
             r#"
 routes {
     route "shared-id" {
-        match { path-prefix "/first" }
+        matches { path-prefix "/first" }
     }
 }
 "#,
@@ -1382,7 +1382,7 @@ routes {
             r#"
 routes {
     route "shared-id" {
-        match { path-prefix "/second" }
+        matches { path-prefix "/second" }
     }
 }
 "#,
