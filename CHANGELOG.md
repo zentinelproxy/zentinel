@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.06_3](#26063---2026-06-23) | 0.6.17 | 2026-06-23 | Multi-file KDL block merging, upstream circuit-breaker recovery fix, counter underflow guard, dependency maintenance |
 | [26.06_2](#26062---2026-06-16) | 0.6.16 | 2026-06-16 | Manifesto hardening (agent body limits, bounded limiter/pool state, pool maintenance), route-level retry-policy parsing, Pingora 0.8.1 security bump, dependency maintenance |
 | [26.06_1](#26061---2026-06-07) | 0.6.15 | 2026-06-07 | Standalone Prometheus metrics server, per-listener route sets, quickstart fixes, dep maintenance (tikv-jemallocator 0.7, openssl 0.10.80, rust-minor batches) |
 | [26.05_4](#26054---2026-05-12) | 0.6.14 | 2026-05-12 | Dependency maintenance: OpenTelemetry 0.32, sysinfo 0.39, Rust toolchain 1.95 |
@@ -51,73 +52,29 @@ for details.
 
 ## [Unreleased]
 
-### Changed
-- **⚠️ Behavior change: oversized bodies no longer bypass agent inspection.**
-  Request/response bodies larger than an agent's `max-request-body-bytes` /
-  `max-response-body-bytes` (default 1 MiB; previously a hardcoded request-only
-  1 MB) now follow the agent's `failure-mode`: `closed` blocks the request with
-  **413**, `open` skips that agent loudly (warn log + `body_size_skips` metric)
-  while other agents still inspect. Previously oversized bodies were silently
-  allowed past all agents, and streaming bodies had no limit at all. Set
-  `failure-mode "open"` and/or raise the body limits on an agent to retain the
-  old (insecure) behavior explicitly.
+---
+
+## [26.06_3] - 2026-06-23
+
+**Crate version:** 0.6.17
 
 ### Added
-- Per-agent `max-request-body-bytes` / `max-response-body-bytes` are now
-  enforced (the fields previously parsed but had no effect) and covered by the
-  multi-file config parser.
-- `max-keys` on rate-limit filters (default `100000`) bounds the in-memory
-  per-key limiter map with idle-aware eviction, replacing the unbounded growth
-  between periodic sweeps. New metrics: `zentinel_rate_limit_keys{scope}`,
-  `zentinel_rate_limit_key_evictions_total{scope}`.
-- `max-tenants` on inference token budgets (default `10000`) bounds per-tenant
-  budget state with expired-period-first eviction. New metrics:
-  `zentinel_inference_budget_tenants{route}`,
-  `zentinel_inference_budget_tenant_evictions_total{route}`.
-- `AgentDecision.decided_by` records which agent produced a block/redirect/
-  challenge (including synthetic fail-closed blocks from timeouts, circuit
-  breakers, and body-size limits); block logs carry `agent_id` and audit
-  entries gain an `agent:<id>` tag.
-- Config validation now rejects duplicate agent IDs, zero agent timeouts
-  (`timeout-ms`, `chunk-timeout-ms`), and zero body limits.
-- CI: workspace unit tests (`cargo test --workspace --lib`) now run on every
-  pull request; the full suite remains in the Tests workflow.
-- `system { route-cache-size N }` (default `1000`) exposes the previously
-  hardcoded route-match cache size; evictions are now visible via
-  `zentinel_route_cache_evictions_total` and a debug log.
-- Agent pool correlation affinities are bounded (`max_correlation_affinities`,
-  default `100000`) with idle-TTL reclamation (default 5 min) and explicit
-  release at request completion. New metrics: `correlation_affinities` gauge,
-  `affinity_evictions_total`, `affinity_rejections_total`.
+- **Merge duplicate top-level blocks across included KDL files.** `listeners`,
+  `routes`, `upstreams`, `filters`, and `agents` blocks now merge across
+  `include`d files instead of the last file silently winning; duplicate IDs are
+  rejected at parse time. Singleton blocks (`system`/`server`/`waf`) keep
+  last-wins semantics but now warn on duplicates. (#277)
 
 ### Fixed
-- **Agent pool maintenance now actually runs.** `AgentPool::run_maintenance`
-  (connection health re-checks, reconnection, sticky-session cleanup) existed
-  but was never spawned: a crashed-and-restarted agent stayed permanently
-  unhealthy until proxy restart. It is now spawned per agent on initialize.
-- Correlation affinity entries leaked once per request (inserted on every
-  request-headers call, never cleared anywhere).
-- Reverse-connection clients leaked pending-response entries on
-  serialization/send failure and on timeout under lock contention; the
-  `in_flight` gauge also drifted upward on every error.
-- Agent metrics collector: `max_series` was configured but never enforced and
-  `expire_old_metrics` was never called, so agent-reported series accumulated
-  without bound. New series are dropped at the limit (warn + counter) and
-  stale series expire via pool maintenance.
-- Consistent-hash lookup cache grew without bound on request-derived key
-  hashes (`with_capacity(1000)` was only an allocation hint); now hard-bounded
-  at 10k entries.
-- Active health checks now bound the WHOLE probe (connect + write + read) with
-  `timeout-secs`; previously only the connect was bounded, so a backend that
-  accepted then hung froze that target's check loop forever.
-- Disk-cache in-flight write tracking could silently skip cleanup when a
-  handler was dropped under lock contention; moved to a lock-free map. Startup
-  now probes cache-dir writability once with an actionable error.
-- Hot reload warns explicitly when listener or `system` settings changed in
-  the new config (they are not hot-reloadable and were previously ignored
-  silently).
-- README no longer claims S3-FIFO/TinyLFU cache eviction (it is LRU) or
-  WebSocket traffic mirroring (frame inspection + session affinity).
+- **Upstream circuit breaker now recovers from the open state.** A breaker that
+  tripped open could remain open instead of transitioning to half-open and
+  recovering once the backend healed. (#282)
+- Guard active request/connection counters against underflow. (#278)
+
+### Changed
+- Bump `tiktoken-rs` 0.11 → 0.12. (#269)
+- Bump the rust-minor group (4 updates). (#284)
+- CI: bump `actions/checkout` 6 → 7. (#283)
 
 ---
 
