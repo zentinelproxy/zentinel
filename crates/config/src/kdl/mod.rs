@@ -39,6 +39,7 @@ use zentinel_common::limits::Limits;
 
 pub use crate::kdl::circuitbreaker_helper::parse_circuit_breaker_faildefault;
 use crate::observability::ObservabilityConfig;
+use crate::routes::RouteConfig;
 use crate::waf::WafConfig;
 use crate::{AgentConfig, Config, CURRENT_SCHEMA_VERSION};
 
@@ -75,6 +76,12 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
             }
             // Accept both "system" (preferred) and "server" (deprecated)
             "system" => {
+                if server.is_some() {
+                    warn!(
+                        "Duplicate 'system' block found. Singleton blocks use last-wins semantics; \
+                         the previous 'system' block will be overridden."
+                    );
+                }
                 server = Some(parse_server_config(node)?);
                 trace!("Parsed system configuration");
             }
@@ -83,30 +90,90 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
                     "The 'server' block is deprecated. Please use 'system' instead. \
                      This will be removed in a future version."
                 );
+                if server.is_some() {
+                    warn!(
+                        "Duplicate 'server'/'system' block found. Singleton blocks use last-wins semantics; \
+                         the previous block will be overridden."
+                    );
+                }
                 server = Some(parse_server_config(node)?);
                 trace!("Parsed server configuration (deprecated)");
             }
             "listeners" => {
-                listeners = parse_listeners(node)?;
+                let new_listeners = parse_listeners(node)?;
+                for listener in new_listeners {
+                    if listeners
+                        .iter()
+                        .any(|l: &crate::server::ListenerConfig| l.id == listener.id)
+                    {
+                        return Err(anyhow::anyhow!(
+                            "Duplicate listener ID '{}' found. Each listener ID must be unique across all config files.",
+                            listener.id
+                        ));
+                    }
+                    listeners.push(listener);
+                }
                 trace!(count = listeners.len(), "Parsed listeners");
             }
             "routes" => {
-                routes = parse_routes(node)?;
+                let new_routes = parse_routes(node)?;
+                for route in new_routes {
+                    if routes.iter().any(|r: &RouteConfig| r.id == route.id) {
+                        return Err(anyhow::anyhow!(
+                            "Duplicate route ID '{}' found. Each route ID must be unique across all config files.",
+                            route.id
+                        ));
+                    }
+                    routes.push(route);
+                }
                 trace!(count = routes.len(), "Parsed routes");
             }
             "upstreams" => {
-                upstreams = parse_upstreams(node)?;
+                let new_upstreams = parse_upstreams(node)?;
+                for (id, upstream) in new_upstreams {
+                    if upstreams.contains_key(&id) {
+                        return Err(anyhow::anyhow!(
+                            "Duplicate upstream ID '{}' found. Each upstream ID must be unique across all config files.",
+                            id
+                        ));
+                    }
+                    upstreams.insert(id, upstream);
+                }
                 trace!(count = upstreams.len(), "Parsed upstreams");
             }
             "filters" => {
-                filters = parse_filter_definitions(node)?;
+                let new_filters = parse_filter_definitions(node)?;
+                for (id, filter) in new_filters {
+                    if filters.contains_key(&id) {
+                        return Err(anyhow::anyhow!(
+                            "Duplicate filter ID '{}' found. Each filter ID must be unique across all config files.",
+                            id
+                        ));
+                    }
+                    filters.insert(id, filter);
+                }
                 trace!(count = filters.len(), "Parsed filters");
             }
             "agents" => {
-                agents = parse_agents(node)?;
+                let new_agents = parse_agents(node)?;
+                for agent in new_agents {
+                    if agents.iter().any(|a: &AgentConfig| a.id == agent.id) {
+                        return Err(anyhow::anyhow!(
+                            "Duplicate agent ID '{}' found. Each agent ID must be unique across all config files.",
+                            agent.id
+                        ));
+                    }
+                    agents.push(agent);
+                }
                 trace!(count = agents.len(), "Parsed agents");
             }
             "waf" => {
+                if waf.is_some() {
+                    warn!(
+                        "Duplicate 'waf' block found. Singleton blocks use last-wins semantics; \
+                         the previous 'waf' block will be overridden."
+                    );
+                }
                 waf = Some(parse_waf_config(node)?);
                 trace!("Parsed WAF configuration");
             }

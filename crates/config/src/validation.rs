@@ -1341,20 +1341,38 @@ mod tests {
 
     #[test]
     fn duplicate_agent_ids_fail_validation() {
-        let config = config_with_agent_block(
-            r#"
-            agent "waf" type="waf" {
-                unix-socket path="/tmp/waf-a.sock"
+        let kdl = r#"
+            schema-version "1.0"
+            system { worker-threads 0 }
+            listeners {
+                listener "public" {
+                    address "0.0.0.0:8080"
+                }
             }
-            agent "waf" type="waf" {
-                unix-socket path="/tmp/waf-b.sock"
+            routes {
+                route "api" {
+                    matches { path-prefix "/" }
+                    upstream "backend"
+                }
             }
-            "#,
-        );
-        let errors = validation_errors(&config);
+            upstreams {
+                upstream "backend" {
+                    target "127.0.0.1:3000"
+                }
+            }
+            agents {
+                agent "waf" type="waf" {
+                    unix-socket path="/tmp/waf-a.sock"
+                }
+                agent "waf" type="waf" {
+                    unix-socket path="/tmp/waf-b.sock"
+                }
+            }
+        "#;
+        let err = crate::Config::from_kdl(kdl).unwrap_err();
         assert!(
-            errors.contains("Duplicate agent ID 'waf'"),
-            "expected duplicate agent ID error, got: {errors}"
+            err.to_string().contains("Duplicate agent ID 'waf'"),
+            "expected duplicate agent ID error, got: {err}"
         );
     }
 
