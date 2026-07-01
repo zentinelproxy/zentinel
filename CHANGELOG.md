@@ -12,6 +12,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.07_1](#26071---2026-07-01) | 0.6.19 | 2026-07-01 | Dependency maintenance: maxminddb 0.29, wasmtime 46, rust-minor batch (12 updates), actions/cache 6 |
 | [26.06_3](#26063---2026-06-23) | 0.6.17 | 2026-06-23 | Multi-file KDL block merging, upstream circuit-breaker recovery fix, counter underflow guard, dependency maintenance |
 | [26.06_2](#26062---2026-06-16) | 0.6.16 | 2026-06-16 | Manifesto hardening (agent body limits, bounded limiter/pool state, pool maintenance), route-level retry-policy parsing, Pingora 0.8.1 security bump, dependency maintenance |
 | [26.06_1](#26061---2026-06-07) | 0.6.15 | 2026-06-07 | Standalone Prometheus metrics server, per-listener route sets, quickstart fixes, dep maintenance (tikv-jemallocator 0.7, openssl 0.10.80, rust-minor batches) |
@@ -51,6 +52,18 @@ for details.
 ---
 
 ## [Unreleased]
+
+---
+
+## [26.07_1] - 2026-07-01
+
+**Crate version:** 0.6.19
+
+### Changed
+- Bump `maxminddb` 0.28 → 0.29. (#293)
+- Bump the `wasmtime` group (`wasmtime`, `wasmtime-wasi`) 45.0 → 46.0. (#292)
+- Bump the rust-minor group (12 updates). (#291)
+- CI: bump `actions/cache` 5 → 6. (#290)
 
 ---
 
