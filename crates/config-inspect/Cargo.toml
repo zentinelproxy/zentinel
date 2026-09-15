@@ -1,6 +1,6 @@
 [package]
 name = "zentinel-config-inspect"
-version = "0.6.42"
+version = "0.6.43"
 edition = "2021"
 authors = ["Zentinel Contributors"]
 license = "MIT OR Apache-2.0"
