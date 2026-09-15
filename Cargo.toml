@@ -29,16 +29,16 @@ homepage = "https://github.com/zentinelproxy/zentinel"
 rust-version = "1.95.0"
 
 [workspace.dependencies]
-# Core dependencies (using our fork with security fixes, rebased on 0.8.1)
-pingora = { package = "zentinel-pingora", version = "0.8.1", features = ["proxy", "lb", "rustls"] }
-pingora-core = { package = "zentinel-pingora-core", version = "0.8.1", features = ["rustls"] }
-pingora-http = "0.8.1"
-pingora-proxy = { package = "zentinel-pingora-proxy", version = "0.8.1" }
-pingora-load-balancing = { package = "zentinel-pingora-load-balancing", version = "0.8.1" }
-pingora-timeout = "0.8.1"
-pingora-limits = "0.8.1"
-pingora-cache = { package = "zentinel-pingora-cache", version = "0.8.1" }
-pingora-memory-cache = "0.8.1"
+# Core dependencies (using our fork with security fixes, rebased on 0.9.0)
+pingora = { package = "zentinel-pingora", version = "0.9.0", features = ["proxy", "lb", "rustls"] }
+pingora-core = { package = "zentinel-pingora-core", version = "0.9.0", features = ["rustls"] }
+pingora-http = "0.9.0"
+pingora-proxy = { package = "zentinel-pingora-proxy", version = "0.9.0" }
+pingora-load-balancing = { package = "zentinel-pingora-load-balancing", version = "0.9.0" }
+pingora-timeout = "0.9.0"
+pingora-limits = "0.9.0"
+pingora-cache = { package = "zentinel-pingora-cache", version = "0.9.0" }
+pingora-memory-cache = "0.9.0"
 
 # Async runtime
 # Minimal feature set for proxy workloads (trimmed from "full" for smaller binary)

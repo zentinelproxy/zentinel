@@ -3079,7 +3079,7 @@ impl ProxyHttp for ZentinelProxy {
 
         // Generate cache key from request URI (namespace empty, user_tag empty)
         // CacheKey::default() was removed in Pingora 0.8.0
-        Ok(CacheKey::new("", format!("{}", req_header.uri), ""))
+        Ok(CacheKey::new(format!("{}", req_header.uri), ""))
     }
 
     /// Called when a cache miss occurs.
