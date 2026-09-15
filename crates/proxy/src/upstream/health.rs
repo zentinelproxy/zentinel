@@ -499,6 +499,18 @@ mod tests {
         let checker = ActiveHealthChecker::new(&config).expect("checker built");
         checker.run_health_check().await;
 
+        // The probe has connected by the time the cycle returns, but the
+        // accept loop above only counts it once the runtime polls that task,
+        // and whether that has happened yet depends on scheduler ordering
+        // (Pingora 0.9.0's JoinSet-driven pass changed it). Give the counter
+        // a bounded window rather than asserting on the very next line.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while probed.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
         assert!(
             probed.load(std::sync::atomic::Ordering::SeqCst) > 0,
             "a health check cycle connected to nothing"

@@ -20,11 +20,12 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
-use pingora_cache::eviction::EvictionManager;
+use pingora_cache::eviction::{CacheEntryKey, EvictionManager};
 use pingora_cache::key::{CacheHashKey, CacheKey, CompactCacheKey};
 use pingora_cache::meta::CacheMeta;
 use pingora_cache::storage::{
-    HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage,
+    HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeOutcome, PurgeTarget,
+    PurgeType, Storage,
 };
 use pingora_cache::trace::SpanHandle;
 use pingora_core::{Error, ErrorType, Result};
@@ -513,11 +514,17 @@ impl Storage for DiskCacheStorage {
 
     async fn purge(
         &'static self,
-        key: &CompactCacheKey,
+        target: PurgeTarget<'_>,
         _purge_type: PurgeType,
         _trace: &SpanHandle,
-    ) -> Result<bool> {
-        let combined = key.combined();
+    ) -> Result<PurgeOutcome> {
+        // Entries on disk are addressed by their key alone; this store never
+        // hands out entry IDs, so an identified target cannot be matched
+        // safely and is reported as absent rather than guessed at.
+        if matches!(target, PurgeTarget::Exact(CacheEntryKey::Identified { .. })) {
+            return Ok(PurgeOutcome::NotFound);
+        }
+        let combined = target.key().combined();
         let meta_path = self.meta_path(&combined);
         let body_path = self.body_path(&combined);
 
@@ -537,7 +544,11 @@ impl Storage for DiskCacheStorage {
         // Also remove from inflight tracking
         self.inflight.remove(&combined);
 
-        Ok(removed)
+        Ok(if removed {
+            PurgeOutcome::Purged(None)
+        } else {
+            PurgeOutcome::NotFound
+        })
     }
 
     async fn update_meta(
@@ -653,7 +664,7 @@ pub async fn rebuild_eviction_state(
                         // Admit to eviction manager (use epoch as fresh_until since
                         // we don't know the actual TTL without parsing meta)
                         let _ = eviction.admit(
-                            compact,
+                            CacheEntryKey::key_only(compact),
                             size,
                             std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
                         );
@@ -770,7 +781,7 @@ mod tests {
         });
         let trace = &span();
 
-        let key = CacheKey::new("", "test-write-read", "1");
+        let key = CacheKey::new("test-write-read", "1");
         let meta = create_test_meta();
 
         // Lookup should return None initially
@@ -816,7 +827,7 @@ mod tests {
         });
         let trace = &span();
 
-        let key = CacheKey::new("", "test-purge", "1");
+        let key = CacheKey::new("test-purge", "1");
         let meta = create_test_meta();
 
         // Write an entry
@@ -833,10 +844,14 @@ mod tests {
         // Purge it
         let compact = key.to_compact();
         let purged = STORAGE
-            .purge(&compact, PurgeType::Invalidation, trace)
+            .purge(
+                PurgeTarget::Active(&compact),
+                PurgeType::Invalidation,
+                trace,
+            )
             .await
             .unwrap();
-        assert!(purged);
+        assert_eq!(purged, PurgeOutcome::Purged(None));
 
         // Verify it's gone
         assert!(STORAGE.lookup(&key, trace).await.unwrap().is_none());
@@ -855,7 +870,7 @@ mod tests {
         });
         let trace = &span();
 
-        let key = CacheKey::new("", "test-update-meta", "1");
+        let key = CacheKey::new("test-update-meta", "1");
         let meta = create_test_meta();
 
         // Write an entry
@@ -904,7 +919,7 @@ mod tests {
         });
         let trace = &span();
 
-        let key = CacheKey::new("", "test-miss-drop", "1");
+        let key = CacheKey::new("test-miss-drop", "1");
         let meta = create_test_meta();
 
         // Create miss handler and write some data but don't finish
@@ -938,7 +953,7 @@ mod tests {
         });
         let trace = &span();
 
-        let key = CacheKey::new("", "test-corrupted", "1");
+        let key = CacheKey::new("test-corrupted", "1");
         let combined = key.combined();
 
         // Write garbage to the meta file

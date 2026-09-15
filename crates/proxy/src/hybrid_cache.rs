@@ -11,7 +11,8 @@ use futures::FutureExt;
 use pingora_cache::key::{CacheHashKey, CacheKey, CompactCacheKey};
 use pingora_cache::meta::CacheMeta;
 use pingora_cache::storage::{
-    HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage,
+    HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeOutcome, PurgeTarget,
+    PurgeType, Storage,
 };
 use pingora_cache::trace::SpanHandle;
 use pingora_cache::MemCache;
@@ -135,20 +136,30 @@ impl Storage for HybridCacheStorage {
 
     async fn purge(
         &'static self,
-        key: &CompactCacheKey,
+        target: PurgeTarget<'_>,
         purge_type: PurgeType,
         trace: &SpanHandle,
-    ) -> Result<bool> {
+    ) -> Result<PurgeOutcome> {
         match purge_type {
             PurgeType::Eviction => {
                 // Capacity demotion: remove from memory only, disk copy stays.
                 debug!("hybrid cache: eviction demotion, keeping disk copy");
-                self.memory.purge(key, purge_type, trace).await
+                self.memory.purge(target, purge_type, trace).await
             }
             PurgeType::Invalidation => {
-                let mem = self.memory.purge(key, purge_type, trace).await?;
-                let disk = self.disk.purge(key, purge_type, trace).await?;
-                Ok(mem || disk)
+                let mem = self.memory.purge(target, purge_type, trace).await?;
+                let disk = self.disk.purge(target, purge_type, trace).await?;
+                // The entry is gone if either tier removed it. Neither tier
+                // assigns entry IDs, so there is no identity to carry over.
+                Ok(match (mem, disk) {
+                    (PurgeOutcome::Purged(id), _) | (_, PurgeOutcome::Purged(id)) => {
+                        PurgeOutcome::Purged(id)
+                    }
+                    (PurgeOutcome::Expired, _) | (_, PurgeOutcome::Expired) => {
+                        PurgeOutcome::Expired
+                    }
+                    (PurgeOutcome::NotFound, PurgeOutcome::NotFound) => PurgeOutcome::NotFound,
+                })
             }
         }
     }
@@ -379,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_miss_then_hit() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-miss-hit", "1");
+        let key = CacheKey::new("hybrid-miss-hit", "1");
         let meta = create_test_meta();
 
         // Lookup should miss
@@ -415,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_disk_promotion() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-promote", "1");
+        let key = CacheKey::new("hybrid-promote", "1");
         let meta = create_test_meta();
 
         // Write directly to disk tier only
@@ -457,7 +468,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_purge_both_tiers() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-purge", "1");
+        let key = CacheKey::new("hybrid-purge", "1");
         let meta = create_test_meta();
 
         // Write via hybrid (goes to both tiers)
@@ -475,10 +486,14 @@ mod tests {
         // Purge
         let compact = key.to_compact();
         let purged = HYBRID_3
-            .purge(&compact, PurgeType::Invalidation, trace)
+            .purge(
+                PurgeTarget::Active(&compact),
+                PurgeType::Invalidation,
+                trace,
+            )
             .await
             .unwrap();
-        assert!(purged);
+        assert_eq!(purged, PurgeOutcome::Purged(None));
 
         // Both tiers should be empty
         assert!(HYBRID_3_MEM.lookup(&key, trace).await.unwrap().is_none());
@@ -497,7 +512,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_update_meta() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-update-meta", "1");
+        let key = CacheKey::new("hybrid-update-meta", "1");
         let meta = create_test_meta();
 
         // Write entry
@@ -544,7 +559,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_miss_handler_drop() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-miss-drop", "1");
+        let key = CacheKey::new("hybrid-miss-drop", "1");
         let meta = create_test_meta();
 
         // Create miss handler, write data, drop without finish
@@ -574,7 +589,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_chunked_write() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-chunked", "1");
+        let key = CacheKey::new("hybrid-chunked", "1");
         let meta = create_test_meta();
 
         let mut handler = HYBRID_6.get_miss_handler(&key, &meta, trace).await.unwrap();
@@ -609,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_seek() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-seek", "1");
+        let key = CacheKey::new("hybrid-seek", "1");
         let meta = create_test_meta();
 
         // Write directly to disk so lookup returns HybridHitHandler
@@ -652,7 +667,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_eviction_demotion() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-evict-demote", "1");
+        let key = CacheKey::new("hybrid-evict-demote", "1");
         let meta = create_test_meta();
 
         // Write via hybrid (goes to both tiers)
@@ -670,10 +685,10 @@ mod tests {
         // Eviction purge — should only remove from memory
         let compact = key.to_compact();
         let purged = HYBRID_8
-            .purge(&compact, PurgeType::Eviction, trace)
+            .purge(PurgeTarget::Active(&compact), PurgeType::Eviction, trace)
             .await
             .unwrap();
-        assert!(purged);
+        assert_eq!(purged, PurgeOutcome::Purged(None));
 
         // Memory should be empty, disk should still have it
         assert!(HYBRID_8_MEM.lookup(&key, trace).await.unwrap().is_none());
@@ -692,7 +707,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_eviction_then_disk_hit() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-evict-hit", "1");
+        let key = CacheKey::new("hybrid-evict-hit", "1");
         let meta = create_test_meta();
 
         // Write via hybrid (goes to both tiers)
@@ -706,7 +721,7 @@ mod tests {
         // Evict from memory
         let compact = key.to_compact();
         HYBRID_9
-            .purge(&compact, PurgeType::Eviction, trace)
+            .purge(PurgeTarget::Active(&compact), PurgeType::Eviction, trace)
             .await
             .unwrap();
 
@@ -741,7 +756,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_invalidation_clears_both() {
         let trace = &span();
-        let key = CacheKey::new("", "hybrid-invalidate", "1");
+        let key = CacheKey::new("hybrid-invalidate", "1");
         let meta = create_test_meta();
 
         // Write via hybrid (goes to both tiers)
@@ -762,10 +777,14 @@ mod tests {
         // Invalidation purge — should remove from both tiers
         let compact = key.to_compact();
         let purged = HYBRID_10
-            .purge(&compact, PurgeType::Invalidation, trace)
+            .purge(
+                PurgeTarget::Active(&compact),
+                PurgeType::Invalidation,
+                trace,
+            )
             .await
             .unwrap();
-        assert!(purged);
+        assert_eq!(purged, PurgeOutcome::Purged(None));
 
         // Both tiers should be empty
         assert!(HYBRID_10_MEM.lookup(&key, trace).await.unwrap().is_none());
