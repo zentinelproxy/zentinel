@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.09_6](#26096---2026-09-15) | 0.6.43 | 2026-09-15 | **Pingora 0.9.0**: request-target and authority hardening, hop-by-hop request headers stripped before the upstream, no HTTP/1 upstream reuse after an incomplete response; gRPC-Go advisory in the conformance suite; dependency maintenance |
 | [26.09_5](#26095---2026-09-04) | 0.6.42 | 2026-09-04 | **`zentinel bundle install` failed for every non-root user**, so no agent could be installed by following the documented instructions |
 | [26.09_4](#26094---2026-09-03) | 0.6.41 | 2026-09-03 | **An agent the proxy could not reach at startup was lost until the proxy restarted**, silently — including any agent that restarts; multiplexed MCP tool calls are now proxied rather than originated, so they use the connection pool and retry policy |
 | [26.09_3](#26093---2026-09-03) | 0.6.40 | 2026-09-03 | **Agents in the container images could not create their sockets**, so agent routes silently failed open; one route can now also front several MCP servers as a single endpoint, merging their listings and routing calls by tool |
@@ -83,6 +84,70 @@ for details.
 ## [Unreleased]
 
 _Nothing yet._
+
+---
+
+## [26.09_6] - 2026-09-15
+
+**Crate version:** 0.6.43
+
+> **Pingora 0.9.0.** The proxy engine under Zentinel moves from 0.8.1 to 0.9.0.
+> No configuration changes are needed, but one forwarding behaviour changes:
+> hop-by-hop request headers no longer reach the upstream. See *Changed*.
+
+### Security
+- **Bump Pingora 0.8.1 → 0.9.0**
+  ([cloudflare/pingora release](https://github.com/cloudflare/pingora/releases/tag/0.9.0)).
+  The fork was rebased in
+  [zentinelproxy/pingora#10](https://github.com/zentinelproxy/pingora/pull/10)
+  and republished as `zentinel-pingora-* 0.9.0`; both fork patches
+  (`TlsSettings::with_server_config`, `should_retry_response`) carry over
+  unchanged in behaviour. What 0.9.0 brings that matters here:
+  - **HTTP request-target hardening.** Path and authority validation share one
+    parser; ambiguous request authorities are rejected on ingress and egress,
+    CR/LF bytes in an HTTP/2 `:path` are rejected, and non-origin-form request
+    targets are preserved without mangling the URI.
+  - **Hop-by-hop request headers are stripped before the upstream sees them**
+    (`Connection`, `Keep-Alive`, `Proxy-Connection`, `Proxy-Authenticate`,
+    `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`,
+    `HTTP2-Settings`), along with any header the client nominates in
+    `Connection`. A request that nominates `Host`, a forwarding header or a
+    pseudo-header-shaped name is rejected rather than forwarded with the
+    protection removed.
+  - **HTTP/1 upstream connections are never reused after an incomplete response
+    or a failed write**, which previously could leave a reused connection out of
+    step with the next request.
+  - Obsolete line folding in upstream response headers is normalized before the
+    response is forwarded.
+  - Default HTTP/2 server limits are bounded rather than unbounded (memory
+    exhaustion).
+  - The unmaintained `daemonize` crate is replaced by `daemonix`; `nix` 0.31,
+    `lru` 0.18, `h2` ≥ 0.4.16.
+
+  (#482)
+- **`google.golang.org/grpc` 1.83.2 in the conformance suite**
+  ([GHSA-2v4p-qf9q-27wj](https://github.com/advisories/GHSA-2v4p-qf9q-27wj),
+  xDS server crash on missing `:authority`/`Host`). Closes Dependabot alert #64.
+  The conformance harness is the only Go code in the repository; the proxy is
+  unaffected. (#480)
+
+### Changed
+- **Forwarding behaviour: WebSocket upgrades still work, other HTTP/1 upgrades
+  are no longer forwarded.** Pingora 0.9.0 forwards a normalized `Upgrade:
+  websocket` handshake and drops every other `Upgrade` (for example `h2c`),
+  as part of the hop-by-hop stripping above. `Proxy-Authorization` is likewise
+  not passed on. Nothing in Zentinel's configuration turns the legacy
+  pass-through back on; if you depended on it, open an issue.
+- **Cache storage moved to the 0.9.0 `Storage` API.** The disk and hybrid
+  caches take a `PurgeTarget` and report a `PurgeOutcome` instead of a bool;
+  `CacheKey` no longer has a namespace argument. Zentinel always passed an
+  empty namespace, so cache keys and on-disk hashes are unchanged and no cache
+  goes cold. (#482)
+- **Dependency maintenance:** `brotli` 9.0 (#479), `jsonschema` 0.53 (#478),
+  and the rust-minor group of 13 — `rustls` 0.23.44, `hyper` 1.11.1,
+  `aws-lc-rs` 1.18.1, `reqwest` 0.13.5, `hickory-resolver` 0.26.3,
+  `tokio-rustls` 0.26.5, `smallvec` 1.16, `redis` 1.7, `uuid` 1.26.1,
+  `flate2` 1.1.10, `toml` 1.1.6, `rcgen` 0.14.10, `aes` 0.9.3 (#481).
 
 ---
 
