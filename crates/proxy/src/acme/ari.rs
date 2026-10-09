@@ -38,20 +38,22 @@ pub const ARI_BASE_TEMP_BACKOFF: Duration = Duration::from_secs(60);
 pub enum AriCapability {
     /// ARI request succeeded; CA is confirmed to support RFC 9773.
     Supported,
-    /// CA explicitly reported that ARI is unsupported (e.g. no directory entry or 404).
+    /// CA explicitly reported that ARI is unsupported (directory metadata omits renewalInfo or Error::Unsupported).
+    ///
+    /// Note: Non-5xx HTTP errors (such as 404 Not Found) are long-term errors, NOT evidence of unsupported capability.
     Unsupported,
-    /// ARI support is not yet known or inconclusive (initial state or transient error).
+    /// ARI support is not yet known or inconclusive (initial state or transient/long-term error).
     Unknown,
 }
 
 /// Classification of ARI request errors per RFC 9773 §4.3.3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AriErrorClassification {
-    /// CA explicitly reports that ARI is unsupported (e.g. Error::Unsupported, 404 Not Found).
+    /// CA explicitly reports that ARI is unsupported (e.g. Error::Unsupported when Directory omits renewalInfo).
     Unsupported,
-    /// Temporary/transient failure (e.g. network failure, timeout, 5xx server response).
+    /// Temporary/transient failure eligible for bounded exponential backoff (e.g. connection/request timeout, 5xx server response).
     Temporary,
-    /// Long-term failure (e.g. missing Retry-After, invalid renewal response, 4xx).
+    /// Long-term failure requiring ~6 hour retry (e.g. non-5xx HTTP responses like 404 Not Found, missing/invalid Retry-After, invalid renewal response, DNS resolution failure, connection refusal).
     LongTerm,
 }
 
@@ -116,7 +118,18 @@ pub fn classify_instant_acme_error(err: &instant_acme::Error) -> AriErrorClassif
         instant_acme::Error::Unsupported(_) => AriErrorClassification::Unsupported,
         instant_acme::Error::Api(problem) => match problem.status {
             Some(status) if (500..=599).contains(&status) => AriErrorClassification::Temporary,
-            // RFC 9773 §4.3.3: Treat non-5xx HTTP responses (including 404) as long-term errors.
+            // RFC 9773 §4.3.3 / Dependency boundary note:
+            // instant-acme 0.8.5 parses Problem JSON (RFC 7807/RFC 8555) and exposes the
+            // optional `problem.status: Option<u16>` as deserialized from the response body.
+            // The actual transport-level HTTP status code header is not retained by the
+            // library when Problem `status` is absent, or if the response fails to parse
+            // as Problem JSON (which yields `Error::Json` or `Error::Str("missing Retry-After header")`).
+            //
+            // When `problem.status` is present and in 500..=599, it is classified as Temporary.
+            // When `problem.status` is non-5xx (including 404), RFC 9773 classifies it as LongTerm.
+            // When `problem.status` is missing (`None`), we cannot confirm a 5xx status, so we
+            // fall back conservatively to LongTerm. Crucially, missing or non-5xx problem details
+            // are NEVER treated as proof that ARI is Unsupported.
             _ => AriErrorClassification::LongTerm,
         },
         instant_acme::Error::Timeout(_) => AriErrorClassification::Temporary,
@@ -182,14 +195,42 @@ pub fn classify_instant_acme_error(err: &instant_acme::Error) -> AriErrorClassif
         instant_acme::Error::Crypto | instant_acme::Error::KeyRejected => {
             AriErrorClassification::LongTerm
         }
-        _ => {
+        instant_acme::Error::Other(ref err) => {
+            let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err.as_ref());
+            while let Some(e) = curr {
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                    match io_err.kind() {
+                        std::io::ErrorKind::ConnectionRefused => {
+                            return AriErrorClassification::LongTerm;
+                        }
+                        std::io::ErrorKind::TimedOut => {
+                            return AriErrorClassification::Temporary;
+                        }
+                        std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof => {
+                            return AriErrorClassification::Temporary;
+                        }
+                        _ => {}
+                    }
+                }
+                curr = e.source();
+            }
+
             let msg = err.to_string().to_lowercase();
-            if msg.contains("connection refused") || msg.contains("dns") || msg.contains("resolve")
+            if msg.contains("connection refused")
+                || msg.contains("dns")
+                || msg.contains("resolve")
+                || msg.contains("name resolution")
+                || msg.contains("not found")
             {
                 AriErrorClassification::LongTerm
             } else if msg.contains("timeout")
                 || msg.contains("timed out")
                 || msg.contains("reset")
+                || msg.contains("closed")
+                || msg.contains("aborted")
                 || msg.contains("eof")
             {
                 AriErrorClassification::Temporary
@@ -197,6 +238,7 @@ pub fn classify_instant_acme_error(err: &instant_acme::Error) -> AriErrorClassif
                 AriErrorClassification::LongTerm
             }
         }
+        _ => AriErrorClassification::LongTerm,
     }
 }
 
@@ -808,6 +850,63 @@ mod tests {
     #[test]
     fn test_classify_instant_acme_error_missing_retry_after_is_long_term() {
         let err = instant_acme::Error::Str("missing Retry-After header");
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::LongTerm
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_api_missing_status_is_long_term() {
+        // Dependency limitation test: Problem without an explicit status field falls back conservatively to LongTerm
+        let problem = instant_acme::Problem {
+            r#type: Some("urn:ietf:params:acme:error:serverInternal".to_string()),
+            detail: Some("server failure".to_string()),
+            status: None,
+            subproblems: Vec::new(),
+        };
+        let err = instant_acme::Error::Api(problem);
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::LongTerm
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_timeout_is_temporary() {
+        let err = instant_acme::Error::Timeout(None);
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::Temporary
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_connection_refused_is_long_term() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        let err = instant_acme::Error::Other(Box::new(io_err));
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::LongTerm
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_dns_failure_is_long_term() {
+        let custom_err = std::io::Error::other(
+            "failed to lookup address information: Name or service not known",
+        );
+        let err = instant_acme::Error::Other(Box::new(custom_err));
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::LongTerm
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_json_parse_is_long_term() {
+        let json_err: serde_json::Error = serde_json::from_str::<String>("not json").unwrap_err();
+        let err = instant_acme::Error::Json(json_err);
         assert_eq!(
             classify_instant_acme_error(&err),
             AriErrorClassification::LongTerm
