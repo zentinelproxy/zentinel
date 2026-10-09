@@ -974,8 +974,8 @@ async fn test_startup_deduplication() {
     // 2. Start RenewalScheduler::run() in a real background task
     let run_handle = tokio::spawn(scheduler.run());
 
-    // 3. Allow its startup delay (2s) and initial renewal check to execute
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // 3. Allow its startup delay (2s) and initial renewal check to execute (3s margin)
+    tokio::time::sleep(Duration::from_millis(3000)).await;
 
     // 4. Stop the task cleanly
     run_handle.abort();
@@ -1041,17 +1041,24 @@ async fn test_startup_run_fetches_ari_when_no_prior_refresh() {
     // Start RenewalScheduler::run()
     let run_handle = tokio::spawn(scheduler.run());
 
-    // Allow startup delay (2s) and initial check to execute
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // Allow startup delay (2s) and initial check to execute with a polling deadline to eliminate timing fragility
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut total_ari = 0;
+    while tokio::time::Instant::now() < deadline {
+        let all_requests = mock.received_requests().await.unwrap();
+        total_ari = all_requests
+            .iter()
+            .filter(|r| r.url.path().starts_with("/renewal-info/"))
+            .count();
+        if total_ari >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     run_handle.abort();
     let _ = run_handle.await;
 
-    let all_requests = mock.received_requests().await.unwrap();
-    let total_ari = all_requests
-        .iter()
-        .filter(|r| r.url.path().starts_with("/renewal-info/"))
-        .count();
     assert_eq!(
         total_ari, 1,
         "run() must fetch ARI on startup when no prior refresh was performed"

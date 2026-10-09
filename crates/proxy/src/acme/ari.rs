@@ -171,6 +171,8 @@ pub fn classify_instant_acme_error(err: &instant_acme::Error) -> AriErrorClassif
                 || msg.contains("dns")
                 || msg.contains("resolve")
                 || msg.contains("name resolution")
+                || msg.contains("failed to lookup address")
+                || msg.contains("name or service not known")
                 || msg.contains("not found")
             {
                 AriErrorClassification::LongTerm
@@ -223,6 +225,8 @@ pub fn classify_instant_acme_error(err: &instant_acme::Error) -> AriErrorClassif
                 || msg.contains("dns")
                 || msg.contains("resolve")
                 || msg.contains("name resolution")
+                || msg.contains("failed to lookup address")
+                || msg.contains("name or service not known")
                 || msg.contains("not found")
             {
                 AriErrorClassification::LongTerm
@@ -874,6 +878,7 @@ mod tests {
 
     #[test]
     fn test_classify_instant_acme_error_timeout_is_temporary() {
+        // Direct instant_acme::Error::Timeout
         let err = instant_acme::Error::Timeout(None);
         assert_eq!(
             classify_instant_acme_error(&err),
@@ -882,7 +887,30 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_instant_acme_error_io_timeout_is_temporary() {
+        // Structured std::io::ErrorKind::TimedOut wrapped in Error::Other
+        let io_err = std::io::Error::from(std::io::ErrorKind::TimedOut);
+        let err = instant_acme::Error::Other(Box::new(io_err));
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::Temporary
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_string_timeout_is_temporary() {
+        // String pattern timeout match in Error::Other
+        let custom_err = std::io::Error::other("connection timed out during request");
+        let err = instant_acme::Error::Other(Box::new(custom_err));
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::Temporary
+        );
+    }
+
+    #[test]
     fn test_classify_instant_acme_error_connection_refused_is_long_term() {
+        // Structured std::io::ErrorKind::ConnectionRefused wrapped in Error::Other
         let io_err = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
         let err = instant_acme::Error::Other(Box::new(io_err));
         assert_eq!(
@@ -893,12 +921,22 @@ mod tests {
 
     #[test]
     fn test_classify_instant_acme_error_dns_failure_is_long_term() {
+        // Standard libc/platform getaddrinfo failure string explicitly recognized
         let custom_err = std::io::Error::other(
             "failed to lookup address information: Name or service not known",
         );
         let err = instant_acme::Error::Other(Box::new(custom_err));
         assert_eq!(
             classify_instant_acme_error(&err),
+            AriErrorClassification::LongTerm
+        );
+
+        // Explicit "dns" keyword recognition
+        let dns_err =
+            std::io::Error::other("dns resolution failed for acme-v02.api.letsencrypt.org");
+        let err_dns = instant_acme::Error::Other(Box::new(dns_err));
+        assert_eq!(
+            classify_instant_acme_error(&err_dns),
             AriErrorClassification::LongTerm
         );
     }
