@@ -13,14 +13,15 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use instant_acme::{
-    Account, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
-    Order, OrderStatus, RetryPolicy,
+    Account, AuthorizationStatus, CertificateIdentifier, ChallengeType, Identifier, LetsEncrypt,
+    NewAccount, NewOrder, Order, OrderStatus, RenewalInfo, RetryPolicy,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
 
 use zentinel_config::server::AcmeConfig;
 
+use super::ari::{self, AriError};
 use super::dns::challenge::{create_challenge_info, Dns01ChallengeInfo};
 use super::error::{is_retryable_acme_error, AcmeError, ACME_RETRY_BACKOFF, ACME_RETRY_MAX};
 use super::storage::{CertificateStorage, StoredAccountCredentials};
@@ -214,15 +215,30 @@ impl AcmeClient {
     /// Creates a new certificate order and returns it along with the
     /// authorization challenges that need to be completed.
     ///
+    /// # Arguments
+    ///
+    /// * `replaces` - Optional RFC 9773 predecessor certificate identifier
+    ///
     /// # Returns
     ///
     /// A tuple of (Order, Vec<`ChallengeInfo`>) containing the order and
     /// HTTP-01 challenge information for each domain.
-    pub async fn create_order(&self) -> Result<(Order, Vec<ChallengeInfo>), AcmeError> {
-        retry_acme(|| async { self.create_order_once().await }).await
+    pub async fn create_order(
+        &self,
+        replaces: Option<&CertificateIdentifier<'_>>,
+    ) -> Result<(Order, Vec<ChallengeInfo>), AcmeError> {
+        let replaces_owned = replaces.cloned();
+        retry_acme(|| {
+            let r = replaces_owned.clone();
+            async move { self.create_order_once(r.as_ref()).await }
+        })
+        .await
     }
 
-    async fn create_order_once(&self) -> Result<(Order, Vec<ChallengeInfo>), AcmeError> {
+    async fn create_order_once(
+        &self,
+        replaces: Option<&CertificateIdentifier<'_>>,
+    ) -> Result<(Order, Vec<ChallengeInfo>), AcmeError> {
         let account_guard = self.account.read().await;
         let account = account_guard.as_ref().ok_or(AcmeError::NoAccount)?;
 
@@ -234,11 +250,20 @@ impl AcmeClient {
             .map(|d: &String| Identifier::Dns(d.clone()))
             .collect();
 
-        info!(domains = ?self.config.domains, "Creating certificate order");
+        info!(
+            domains = ?self.config.domains,
+            replaces = ?replaces.map(|r| r.to_string()),
+            "Creating certificate order"
+        );
 
         // Create the order
+        let mut new_order = NewOrder::new(&identifiers);
+        if let Some(replaces_id) = replaces {
+            new_order = new_order.replaces(replaces_id.clone());
+        }
+
         let mut order = account
-            .new_order(&NewOrder::new(&identifiers))
+            .new_order(&new_order)
             .await
             .map_err(|e| AcmeError::OrderCreation(e.to_string()))?;
 
@@ -288,15 +313,30 @@ impl AcmeClient {
     /// Creates a new certificate order and returns it along with the
     /// DNS-01 challenge information for each domain.
     ///
+    /// # Arguments
+    ///
+    /// * `replaces` - Optional RFC 9773 predecessor certificate identifier
+    ///
     /// # Returns
     ///
     /// A tuple of (Order, Vec<`Dns01ChallengeInfo`>) containing the order and
     /// DNS-01 challenge information for each domain.
-    pub async fn create_order_dns01(&self) -> Result<(Order, Vec<Dns01ChallengeInfo>), AcmeError> {
-        retry_acme(|| async { self.create_order_dns01_once().await }).await
+    pub async fn create_order_dns01(
+        &self,
+        replaces: Option<&CertificateIdentifier<'_>>,
+    ) -> Result<(Order, Vec<Dns01ChallengeInfo>), AcmeError> {
+        let replaces_owned = replaces.cloned();
+        retry_acme(|| {
+            let r = replaces_owned.clone();
+            async move { self.create_order_dns01_once(r.as_ref()).await }
+        })
+        .await
     }
 
-    async fn create_order_dns01_once(&self) -> Result<(Order, Vec<Dns01ChallengeInfo>), AcmeError> {
+    async fn create_order_dns01_once(
+        &self,
+        replaces: Option<&CertificateIdentifier<'_>>,
+    ) -> Result<(Order, Vec<Dns01ChallengeInfo>), AcmeError> {
         let account_guard = self.account.read().await;
         let account = account_guard.as_ref().ok_or(AcmeError::NoAccount)?;
 
@@ -308,11 +348,20 @@ impl AcmeClient {
             .map(|d: &String| Identifier::Dns(d.clone()))
             .collect();
 
-        info!(domains = ?self.config.domains, "Creating certificate order with DNS-01 challenges");
+        info!(
+            domains = ?self.config.domains,
+            replaces = ?replaces.map(|r| r.to_string()),
+            "Creating certificate order with DNS-01 challenges"
+        );
 
         // Create the order
+        let mut new_order = NewOrder::new(&identifiers);
+        if let Some(replaces_id) = replaces {
+            new_order = new_order.replaces(replaces_id.clone());
+        }
+
         let mut order = account
-            .new_order(&NewOrder::new(&identifiers))
+            .new_order(&new_order)
             .await
             .map_err(|e| AcmeError::OrderCreation(e.to_string()))?;
 
@@ -354,6 +403,27 @@ impl AcmeClient {
         }
 
         Ok((order, challenges))
+    }
+
+    /// Extract RFC 9773 certificate identifier from a PEM certificate chain
+    pub fn extract_certificate_identifier(
+        &self,
+        cert_pem: &str,
+    ) -> Result<CertificateIdentifier<'static>, AcmeError> {
+        super::ari::extract_certificate_identifier(cert_pem)
+    }
+
+    /// Request ARI renewal information for an identified certificate (RFC 9773 §4.2)
+    pub async fn renewal_info(
+        &self,
+        certificate_id: &CertificateIdentifier<'_>,
+    ) -> Result<(RenewalInfo, Duration), AriError> {
+        let account_guard = self.account.read().await;
+        let account = account_guard.as_ref().ok_or(AriError::NoAccount)?;
+        account
+            .renewal_info(certificate_id)
+            .await
+            .map_err(AriError::Protocol)
     }
 
     /// Notify the ACME server that a challenge is ready for validation
