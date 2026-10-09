@@ -582,6 +582,11 @@ async fn test_client_renewal_info_mock_server() {
     let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
     let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
 
+    let start_dt = Utc::now() + chrono::Duration::days(30);
+    let end_dt = Utc::now() + chrono::Duration::days(60);
+    let start_str = start_dt.to_rfc3339();
+    let end_str = end_dt.to_rfc3339();
+
     let cert_id_str = cert_id.to_string();
     Mock::given(method("GET"))
         .and(path(format!("/renewal-info/{cert_id_str}")))
@@ -590,8 +595,8 @@ async fn test_client_renewal_info_mock_server() {
                 .insert_header("Retry-After", "3600")
                 .set_body_json(serde_json::json!({
                     "suggestedWindow": {
-                        "start": "2026-10-15T00:00:00Z",
-                        "end": "2026-10-20T00:00:00Z"
+                        "start": start_str,
+                        "end": end_str
                     },
                     "explanationURL": "https://example.com/ari-docs"
                 })),
@@ -607,15 +612,11 @@ async fn test_client_renewal_info_mock_server() {
     );
     assert_eq!(
         info.suggested_window.start.unix_timestamp(),
-        Utc.with_ymd_and_hms(2026, 10, 15, 0, 0, 0)
-            .unwrap()
-            .timestamp()
+        start_dt.timestamp()
     );
     assert_eq!(
         info.suggested_window.end.unix_timestamp(),
-        Utc.with_ymd_and_hms(2026, 10, 20, 0, 0, 0)
-            .unwrap()
-            .timestamp()
+        end_dt.timestamp()
     );
 }
 
@@ -724,11 +725,15 @@ async fn test_capability_detection_unsupported_vs_non_5xx() {
 
     Mock::given(method("GET"))
         .and(path_regex(r"^/renewal-info/.*"))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "type": "urn:ietf:params:acme:error:malformed",
-            "status": 404,
-            "detail": "Certificate ID not found"
-        })))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .insert_header("Retry-After", "3600")
+                .set_body_json(serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:malformed",
+                    "status": 404,
+                    "detail": "Certificate ID not found"
+                })),
+        )
         .mount(&mock_404)
         .await;
 
@@ -744,6 +749,77 @@ async fn test_capability_detection_unsupported_vs_non_5xx() {
         .unwrap()
         .duration_since(tokio::time::Instant::now());
     assert!(delay >= Duration::from_secs(5 * 3600));
+
+    // 3. HTTP 500 with Problem body missing status field (dependency limitation)
+    let (mock_no_status, client_no_status, scheduler_no_status) =
+        setup_mock_acme(true, temp_dir.path().join("no_status")).await;
+
+    client_no_status.init_account().await.unwrap();
+    client_no_status
+        .storage()
+        .save_certificate(
+            "example.com",
+            &cert_pem,
+            &key_pem,
+            expires,
+            &["example.com".to_string()],
+        )
+        .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/renewal-info/.*"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .insert_header("Retry-After", "3600")
+                .set_body_json(serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:serverInternal",
+                    "detail": "Internal server error without status field"
+                })),
+        )
+        .mount(&mock_no_status)
+        .await;
+
+    let err_no_status = scheduler_no_status.refresh_ari().await.unwrap_err();
+    assert!(matches!(
+        err_no_status,
+        zentinel_proxy::acme::AcmeError::Ari(_)
+    ));
+    // When status field is omitted in Problem document, the transport HTTP status
+    // cannot be recovered through instant-acme; conservatively classified as LongTerm (not Unsupported)
+    assert_ne!(
+        scheduler_no_status.ari_capability(),
+        AriCapability::Unsupported
+    );
+    assert_eq!(scheduler_no_status.ari_capability(), AriCapability::Unknown);
+
+    // 4. HTTP 500 without Retry-After header (dependency limitation)
+    let (mock_no_ra, client_no_ra, scheduler_no_ra) =
+        setup_mock_acme(true, temp_dir.path().join("no_ra")).await;
+
+    client_no_ra.init_account().await.unwrap();
+    client_no_ra
+        .storage()
+        .save_certificate(
+            "example.com",
+            &cert_pem,
+            &key_pem,
+            expires,
+            &["example.com".to_string()],
+        )
+        .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/renewal-info/.*"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_no_ra)
+        .await;
+
+    let err_no_ra = scheduler_no_ra.refresh_ari().await.unwrap_err();
+    assert!(matches!(err_no_ra, zentinel_proxy::acme::AcmeError::Ari(_)));
+    // Missing Retry-After header causes instant-acme to discard the HTTP status
+    // and emit Error::Str("missing Retry-After header"). Classified as LongTerm, not Unsupported.
+    assert_ne!(scheduler_no_ra.ari_capability(), AriCapability::Unsupported);
+    assert_eq!(scheduler_no_ra.ari_capability(), AriCapability::Unknown);
 }
 
 #[tokio::test]
@@ -757,6 +833,8 @@ async fn test_order_creation_replaces_serialized_with_wiremock() {
     let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
     let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
 
+    let order_expires = (Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+
     Mock::given(method("POST"))
         .and(path("/new-order"))
         .respond_with(
@@ -765,7 +843,7 @@ async fn test_order_creation_replaces_serialized_with_wiremock() {
                 .insert_header("location", format!("{}/order/1", mock.uri()))
                 .set_body_json(serde_json::json!({
                     "status": "pending",
-                    "expires": "2026-10-30T00:00:00Z",
+                    "expires": order_expires,
                     "identifiers": [{"type": "dns", "value": "example.com"}],
                     "authorizations": [],
                     "finalize": format!("{}/order/1/finalize", mock.uri()),
@@ -784,7 +862,7 @@ async fn test_order_creation_replaces_serialized_with_wiremock() {
                 .insert_header("location", format!("{}/order/2", mock.uri()))
                 .set_body_json(serde_json::json!({
                     "status": "pending",
-                    "expires": "2026-10-30T00:00:00Z",
+                    "expires": (Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
                     "identifiers": [{"type": "dns", "value": "example.com"}],
                     "authorizations": [],
                     "finalize": format!("{}/order/2/finalize", mock.uri())
@@ -860,6 +938,9 @@ async fn test_startup_deduplication() {
         )
         .unwrap();
 
+    let window_start = (Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+    let window_end = (Utc::now() + chrono::Duration::days(45)).to_rfc3339();
+
     Mock::given(method("GET"))
         .and(path_regex(r"^/renewal-info/.*"))
         .respond_with(
@@ -867,30 +948,113 @@ async fn test_startup_deduplication() {
                 .insert_header("Retry-After", "3600")
                 .set_body_json(serde_json::json!({
                     "suggestedWindow": {
-                        "start": "2026-10-15T00:00:00Z",
-                        "end": "2026-10-20T00:00:00Z"
+                        "start": window_start,
+                        "end": window_end
                     }
                 })),
         )
         .mount(&mock)
         .await;
 
-    // ensure_certificates() runs at startup
+    // 1. Call ensure_certificates() as done during startup
     scheduler.ensure_certificates().await.unwrap();
 
-    // Verify ARI info was fetched and next_refresh scheduled ~1h in the future
+    // Verify ARI info was fetched and next_refresh scheduled in the future
     let state = scheduler.ari_state();
     assert_eq!(state.capability, AriCapability::Supported);
     assert!(state.next_refresh.unwrap() > tokio::time::Instant::now());
 
-    // In run(), we check if next_refresh is due before doing initial ARI query.
-    // Since next_refresh is in the future, should_initial_refresh must be FALSE!
-    let should_initial_refresh = state
-        .next_refresh
-        .is_none_or(|r| r <= tokio::time::Instant::now());
-    assert!(
-        !should_initial_refresh,
-        "Startup run() must not immediately duplicate ARI request when a future refresh is already scheduled"
+    let initial_requests = mock.received_requests().await.unwrap();
+    let initial_ari = initial_requests
+        .iter()
+        .filter(|r| r.url.path().starts_with("/renewal-info/"))
+        .count();
+    assert_eq!(initial_ari, 1, "ensure_certificates() must fetch ARI once");
+
+    // 2. Start RenewalScheduler::run() in a real background task
+    let run_handle = tokio::spawn(scheduler.run());
+
+    // 3. Allow its startup delay (2s) and initial renewal check to execute
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    // 4. Stop the task cleanly
+    run_handle.abort();
+    let _ = run_handle.await;
+
+    // 5. Assert that the mock renewal-info endpoint received exactly ONE request total!
+    let all_requests = mock.received_requests().await.unwrap();
+    let total_ari = all_requests
+        .iter()
+        .filter(|r| r.url.path().starts_with("/renewal-info/"))
+        .count();
+    assert_eq!(
+        total_ari,
+        1,
+        "run() must not send a duplicate ARI request when ensure_certificates() already scheduled a future refresh"
+    );
+}
+
+#[tokio::test]
+async fn test_startup_run_fetches_ari_when_no_prior_refresh() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+    let expires = Utc::now() + chrono::Duration::days(60);
+
+    client
+        .storage()
+        .save_certificate(
+            "example.com",
+            &cert_pem,
+            &key_pem,
+            expires,
+            &["example.com".to_string()],
+        )
+        .unwrap();
+
+    let window_start = (Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+    let window_end = (Utc::now() + chrono::Duration::days(45)).to_rfc3339();
+
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/renewal-info/.*"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Retry-After", "3600")
+                .set_body_json(serde_json::json!({
+                    "suggestedWindow": {
+                        "start": window_start,
+                        "end": window_end
+                    }
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    // Do NOT call ensure_certificates(). Verify no prior refresh.
+    assert!(scheduler.ari_state().next_refresh.is_none());
+
+    // Start RenewalScheduler::run()
+    let run_handle = tokio::spawn(scheduler.run());
+
+    // Allow startup delay (2s) and initial check to execute
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    run_handle.abort();
+    let _ = run_handle.await;
+
+    let all_requests = mock.received_requests().await.unwrap();
+    let total_ari = all_requests
+        .iter()
+        .filter(|r| r.url.path().starts_with("/renewal-info/"))
+        .count();
+    assert_eq!(
+        total_ari, 1,
+        "run() must fetch ARI on startup when no prior refresh was performed"
     );
 }
 
