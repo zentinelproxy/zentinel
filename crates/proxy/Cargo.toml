@@ -161,7 +161,8 @@ tonic-health = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 
 # ACME automatic certificate management (Let's Encrypt)
-instant-acme = "0.8"
+instant-acme = { version = "0.8", features = ["time", "x509-parser"] }
+time = { version = "0.3", features = ["serde", "parsing", "formatting"] }
 
 # Certificate generation for ACME
 rcgen = "0.14"

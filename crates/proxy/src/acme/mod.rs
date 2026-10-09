@@ -92,6 +92,7 @@
 //! 5. Once validated, [`AcmeClient`] finalizes the order and receives the certificate
 //! 6. DNS records are cleaned up, certificate is persisted
 
+pub mod ari;
 mod challenge;
 pub mod challenge_server;
 mod client;
@@ -100,6 +101,7 @@ mod error;
 mod scheduler;
 mod storage;
 
+pub use ari::{AriCapability, AriError, AriErrorClassification, RenewalWindow};
 pub use challenge::ChallengeManager;
 pub use client::AcmeClient;
 pub use error::{is_retryable_acme_error, AcmeError};

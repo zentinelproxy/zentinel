@@ -2759,7 +2759,9 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "time",
  "tokio",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -8453,6 +8455,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tiktoken-rs",
  "tikv-jemallocator",
+ "time",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",

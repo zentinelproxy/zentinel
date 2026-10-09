@@ -1,0 +1,691 @@
+//! ACME Renewal Information (ARI) support (RFC 9773)
+//!
+//! Provides support for the ACME Renewal Information (ARI) extension, enabling
+//! CAs to suggest renewal windows and client order replacement (`replaces`).
+//!
+//! # Specification Reference
+//!
+//! - RFC 9773: Automated Certificate Management Environment (ACME) Renewal Information (ARI)
+//!   <https://www.rfc-editor.org/rfc/rfc9773.html>
+
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use instant_acme::{CertificateIdentifier, SuggestedWindow};
+use rand::RngExt;
+use rustls::pki_types::CertificateDer;
+use tracing::{debug, warn};
+
+use super::error::AcmeError;
+
+/// Minimum refresh interval for ARI polling (1 minute, RFC 9773 §4.3.2).
+pub const ARI_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Maximum refresh interval for ARI polling (24 hours, RFC 9773 §4.3.2).
+pub const ARI_MAX_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+
+/// Default retry interval for long-term errors (6 hours, RFC 9773 §4.3.3).
+pub const ARI_LONG_TERM_RETRY_INTERVAL: Duration = Duration::from_secs(6 * 3600);
+
+/// Maximum number of consecutive temporary failure retries before transitioning to long-term retry.
+pub const ARI_MAX_TEMP_RETRIES: u32 = 3;
+
+/// Base backoff for temporary failures (1 minute).
+pub const ARI_BASE_TEMP_BACKOFF: Duration = Duration::from_secs(60);
+
+/// CA ARI capability status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AriCapability {
+    /// ARI request succeeded; CA is confirmed to support RFC 9773.
+    Supported,
+    /// CA explicitly reported that ARI is unsupported (e.g. no directory entry or 404).
+    Unsupported,
+    /// ARI support is not yet known or inconclusive (initial state or transient error).
+    Unknown,
+}
+
+/// Classification of ARI request errors per RFC 9773 §4.3.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AriErrorClassification {
+    /// CA explicitly reports that ARI is unsupported (e.g. Error::Unsupported, 404 Not Found).
+    Unsupported,
+    /// Temporary/transient failure (e.g. network failure, timeout, 5xx server response).
+    Temporary,
+    /// Long-term failure (e.g. missing Retry-After, invalid renewal response, 4xx).
+    LongTerm,
+}
+
+/// Errors specific to ARI operations.
+#[derive(Debug, thiserror::Error)]
+pub enum AriError {
+    /// ACME protocol or transport error from instant-acme
+    #[error("ACME protocol error: {0}")]
+    Protocol(#[from] instant_acme::Error),
+
+    /// Invalid renewal window suggested by CA
+    #[error("Invalid renewal window: end ({end}) <= start ({start})")]
+    InvalidWindow {
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    },
+
+    /// Failed to parse certificate or extract ARI identifier
+    #[error("Certificate parse error: {0}")]
+    CertificateParse(String),
+
+    /// ACME account not initialized
+    #[error("ACME account not initialized")]
+    NoAccount,
+
+    /// Error ensuring ACME account
+    #[error("Failed to ensure ACME account: {0}")]
+    Account(String),
+}
+
+impl AriError {
+    /// Classify the error into Unsupported, Temporary, or LongTerm.
+    pub fn classification(&self) -> AriErrorClassification {
+        match self {
+            AriError::Protocol(err) => classify_instant_acme_error(err),
+            AriError::InvalidWindow { .. } => AriErrorClassification::LongTerm,
+            AriError::CertificateParse(_) => AriErrorClassification::LongTerm,
+            AriError::NoAccount => AriErrorClassification::Temporary,
+            AriError::Account(_) => AriErrorClassification::Temporary,
+        }
+    }
+
+    /// Whether this error indicates ARI is explicitly unsupported.
+    pub fn is_unsupported(&self) -> bool {
+        self.classification() == AriErrorClassification::Unsupported
+    }
+
+    /// Whether this error is transient and eligible for bounded exponential backoff.
+    pub fn is_temporary(&self) -> bool {
+        self.classification() == AriErrorClassification::Temporary
+    }
+
+    /// Whether this error is a long-term failure requiring ~6 hour retry.
+    pub fn is_long_term(&self) -> bool {
+        self.classification() == AriErrorClassification::LongTerm
+    }
+}
+
+/// Classify an `instant_acme::Error` into an `AriErrorClassification` (RFC 9773 §4.3.3).
+pub fn classify_instant_acme_error(err: &instant_acme::Error) -> AriErrorClassification {
+    match err {
+        instant_acme::Error::Unsupported(_) => AriErrorClassification::Unsupported,
+        instant_acme::Error::Api(problem) => match problem.status {
+            Some(404) => AriErrorClassification::Unsupported,
+            Some(status) if (500..600).contains(&status) => AriErrorClassification::Temporary,
+            _ => AriErrorClassification::LongTerm,
+        },
+        instant_acme::Error::Timeout(_) => AriErrorClassification::Temporary,
+        instant_acme::Error::Hyper(_) => AriErrorClassification::Temporary,
+        instant_acme::Error::Http(_) => AriErrorClassification::Temporary,
+        instant_acme::Error::Str("missing Retry-After header") => AriErrorClassification::LongTerm,
+        _ => {
+            let msg = err.to_string().to_lowercase();
+            if msg.contains("client error (connect)")
+                || msg.contains("unexpected eof")
+                || msg.contains("connection reset")
+                || msg.contains("connection closed")
+                || msg.contains("connection aborted")
+                || msg.contains("tls connect error")
+                || msg.contains("timed out")
+                || msg.contains("transport error")
+            {
+                AriErrorClassification::Temporary
+            } else {
+                AriErrorClassification::LongTerm
+            }
+        }
+    }
+}
+
+/// Validated suggested renewal window from the ACME server (RFC 9773 §4.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenewalWindow {
+    /// Start of suggested renewal window.
+    pub start: DateTime<Utc>,
+    /// End of suggested renewal window.
+    pub end: DateTime<Utc>,
+}
+
+impl RenewalWindow {
+    /// Create and validate a renewal window.
+    ///
+    /// # Errors
+    /// Returns `AriError::InvalidWindow` if `end <= start`.
+    pub fn new(start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Self, AriError> {
+        if end <= start {
+            return Err(AriError::InvalidWindow { start, end });
+        }
+        Ok(Self { start, end })
+    }
+
+    /// Construct from `instant_acme::SuggestedWindow`.
+    ///
+    /// # Errors
+    /// Returns `AriError::InvalidWindow` if `end <= start`.
+    pub fn from_instant_acme(window: &SuggestedWindow) -> Result<Self, AriError> {
+        let start = offset_date_time_to_chrono(window.start);
+        let end = offset_date_time_to_chrono(window.end);
+        Self::new(start, end)
+    }
+
+    /// Calculate the intersection with another window, if non-empty.
+    pub fn intersection(&self, other: &Self) -> Option<Self> {
+        let start = self.start.max(other.start);
+        let end = self.end.min(other.end);
+        if start < end {
+            Some(Self { start, end })
+        } else {
+            None
+        }
+    }
+}
+
+/// Convert `time::OffsetDateTime` to `chrono::DateTime<Utc>`.
+pub fn offset_date_time_to_chrono(odt: time::OffsetDateTime) -> DateTime<Utc> {
+    DateTime::from_timestamp(odt.unix_timestamp(), odt.nanosecond()).unwrap_or_else(|| {
+        if odt.unix_timestamp() < 0 {
+            DateTime::<Utc>::MIN_UTC
+        } else {
+            DateTime::<Utc>::MAX_UTC
+        }
+    })
+}
+
+/// Convert `chrono::DateTime<Utc>` to `time::OffsetDateTime`.
+pub fn chrono_to_offset_date_time(dt: DateTime<Utc>) -> time::OffsetDateTime {
+    time::OffsetDateTime::from_unix_timestamp_nanos(dt.timestamp_nanos_opt().unwrap_or(0) as i128)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+}
+
+/// Clamp the refresh interval according to RFC 9773 §4.3.2 bounds.
+pub fn clamp_refresh_interval(interval: Duration) -> Duration {
+    interval.clamp(ARI_MIN_REFRESH_INTERVAL, ARI_MAX_REFRESH_INTERVAL)
+}
+
+/// Calculate retry delay and whether the retry transitioned to long-term (RFC 9773 §4.3.3).
+pub fn calculate_retry_delay(
+    classification: AriErrorClassification,
+    temp_failure_count: u32,
+) -> (Duration, bool) {
+    match classification {
+        AriErrorClassification::Unsupported => (ARI_LONG_TERM_RETRY_INTERVAL, false),
+        AriErrorClassification::LongTerm => (ARI_LONG_TERM_RETRY_INTERVAL, false),
+        AriErrorClassification::Temporary => {
+            if temp_failure_count >= ARI_MAX_TEMP_RETRIES {
+                (ARI_LONG_TERM_RETRY_INTERVAL, true)
+            } else {
+                let multiplier = 1u64.checked_shl(temp_failure_count).unwrap_or(u64::MAX);
+                let delay = ARI_BASE_TEMP_BACKOFF.saturating_mul(multiplier as u32);
+                (delay.min(ARI_LONG_TERM_RETRY_INTERVAL), false)
+            }
+        }
+    }
+}
+
+/// Select a renewal time uniformly at random within the valid window (RFC 9773 §4.3.1).
+pub fn select_renewal_time(
+    window: &RenewalWindow,
+    previous_window: Option<&RenewalWindow>,
+    previous_renewal_time: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> DateTime<Utc> {
+    let mut rng = rand::rng();
+    select_renewal_time_with_rng(
+        window,
+        previous_window,
+        previous_renewal_time,
+        now,
+        &mut rng,
+    )
+}
+
+/// Select a renewal time with a specific RNG (RFC 9773 §4.3.1).
+pub fn select_renewal_time_with_rng<R: rand::RngExt>(
+    window: &RenewalWindow,
+    previous_window: Option<&RenewalWindow>,
+    previous_renewal_time: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    rng: &mut R,
+) -> DateTime<Utc> {
+    // If the window has not changed and a previous time exists, keep it stable.
+    if let (Some(prev_win), Some(prev_time)) = (previous_window, previous_renewal_time) {
+        if prev_win == window {
+            if prev_time <= now {
+                return now;
+            }
+            return prev_time;
+        }
+    }
+
+    // RFC 9773 §4.3.1: If the window starts in the past (e.g. revoked), attempt renewal immediately.
+    if window.start <= now {
+        return now;
+    }
+
+    // Determine target selection window: intersection if non-empty, else new window.
+    let target = if let Some(prev) = previous_window {
+        window.intersection(prev).unwrap_or_else(|| window.clone())
+    } else {
+        window.clone()
+    };
+
+    let span_secs = (target.end - target.start).num_seconds();
+    if span_secs <= 0 {
+        return now;
+    }
+
+    let offset_secs = rng.random_range(0..=span_secs);
+    let selected = target.start + chrono::Duration::seconds(offset_secs);
+
+    if selected <= now {
+        now
+    } else {
+        selected
+    }
+}
+
+/// Deterministically selects a renewal time at fraction `ratio` in [0.0, 1.0] of the target window.
+pub fn select_renewal_time_at_ratio(
+    window: &RenewalWindow,
+    previous_window: Option<&RenewalWindow>,
+    previous_renewal_time: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    ratio: f64,
+) -> DateTime<Utc> {
+    if let (Some(prev_win), Some(prev_time)) = (previous_window, previous_renewal_time) {
+        if prev_win == window {
+            if prev_time <= now {
+                return now;
+            }
+            return prev_time;
+        }
+    }
+
+    if window.start <= now {
+        return now;
+    }
+
+    let target = if let Some(prev) = previous_window {
+        window.intersection(prev).unwrap_or_else(|| window.clone())
+    } else {
+        window.clone()
+    };
+
+    let span_secs = (target.end - target.start).num_seconds();
+    if span_secs <= 0 {
+        return now;
+    }
+
+    let clamped_ratio = ratio.clamp(0.0, 1.0);
+    let offset_secs = (span_secs as f64 * clamped_ratio).round() as i64;
+    let selected = target.start + chrono::Duration::seconds(offset_secs);
+
+    if selected <= now {
+        now
+    } else {
+        selected
+    }
+}
+
+/// Computes the next instant the scheduler loop should awaken.
+pub fn next_wakeup(
+    now_utc: DateTime<Utc>,
+    now_instant: tokio::time::Instant,
+    renewal_deadline: Option<DateTime<Utc>>,
+    next_refresh: Option<tokio::time::Instant>,
+    fallback_interval: Duration,
+) -> tokio::time::Instant {
+    let fallback_wake = now_instant + fallback_interval;
+    let mut earliest = fallback_wake;
+
+    if let Some(refresh_time) = next_refresh {
+        if refresh_time < earliest {
+            earliest = refresh_time;
+        }
+    }
+
+    if let Some(renew_dt) = renewal_deadline {
+        let renew_instant = if renew_dt <= now_utc {
+            now_instant
+        } else {
+            let dur = (renew_dt - now_utc).to_std().unwrap_or(Duration::ZERO);
+            now_instant + dur
+        };
+        if renew_instant < earliest {
+            earliest = renew_instant;
+        }
+    }
+
+    earliest
+}
+
+/// Extract the leaf certificate DER from a PEM-encoded certificate chain.
+pub fn extract_leaf_certificate_der(cert_pem: &str) -> Result<CertificateDer<'static>, AcmeError> {
+    let mut reader = cert_pem.as_bytes();
+    if let Some(item) = rustls_pemfile::certs(&mut reader).next() {
+        let cert = item.map_err(|e| {
+            AcmeError::CertificateParse(format!("Failed to parse certificate PEM: {e}"))
+        })?;
+        return Ok(cert);
+    }
+    Err(AcmeError::CertificateParse(
+        "No certificates found in PEM data".to_string(),
+    ))
+}
+
+/// Extract the RFC 9773 CertificateIdentifier from a PEM-encoded certificate or chain.
+pub fn extract_certificate_identifier(
+    cert_pem: &str,
+) -> Result<CertificateIdentifier<'static>, AcmeError> {
+    let leaf_der = extract_leaf_certificate_der(cert_pem)?;
+    CertificateIdentifier::try_from(&leaf_der)
+        .map(|id| id.into_owned())
+        .map_err(|e| {
+            AcmeError::CertificateParse(format!(
+                "Failed to extract ARI certificate identifier: {e}"
+            ))
+        })
+}
+
+/// In-memory ARI tracking state for a certificate.
+#[derive(Debug, Clone)]
+pub struct AriSchedulerState {
+    /// In-memory ARI capability for this CA: Supported, Unsupported, or Unknown.
+    pub capability: AriCapability,
+    /// Active leaf certificate identifier, if known.
+    pub certificate_id: Option<CertificateIdentifier<'static>>,
+    /// Last valid renewal window provided by the CA.
+    pub last_window: Option<RenewalWindow>,
+    /// Selected renewal deadline within the suggested window.
+    pub renewal_deadline: Option<DateTime<Utc>>,
+    /// Next deadline to refresh renewal information from the CA.
+    pub next_refresh: Option<tokio::time::Instant>,
+    /// Consecutive temporary failure count for backoff calculation.
+    pub temp_failure_count: u32,
+    /// Explanation URL provided by the CA, if any.
+    pub explanation_url: Option<String>,
+}
+
+impl Default for AriSchedulerState {
+    fn default() -> Self {
+        Self {
+            capability: AriCapability::Unknown,
+            certificate_id: None,
+            last_window: None,
+            renewal_deadline: None,
+            next_refresh: None,
+            temp_failure_count: 0,
+            explanation_url: None,
+        }
+    }
+}
+
+impl AriSchedulerState {
+    /// Reset in-memory retry and window state when the active certificate changes.
+    pub fn reset_for_new_certificate(
+        &mut self,
+        new_cert_id: Option<CertificateIdentifier<'static>>,
+    ) {
+        self.certificate_id = new_cert_id;
+        self.last_window = None;
+        self.renewal_deadline = None;
+        self.next_refresh = None;
+        self.temp_failure_count = 0;
+        self.explanation_url = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_renewal_window_validation() {
+        let now = Utc::now();
+        let valid = RenewalWindow::new(now, now + chrono::Duration::hours(2));
+        assert!(valid.is_ok());
+
+        // end == start must fail
+        let equal = RenewalWindow::new(now, now);
+        assert!(equal.is_err());
+        assert!(matches!(equal.unwrap_err(), AriError::InvalidWindow { .. }));
+
+        // end < start must fail
+        let reversed = RenewalWindow::new(now + chrono::Duration::hours(2), now);
+        assert!(reversed.is_err());
+        assert!(matches!(
+            reversed.unwrap_err(),
+            AriError::InvalidWindow { .. }
+        ));
+    }
+
+    #[test]
+    fn test_renewal_window_intersection() {
+        let t0 = Utc::now();
+        let t1 = t0 + chrono::Duration::hours(1);
+        let t2 = t0 + chrono::Duration::hours(2);
+        let t3 = t0 + chrono::Duration::hours(3);
+
+        let w1 = RenewalWindow::new(t0, t2).unwrap();
+        let w2 = RenewalWindow::new(t1, t3).unwrap();
+
+        let inter = w1.intersection(&w2).unwrap();
+        assert_eq!(inter.start, t1);
+        assert_eq!(inter.end, t2);
+
+        // Disjoint windows
+        let w3 = RenewalWindow::new(t0, t1).unwrap();
+        let w4 = RenewalWindow::new(t2, t3).unwrap();
+        assert!(w3.intersection(&w4).is_none());
+    }
+
+    #[test]
+    fn test_select_renewal_time_in_future_window() {
+        let now = Utc::now();
+        let start = now + chrono::Duration::days(1);
+        let end = now + chrono::Duration::days(5);
+        let window = RenewalWindow::new(start, end).unwrap();
+
+        let selected = select_renewal_time_at_ratio(&window, None, None, now, 0.5);
+        assert!(selected >= start && selected <= end);
+        assert_eq!(selected, start + chrono::Duration::days(2));
+    }
+
+    #[test]
+    fn test_select_renewal_time_window_starting_in_past_is_immediate() {
+        let now = Utc::now();
+        let start = now - chrono::Duration::hours(1);
+        let end = now + chrono::Duration::hours(5);
+        let window = RenewalWindow::new(start, end).unwrap();
+
+        let selected = select_renewal_time_at_ratio(&window, None, None, now, 0.5);
+        assert_eq!(selected, now);
+    }
+
+    #[test]
+    fn test_select_renewal_time_unchanged_window_stability() {
+        let now = Utc::now();
+        let start = now + chrono::Duration::days(1);
+        let end = now + chrono::Duration::days(5);
+        let window = RenewalWindow::new(start, end).unwrap();
+
+        let first_choice = start + chrono::Duration::days(2);
+        let second_choice = select_renewal_time_at_ratio(
+            &window,
+            Some(&window),
+            Some(first_choice),
+            now,
+            0.8, // even if ratio is different, unchanged window keeps first_choice
+        );
+
+        assert_eq!(second_choice, first_choice);
+    }
+
+    #[test]
+    fn test_select_renewal_time_changed_window_uses_intersection() {
+        let now = Utc::now();
+        let w1 = RenewalWindow::new(
+            now + chrono::Duration::days(2),
+            now + chrono::Duration::days(6),
+        )
+        .unwrap();
+        let w2 = RenewalWindow::new(
+            now + chrono::Duration::days(4),
+            now + chrono::Duration::days(8),
+        )
+        .unwrap();
+
+        // Intersection is days 4..6
+        let selected = select_renewal_time_at_ratio(&w2, Some(&w1), None, now, 0.5);
+        assert_eq!(selected, now + chrono::Duration::days(5));
+    }
+
+    #[test]
+    fn test_clamp_refresh_interval() {
+        assert_eq!(
+            clamp_refresh_interval(Duration::from_secs(10)),
+            ARI_MIN_REFRESH_INTERVAL
+        );
+        assert_eq!(
+            clamp_refresh_interval(Duration::from_secs(3600)),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            clamp_refresh_interval(Duration::from_secs(100_000)),
+            ARI_MAX_REFRESH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn test_retry_delay_temporary_backoff_and_exhaustion() {
+        let (d0, trans0) = calculate_retry_delay(AriErrorClassification::Temporary, 0);
+        assert_eq!(d0, Duration::from_secs(60));
+        assert!(!trans0);
+
+        let (d1, trans1) = calculate_retry_delay(AriErrorClassification::Temporary, 1);
+        assert_eq!(d1, Duration::from_secs(120));
+        assert!(!trans1);
+
+        let (d2, trans2) = calculate_retry_delay(AriErrorClassification::Temporary, 2);
+        assert_eq!(d2, Duration::from_secs(240));
+        assert!(!trans2);
+
+        // Exhausted (attempt 3 >= ARI_MAX_TEMP_RETRIES)
+        let (d3, trans3) = calculate_retry_delay(AriErrorClassification::Temporary, 3);
+        assert_eq!(d3, ARI_LONG_TERM_RETRY_INTERVAL);
+        assert!(trans3);
+    }
+
+    #[test]
+    fn test_retry_delay_long_term_and_unsupported() {
+        let (d_lt, trans_lt) = calculate_retry_delay(AriErrorClassification::LongTerm, 0);
+        assert_eq!(d_lt, ARI_LONG_TERM_RETRY_INTERVAL);
+        assert!(!trans_lt);
+
+        let (d_unsup, trans_unsup) = calculate_retry_delay(AriErrorClassification::Unsupported, 0);
+        assert_eq!(d_unsup, ARI_LONG_TERM_RETRY_INTERVAL);
+        assert!(!trans_unsup);
+    }
+
+    #[test]
+    fn test_next_wakeup_renewal_precedence() {
+        let now_utc = Utc::now();
+        let now_inst = tokio::time::Instant::now();
+
+        let renewal_deadline = now_utc + chrono::Duration::minutes(10);
+        let next_refresh = now_inst + Duration::from_secs(3600); // 1 hour
+        let fallback = Duration::from_secs(12 * 3600); // 12 hours
+
+        let wake = next_wakeup(
+            now_utc,
+            now_inst,
+            Some(renewal_deadline),
+            Some(next_refresh),
+            fallback,
+        );
+        // Should wake at renewal deadline (~10 minutes), not refresh (1 hour)
+        let diff = wake.duration_since(now_inst);
+        assert!(diff <= Duration::from_secs(601) && diff >= Duration::from_secs(599));
+    }
+
+    #[test]
+    fn test_next_wakeup_refresh_precedence() {
+        let now_utc = Utc::now();
+        let now_inst = tokio::time::Instant::now();
+
+        let renewal_deadline = now_utc + chrono::Duration::hours(24);
+        let next_refresh = now_inst + Duration::from_secs(1800); // 30 mins
+        let fallback = Duration::from_secs(12 * 3600);
+
+        let wake = next_wakeup(
+            now_utc,
+            now_inst,
+            Some(renewal_deadline),
+            Some(next_refresh),
+            fallback,
+        );
+        let diff = wake.duration_since(now_inst);
+        assert_eq!(diff, Duration::from_secs(1800));
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_unsupported() {
+        let err = instant_acme::Error::Unsupported("ACME renewal information (ARI)");
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::Unsupported
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_api_404_is_unsupported() {
+        let problem = instant_acme::Problem {
+            r#type: None,
+            detail: None,
+            status: Some(404),
+            subproblems: Vec::new(),
+        };
+        let err = instant_acme::Error::Api(problem);
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::Unsupported
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_api_500_is_temporary() {
+        let problem = instant_acme::Problem {
+            r#type: None,
+            detail: None,
+            status: Some(500),
+            subproblems: Vec::new(),
+        };
+        let err = instant_acme::Error::Api(problem);
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::Temporary
+        );
+    }
+
+    #[test]
+    fn test_classify_instant_acme_error_missing_retry_after_is_long_term() {
+        let err = instant_acme::Error::Str("missing Retry-After header");
+        assert_eq!(
+            classify_instant_acme_error(&err),
+            AriErrorClassification::LongTerm
+        );
+    }
+
+    #[test]
+    fn test_extract_certificate_identifier_invalid_pem() {
+        let invalid = "not a valid pem";
+        let res = extract_certificate_identifier(invalid);
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), AcmeError::CertificateParse(_)));
+    }
+}

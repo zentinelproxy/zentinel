@@ -76,6 +76,10 @@ pub enum AcmeError {
     /// Certificate parsing error
     #[error("Failed to parse certificate: {0}")]
     CertificateParse(String),
+
+    /// ACME Renewal Information (ARI) error
+    #[error("ARI error: {0}")]
+    Ari(#[from] super::ari::AriError),
 }
 
 /// Errors specific to certificate storage operations
@@ -122,6 +126,9 @@ impl From<instant_acme::Error> for AcmeError {
 /// transport failures. Non-transient errors like auth/rate-limit
 /// or DNS propagation timeouts must fail fast.
 pub fn is_retryable_acme_error(e: &AcmeError) -> bool {
+    if let AcmeError::Ari(ari_err) = e {
+        return ari_err.is_temporary();
+    }
     // Never retry deterministic errors: storage/config, missing
     // challenges, or polling timeouts (the latter is application-level
     // "wait too long", not a transient transport failure).
