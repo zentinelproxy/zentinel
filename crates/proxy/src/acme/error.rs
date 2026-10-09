@@ -80,6 +80,20 @@ pub enum AcmeError {
     /// ACME Renewal Information (ARI) error
     #[error("ARI error: {0}")]
     Ari(#[from] super::ari::AriError),
+
+    /// ACME feature unsupported (e.g. replaces or renewalInfo)
+    #[error("ACME feature unsupported: {0}")]
+    Unsupported(&'static str),
+}
+
+impl AcmeError {
+    /// Returns true if this error indicates that the `replaces` order field or ARI is unsupported.
+    pub fn is_replaces_unsupported(&self) -> bool {
+        matches!(
+            self,
+            AcmeError::Unsupported("replaces") | AcmeError::Unsupported("renewalInfo")
+        )
+    }
 }
 
 /// Errors specific to certificate storage operations
@@ -114,7 +128,10 @@ impl From<serde_json::Error> for StorageError {
 
 impl From<instant_acme::Error> for AcmeError {
     fn from(e: instant_acme::Error) -> Self {
-        AcmeError::Protocol(e.to_string())
+        match e {
+            instant_acme::Error::Unsupported(feature) => AcmeError::Unsupported(feature),
+            other => AcmeError::Protocol(other.to_string()),
+        }
     }
 }
 
@@ -130,8 +147,7 @@ pub fn is_retryable_acme_error(e: &AcmeError) -> bool {
         return ari_err.is_temporary();
     }
     // Never retry deterministic errors: storage/config, missing
-    // challenges, or polling timeouts (the latter is application-level
-    // "wait too long", not a transient transport failure).
+    // challenges, unsupported features, or polling timeouts.
     if matches!(
         e,
         AcmeError::Storage(_)
@@ -143,6 +159,7 @@ pub fn is_retryable_acme_error(e: &AcmeError) -> bool {
             | AcmeError::CertificateParse(_)
             | AcmeError::Timeout(_)
             | AcmeError::PropagationTimeout { .. }
+            | AcmeError::Unsupported(_)
     ) {
         return false;
     }

@@ -115,24 +115,82 @@ pub fn classify_instant_acme_error(err: &instant_acme::Error) -> AriErrorClassif
     match err {
         instant_acme::Error::Unsupported(_) => AriErrorClassification::Unsupported,
         instant_acme::Error::Api(problem) => match problem.status {
-            Some(404) => AriErrorClassification::Unsupported,
-            Some(status) if (500..600).contains(&status) => AriErrorClassification::Temporary,
+            Some(status) if (500..=599).contains(&status) => AriErrorClassification::Temporary,
+            // RFC 9773 §4.3.3: Treat non-5xx HTTP responses (including 404) as long-term errors.
             _ => AriErrorClassification::LongTerm,
         },
         instant_acme::Error::Timeout(_) => AriErrorClassification::Temporary,
-        instant_acme::Error::Hyper(_) => AriErrorClassification::Temporary,
-        instant_acme::Error::Http(_) => AriErrorClassification::Temporary,
+        instant_acme::Error::Http(_) => {
+            // Client-side HTTP creation error (e.g. invalid header) is long-term.
+            AriErrorClassification::LongTerm
+        }
+        instant_acme::Error::Hyper(hyper_err) => {
+            if hyper_err.is_timeout() {
+                return AriErrorClassification::Temporary;
+            }
+
+            // Inspect the error source chain for structured std::io::Error
+            let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(hyper_err);
+            while let Some(e) = curr {
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                    match io_err.kind() {
+                        std::io::ErrorKind::ConnectionRefused => {
+                            // RFC 9773 §4.3.3: Connection refusal is an example of long-term error.
+                            return AriErrorClassification::LongTerm;
+                        }
+                        std::io::ErrorKind::TimedOut => {
+                            return AriErrorClassification::Temporary;
+                        }
+                        std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof => {
+                            return AriErrorClassification::Temporary;
+                        }
+                        _ => {}
+                    }
+                }
+                curr = e.source();
+            }
+
+            let msg = hyper_err.to_string().to_lowercase();
+            if msg.contains("connection refused")
+                || msg.contains("dns")
+                || msg.contains("resolve")
+                || msg.contains("name resolution")
+                || msg.contains("not found")
+            {
+                AriErrorClassification::LongTerm
+            } else if msg.contains("timeout")
+                || msg.contains("timed out")
+                || msg.contains("reset")
+                || msg.contains("closed")
+                || msg.contains("aborted")
+                || msg.contains("eof")
+            {
+                AriErrorClassification::Temporary
+            } else {
+                AriErrorClassification::LongTerm
+            }
+        }
         instant_acme::Error::Str("missing Retry-After header") => AriErrorClassification::LongTerm,
+        instant_acme::Error::Json(_) => {
+            // Invalid renewal information JSON response (RFC 9773 §4.3.3)
+            AriErrorClassification::LongTerm
+        }
+        instant_acme::Error::InvalidUri(_) => AriErrorClassification::LongTerm,
+        instant_acme::Error::Crypto | instant_acme::Error::KeyRejected => {
+            AriErrorClassification::LongTerm
+        }
         _ => {
             let msg = err.to_string().to_lowercase();
-            if msg.contains("client error (connect)")
-                || msg.contains("unexpected eof")
-                || msg.contains("connection reset")
-                || msg.contains("connection closed")
-                || msg.contains("connection aborted")
-                || msg.contains("tls connect error")
+            if msg.contains("connection refused") || msg.contains("dns") || msg.contains("resolve")
+            {
+                AriErrorClassification::LongTerm
+            } else if msg.contains("timeout")
                 || msg.contains("timed out")
-                || msg.contains("transport error")
+                || msg.contains("reset")
+                || msg.contains("eof")
             {
                 AriErrorClassification::Temporary
             } else {
@@ -208,6 +266,12 @@ pub fn clamp_refresh_interval(interval: Duration) -> Duration {
 }
 
 /// Calculate retry delay and whether the retry transitioned to long-term (RFC 9773 §4.3.3).
+///
+/// `temp_failure_count` represents the 1-based number of consecutive temporary failures:
+/// - 1st failure (count <= 1): base backoff (1 minute)
+/// - 2nd failure (count == 2): 2 minutes
+/// - 3rd failure (count == 3): 4 minutes
+/// - Failure count > `ARI_MAX_TEMP_RETRIES` (3 attempts) transitions to long-term (6 hours).
 pub fn calculate_retry_delay(
     classification: AriErrorClassification,
     temp_failure_count: u32,
@@ -216,10 +280,11 @@ pub fn calculate_retry_delay(
         AriErrorClassification::Unsupported => (ARI_LONG_TERM_RETRY_INTERVAL, false),
         AriErrorClassification::LongTerm => (ARI_LONG_TERM_RETRY_INTERVAL, false),
         AriErrorClassification::Temporary => {
-            if temp_failure_count >= ARI_MAX_TEMP_RETRIES {
+            if temp_failure_count > ARI_MAX_TEMP_RETRIES {
                 (ARI_LONG_TERM_RETRY_INTERVAL, true)
             } else {
-                let multiplier = 1u64.checked_shl(temp_failure_count).unwrap_or(u64::MAX);
+                let exponent = temp_failure_count.saturating_sub(1);
+                let multiplier = 1u64.checked_shl(exponent).unwrap_or(u64::MAX);
                 let delay = ARI_BASE_TEMP_BACKOFF.saturating_mul(multiplier as u32);
                 (delay.min(ARI_LONG_TERM_RETRY_INTERVAL), false)
             }
@@ -438,6 +503,71 @@ impl AriSchedulerState {
         self.temp_failure_count = 0;
         self.explanation_url = None;
     }
+
+    /// Clear scheduling state when certificate is missing or expired.
+    pub fn clear_expired_or_missing(&mut self) {
+        self.last_window = None;
+        self.renewal_deadline = None;
+        self.next_refresh = None;
+        self.temp_failure_count = 0;
+        self.explanation_url = None;
+    }
+
+    /// Check whether ARI renewal deadline indicates renewal is due.
+    ///
+    /// Returns:
+    /// - `None` if ARI is explicitly unsupported or no ARI deadline is set (signaling that fallback policy should decide).
+    /// - `Some(true)` if ARI is active and the renewal deadline has passed.
+    /// - `Some(false)` if ARI is active and the renewal deadline is in the future.
+    pub fn is_ari_renewal_due(&self, now: DateTime<Utc>) -> Option<bool> {
+        if self.capability == AriCapability::Unsupported {
+            return None;
+        }
+        self.renewal_deadline.map(|deadline| deadline <= now)
+    }
+
+    /// Record a successful ARI refresh.
+    pub fn record_success(
+        &mut self,
+        window: RenewalWindow,
+        renewal_deadline: DateTime<Utc>,
+        next_refresh: tokio::time::Instant,
+        explanation_url: Option<String>,
+    ) {
+        self.capability = AriCapability::Supported;
+        self.last_window = Some(window);
+        self.renewal_deadline = Some(renewal_deadline);
+        self.next_refresh = Some(next_refresh);
+        self.temp_failure_count = 0;
+        self.explanation_url = explanation_url;
+    }
+
+    /// Record that ARI is explicitly unsupported.
+    ///
+    /// Clears any cached ARI window and renewal deadline, stops using ARI for renewal,
+    /// and schedules a delayed capability recheck.
+    pub fn record_unsupported(&mut self, next_recheck: tokio::time::Instant) {
+        self.capability = AriCapability::Unsupported;
+        self.last_window = None;
+        self.renewal_deadline = None;
+        self.next_refresh = Some(next_recheck);
+        self.temp_failure_count = 0;
+    }
+
+    /// Record a temporary failure and update next_refresh deadline.
+    ///
+    /// Retains previously valid window and renewal deadline for the active certificate.
+    pub fn record_temporary_failure(&mut self, delay: Duration) {
+        self.temp_failure_count = self.temp_failure_count.saturating_add(1);
+        self.next_refresh = Some(tokio::time::Instant::now() + delay);
+    }
+
+    /// Record a long-term failure and update next_refresh deadline.
+    ///
+    /// Retains previously valid window and renewal deadline for the active certificate.
+    pub fn record_long_term_failure(&mut self, delay: Duration) {
+        self.next_refresh = Some(tokio::time::Instant::now() + delay);
+    }
 }
 
 #[cfg(test)]
@@ -563,22 +693,25 @@ mod tests {
 
     #[test]
     fn test_retry_delay_temporary_backoff_and_exhaustion() {
-        let (d0, trans0) = calculate_retry_delay(AriErrorClassification::Temporary, 0);
-        assert_eq!(d0, Duration::from_secs(60));
-        assert!(!trans0);
-
+        // 1st temporary failure: base backoff (1 min)
         let (d1, trans1) = calculate_retry_delay(AriErrorClassification::Temporary, 1);
-        assert_eq!(d1, Duration::from_secs(120));
+        assert_eq!(d1, Duration::from_secs(60));
         assert!(!trans1);
 
+        // 2nd temporary failure: 2 mins
         let (d2, trans2) = calculate_retry_delay(AriErrorClassification::Temporary, 2);
-        assert_eq!(d2, Duration::from_secs(240));
+        assert_eq!(d2, Duration::from_secs(120));
         assert!(!trans2);
 
-        // Exhausted (attempt 3 >= ARI_MAX_TEMP_RETRIES)
+        // 3rd temporary failure: 4 mins
         let (d3, trans3) = calculate_retry_delay(AriErrorClassification::Temporary, 3);
-        assert_eq!(d3, ARI_LONG_TERM_RETRY_INTERVAL);
-        assert!(trans3);
+        assert_eq!(d3, Duration::from_secs(240));
+        assert!(!trans3);
+
+        // 4th temporary failure (> ARI_MAX_TEMP_RETRIES): exhausted, transitions to long-term (6 hours)
+        let (d4, trans4) = calculate_retry_delay(AriErrorClassification::Temporary, 4);
+        assert_eq!(d4, ARI_LONG_TERM_RETRY_INTERVAL);
+        assert!(trans4);
     }
 
     #[test]
@@ -643,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_instant_acme_error_api_404_is_unsupported() {
+    fn test_classify_instant_acme_error_api_404_is_long_term() {
         let problem = instant_acme::Problem {
             r#type: None,
             detail: None,
@@ -653,7 +786,7 @@ mod tests {
         let err = instant_acme::Error::Api(problem);
         assert_eq!(
             classify_instant_acme_error(&err),
-            AriErrorClassification::Unsupported
+            AriErrorClassification::LongTerm
         );
     }
 
