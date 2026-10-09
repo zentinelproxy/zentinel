@@ -230,11 +230,14 @@ The `RenewalScheduler` runs as a background task orchestrating renewal timing, A
 - **Refresh Lifecycle & `Retry-After`**: Periodically refreshes renewal information using the CA server's `Retry-After` hint to discover changes to the renewal window. Refresh intervals are clamped between 1 minute and 24 hours (RFC 9773 §4.3.2). Upcoming refreshes never delay an already-due renewal.
 - **Fallback Policy (`renew-before-days`)**: Not all ACME servers support ARI. When ARI is explicitly unsupported, or when ARI information is temporarily unavailable and no cached window exists, Zentinel continues using the configured `renew-before-days` policy.
 - **Error Recovery & Backoff (RFC 9773 §4.3.3)**:
-  - Temporary failures (timeouts, network errors, 5xx responses) trigger bounded exponential backoff (1m, 2m, 4m).
-  - Exhausted retries transition to a long-term retry schedule (~6 hours).
-  - Invalid responses (missing `Retry-After`, `end <= start`) use the long-term ~6-hour retry path.
-  - Transient refresh failures preserve any previously cached valid window and renewal deadline.
-- **Order Linking with `replaces`**: When a valid predecessor certificate exists, its identifier can be extracted, and the CA is confirmed to support ARI, renewal orders include `replaces(cert_id)` for both HTTP-01 and DNS-01 flows.
+  - Every refresh failure either schedules a future retry or clears obsolete deadlines; no overdue refresh is left in the past to prevent tight wakeup loops.
+  - Temporary failures (timeouts, network errors, 5xx responses) trigger bounded exponential backoff (1m for 1st failure, 2m for 2nd, 4m for 3rd).
+  - Exhausted retries (>3 consecutive failures) transition to a long-term retry schedule (~6 hours).
+  - Long-term errors (non-5xx HTTP responses including 404, connection refused, DNS resolution failures, invalid `suggestedWindow` where `end <= start`) schedule long-term retries (~6 hours) without tight polling.
+  - Explicit unsupported status (`instant_acme::Error::Unsupported`) switches capability to `Unsupported`, clears stale ARI windows, and activates `renew-before-days` fallback.
+  - Expired or missing certificates clear obsolete ARI state and fall back directly to immediate renewal / fallback thresholds.
+  - Transient refresh failures preserve any previously cached valid window and renewal deadline for the active certificate.
+- **Order Linking with `replaces`**: When a valid predecessor certificate exists, its identifier can be extracted, and the CA supports ARI, renewal orders include `replaces(cert_id)` for both HTTP-01 and DNS-01 flows. If an order with `replaces` fails because the server rejects predecessor replacement, the client cleanly falls back to ordering without `replaces`.
 - **Active Certificate Identity**: After renewal succeeds, the scheduler switches to tracking the newly issued certificate, invalidates predecessor scheduling state, and promptly requests ARI for the new certificate.
 
 ### `acme/error.rs`
@@ -258,6 +261,7 @@ pub enum AcmeError {
     Timeout(String),
     Storage(StorageError),
     Ari(AriError),                     // RFC 9773 ARI errors
+    Unsupported(&'static str),         // ACME feature unsupported (e.g. ARI)
 }
 ```
 
