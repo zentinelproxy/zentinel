@@ -23,7 +23,7 @@ use super::ari::{
 use super::challenge::ChallengeManager;
 use super::client::AcmeClient;
 use super::dns::Dns01ChallengeManager;
-use super::error::AcmeError;
+use super::error::{is_retryable_acme_error, AcmeError};
 use crate::tls::HotReloadableSniResolver;
 
 /// Default check interval (12 hours)
@@ -99,6 +99,14 @@ impl RenewalScheduler {
         self.ari_state.lock().capability = capability;
     }
 
+    /// Update in-memory ARI state with a closure (useful for testing)
+    pub fn update_ari_state<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut AriSchedulerState) -> R,
+    {
+        f(&mut self.ari_state.lock())
+    }
+
     /// Set the DNS-01 challenge manager
     ///
     /// Required when using DNS-01 challenge type.
@@ -162,15 +170,30 @@ impl RenewalScheduler {
             .is_some();
 
         if has_existing_cert {
-            info!(
-                domain = %primary_domain,
-                "Requesting initial ARI renewal information for existing certificate"
-            );
-            if let Err(e) = self.refresh_ari().await {
-                warn!(
+            // Check if we already have a valid ARI schedule or pending retry:
+            // Do not perform duplicate requests if ensure_certificates() or previous setup
+            // already established a future refresh deadline.
+            let should_initial_refresh = {
+                let state = self.ari_state.lock();
+                state.next_refresh.is_none_or(|r| r <= Instant::now())
+            };
+
+            if should_initial_refresh {
+                info!(
                     domain = %primary_domain,
-                    error = %e,
-                    "Initial ARI refresh failed; continuing with standard checks"
+                    "Requesting initial ARI renewal information for existing certificate"
+                );
+                if let Err(e) = self.refresh_ari().await {
+                    warn!(
+                        domain = %primary_domain,
+                        error = %e,
+                        "Initial ARI refresh failed; continuing with standard checks"
+                    );
+                }
+            } else {
+                debug!(
+                    domain = %primary_domain,
+                    "ARI refresh already scheduled in future; skipping duplicate startup request"
                 );
             }
         }
@@ -203,19 +226,7 @@ impl RenewalScheduler {
 
             // 1. Renewal check: If renewal is due, renewal takes precedence over refresh.
             // RFC 9773: "an upcoming refresh must not delay an already-due renewal"
-            let renewal_is_due = {
-                let state = self.ari_state.lock();
-                if let Some(deadline) = state.renewal_deadline {
-                    deadline <= Utc::now()
-                } else if state.capability == AriCapability::Unsupported
-                    || state.last_window.is_none()
-                {
-                    // Fallback policy
-                    self.client.needs_renewal(&primary_domain).unwrap_or(false)
-                } else {
-                    false
-                }
-            };
+            let renewal_is_due = self.is_renewal_due(&primary_domain).unwrap_or(false);
 
             if renewal_is_due {
                 info!(domain = %primary_domain, "Certificate renewal is due");
@@ -247,21 +258,50 @@ impl RenewalScheduler {
         }
     }
 
+    /// Check whether renewal is needed according to ARI or fallback policy
+    pub fn is_renewal_due(&self, domain: &str) -> Result<bool, AcmeError> {
+        let now = Utc::now();
+        let ari_due = {
+            let state = self.ari_state.lock();
+            state.is_ari_renewal_due(now)
+        };
+
+        match ari_due {
+            Some(due) => Ok(due),
+            None => self.client.needs_renewal(domain),
+        }
+    }
+
     /// Refresh ARI information for the active certificate.
+    ///
+    /// Leaves the scheduler in a safe, forward-progressing state whether it succeeds or fails.
+    /// On success, schedules the next refresh according to the CA's `Retry-After` hint.
+    /// On failure, schedules an appropriate backoff retry or clears obsolete deadlines.
     pub async fn refresh_ari(&self) -> Result<(), AcmeError> {
         let primary_domain = match self.client.config().domains.first() {
             Some(d) => d.clone(),
             None => return Ok(()),
         };
 
+        match self.refresh_ari_step(&primary_domain).await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.handle_refresh_failure(&primary_domain, &err);
+                Err(err)
+            }
+        }
+    }
+
+    async fn refresh_ari_step(&self, primary_domain: &str) -> Result<(), AcmeError> {
         // 1. Ensure account is ready
         self.client.ensure_account().await?;
 
         // 2. Load stored certificate and check validity
-        let stored_cert = match self.client.storage().load_certificate(&primary_domain)? {
+        let stored_cert = match self.client.storage().load_certificate(primary_domain)? {
             Some(cert) => cert,
             None => {
-                debug!(domain = %primary_domain, "No stored certificate to refresh ARI for");
+                debug!(domain = %primary_domain, "No stored certificate found; clearing obsolete ARI state");
+                self.ari_state.lock().clear_expired_or_missing();
                 return Ok(());
             }
         };
@@ -271,158 +311,143 @@ impl RenewalScheduler {
             debug!(
                 domain = %primary_domain,
                 expires = %stored_cert.meta.expires,
-                "Certificate has expired; skipping ARI refresh"
+                "Certificate has expired; clearing obsolete ARI state"
             );
+            self.ari_state.lock().clear_expired_or_missing();
             return Ok(());
         }
 
         // 3. Extract leaf certificate identifier
-        let cert_id = match self
+        let cert_id = self
             .client
-            .extract_certificate_identifier(&stored_cert.cert_pem)
-        {
-            Ok(id) => id,
-            Err(e) => {
-                warn!(
-                    domain = %primary_domain,
-                    error = %e,
-                    "Failed to extract ARI certificate identifier from leaf certificate"
-                );
-                // Identifier extraction failure must not corrupt stored cert or prevent fallback
-                let mut state = self.ari_state.lock();
-                state.temp_failure_count += 1;
-                let (retry_delay, _) = calculate_retry_delay(
-                    AriErrorClassification::LongTerm,
-                    state.temp_failure_count,
-                );
-                state.next_refresh = Some(Instant::now() + retry_delay);
-                return Ok(());
-            }
-        };
+            .extract_certificate_identifier(&stored_cert.cert_pem)?;
 
         // Update active certificate_id in state
         {
             let mut state = self.ari_state.lock();
-            state.certificate_id = Some(cert_id.clone());
+            if state.certificate_id.as_ref() != Some(&cert_id) {
+                state.reset_for_new_certificate(Some(cert_id.clone()));
+            }
         }
 
         // 4. Request renewal info from CA
-        let result = self.client.renewal_info(&cert_id).await;
+        let (renewal_info, retry_after) = self
+            .client
+            .renewal_info(&cert_id)
+            .await
+            .map_err(AcmeError::Ari)?;
 
-        match result {
-            Ok((renewal_info, retry_after)) => {
-                let clamped_refresh = clamp_refresh_interval(retry_after);
-                let now_utc = Utc::now();
-                let now_instant = Instant::now();
+        // 5. Validate suggested window: if end <= start, invalid response
+        let window = RenewalWindow::from_instant_acme(&renewal_info.suggested_window)
+            .map_err(AcmeError::Ari)?;
 
-                // Validate suggested window: if end <= start, invalid response
-                let window = match RenewalWindow::from_instant_acme(&renewal_info.suggested_window)
-                {
-                    Ok(w) => w,
-                    Err(AriError::InvalidWindow { start, end }) => {
-                        warn!(
-                            domain = %primary_domain,
-                            start = %start,
-                            end = %end,
-                            "CA returned invalid ARI renewal window (end <= start); using long-term error schedule"
-                        );
-                        let mut state = self.ari_state.lock();
-                        state.temp_failure_count += 1;
-                        let (delay, _) = calculate_retry_delay(
-                            AriErrorClassification::LongTerm,
-                            state.temp_failure_count,
-                        );
-                        state.next_refresh = Some(now_instant + delay);
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        warn!(domain = %primary_domain, error = %e, "Unexpected error validating renewal window");
-                        return Ok(());
-                    }
-                };
+        let clamped_refresh = clamp_refresh_interval(retry_after);
+        let now_utc = Utc::now();
+        let now_instant = Instant::now();
 
-                let mut state = self.ari_state.lock();
-                state.capability = AriCapability::Supported;
-                state.explanation_url = renewal_info.explanation_url;
-                state.temp_failure_count = 0;
+        let mut state = self.ari_state.lock();
+        let renewal_time = select_renewal_time(
+            &window,
+            state.last_window.as_ref(),
+            state.renewal_deadline,
+            now_utc,
+        );
 
-                // Select renewal time
-                let renewal_time = select_renewal_time(
-                    &window,
-                    state.last_window.as_ref(),
-                    state.renewal_deadline,
-                    now_utc,
-                );
+        info!(
+            domain = %primary_domain,
+            window_start = %window.start,
+            window_end = %window.end,
+            renewal_deadline = %renewal_time,
+            refresh_in_secs = clamped_refresh.as_secs(),
+            "ARI renewal info updated successfully"
+        );
 
-                info!(
-                    domain = %primary_domain,
-                    window_start = %window.start,
-                    window_end = %window.end,
-                    renewal_deadline = %renewal_time,
-                    refresh_in_secs = clamped_refresh.as_secs(),
-                    "ARI renewal info updated successfully"
-                );
-
-                state.last_window = Some(window);
-                state.renewal_deadline = Some(renewal_time);
-                state.next_refresh = Some(now_instant + clamped_refresh);
-            }
-            Err(err) => {
-                let classification = err.classification();
-                let mut state = self.ari_state.lock();
-
-                match classification {
-                    AriErrorClassification::Unsupported => {
-                        info!(
-                            domain = %primary_domain,
-                            "ACME CA does not support ARI; activating renew-before-days fallback policy"
-                        );
-                        state.capability = AriCapability::Unsupported;
-                        state.next_refresh = Some(Instant::now() + ARI_LONG_TERM_RETRY_INTERVAL);
-                    }
-                    AriErrorClassification::Temporary => {
-                        state.temp_failure_count += 1;
-                        let (delay, transitioned) = calculate_retry_delay(
-                            AriErrorClassification::Temporary,
-                            state.temp_failure_count,
-                        );
-                        if transitioned {
-                            warn!(
-                                domain = %primary_domain,
-                                failures = state.temp_failure_count,
-                                error = %err,
-                                "Exhausted temporary retries for ARI; transitioning to long-term retry schedule (6 hours)"
-                            );
-                        } else {
-                            warn!(
-                                domain = %primary_domain,
-                                attempt = state.temp_failure_count,
-                                delay_secs = delay.as_secs(),
-                                error = %err,
-                                "Temporary failure requesting ARI; scheduling retry with backoff"
-                            );
-                        }
-                        state.next_refresh = Some(Instant::now() + delay);
-                    }
-                    AriErrorClassification::LongTerm => {
-                        state.temp_failure_count += 1;
-                        let (delay, _) = calculate_retry_delay(
-                            AriErrorClassification::LongTerm,
-                            state.temp_failure_count,
-                        );
-                        warn!(
-                            domain = %primary_domain,
-                            delay_secs = delay.as_secs(),
-                            error = %err,
-                            "Long-term error requesting ARI; scheduling retry in 6 hours"
-                        );
-                        state.next_refresh = Some(Instant::now() + delay);
-                    }
-                }
-            }
-        }
+        state.record_success(
+            window,
+            renewal_time,
+            now_instant + clamped_refresh,
+            renewal_info.explanation_url,
+        );
 
         Ok(())
+    }
+
+    fn handle_refresh_failure(&self, primary_domain: &str, err: &AcmeError) {
+        let classification = match err {
+            AcmeError::Ari(ari_err) => ari_err.classification(),
+            AcmeError::Unsupported(_) => AriErrorClassification::Unsupported,
+            AcmeError::NoAccount | AcmeError::AccountCreation(_) => {
+                if is_retryable_acme_error(err) {
+                    AriErrorClassification::Temporary
+                } else {
+                    AriErrorClassification::LongTerm
+                }
+            }
+            AcmeError::Storage(_) | AcmeError::CertificateParse(_) => {
+                AriErrorClassification::LongTerm
+            }
+            AcmeError::Timeout(_) => AriErrorClassification::Temporary,
+            AcmeError::Protocol(_) => {
+                if is_retryable_acme_error(err) {
+                    AriErrorClassification::Temporary
+                } else {
+                    AriErrorClassification::LongTerm
+                }
+            }
+            _ => {
+                if is_retryable_acme_error(err) {
+                    AriErrorClassification::Temporary
+                } else {
+                    AriErrorClassification::LongTerm
+                }
+            }
+        };
+
+        let mut state = self.ari_state.lock();
+        match classification {
+            AriErrorClassification::Unsupported => {
+                info!(
+                    domain = %primary_domain,
+                    "ACME CA does not support ARI; activating renew-before-days fallback policy"
+                );
+                state.record_unsupported(Instant::now() + ARI_LONG_TERM_RETRY_INTERVAL);
+            }
+            AriErrorClassification::Temporary => {
+                let failure_count = state.temp_failure_count.saturating_add(1);
+                let (delay, transitioned) =
+                    calculate_retry_delay(AriErrorClassification::Temporary, failure_count);
+                if transitioned {
+                    warn!(
+                        domain = %primary_domain,
+                        failures = failure_count,
+                        error = %err,
+                        "Exhausted temporary retries for ARI; transitioning to long-term retry schedule (6 hours)"
+                    );
+                } else {
+                    warn!(
+                        domain = %primary_domain,
+                        attempt = failure_count,
+                        delay_secs = delay.as_secs(),
+                        error = %err,
+                        "Temporary failure requesting ARI; scheduling retry with backoff"
+                    );
+                }
+                state.record_temporary_failure(delay);
+            }
+            AriErrorClassification::LongTerm => {
+                let (delay, _) = calculate_retry_delay(
+                    AriErrorClassification::LongTerm,
+                    state.temp_failure_count,
+                );
+                warn!(
+                    domain = %primary_domain,
+                    delay_secs = delay.as_secs(),
+                    error = %err,
+                    "Long-term error requesting ARI; scheduling retry in 6 hours"
+                );
+                state.record_long_term_failure(delay);
+            }
+        }
     }
 
     /// Check all configured domains and renew certificates as needed
@@ -448,15 +473,7 @@ impl RenewalScheduler {
         }
 
         // Check if renewal is needed according to ARI or fallback
-        let needs_renewal = {
-            let state = self.ari_state.lock();
-            if let Some(deadline) = state.renewal_deadline {
-                deadline <= Utc::now()
-            } else {
-                // Fallback to renew-before-days
-                self.client.needs_renewal(domain)?
-            }
-        };
+        let needs_renewal = self.is_renewal_due(domain)?;
 
         if needs_renewal {
             info!(domain = %domain, "Certificate needs renewal");
@@ -560,12 +577,11 @@ impl RenewalScheduler {
         let order_res = self.client.create_order(predecessor_id).await;
         let (mut order, challenges) = match order_res {
             Ok(res) => res,
-            Err(e)
-                if predecessor_id.is_some()
-                    && e.to_string().to_lowercase().contains("unsupported") =>
-            {
-                warn!("CA rejected order with replaces; retrying without replaces");
-                self.ari_state.lock().capability = AriCapability::Unsupported;
+            Err(e) if predecessor_id.is_some() && e.is_replaces_unsupported() => {
+                warn!("CA does not support order with replaces; marking ARI unsupported and retrying without replaces");
+                self.ari_state
+                    .lock()
+                    .record_unsupported(Instant::now() + ARI_LONG_TERM_RETRY_INTERVAL);
                 self.client.create_order(None).await?
             }
             Err(e) => return Err(e),
@@ -639,12 +655,11 @@ impl RenewalScheduler {
         let order_res = self.client.create_order_dns01(predecessor_id).await;
         let (mut order, mut challenges) = match order_res {
             Ok(res) => res,
-            Err(e)
-                if predecessor_id.is_some()
-                    && e.to_string().to_lowercase().contains("unsupported") =>
-            {
-                warn!("CA rejected order with replaces; retrying without replaces");
-                self.ari_state.lock().capability = AriCapability::Unsupported;
+            Err(e) if predecessor_id.is_some() && e.is_replaces_unsupported() => {
+                warn!("CA does not support order with replaces; marking ARI unsupported and retrying without replaces");
+                self.ari_state
+                    .lock()
+                    .record_unsupported(Instant::now() + ARI_LONG_TERM_RETRY_INTERVAL);
                 self.client.create_order_dns01(None).await?
             }
             Err(e) => return Err(e),
@@ -751,7 +766,7 @@ impl RenewalScheduler {
         // Ensure ACME account exists
         self.client.ensure_account().await?;
 
-        // If certificate already exists, extract identifier and attempt ARI refresh
+        // If certificate already exists, attempt ARI refresh
         if let Ok(Some(cert)) = self.client.storage().load_certificate(primary_domain) {
             if let Ok(id) = self.client.extract_certificate_identifier(&cert.cert_pem) {
                 self.ari_state.lock().certificate_id = Some(id);
@@ -759,14 +774,7 @@ impl RenewalScheduler {
             }
         }
 
-        let needs_renewal = {
-            let state = self.ari_state.lock();
-            if let Some(deadline) = state.renewal_deadline {
-                deadline <= Utc::now()
-            } else {
-                self.client.needs_renewal(primary_domain)?
-            }
-        };
+        let needs_renewal = self.is_renewal_due(primary_domain)?;
 
         if needs_renewal {
             info!(

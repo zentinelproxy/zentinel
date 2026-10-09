@@ -8415,6 +8415,7 @@ dependencies = [
  "http 1.5.0",
  "http-body-util",
  "httpdate",
+ "hyper-util",
  "insta",
  "instant-acme",
  "ip2location",

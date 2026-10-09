@@ -13,8 +13,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use instant_acme::{
-    Account, AuthorizationStatus, CertificateIdentifier, ChallengeType, Identifier, LetsEncrypt,
-    NewAccount, NewOrder, Order, OrderStatus, RenewalInfo, RetryPolicy,
+    Account, AccountBuilder, AuthorizationStatus, CertificateIdentifier, ChallengeType, Identifier,
+    LetsEncrypt, NewAccount, NewOrder, Order, OrderStatus, RenewalInfo, RetryPolicy,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
@@ -141,6 +141,20 @@ impl AcmeClient {
         self.init_account().await
     }
 
+    fn account_builder(&self) -> Result<AccountBuilder, AcmeError> {
+        if self.directory_url().starts_with("http://") {
+            let connector = hyper_util::client::legacy::connect::HttpConnector::new();
+            let client: hyper_util::client::legacy::Client<
+                hyper_util::client::legacy::connect::HttpConnector,
+                instant_acme::BodyWrapper<bytes::Bytes>,
+            > = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(connector);
+            Ok(Account::builder_with_http(Box::new(client)))
+        } else {
+            Account::builder().map_err(|e| AcmeError::AccountCreation(e.to_string()))
+        }
+    }
+
     async fn init_account_once(&self) -> Result<(), AcmeError> {
         // Check for existing account credentials (stored as JSON)
         if let Some(creds_json) = self.storage.load_credentials_json()? {
@@ -153,8 +167,8 @@ impl AcmeClient {
             })?;
 
             // Reconstruct account from stored credentials
-            let account = Account::builder()
-                .map_err(|e| AcmeError::AccountCreation(e.to_string()))?
+            let account = self
+                .account_builder()?
                 .from_credentials(credentials)
                 .await
                 .map_err(|e| AcmeError::AccountCreation(e.to_string()))?;
@@ -184,8 +198,8 @@ impl AcmeClient {
             None
         };
 
-        let (account, credentials) = Account::builder()
-            .map_err(|e| AcmeError::AccountCreation(e.to_string()))?
+        let (account, credentials) = self
+            .account_builder()?
             .create(
                 &NewAccount {
                     contact: &[&format!("mailto:{}", self.config.email)],
@@ -262,10 +276,10 @@ impl AcmeClient {
             new_order = new_order.replaces(replaces_id.clone());
         }
 
-        let mut order = account
-            .new_order(&new_order)
-            .await
-            .map_err(|e| AcmeError::OrderCreation(e.to_string()))?;
+        let mut order = account.new_order(&new_order).await.map_err(|e| match e {
+            instant_acme::Error::Unsupported(feature) => AcmeError::Unsupported(feature),
+            other => AcmeError::OrderCreation(other.to_string()),
+        })?;
 
         // Get authorizations and extract HTTP-01 challenges
         let mut authorizations = order.authorizations();
@@ -360,10 +374,10 @@ impl AcmeClient {
             new_order = new_order.replaces(replaces_id.clone());
         }
 
-        let mut order = account
-            .new_order(&new_order)
-            .await
-            .map_err(|e| AcmeError::OrderCreation(e.to_string()))?;
+        let mut order = account.new_order(&new_order).await.map_err(|e| match e {
+            instant_acme::Error::Unsupported(feature) => AcmeError::Unsupported(feature),
+            other => AcmeError::OrderCreation(other.to_string()),
+        })?;
 
         // Get authorizations and extract DNS-01 challenges
         let mut authorizations = order.authorizations();
