@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_1](#26101---2026-10-10) | 0.6.44 | 2026-10-10 | Dependency maintenance: `rustls` 0.23.45 (stricter HelloRetryRequest handling), `maxminddb` 0.32 (bounded decoding of crafted GeoIP databases), `jsonschema` 0.56, rust-minor batch (12 updates) |
 | [26.09_6](#26096---2026-09-15) | 0.6.43 | 2026-09-15 | **Pingora 0.9.0**: request-target and authority hardening, hop-by-hop request headers stripped before the upstream, no HTTP/1 upstream reuse after an incomplete response; gRPC-Go advisory in the conformance suite; dependency maintenance |
 | [26.09_5](#26095---2026-09-04) | 0.6.42 | 2026-09-04 | **`zentinel bundle install` failed for every non-root user**, so no agent could be installed by following the documented instructions |
 | [26.09_4](#26094---2026-09-03) | 0.6.41 | 2026-09-03 | **An agent the proxy could not reach at startup was lost until the proxy restarted**, silently — including any agent that restarts; multiplexed MCP tool calls are now proxied rather than originated, so they use the connection pool and retry policy |
@@ -84,6 +85,41 @@ for details.
 ## [Unreleased]
 
 _Nothing yet._
+
+---
+
+## [26.10_1] - 2026-10-10
+
+**Crate version:** 0.6.44
+
+Dependency updates only. Nothing in this release changes how Zentinel routes,
+inspects or blocks traffic, and no configuration change is needed.
+
+### Security
+- **`rustls` 0.23.44 → 0.23.45.** Stricter handshake handling after a
+  HelloRetryRequest: a second ClientHello that changes the cipher suite or drops
+  `pre_shared_key` is rejected, and the server no longer negotiates TLS 1.2
+  after an HRR. Private key DER is zeroized in the providers. Also
+  `tokio-rustls` 0.26.6 and `hyper-rustls` 0.27.10. (#490)
+- **`maxminddb` 0.30.3 → 0.32.0** for the GeoIP filter. 0.31 bounds the work
+  done when decoding records and metadata, so a crafted database can no longer
+  cause excessive CPU and memory use by repeatedly referencing shared data;
+  lookups that exceed the limits return an error instead. The database is
+  operator-supplied, so this only matters if its source is not fully trusted.
+  (#487)
+- **`xxhash-rust` 0.8.19 in the `zentinel-sim` crate**
+  ([GHSA-6g2r-675j-hx59](https://github.com/advisories/GHSA-6g2r-675j-hx59), low:
+  the xxh3 custom-secret API accepted a too-short secret in release builds).
+  `crates/sim` keeps its own lockfile outside the workspace, so the workspace
+  bump did not reach it. Closes Dependabot alert #66. (#495)
+
+### Changed
+- **`jsonschema` 0.53 → 0.56** in the config and proxy crates; no code changes
+  were needed. (#486)
+- **rust-minor group (12 updates):** `thiserror` 2.0.21, `clap` 4.6.7,
+  `rand` 0.10.3, `tiktoken-rs` 0.12.1, `redis` 1.7.1, `xxhash-rust` 0.8.19,
+  `hyper-util` 0.1.21, `smallvec` 1.16.2, `tokio-test` 0.4.6, plus the rustls
+  crates above. (#490) `xxhash-rust` 0.8.19 in the browser playground. (#493)
 
 ---
 
