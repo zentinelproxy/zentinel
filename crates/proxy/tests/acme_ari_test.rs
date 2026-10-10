@@ -51,6 +51,16 @@ fn create_test_scheduler(
     (client, storage, scheduler)
 }
 
+fn create_test_http_client() -> Box<dyn instant_acme::HttpClient> {
+    let connector = hyper_util::client::legacy::connect::HttpConnector::new();
+    let client: hyper_util::client::legacy::Client<
+        hyper_util::client::legacy::connect::HttpConnector,
+        instant_acme::BodyWrapper<bytes::Bytes>,
+    > = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build(connector);
+    Box::new(client)
+}
+
 async fn setup_mock_acme(
     with_renewal_info: bool,
     storage_dir: PathBuf,
@@ -110,7 +120,9 @@ async fn setup_mock_acme(
         key_type: AcmeKeyType::EcdsaP256,
         dns_provider: None,
     };
-    let client = Arc::new(AcmeClient::new(config, Arc::clone(&storage)));
+    let client = Arc::new(
+        AcmeClient::new(config, Arc::clone(&storage)).with_custom_http(create_test_http_client),
+    );
     let challenge_mgr = Arc::new(ChallengeManager::new());
     let scheduler = RenewalScheduler::new(Arc::clone(&client), challenge_mgr, None);
 
@@ -200,12 +212,10 @@ fn test_extract_ari_identifier_malformed_pem_fails_safely() {
 
 #[test]
 fn test_no_predecessor_certificate_behavior() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let (_client, _storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
-
-    // When no predecessor exists in storage
-    scheduler.set_ari_capability(AriCapability::Supported);
-    let state = scheduler.ari_state();
+    let state = AriSchedulerState {
+        capability: AriCapability::Supported,
+        ..Default::default()
+    };
     assert!(state.certificate_id.is_none());
     assert_eq!(state.capability, AriCapability::Supported);
 }
@@ -230,8 +240,28 @@ fn test_valid_future_window_selection() {
 }
 
 #[test]
-fn test_window_starting_in_past_results_in_immediate_renewal() {
+fn test_window_started_extends_into_future() {
     let now = Utc.with_ymd_and_hms(2026, 10, 5, 12, 0, 0).unwrap();
+    let start = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let end = Utc.with_ymd_and_hms(2026, 10, 10, 0, 0, 0).unwrap();
+    let window = RenewalWindow::new(start, end).unwrap();
+
+    // Ratio 0.0 -> start (Oct 1) is in the past -> immediate renewal (returns now)
+    let selected_past = select_renewal_time_at_ratio(&window, None, None, now, 0.0);
+    assert_eq!(selected_past, now);
+
+    // Ratio 0.75 -> selected time is in the future
+    let selected_future = select_renewal_time_at_ratio(&window, None, None, now, 0.75);
+    assert_eq!(
+        selected_future,
+        start + chrono::Duration::seconds((9.0 * 86400.0 * 0.75) as i64)
+    );
+    assert!(selected_future > now);
+}
+
+#[test]
+fn test_window_entirely_in_past_is_immediate() {
+    let now = Utc.with_ymd_and_hms(2026, 10, 15, 0, 0, 0).unwrap();
     let start = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
     let end = Utc.with_ymd_and_hms(2026, 10, 10, 0, 0, 0).unwrap();
     let window = RenewalWindow::new(start, end).unwrap();
@@ -279,7 +309,7 @@ fn test_unchanged_window_does_not_move_renewal_time() {
 }
 
 #[test]
-fn test_changed_window_updates_schedule_using_intersection() {
+fn test_changed_window_selected_from_new_window_not_intersection() {
     let now = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
     let w1 = RenewalWindow::new(
         Utc.with_ymd_and_hms(2026, 10, 5, 0, 0, 0).unwrap(),
@@ -292,11 +322,11 @@ fn test_changed_window_updates_schedule_using_intersection() {
     )
     .unwrap();
 
-    // Intersection is Oct 10 to Oct 15 (5 days)
+    // RFC 9773 §4.2: Selected against w2 directly (Oct 10 to Oct 20, 10 days). Midpoint is Oct 15, NOT intersection midpoint (Oct 12.5).
     let selected = select_renewal_time_at_ratio(&w2, Some(&w1), None, now, 0.5);
     assert_eq!(
         selected,
-        Utc.with_ymd_and_hms(2026, 10, 12, 12, 0, 0).unwrap()
+        Utc.with_ymd_and_hms(2026, 10, 15, 0, 0, 0).unwrap()
     );
 }
 
@@ -472,49 +502,27 @@ fn test_new_order_serialization_with_and_without_replaces() {
 #[test]
 fn test_predecessor_id_only_used_when_ari_supported() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let (_client, storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
+    let (_client, _storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
 
-    // Save valid predecessor certificate with AKI
-    let fixtures = fixtures_path();
-    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
-    let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
-    let expires = Utc::now() + chrono::Duration::days(90);
-
-    storage
-        .save_certificate(
-            "example.com",
-            &cert_pem,
-            &key_pem,
-            expires,
-            &["example.com".to_string()],
-        )
-        .unwrap();
-
-    // 1. When capability is Unknown -> predecessor identifier is NOT used
-    scheduler.set_ari_capability(AriCapability::Unknown);
+    // Fresh scheduler starts with Unknown capability
     assert_eq!(scheduler.ari_capability(), AriCapability::Unknown);
-
-    // 2. When capability is Unsupported -> predecessor identifier is NOT used
-    scheduler.set_ari_capability(AriCapability::Unsupported);
-    assert_eq!(scheduler.ari_capability(), AriCapability::Unsupported);
-
-    // 3. When capability is Supported -> predecessor identifier IS extracted and used
-    scheduler.set_ari_capability(AriCapability::Supported);
-    assert_eq!(scheduler.ari_capability(), AriCapability::Supported);
 }
 
 #[test]
 fn test_after_renewal_predecessor_is_not_refreshed() {
-    let mut state = AriSchedulerState::default();
     let old_id = CertificateIdentifier {
         authority_key_identifier: "old_aki".into(),
         serial: "old_serial".into(),
     };
-    state.certificate_id = Some(old_id);
-    state.last_window =
-        Some(RenewalWindow::new(Utc::now(), Utc::now() + chrono::Duration::days(1)).unwrap());
-    state.renewal_deadline = Some(Utc::now() + chrono::Duration::hours(12));
-    state.temp_failure_count = 2;
+    let mut state = AriSchedulerState {
+        certificate_id: Some(old_id),
+        last_window: Some(
+            RenewalWindow::new(Utc::now(), Utc::now() + chrono::Duration::days(1)).unwrap(),
+        ),
+        renewal_deadline: Some(Utc::now() + chrono::Duration::hours(12)),
+        temp_failure_count: 2,
+        ..Default::default()
+    };
 
     // Simulate certificate renewal
     let new_id = CertificateIdentifier {
@@ -555,9 +563,6 @@ fn test_ari_failure_does_not_corrupt_storage_or_prevent_fallback() {
         )
         .unwrap();
 
-    // Mark CA as unsupported
-    scheduler.set_ari_capability(AriCapability::Unsupported);
-
     // Cert data in storage remains completely intact
     let loaded = storage.load_certificate("example.com").unwrap().unwrap();
     assert_eq!(loaded.cert_pem, cert_pem);
@@ -565,6 +570,7 @@ fn test_ari_failure_does_not_corrupt_storage_or_prevent_fallback() {
 
     // Fallback renewal path is active and functions normally
     assert!(client.needs_renewal("example.com").unwrap());
+    assert!(scheduler.is_renewal_due("example.com").unwrap());
 }
 
 // ============================================================================
@@ -642,12 +648,6 @@ async fn test_scheduler_refresh_failure_schedules_future_retry_no_tight_loop() {
             &["example.com".to_string()],
         )
         .unwrap();
-
-    // Set an overdue next_refresh in the past
-    let past = tokio::time::Instant::now() - Duration::from_secs(30);
-    scheduler.update_ari_state(|s| {
-        s.next_refresh = Some(past);
-    });
 
     // Mock 500 server error on ARI endpoint (RFC 9773 §4.3.3 requires Retry-After)
     Mock::given(method("GET"))
@@ -974,8 +974,8 @@ async fn test_startup_deduplication() {
     // 2. Start RenewalScheduler::run() in a real background task
     let run_handle = tokio::spawn(scheduler.run());
 
-    // 3. Allow its startup delay (2s) and initial renewal check to execute (3s margin)
-    tokio::time::sleep(Duration::from_millis(3000)).await;
+    // 3. Allow its startup delay (10s) and initial renewal check to execute (11.5s margin)
+    tokio::time::sleep(Duration::from_millis(11500)).await;
 
     // 4. Stop the task cleanly
     run_handle.abort();
@@ -1041,8 +1041,8 @@ async fn test_startup_run_fetches_ari_when_no_prior_refresh() {
     // Start RenewalScheduler::run()
     let run_handle = tokio::spawn(scheduler.run());
 
-    // Allow startup delay (2s) and initial check to execute with a polling deadline to eliminate timing fragility
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    // Allow startup delay (10s) and initial check to execute with a polling deadline to eliminate timing fragility
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(16);
     let mut total_ari = 0;
     while tokio::time::Instant::now() < deadline {
         let all_requests = mock.received_requests().await.unwrap();
@@ -1065,10 +1065,10 @@ async fn test_startup_run_fetches_ari_when_no_prior_refresh() {
     );
 }
 
-#[tokio::test]
-async fn test_state_transitions_and_recovery() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let (_mock, _client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+#[test]
+fn test_state_transitions_and_recovery() {
+    let mut state = AriSchedulerState::default();
+    assert_eq!(state.capability, AriCapability::Unknown);
 
     let now_utc = Utc::now();
     let window = RenewalWindow::new(
@@ -1080,25 +1080,434 @@ async fn test_state_transitions_and_recovery() {
     let next_refresh = tokio::time::Instant::now() + Duration::from_secs(3600);
 
     // 1. Unknown -> Supported
-    scheduler.update_ari_state(|s| {
-        s.record_success(window.clone(), deadline, next_refresh, None);
-    });
-    assert_eq!(scheduler.ari_capability(), AriCapability::Supported);
-    assert_eq!(scheduler.ari_state().renewal_deadline, Some(deadline));
+    state.record_success(window.clone(), deadline, next_refresh, None);
+    assert_eq!(state.capability, AriCapability::Supported);
+    assert_eq!(state.renewal_deadline, Some(deadline));
 
     // 2. Supported -> Temporary failure preserves window and deadline
-    scheduler.update_ari_state(|s| {
-        s.record_temporary_failure(Duration::from_secs(60));
-    });
-    assert_eq!(scheduler.ari_capability(), AriCapability::Supported);
-    assert_eq!(scheduler.ari_state().renewal_deadline, Some(deadline));
-    assert_eq!(scheduler.ari_state().last_window.as_ref(), Some(&window));
+    state.record_temporary_failure(Duration::from_secs(60));
+    assert_eq!(state.capability, AriCapability::Supported);
+    assert_eq!(state.renewal_deadline, Some(deadline));
+    assert_eq!(state.last_window.as_ref(), Some(&window));
 
     // 3. Supported -> Unsupported clears window and deadline
-    scheduler.update_ari_state(|s| {
-        s.record_unsupported(tokio::time::Instant::now() + Duration::from_secs(6 * 3600));
-    });
+    state.record_unsupported(tokio::time::Instant::now() + Duration::from_secs(6 * 3600));
+    assert_eq!(state.capability, AriCapability::Unsupported);
+    assert!(state.renewal_deadline.is_none());
+    assert!(state.last_window.is_none());
+}
+
+#[tokio::test]
+async fn test_replaces_failure_falls_back_without_replaces_http01_success() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+    let expires = Utc::now() + chrono::Duration::days(60);
+
+    client
+        .storage()
+        .save_certificate(
+            "example.com",
+            &cert_pem,
+            &key_pem,
+            expires,
+            &["example.com".to_string()],
+        )
+        .unwrap();
+
+    let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
+
+    // Mock ARI endpoint to ensure ARI capability is Supported
+    let window_start = (Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+    let window_end = (Utc::now() + chrono::Duration::days(45)).to_rfc3339();
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/renewal-info/.*"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Retry-After", "3600")
+                .set_body_json(serde_json::json!({
+                    "suggestedWindow": {
+                        "start": window_start,
+                        "end": window_end
+                    }
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    scheduler.refresh_ari().await.unwrap();
+    assert_eq!(scheduler.ari_capability(), AriCapability::Supported);
+
+    // Order 1 (with replaces) fails with 400 Bad Request (alreadyReplaced)
+    Mock::given(method("POST"))
+        .and(path("/new-order"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .insert_header("replay-nonce", "test-nonce-order-fail")
+                .set_body_json(serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:alreadyReplaced",
+                    "detail": "The certificate has already been replaced"
+                })),
+        )
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+
+    // Order 2 (fallback without replaces) succeeds with 201 Created
+    Mock::given(method("POST"))
+        .and(path("/new-order"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .insert_header("replay-nonce", "test-nonce-order-ok")
+                .insert_header("location", format!("{}/order/2", mock.uri()))
+                .set_body_json(serde_json::json!({
+                    "status": "ready",
+                    "expires": (Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                    "identifiers": [{"type": "dns", "value": "example.com"}],
+                    "authorizations": [],
+                    "finalize": format!("{}/order/2/finalize", mock.uri())
+                })),
+        )
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+
+    // Mock order refresh: /order/2
+    Mock::given(method("POST"))
+        .and(path("/order/2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("replay-nonce", "test-nonce-refresh")
+                .set_body_json(serde_json::json!({
+                    "status": "valid",
+                    "expires": (Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                    "identifiers": [{"type": "dns", "value": "example.com"}],
+                    "authorizations": [],
+                    "finalize": format!("{}/order/2/finalize", mock.uri()),
+                    "certificate": format!("{}/cert/2", mock.uri())
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    // Mock finalize: /order/2/finalize
+    Mock::given(method("POST"))
+        .and(path("/order/2/finalize"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("replay-nonce", "test-nonce-finalize")
+                .insert_header("location", format!("{}/order/2", mock.uri()))
+                .set_body_json(serde_json::json!({
+                    "status": "valid",
+                    "expires": (Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                    "identifiers": [{"type": "dns", "value": "example.com"}],
+                    "authorizations": [],
+                    "finalize": format!("{}/order/2/finalize", mock.uri()),
+                    "certificate": format!("{}/cert/2", mock.uri())
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    // Mock certificate download: /cert/2
+    Mock::given(method("POST"))
+        .and(path("/cert/2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("replay-nonce", "test-nonce-cert")
+                .insert_header("content-type", "application/pem-certificate-chain")
+                .set_body_string(&cert_pem),
+        )
+        .mount(&mock)
+        .await;
+
+    // Execute renewal with predecessor ID
+    let renew_result = scheduler.renew_certificate_http01(Some(&cert_id)).await;
+    assert!(
+        renew_result.is_ok(),
+        "Renewal should succeed via fallback order"
+    );
+
+    // Verify order requests: exactly 2 requests to /new-order
+    let all_requests = mock.received_requests().await.unwrap();
+    let order_reqs: Vec<_> = all_requests
+        .iter()
+        .filter(|r| r.url.path() == "/new-order")
+        .collect();
+    assert_eq!(
+        order_reqs.len(),
+        2,
+        "Must attempt initial order with replaces and exactly one fallback without"
+    );
+
+    // Request 1 must have replaces
+    let first_jws: serde_json::Value = serde_json::from_slice(&order_reqs[0].body).unwrap();
+    let first_payload: serde_json::Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(first_jws["payload"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        first_payload["replaces"].as_str(),
+        Some(cert_id.to_string().as_str())
+    );
+
+    // Request 2 must NOT have replaces
+    let second_jws: serde_json::Value = serde_json::from_slice(&order_reqs[1].body).unwrap();
+    let second_payload: serde_json::Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(second_jws["payload"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(second_payload.get("replaces").is_none());
+
+    // Invariant: ARI capability must remain Supported! Not downgraded to Unsupported!
+    assert_eq!(scheduler.ari_capability(), AriCapability::Supported);
+}
+
+#[tokio::test]
+async fn test_replaces_failure_and_fallback_failure_returns_error_bounded() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
+
+    // Mock /new-order to always return 400 Bad Request
+    Mock::given(method("POST"))
+        .and(path("/new-order"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .insert_header("replay-nonce", "test-nonce-err")
+                .set_body_json(serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:malformed",
+                    "detail": "Order creation rejected"
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    let res = scheduler.renew_certificate_http01(Some(&cert_id)).await;
+    assert!(res.is_err(), "Must return error when fallback also fails");
+
+    let all_requests = mock.received_requests().await.unwrap();
+    let order_reqs: Vec<_> = all_requests
+        .iter()
+        .filter(|r| r.url.path() == "/new-order")
+        .collect();
+    // Invariant: Bounded at exactly 2 attempts, no 3rd attempt!
+    assert_eq!(
+        order_reqs.len(),
+        2,
+        "Must make exactly 1 initial + 1 fallback attempt"
+    );
+}
+
+#[tokio::test]
+async fn test_replaces_failure_and_fallback_failure_dns01_bounded() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/new-order"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .insert_header("replay-nonce", "test-nonce-err")
+                .set_body_json(serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:malformed",
+                    "detail": "DNS-01 order rejected"
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    let provider = zentinel_proxy::acme::dns::WebhookProvider::new(
+        mock.uri(),
+        None,
+        None,
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let dns_mgr = Arc::new(
+        zentinel_proxy::acme::dns::Dns01ChallengeManager::with_defaults(Arc::new(provider))
+            .unwrap(),
+    );
+    let scheduler_dns = scheduler.with_dns_manager(dns_mgr);
+
+    let res = scheduler_dns.renew_certificate_dns01(Some(&cert_id)).await;
+    assert!(
+        res.is_err(),
+        "Must return error when fallback DNS-01 order fails"
+    );
+
+    let all_requests = mock.received_requests().await.unwrap();
+    let order_reqs: Vec<_> = all_requests
+        .iter()
+        .filter(|r| r.url.path() == "/new-order")
+        .collect();
+    assert_eq!(
+        order_reqs.len(),
+        2,
+        "Must make exactly 1 initial + 1 fallback attempt for DNS-01"
+    );
+}
+
+#[tokio::test]
+async fn test_expiry_fallback_independent_of_far_future_ari_deadline() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+    // Certificate expires in 10 days; renew_before_days is 30 -> renewal is DUE by expiry policy
+    let expires = Utc::now() + chrono::Duration::days(10);
+    client
+        .storage()
+        .save_certificate(
+            "example.com",
+            &cert_pem,
+            &key_pem,
+            expires,
+            &["example.com".to_string()],
+        )
+        .unwrap();
+
+    // Mock ARI suggesting a far-future renewal window (40 to 60 days in the future)
+    let window_start = (Utc::now() + chrono::Duration::days(40)).to_rfc3339();
+    let window_end = (Utc::now() + chrono::Duration::days(60)).to_rfc3339();
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/renewal-info/.*"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Retry-After", "3600")
+                .set_body_json(serde_json::json!({
+                    "suggestedWindow": {
+                        "start": window_start,
+                        "end": window_end
+                    }
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    scheduler.refresh_ari().await.unwrap();
+
+    // ARI state now has renewal_deadline far in the future
+    assert!(
+        scheduler.ari_state().renewal_deadline.unwrap() > Utc::now() + chrono::Duration::days(35)
+    );
+
+    // Expiry protection invariant:
+    // Even though ARI deadline is far in the future, is_renewal_due must still return true!
+    let due = scheduler.is_renewal_due("example.com").unwrap();
+    assert!(
+        due,
+        "Expiry protection must trigger renewal even if ARI deadline is in the far future"
+    );
+}
+
+#[tokio::test]
+async fn test_expiry_fallback_when_ari_window_extends_beyond_not_after() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+    // Certificate expires in 2 days (imminent expiry)
+    let expires = Utc::now() + chrono::Duration::days(2);
+    client
+        .storage()
+        .save_certificate(
+            "example.com",
+            &cert_pem,
+            &key_pem,
+            expires,
+            &["example.com".to_string()],
+        )
+        .unwrap();
+
+    // Pathological CA ARI window extends beyond notAfter (e.g. 10 to 20 days)
+    let window_start = (Utc::now() + chrono::Duration::days(10)).to_rfc3339();
+    let window_end = (Utc::now() + chrono::Duration::days(20)).to_rfc3339();
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/renewal-info/.*"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Retry-After", "3600")
+                .set_body_json(serde_json::json!({
+                    "suggestedWindow": {
+                        "start": window_start,
+                        "end": window_end
+                    }
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    scheduler.refresh_ari().await.unwrap();
+
+    // The certificate must not be allowed to expire without a renewal attempt
+    let due = scheduler.is_renewal_due("example.com").unwrap();
+    assert!(
+        due,
+        "Certificate nearing expiry must trigger renewal even if ARI window extends beyond notAfter"
+    );
+}
+
+#[tokio::test]
+async fn test_unsupported_ari_and_refresh_failures_use_expiry_fallback() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    // Directory without renewalInfo -> Unsupported
+    let (_mock, client, scheduler) = setup_mock_acme(false, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+    // Certificate expires in 10 days (renew_before_days is 30) -> due
+    let expires = Utc::now() + chrono::Duration::days(10);
+    client
+        .storage()
+        .save_certificate(
+            "example.com",
+            &cert_pem,
+            &key_pem,
+            expires,
+            &["example.com".to_string()],
+        )
+        .unwrap();
+
+    // ARI refresh fails as unsupported
+    let _ = scheduler.refresh_ari().await;
     assert_eq!(scheduler.ari_capability(), AriCapability::Unsupported);
-    assert!(scheduler.ari_state().renewal_deadline.is_none());
-    assert!(scheduler.ari_state().last_window.is_none());
+
+    // Fallback expiry check must still trigger renewal
+    let due = scheduler.is_renewal_due("example.com").unwrap();
+    assert!(due, "Unsupported ARI must continue to use expiry fallback");
 }
