@@ -293,7 +293,7 @@ impl AcmeClient {
 
         while let Some(result) = authorizations.next().await {
             let mut authz = result.map_err(|e| {
-                AcmeError::OrderCreation(format!("Failed to get authorization: {}", e))
+                AcmeError::Authorization(format!("Failed to get authorization: {}", e))
             })?;
 
             let identifier = authz.identifier();
@@ -391,7 +391,7 @@ impl AcmeClient {
 
         while let Some(result) = authorizations.next().await {
             let mut authz = result.map_err(|e| {
-                AcmeError::OrderCreation(format!("Failed to get authorization: {}", e))
+                AcmeError::Authorization(format!("Failed to get authorization: {}", e))
             })?;
 
             let identifier = authz.identifier();

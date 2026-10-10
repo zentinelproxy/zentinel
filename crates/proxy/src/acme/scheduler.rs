@@ -641,7 +641,9 @@ impl RenewalScheduler {
         // Create order and get challenges (with replaces if predecessor_id is present)
         let (mut order, challenges) = match self.client.create_order(predecessor_id).await {
             Ok(res) => res,
-            Err(initial_err) if predecessor_id.is_some() => {
+            Err(initial_err)
+                if predecessor_id.is_some() && initial_err.is_order_creation_error() =>
+            {
                 warn!(
                     error = %initial_err,
                     predecessor_id = ?predecessor_id.map(|p| p.to_string()),
@@ -733,7 +735,9 @@ impl RenewalScheduler {
         let (mut order, mut challenges) = match self.client.create_order_dns01(predecessor_id).await
         {
             Ok(res) => res,
-            Err(initial_err) if predecessor_id.is_some() => {
+            Err(initial_err)
+                if predecessor_id.is_some() && initial_err.is_order_creation_error() =>
+            {
                 warn!(
                     error = %initial_err,
                     predecessor_id = ?predecessor_id.map(|p| p.to_string()),

@@ -29,6 +29,10 @@ pub enum AcmeError {
     #[error("Failed to create certificate order: {0}")]
     OrderCreation(String),
 
+    /// Failed to retrieve or process order authorizations
+    #[error("Failed to process order authorization: {0}")]
+    Authorization(String),
+
     /// Challenge validation failed
     #[error("Challenge validation failed for domain '{domain}': {message}")]
     ChallengeValidation { domain: String, message: String },
@@ -84,6 +88,18 @@ pub enum AcmeError {
     /// ACME feature unsupported (e.g. replaces or renewalInfo)
     #[error("ACME feature unsupported: {0}")]
     Unsupported(&'static str),
+}
+
+impl AcmeError {
+    /// Check whether this error represents a failure during the ACME order-creation step
+    /// (the `newOrder` request itself), as opposed to subsequent processing of an
+    /// already-created order (e.g. authorization retrieval or challenge extraction).
+    pub fn is_order_creation_error(&self) -> bool {
+        matches!(
+            self,
+            AcmeError::OrderCreation(_) | AcmeError::Unsupported(_)
+        )
+    }
 }
 
 /// Errors specific to certificate storage operations
@@ -243,5 +259,21 @@ mod tests {
             retry_after_secs: 60,
         });
         assert!(!is_retryable_acme_error(&e));
+    }
+
+    #[test]
+    fn test_is_order_creation_error() {
+        assert!(AcmeError::OrderCreation("CA rejected order".to_string()).is_order_creation_error());
+        assert!(AcmeError::Unsupported("replaces").is_order_creation_error());
+        assert!(!AcmeError::Authorization("authz failed".to_string()).is_order_creation_error());
+        assert!(!AcmeError::NoHttp01Challenge("example.com".to_string()).is_order_creation_error());
+        assert!(!AcmeError::NoDns01Challenge("example.com".to_string()).is_order_creation_error());
+        assert!(!AcmeError::ChallengeValidation {
+            domain: "example.com".to_string(),
+            message: "invalid".to_string(),
+        }
+        .is_order_creation_error());
+        assert!(!AcmeError::Finalization("csr rejected".to_string()).is_order_creation_error());
+        assert!(!AcmeError::NoAccount.is_order_creation_error());
     }
 }

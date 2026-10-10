@@ -1511,3 +1511,320 @@ async fn test_unsupported_ari_and_refresh_failures_use_expiry_fallback() {
     let due = scheduler.is_renewal_due("example.com").unwrap();
     assert!(due, "Unsupported ARI must continue to use expiry fallback");
 }
+
+#[tokio::test]
+async fn test_replaces_order_succeeds_but_authorization_failure_does_not_trigger_fallback_http01() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
+
+    // 1. Initial order creation succeeds with replaces!
+    Mock::given(method("POST"))
+        .and(path("/new-order"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .insert_header("replay-nonce", "test-nonce-order-ok")
+                .insert_header("location", format!("{}/order/1", mock.uri()))
+                .set_body_json(serde_json::json!({
+                    "status": "pending",
+                    "expires": (Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                    "identifiers": [{"type": "dns", "value": "example.com"}],
+                    "authorizations": [format!("{}/authz/1", mock.uri())],
+                    "finalize": format!("{}/order/1/finalize", mock.uri()),
+                    "replaces": cert_id.to_string()
+                })),
+        )
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+
+    // 2. Authorization retrieval fails with a deterministic, non-transient error (404 Problem JSON)
+    Mock::given(method("POST"))
+        .and(path("/authz/1"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .insert_header("replay-nonce", "test-nonce-authz-fail")
+                .set_body_json(serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:malformed",
+                    "status": 404,
+                    "detail": "Authorization object not found"
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    let res = scheduler.renew_certificate_http01(Some(&cert_id)).await;
+    assert!(
+        matches!(res, Err(zentinel_proxy::acme::AcmeError::Authorization(_))),
+        "Must return Authorization error when authorization retrieval fails"
+    );
+
+    let all_requests = mock.received_requests().await.unwrap();
+    let order_reqs: Vec<_> = all_requests
+        .iter()
+        .filter(|r| r.url.path() == "/new-order")
+        .collect();
+
+    // Invariant: The CA successfully created the predecessor-linked order.
+    // The subsequent authorization retrieval failed; the scheduler MUST NOT issue
+    // an additional order without replaces!
+    assert_eq!(
+        order_reqs.len(),
+        1,
+        "Must NOT issue a duplicate/fallback order when order creation succeeded but authorization retrieval failed"
+    );
+
+    // Verify the single order created contained replaces
+    let jws: serde_json::Value = serde_json::from_slice(&order_reqs[0].body).unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(jws["payload"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        payload["replaces"].as_str(),
+        Some(cert_id.to_string().as_str()),
+        "The single order issued must have contained replaces"
+    );
+}
+
+#[tokio::test]
+async fn test_replaces_order_succeeds_but_challenge_extraction_failure_does_not_trigger_fallback_http01(
+) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
+
+    // 1. Initial order creation succeeds with replaces!
+    Mock::given(method("POST"))
+        .and(path("/new-order"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .insert_header("replay-nonce", "test-nonce-order-ok")
+                .insert_header("location", format!("{}/order/1", mock.uri()))
+                .set_body_json(serde_json::json!({
+                    "status": "pending",
+                    "expires": (Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                    "identifiers": [{"type": "dns", "value": "example.com"}],
+                    "authorizations": [format!("{}/authz/1", mock.uri())],
+                    "finalize": format!("{}/order/1/finalize", mock.uri()),
+                    "replaces": cert_id.to_string()
+                })),
+        )
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+
+    // 2. Authorization retrieval succeeds, but contains NO HTTP-01 challenge (deterministic failure)
+    Mock::given(method("POST"))
+        .and(path("/authz/1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("replay-nonce", "test-nonce-authz-ok")
+                .set_body_json(serde_json::json!({
+                    "status": "pending",
+                    "identifier": {"type": "dns", "value": "example.com"},
+                    "challenges": [
+                        {
+                            "type": "dns-01",
+                            "status": "pending",
+                            "url": format!("{}/ch/dns", mock.uri()),
+                            "token": "test-dns-token"
+                        }
+                    ]
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    let res = scheduler.renew_certificate_http01(Some(&cert_id)).await;
+    assert!(matches!(
+        res,
+        Err(zentinel_proxy::acme::AcmeError::NoHttp01Challenge(_))
+    ));
+
+    let all_requests = mock.received_requests().await.unwrap();
+    let order_reqs: Vec<_> = all_requests
+        .iter()
+        .filter(|r| r.url.path() == "/new-order")
+        .collect();
+
+    assert_eq!(
+        order_reqs.len(),
+        1,
+        "Must NOT issue a duplicate order when challenge extraction fails"
+    );
+}
+
+#[tokio::test]
+async fn test_replaces_order_succeeds_but_authorization_failure_does_not_trigger_fallback_dns01() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/new-order"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .insert_header("replay-nonce", "test-nonce-order-dns-ok")
+                .insert_header("location", format!("{}/order/dns1", mock.uri()))
+                .set_body_json(serde_json::json!({
+                    "status": "pending",
+                    "expires": (Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                    "identifiers": [{"type": "dns", "value": "example.com"}],
+                    "authorizations": [format!("{}/authz/dns1", mock.uri())],
+                    "finalize": format!("{}/order/dns1/finalize", mock.uri()),
+                    "replaces": cert_id.to_string()
+                })),
+        )
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+
+    // Authorization fails with 404
+    Mock::given(method("POST"))
+        .and(path("/authz/dns1"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .insert_header("replay-nonce", "test-nonce-authz-dns-fail")
+                .set_body_json(serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:malformed",
+                    "status": 404,
+                    "detail": "DNS authorization object not found"
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    let provider = zentinel_proxy::acme::dns::WebhookProvider::new(
+        mock.uri(),
+        None,
+        None,
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let dns_mgr = Arc::new(
+        zentinel_proxy::acme::dns::Dns01ChallengeManager::with_defaults(Arc::new(provider))
+            .unwrap(),
+    );
+    let scheduler_dns = scheduler.with_dns_manager(dns_mgr);
+
+    let res = scheduler_dns.renew_certificate_dns01(Some(&cert_id)).await;
+    assert!(
+        matches!(res, Err(zentinel_proxy::acme::AcmeError::Authorization(_))),
+        "Must return Authorization error when DNS-01 authorization retrieval fails"
+    );
+
+    let all_requests = mock.received_requests().await.unwrap();
+    let order_reqs: Vec<_> = all_requests
+        .iter()
+        .filter(|r| r.url.path() == "/new-order")
+        .collect();
+
+    assert_eq!(
+        order_reqs.len(),
+        1,
+        "Must NOT issue a duplicate/fallback DNS-01 order when authorization retrieval fails"
+    );
+}
+
+#[tokio::test]
+async fn test_replaces_order_succeeds_but_challenge_extraction_failure_does_not_trigger_fallback_dns01(
+) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (mock, client, scheduler) = setup_mock_acme(true, temp_dir.path().to_path_buf()).await;
+
+    client.init_account().await.unwrap();
+
+    let fixtures = fixtures_path();
+    let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+    let cert_id = client.extract_certificate_identifier(&cert_pem).unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/new-order"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .insert_header("replay-nonce", "test-nonce-order-dns-ok")
+                .insert_header("location", format!("{}/order/dns1", mock.uri()))
+                .set_body_json(serde_json::json!({
+                    "status": "pending",
+                    "expires": (Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                    "identifiers": [{"type": "dns", "value": "example.com"}],
+                    "authorizations": [format!("{}/authz/dns1", mock.uri())],
+                    "finalize": format!("{}/order/dns1/finalize", mock.uri()),
+                    "replaces": cert_id.to_string()
+                })),
+        )
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+
+    // Authorization succeeds, but has NO DNS-01 challenge
+    Mock::given(method("POST"))
+        .and(path("/authz/dns1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("replay-nonce", "test-nonce-authz-dns-ok")
+                .set_body_json(serde_json::json!({
+                    "status": "pending",
+                    "identifier": {"type": "dns", "value": "example.com"},
+                    "challenges": [
+                        {
+                            "type": "http-01",
+                            "status": "pending",
+                            "url": format!("{}/ch/http", mock.uri()),
+                            "token": "test-http-token"
+                        }
+                    ]
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    let provider = zentinel_proxy::acme::dns::WebhookProvider::new(
+        mock.uri(),
+        None,
+        None,
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let dns_mgr = Arc::new(
+        zentinel_proxy::acme::dns::Dns01ChallengeManager::with_defaults(Arc::new(provider))
+            .unwrap(),
+    );
+    let scheduler_dns = scheduler.with_dns_manager(dns_mgr);
+
+    let res = scheduler_dns.renew_certificate_dns01(Some(&cert_id)).await;
+    assert!(matches!(
+        res,
+        Err(zentinel_proxy::acme::AcmeError::NoDns01Challenge(_))
+    ));
+
+    let all_requests = mock.received_requests().await.unwrap();
+    let order_reqs: Vec<_> = all_requests
+        .iter()
+        .filter(|r| r.url.path() == "/new-order")
+        .collect();
+
+    assert_eq!(
+        order_reqs.len(),
+        1,
+        "Must NOT issue a duplicate DNS-01 order when challenge extraction fails"
+    );
+}
