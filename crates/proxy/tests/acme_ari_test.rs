@@ -8,14 +8,16 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{TimeZone, Utc};
 use instant_acme::{CertificateIdentifier, Identifier, NewOrder};
+use rand::SeedableRng;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zentinel_config::server::{AcmeChallengeType, AcmeConfig, AcmeKeyType};
 use zentinel_proxy::acme::ari::{
     calculate_retry_delay, clamp_refresh_interval, extract_certificate_identifier,
     extract_leaf_certificate_der, next_wakeup, select_renewal_time, select_renewal_time_at_ratio,
-    AriCapability, AriError, AriErrorClassification, AriSchedulerState, RenewalWindow,
-    ARI_LONG_TERM_RETRY_INTERVAL, ARI_MAX_REFRESH_INTERVAL, ARI_MIN_REFRESH_INTERVAL,
+    select_renewal_time_with_rng, AriCapability, AriError, AriErrorClassification,
+    AriSchedulerState, RenewalWindow, ARI_LONG_TERM_RETRY_INTERVAL, ARI_MAX_REFRESH_INTERVAL,
+    ARI_MIN_REFRESH_INTERVAL,
 };
 use zentinel_proxy::acme::{AcmeClient, CertificateStorage, ChallengeManager, RenewalScheduler};
 
@@ -237,6 +239,17 @@ fn test_valid_future_window_selection() {
         selected,
         start + chrono::Duration::seconds((5.0 * 86400.0 * 0.25) as i64)
     );
+
+    // Verify production randomized function selects within [start, end] in the future
+    let prod_selected = select_renewal_time(&window, None, None, now);
+    assert!(prod_selected >= start && prod_selected <= end);
+    assert!(prod_selected > now);
+
+    // Verify select_renewal_time_with_rng with seeded RNG
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let rng_selected = select_renewal_time_with_rng(&window, None, None, now, &mut rng);
+    assert!(rng_selected >= start && rng_selected <= end);
+    assert!(rng_selected > now);
 }
 
 #[test]
@@ -268,6 +281,10 @@ fn test_window_entirely_in_past_is_immediate() {
 
     let selected = select_renewal_time_at_ratio(&window, None, None, now, 0.5);
     assert_eq!(selected, now);
+
+    // Production randomized selection must also return now when entire window is in the past
+    let prod_selected = select_renewal_time(&window, None, None, now);
+    assert_eq!(prod_selected, now);
 }
 
 #[test]
@@ -306,6 +323,21 @@ fn test_unchanged_window_does_not_move_renewal_time() {
     );
 
     assert_eq!(reselected, initial_time);
+
+    // Production entry point preserves first_choice
+    let prod_reselected = select_renewal_time(&window, Some(&window), Some(initial_time), now);
+    assert_eq!(prod_reselected, initial_time);
+
+    // Seeded RNG also preserves first_choice
+    let mut rng = rand::rngs::StdRng::seed_from_u64(999);
+    let rng_reselected =
+        select_renewal_time_with_rng(&window, Some(&window), Some(initial_time), now, &mut rng);
+    assert_eq!(rng_reselected, initial_time);
+
+    // Expired previous selection becomes immediately due
+    let expired_prev = now - chrono::Duration::hours(1);
+    let expired_reselected = select_renewal_time(&window, Some(&window), Some(expired_prev), now);
+    assert_eq!(expired_reselected, now);
 }
 
 #[test]
@@ -328,6 +360,10 @@ fn test_changed_window_selected_from_new_window_not_intersection() {
         selected,
         Utc.with_ymd_and_hms(2026, 10, 15, 0, 0, 0).unwrap()
     );
+
+    // Production randomized selection selects from w2 bounds
+    let prod_selected = select_renewal_time(&w2, Some(&w1), None, now);
+    assert!(prod_selected >= w2.start && prod_selected <= w2.end);
 }
 
 #[test]
@@ -1930,7 +1966,10 @@ async fn test_past_ari_deadline_with_corrupt_storage_does_not_busy_loop() {
 
     // Allow scheduler to awaken and process iteration; it must not spin or panic
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!run_handle.is_finished(), "Scheduler should remain sleeping for MIN_CHECK_INTERVAL");
+    assert!(
+        !run_handle.is_finished(),
+        "Scheduler should remain sleeping for MIN_CHECK_INTERVAL"
+    );
 
     run_handle.abort();
     let _ = run_handle.await;
@@ -1943,4 +1982,3 @@ async fn test_past_ari_deadline_with_corrupt_storage_does_not_busy_loop() {
         .collect();
     assert_eq!(order_reqs.len(), 0);
 }
-

@@ -1114,8 +1114,7 @@ mod tests {
             )
             .unwrap();
 
-        let (_client, _storage, scheduler) =
-            create_test_scheduler(temp_dir.path().to_path_buf());
+        let (_client, _storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
         scheduler.ari_state.lock().capability = AriCapability::Supported;
         scheduler.ari_state.lock().renewal_deadline =
             Some(Utc::now() - chrono::Duration::minutes(5));
@@ -1132,7 +1131,10 @@ mod tests {
             "Certificate younger than 24 hours must defer ARI-triggered renewal"
         );
         let effective = scheduler.effective_renewal_deadline("example.com").unwrap();
-        assert!(effective > Utc::now(), "Effective renewal deadline must be deferred into future");
+        assert!(
+            effective > Utc::now(),
+            "Effective renewal deadline must be deferred into future"
+        );
 
         // 2. Certificate issued 25 hours ago (> 24 hours cooldown)
         meta.issued = Utc::now() - chrono::Duration::hours(25);
@@ -1143,7 +1145,10 @@ mod tests {
             "Certificate older than 24 hours with overdue ARI deadline must trigger renewal"
         );
         let effective_past = scheduler.effective_renewal_deadline("example.com").unwrap();
-        assert!(effective_past <= Utc::now(), "Effective renewal deadline is no longer deferred");
+        assert!(
+            effective_past <= Utc::now(),
+            "Effective renewal deadline is no longer deferred"
+        );
     }
 
     #[test]
@@ -1166,8 +1171,7 @@ mod tests {
             )
             .unwrap();
 
-        let (_client, _storage, scheduler) =
-            create_test_scheduler(temp_dir.path().to_path_buf());
+        let (_client, _storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
         scheduler.ari_state.lock().capability = AriCapability::Supported;
         scheduler.ari_state.lock().renewal_deadline =
             Some(Utc::now() - chrono::Duration::minutes(5));
@@ -1205,8 +1209,7 @@ mod tests {
             )
             .unwrap();
 
-        let (_client, _storage, scheduler) =
-            create_test_scheduler(temp_dir.path().to_path_buf());
+        let (_client, _storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
 
         // Set past ARI deadline
         let past_deadline = Utc::now() - chrono::Duration::hours(2);
@@ -1253,13 +1256,11 @@ mod tests {
             )
             .unwrap();
 
-        let (_client, _storage, scheduler) =
-            create_test_scheduler(temp_dir.path().to_path_buf());
+        let (_client, _storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
 
         // Set past ARI deadline
         scheduler.ari_state.lock().capability = AriCapability::Supported;
-        scheduler.ari_state.lock().renewal_deadline =
-            Some(Utc::now() - chrono::Duration::hours(2));
+        scheduler.ari_state.lock().renewal_deadline = Some(Utc::now() - chrono::Duration::hours(2));
 
         // Corrupt the meta.json file
         let meta_file = temp_dir.path().join("domains/example.com/meta.json");

@@ -359,31 +359,13 @@ pub fn select_renewal_time_with_rng<R: rand::RngExt>(
     now: DateTime<Utc>,
     rng: &mut R,
 ) -> DateTime<Utc> {
-    // If the window has not changed and a previous selected time remains in the future, keep it stable.
-    if let (Some(prev_win), Some(prev_time)) = (previous_window, previous_renewal_time) {
-        if prev_win == window {
-            if prev_time <= now {
-                return now;
-            }
-            return prev_time;
-        }
-    }
-
-    // Select a uniform random time across the entire current suggested window.
-    let span_secs = (window.end - window.start).num_seconds();
-    if span_secs <= 0 {
-        return now;
-    }
-
-    let offset_secs = rng.random_range(0..=span_secs);
-    let selected = window.start + chrono::Duration::seconds(offset_secs);
-
-    // If the selected time has already passed, attempt renewal immediately.
-    if selected <= now {
-        now
-    } else {
-        selected
-    }
+    select_renewal_time_internal(
+        window,
+        previous_window,
+        previous_renewal_time,
+        now,
+        |span| rng.random_range(0..=span),
+    )
 }
 
 /// Deterministically selects a renewal time at fraction `ratio` in [0.0, 1.0] across the entire current suggested window.
@@ -394,6 +376,27 @@ pub fn select_renewal_time_at_ratio(
     now: DateTime<Utc>,
     ratio: f64,
 ) -> DateTime<Utc> {
+    select_renewal_time_internal(
+        window,
+        previous_window,
+        previous_renewal_time,
+        now,
+        |span| (span as f64 * ratio.clamp(0.0, 1.0)).round() as i64,
+    )
+}
+
+/// Shared internal implementation for renewal time selection across a suggested window.
+fn select_renewal_time_internal<F>(
+    window: &RenewalWindow,
+    previous_window: Option<&RenewalWindow>,
+    previous_renewal_time: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    offset_selector: F,
+) -> DateTime<Utc>
+where
+    F: FnOnce(i64) -> i64,
+{
+    // If the window has not changed and a previous selected time remains in the future, keep it stable.
     if let (Some(prev_win), Some(prev_time)) = (previous_window, previous_renewal_time) {
         if prev_win == window {
             if prev_time <= now {
@@ -403,15 +406,16 @@ pub fn select_renewal_time_at_ratio(
         }
     }
 
+    // Select across the entire current suggested window.
     let span_secs = (window.end - window.start).num_seconds();
     if span_secs <= 0 {
         return now;
     }
 
-    let clamped_ratio = ratio.clamp(0.0, 1.0);
-    let offset_secs = (span_secs as f64 * clamped_ratio).round() as i64;
+    let offset_secs = offset_selector(span_secs);
     let selected = window.start + chrono::Duration::seconds(offset_secs);
 
+    // If the selected time has already passed, attempt renewal immediately.
     if selected <= now {
         now
     } else {
@@ -625,6 +629,11 @@ mod tests {
 
         let selected = select_renewal_time_at_ratio(&window, None, None, now, 0.5);
         assert_eq!(selected, start + chrono::Duration::days(2));
+
+        // Production entry point must also select within [start, end] in the future
+        let prod_selected = select_renewal_time(&window, None, None, now);
+        assert!(prod_selected >= start && prod_selected <= end);
+        assert!(prod_selected > now);
     }
 
     #[test]
@@ -653,6 +662,9 @@ mod tests {
 
         let selected = select_renewal_time_at_ratio(&window, None, None, now, 0.5);
         assert_eq!(selected, now);
+
+        // Production entry point must also return now when window is in the past
+        assert_eq!(select_renewal_time(&window, None, None, now), now);
     }
 
     #[test]
@@ -672,6 +684,15 @@ mod tests {
         );
 
         assert_eq!(second_choice, first_choice);
+
+        // Production entry point also preserves first_choice
+        let prod_choice = select_renewal_time(&window, Some(&window), Some(first_choice), now);
+        assert_eq!(prod_choice, first_choice);
+
+        // Expired previous selection becomes immediately due
+        let expired_prev = now - chrono::Duration::hours(1);
+        let expired_choice = select_renewal_time(&window, Some(&window), Some(expired_prev), now);
+        assert_eq!(expired_choice, now);
     }
 
     #[test]
