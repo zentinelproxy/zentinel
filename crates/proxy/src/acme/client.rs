@@ -79,6 +79,8 @@ pub struct AcmeClient {
     config: AcmeConfig,
     /// Certificate storage
     storage: Arc<CertificateStorage>,
+    /// Optional custom HTTP client factory for testing with mock servers.
+    custom_http: Option<Arc<dyn Fn() -> Box<dyn instant_acme::HttpClient> + Send + Sync>>,
 }
 
 impl AcmeClient {
@@ -93,7 +95,17 @@ impl AcmeClient {
             account: Arc::new(RwLock::new(None)),
             config,
             storage,
+            custom_http: None,
         }
+    }
+
+    /// Set a custom HTTP client factory for testing with mock ACME servers.
+    pub fn with_custom_http<F>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> Box<dyn instant_acme::HttpClient> + Send + Sync + 'static,
+    {
+        self.custom_http = Some(Arc::new(factory));
+        self
     }
 
     /// Get the ACME configuration
@@ -142,14 +154,8 @@ impl AcmeClient {
     }
 
     fn account_builder(&self) -> Result<AccountBuilder, AcmeError> {
-        if self.directory_url().starts_with("http://") {
-            let connector = hyper_util::client::legacy::connect::HttpConnector::new();
-            let client: hyper_util::client::legacy::Client<
-                hyper_util::client::legacy::connect::HttpConnector,
-                instant_acme::BodyWrapper<bytes::Bytes>,
-            > = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build(connector);
-            Ok(Account::builder_with_http(Box::new(client)))
+        if let Some(ref factory) = self.custom_http {
+            Ok(Account::builder_with_http(factory()))
         } else {
             Account::builder().map_err(|e| AcmeError::AccountCreation(e.to_string()))
         }
@@ -704,6 +710,40 @@ impl std::fmt::Debug for AcmeClient {
                     .map(|a| a.is_some())
                     .unwrap_or(false),
             )
+            .field("has_custom_http", &self.custom_http.is_some())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zentinel_config::server::{AcmeChallengeType, AcmeKeyType};
+
+    #[tokio::test]
+    async fn test_default_client_rejects_plaintext_http_url() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(CertificateStorage::new(temp_dir.path()).unwrap());
+        let config = AcmeConfig {
+            email: "test@example.com".to_string(),
+            domains: vec!["example.com".to_string()],
+            server_url: Some("http://127.0.0.1:9999/directory".to_string()),
+            staging: false,
+            eab: None,
+            storage: temp_dir.path().to_path_buf(),
+            renew_before_days: 30,
+            challenge_type: AcmeChallengeType::Http01,
+            key_type: AcmeKeyType::EcdsaP256,
+            dns_provider: None,
+        };
+
+        let client = AcmeClient::new(config, storage);
+        assert!(client.custom_http.is_none());
+
+        // Default construction must NOT use a plaintext client; instant-acme's default HTTPS-only
+        // client will fail or reject http:// directory URLs.
+        let result = client.init_account().await;
+        assert!(result.is_err());
     }
 }

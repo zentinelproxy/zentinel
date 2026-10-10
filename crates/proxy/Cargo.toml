@@ -57,7 +57,6 @@ anyhow = { workspace = true }
 # HTTP
 http = { workspace = true }
 bytes = { workspace = true }
-hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 
 # TLS
 rustls = { workspace = true }
@@ -202,3 +201,4 @@ futures-util = "0.3"
 tokio-rustls = "0.26"
 rcgen = "0.14"
 wiremock = "0.6"
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
