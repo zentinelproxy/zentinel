@@ -195,54 +195,73 @@ impl RenewalScheduler {
 
         // Deadline-based event loop
         loop {
-            let renewal_deadline = self.effective_renewal_deadline(&primary_domain);
-            let next_refresh = self.ari_state.lock().next_refresh;
+            self.run_deadline_iteration(&primary_domain).await;
+        }
+    }
 
-            let now_utc = Utc::now();
-            let now_instant = Instant::now();
-            let next_wake = next_wakeup(
-                now_utc,
-                now_instant,
-                renewal_deadline,
-                next_refresh,
-                self.check_interval,
-            );
+    /// Execute a single iteration of the deadline-based scheduler loop.
+    pub(crate) async fn run_deadline_iteration(&self, primary_domain: &str) {
+        let renewal_deadline = self.effective_renewal_deadline(primary_domain);
+        let next_refresh = self.ari_state.lock().next_refresh;
 
-            tokio::time::sleep_until(next_wake).await;
+        let now_utc = Utc::now();
+        let now_instant = Instant::now();
+        let next_wake = next_wakeup(
+            now_utc,
+            now_instant,
+            renewal_deadline,
+            next_refresh,
+            self.check_interval,
+        );
 
-            debug!(domain = %primary_domain, "Renewal scheduler awakened for deadline check");
+        tokio::time::sleep_until(next_wake).await;
 
-            // 1. Renewal check: If renewal is due, renewal takes precedence over refresh.
-            // RFC 9773: "an upcoming refresh must not delay an already-due renewal"
-            let renewal_is_due = self.is_renewal_due(&primary_domain).unwrap_or(false);
+        debug!(domain = %primary_domain, "Renewal scheduler awakened for deadline check");
 
-            if renewal_is_due {
-                info!(domain = %primary_domain, "Certificate renewal is due");
-                if let Err(e) = self.check_renewals().await {
-                    error!(domain = %primary_domain, error = %e, "Certificate renewal failed");
-                    // Avoid tight loop on renewal failure: sleep minimum interval before next attempt
-                    tokio::time::sleep(MIN_CHECK_INTERVAL).await;
-                }
-                continue;
+        // 1. Renewal check: If renewal is due, renewal takes precedence over refresh.
+        // RFC 9773: "an upcoming refresh must not delay an already-due renewal"
+        let renewal_is_due = match self.is_renewal_due(primary_domain) {
+            Ok(due) => due,
+            Err(e) => {
+                error!(
+                    domain = %primary_domain,
+                    error = %e,
+                    "Failed to check if certificate renewal is due; delaying next check"
+                );
+                // Avoid tight loop on renewal check failure: sleep minimum interval before next attempt
+                tokio::time::sleep(MIN_CHECK_INTERVAL).await;
+                return;
             }
+        };
 
-            // 2. Refresh check: If an ARI refresh is due, execute it.
-            let refresh_is_due = {
-                let state = self.ari_state.lock();
-                state.next_refresh.is_some_and(|r| r <= Instant::now())
-            };
-
-            if refresh_is_due {
-                debug!(domain = %primary_domain, "ARI refresh is due; refreshing ARI info");
-                if let Err(e) = self.refresh_ari().await {
-                    warn!(domain = %primary_domain, error = %e, "Scheduled ARI refresh failed");
-                }
-            }
-
-            // 3. Fallback renewal check (periodic fallback when no ARI or ARI unsupported)
+        if renewal_is_due {
+            info!(domain = %primary_domain, "Certificate renewal is due");
             if let Err(e) = self.check_renewals().await {
-                error!(domain = %primary_domain, error = %e, "Certificate renewal check failed");
+                error!(domain = %primary_domain, error = %e, "Certificate renewal failed");
+                // Avoid tight loop on renewal failure: sleep minimum interval before next attempt
+                tokio::time::sleep(MIN_CHECK_INTERVAL).await;
             }
+            return;
+        }
+
+        // 2. Refresh check: If an ARI refresh is due, execute it.
+        let refresh_is_due = {
+            let state = self.ari_state.lock();
+            state.next_refresh.is_some_and(|r| r <= Instant::now())
+        };
+
+        if refresh_is_due {
+            debug!(domain = %primary_domain, "ARI refresh is due; refreshing ARI info");
+            if let Err(e) = self.refresh_ari().await {
+                warn!(domain = %primary_domain, error = %e, "Scheduled ARI refresh failed");
+            }
+        }
+
+        // 3. Fallback renewal check (periodic fallback when no ARI or ARI unsupported)
+        if let Err(e) = self.check_renewals().await {
+            error!(domain = %primary_domain, error = %e, "Certificate renewal check failed");
+            // Avoid tight loop on fallback check failure: sleep minimum interval before next attempt
+            tokio::time::sleep(MIN_CHECK_INTERVAL).await;
         }
     }
 
@@ -251,19 +270,25 @@ impl RenewalScheduler {
     /// If an ARI renewal deadline is set, it cannot trigger renewal until the certificate has
     /// reached `ARI_MIN_CERTIFICATE_AGE`. Returning the clamped deadline ensures that `next_wakeup`
     /// does not wake up in a tight loop while an ARI renewal is deferred.
+    ///
+    /// If loading the certificate fails with a storage error, returns `None` to prevent a past
+    /// ARI deadline from causing `next_wakeup` to wake up immediately in a busy loop.
     fn effective_renewal_deadline(&self, primary_domain: &str) -> Option<chrono::DateTime<Utc>> {
         let deadline = self.ari_state.lock().renewal_deadline?;
-        let min_renewal_time = self
-            .client
-            .storage()
-            .load_certificate(primary_domain)
-            .ok()
-            .flatten()
-            .and_then(|cert| {
-                chrono::Duration::from_std(ARI_MIN_CERTIFICATE_AGE)
-                    .ok()
-                    .map(|min_age| cert.meta.issued + min_age)
-            });
+        let min_renewal_time = match self.client.storage().load_certificate(primary_domain) {
+            Ok(Some(cert)) => chrono::Duration::from_std(ARI_MIN_CERTIFICATE_AGE)
+                .ok()
+                .map(|min_age| cert.meta.issued + min_age),
+            Ok(None) => None,
+            Err(e) => {
+                warn!(
+                    domain = %primary_domain,
+                    error = %e,
+                    "Failed to load certificate when calculating effective renewal deadline; suppressing deadline to prevent tight loop"
+                );
+                return None;
+            }
+        };
 
         match min_renewal_time {
             Some(min_time) => Some(deadline.max(min_time)),
@@ -1068,5 +1093,97 @@ mod tests {
 
         // Stored issuance metadata is read and cooldown is enforced!
         assert!(!scheduler2.is_renewal_due("example.com").unwrap());
+    }
+
+    #[test]
+    fn test_effective_renewal_deadline_storage_error_suppresses_deadline() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fixtures = test_fixtures_path();
+        let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+        let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+        let storage =
+            Arc::new(super::super::storage::CertificateStorage::new(temp_dir.path()).unwrap());
+        storage
+            .save_certificate(
+                "example.com",
+                &cert_pem,
+                &key_pem,
+                Utc::now() + chrono::Duration::days(90),
+                &["example.com".to_string()],
+            )
+            .unwrap();
+
+        let (_client, _storage, scheduler) =
+            create_test_scheduler(temp_dir.path().to_path_buf());
+
+        // Set past ARI deadline
+        let past_deadline = Utc::now() - chrono::Duration::hours(2);
+        scheduler.ari_state.lock().capability = AriCapability::Supported;
+        scheduler.ari_state.lock().renewal_deadline = Some(past_deadline);
+
+        // Corrupt the meta.json file so storage.load_certificate returns a deserialization error
+        let meta_file = temp_dir.path().join("domains/example.com/meta.json");
+        std::fs::write(&meta_file, b"corrupted non-json content").unwrap();
+
+        assert!(scheduler
+            .client
+            .storage()
+            .load_certificate("example.com")
+            .is_err());
+
+        // Effective deadline must return None (not Some(past_deadline)), preventing immediate wakeup
+        let effective = scheduler.effective_renewal_deadline("example.com");
+        assert!(
+            effective.is_none(),
+            "Storage error must suppress effective renewal deadline to prevent tight loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_iteration_corrupt_storage_bounded_delay() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        tokio::time::pause();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fixtures = test_fixtures_path();
+        let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+        let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+        let storage =
+            Arc::new(super::super::storage::CertificateStorage::new(temp_dir.path()).unwrap());
+        storage
+            .save_certificate(
+                "example.com",
+                &cert_pem,
+                &key_pem,
+                Utc::now() + chrono::Duration::days(90),
+                &["example.com".to_string()],
+            )
+            .unwrap();
+
+        let (_client, _storage, scheduler) =
+            create_test_scheduler(temp_dir.path().to_path_buf());
+
+        // Set past ARI deadline
+        scheduler.ari_state.lock().capability = AriCapability::Supported;
+        scheduler.ari_state.lock().renewal_deadline =
+            Some(Utc::now() - chrono::Duration::hours(2));
+
+        // Corrupt the meta.json file
+        let meta_file = temp_dir.path().join("domains/example.com/meta.json");
+        std::fs::write(&meta_file, b"corrupted non-json content").unwrap();
+
+        // Calling run_deadline_iteration must not return immediately in 0 time,
+        // but must sleep for MIN_CHECK_INTERVAL (1 minute)
+        let t0 = tokio::time::Instant::now();
+        scheduler.run_deadline_iteration("example.com").await;
+        let elapsed = tokio::time::Instant::now() - t0;
+
+        assert!(
+            elapsed >= MIN_CHECK_INTERVAL,
+            "Renewal check error with corrupt storage must delay for at least MIN_CHECK_INTERVAL, got {:?}",
+            elapsed
+        );
     }
 }
