@@ -1258,16 +1258,19 @@ mod tests {
 
         let (_client, _storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
 
-        // Set past ARI deadline
+        // Set past ARI deadline (suppressed by effective_renewal_deadline on storage error)
+        // and set past next_refresh so next_wakeup is immediately due rather than falling back to check_interval.
         scheduler.ari_state.lock().capability = AriCapability::Supported;
         scheduler.ari_state.lock().renewal_deadline = Some(Utc::now() - chrono::Duration::hours(2));
+        scheduler.ari_state.lock().next_refresh =
+            Some(tokio::time::Instant::now() - Duration::from_secs(10));
 
         // Corrupt the meta.json file
         let meta_file = temp_dir.path().join("domains/example.com/meta.json");
         std::fs::write(&meta_file, b"corrupted non-json content").unwrap();
 
         // Calling run_deadline_iteration must not return immediately in 0 time,
-        // but must sleep for MIN_CHECK_INTERVAL (1 minute)
+        // but must sleep for MIN_CHECK_INTERVAL (1 hour)
         let t0 = tokio::time::Instant::now();
         scheduler.run_deadline_iteration("example.com").await;
         let elapsed = tokio::time::Instant::now() - t0;
