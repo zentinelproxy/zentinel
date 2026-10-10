@@ -1665,6 +1665,20 @@ async fn test_replaces_order_succeeds_but_challenge_extraction_failure_does_not_
         1,
         "Must NOT issue a duplicate order when challenge extraction fails"
     );
+
+    // Verify the single order created contained replaces
+    let jws: serde_json::Value = serde_json::from_slice(&order_reqs[0].body).unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(jws["payload"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        payload["replaces"].as_str(),
+        Some(cert_id.to_string().as_str()),
+        "The single order issued must have contained replaces"
+    );
 }
 
 #[tokio::test]
@@ -1741,6 +1755,20 @@ async fn test_replaces_order_succeeds_but_authorization_failure_does_not_trigger
         order_reqs.len(),
         1,
         "Must NOT issue a duplicate/fallback DNS-01 order when authorization retrieval fails"
+    );
+
+    // Verify the single order created contained replaces
+    let jws: serde_json::Value = serde_json::from_slice(&order_reqs[0].body).unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(jws["payload"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        payload["replaces"].as_str(),
+        Some(cert_id.to_string().as_str()),
+        "The single order issued must have contained replaces"
     );
 }
 
@@ -1826,5 +1854,19 @@ async fn test_replaces_order_succeeds_but_challenge_extraction_failure_does_not_
         order_reqs.len(),
         1,
         "Must NOT issue a duplicate DNS-01 order when challenge extraction fails"
+    );
+
+    // Verify the single order created contained replaces
+    let jws: serde_json::Value = serde_json::from_slice(&order_reqs[0].body).unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(jws["payload"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        payload["replaces"].as_str(),
+        Some(cert_id.to_string().as_str()),
+        "The single order issued must have contained replaces"
     );
 }
