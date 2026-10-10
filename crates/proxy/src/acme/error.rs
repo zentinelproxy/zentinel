@@ -94,7 +94,7 @@ impl AcmeError {
     /// Check whether this error represents a failure during the ACME order-creation step
     /// (the `newOrder` request itself), as opposed to subsequent processing of an
     /// already-created order (e.g. authorization retrieval or challenge extraction).
-    pub fn is_order_creation_error(&self) -> bool {
+    pub(crate) fn is_order_creation_error(&self) -> bool {
         matches!(
             self,
             AcmeError::OrderCreation(_) | AcmeError::Unsupported(_)
