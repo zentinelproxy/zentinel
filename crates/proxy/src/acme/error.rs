@@ -86,16 +86,6 @@ pub enum AcmeError {
     Unsupported(&'static str),
 }
 
-impl AcmeError {
-    /// Returns true if this error indicates that the `replaces` order field or ARI is unsupported.
-    pub fn is_replaces_unsupported(&self) -> bool {
-        matches!(
-            self,
-            AcmeError::Unsupported("replaces") | AcmeError::Unsupported("renewalInfo")
-        )
-    }
-}
-
 /// Errors specific to certificate storage operations
 #[derive(Debug, Error)]
 pub enum StorageError {

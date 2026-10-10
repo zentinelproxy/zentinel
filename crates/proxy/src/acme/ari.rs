@@ -33,6 +33,13 @@ pub const ARI_MAX_TEMP_RETRIES: u32 = 3;
 /// Base backoff for temporary failures (1 minute).
 pub const ARI_BASE_TEMP_BACKOFF: Duration = Duration::from_secs(60);
 
+/// Minimum certificate age before an ARI-triggered renewal may execute (1 hour).
+///
+/// Prevents immediate repeated renewal loops if a CA returns a suggested window
+/// that has already started or is in the past for a newly issued certificate.
+/// Does not affect expiry-based renewals (`renew-before-days`), which remain independent.
+pub const ARI_MIN_CERTIFICATE_AGE: Duration = Duration::from_secs(3600);
+
 /// CA ARI capability status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AriCapability {
@@ -276,17 +283,6 @@ impl RenewalWindow {
         let end = offset_date_time_to_chrono(window.end);
         Self::new(start, end)
     }
-
-    /// Calculate the intersection with another window, if non-empty.
-    pub fn intersection(&self, other: &Self) -> Option<Self> {
-        let start = self.start.max(other.start);
-        let end = self.end.min(other.end);
-        if start < end {
-            Some(Self { start, end })
-        } else {
-            None
-        }
-    }
 }
 
 /// Convert `time::OffsetDateTime` to `chrono::DateTime<Utc>`.
@@ -355,7 +351,7 @@ pub fn select_renewal_time(
     )
 }
 
-/// Select a renewal time with a specific RNG (RFC 9773 §4.3.1).
+/// Select a renewal time with a specific RNG (RFC 9773 §4.2, §4.3.1).
 pub fn select_renewal_time_with_rng<R: rand::RngExt>(
     window: &RenewalWindow,
     previous_window: Option<&RenewalWindow>,
@@ -363,7 +359,7 @@ pub fn select_renewal_time_with_rng<R: rand::RngExt>(
     now: DateTime<Utc>,
     rng: &mut R,
 ) -> DateTime<Utc> {
-    // If the window has not changed and a previous time exists, keep it stable.
+    // If the window has not changed and a previous selected time remains in the future, keep it stable.
     if let (Some(prev_win), Some(prev_time)) = (previous_window, previous_renewal_time) {
         if prev_win == window {
             if prev_time <= now {
@@ -373,26 +369,16 @@ pub fn select_renewal_time_with_rng<R: rand::RngExt>(
         }
     }
 
-    // RFC 9773 §4.3.1: If the window starts in the past (e.g. revoked), attempt renewal immediately.
-    if window.start <= now {
-        return now;
-    }
-
-    // Determine target selection window: intersection if non-empty, else new window.
-    let target = if let Some(prev) = previous_window {
-        window.intersection(prev).unwrap_or_else(|| window.clone())
-    } else {
-        window.clone()
-    };
-
-    let span_secs = (target.end - target.start).num_seconds();
+    // Select a uniform random time across the entire current suggested window.
+    let span_secs = (window.end - window.start).num_seconds();
     if span_secs <= 0 {
         return now;
     }
 
     let offset_secs = rng.random_range(0..=span_secs);
-    let selected = target.start + chrono::Duration::seconds(offset_secs);
+    let selected = window.start + chrono::Duration::seconds(offset_secs);
 
+    // If the selected time has already passed, attempt renewal immediately.
     if selected <= now {
         now
     } else {
@@ -400,7 +386,7 @@ pub fn select_renewal_time_with_rng<R: rand::RngExt>(
     }
 }
 
-/// Deterministically selects a renewal time at fraction `ratio` in [0.0, 1.0] of the target window.
+/// Deterministically selects a renewal time at fraction `ratio` in [0.0, 1.0] across the entire current suggested window.
 pub fn select_renewal_time_at_ratio(
     window: &RenewalWindow,
     previous_window: Option<&RenewalWindow>,
@@ -417,24 +403,14 @@ pub fn select_renewal_time_at_ratio(
         }
     }
 
-    if window.start <= now {
-        return now;
-    }
-
-    let target = if let Some(prev) = previous_window {
-        window.intersection(prev).unwrap_or_else(|| window.clone())
-    } else {
-        window.clone()
-    };
-
-    let span_secs = (target.end - target.start).num_seconds();
+    let span_secs = (window.end - window.start).num_seconds();
     if span_secs <= 0 {
         return now;
     }
 
     let clamped_ratio = ratio.clamp(0.0, 1.0);
     let offset_secs = (span_secs as f64 * clamped_ratio).round() as i64;
-    let selected = target.start + chrono::Duration::seconds(offset_secs);
+    let selected = window.start + chrono::Duration::seconds(offset_secs);
 
     if selected <= now {
         now
@@ -641,26 +617,6 @@ mod tests {
     }
 
     #[test]
-    fn test_renewal_window_intersection() {
-        let t0 = Utc::now();
-        let t1 = t0 + chrono::Duration::hours(1);
-        let t2 = t0 + chrono::Duration::hours(2);
-        let t3 = t0 + chrono::Duration::hours(3);
-
-        let w1 = RenewalWindow::new(t0, t2).unwrap();
-        let w2 = RenewalWindow::new(t1, t3).unwrap();
-
-        let inter = w1.intersection(&w2).unwrap();
-        assert_eq!(inter.start, t1);
-        assert_eq!(inter.end, t2);
-
-        // Disjoint windows
-        let w3 = RenewalWindow::new(t0, t1).unwrap();
-        let w4 = RenewalWindow::new(t2, t3).unwrap();
-        assert!(w3.intersection(&w4).is_none());
-    }
-
-    #[test]
     fn test_select_renewal_time_in_future_window() {
         let now = Utc::now();
         let start = now + chrono::Duration::days(1);
@@ -668,15 +624,31 @@ mod tests {
         let window = RenewalWindow::new(start, end).unwrap();
 
         let selected = select_renewal_time_at_ratio(&window, None, None, now, 0.5);
-        assert!(selected >= start && selected <= end);
         assert_eq!(selected, start + chrono::Duration::days(2));
     }
 
     #[test]
-    fn test_select_renewal_time_window_starting_in_past_is_immediate() {
+    fn test_select_renewal_time_window_started_extends_into_future() {
         let now = Utc::now();
-        let start = now - chrono::Duration::hours(1);
-        let end = now + chrono::Duration::hours(5);
+        // Window started 2 hours ago, ends in 6 hours (total span 8 hours)
+        let start = now - chrono::Duration::hours(2);
+        let end = now + chrono::Duration::hours(6);
+        let window = RenewalWindow::new(start, end).unwrap();
+
+        // Ratio 0.0 -> start (in past) -> renewal is immediate (returns now)
+        let selected_past = select_renewal_time_at_ratio(&window, None, None, now, 0.0);
+        assert_eq!(selected_past, now);
+
+        // Ratio 0.75 -> start + 6h = now + 4h (in future) -> scheduled at selected time
+        let selected_future = select_renewal_time_at_ratio(&window, None, None, now, 0.75);
+        assert_eq!(selected_future, now + chrono::Duration::hours(4));
+    }
+
+    #[test]
+    fn test_select_renewal_time_window_entirely_in_past_is_immediate() {
+        let now = Utc::now();
+        let start = now - chrono::Duration::hours(10);
+        let end = now - chrono::Duration::hours(2);
         let window = RenewalWindow::new(start, end).unwrap();
 
         let selected = select_renewal_time_at_ratio(&window, None, None, now, 0.5);
@@ -703,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_renewal_time_changed_window_uses_intersection() {
+    fn test_select_renewal_time_changed_window_selects_from_new_window_not_intersection() {
         let now = Utc::now();
         let w1 = RenewalWindow::new(
             now + chrono::Duration::days(2),
@@ -716,9 +688,9 @@ mod tests {
         )
         .unwrap();
 
-        // Intersection is days 4..6
+        // Midpoint of w2 (days 4..8) is day 6. If intersection (days 4..6) were used, it would be day 5.
         let selected = select_renewal_time_at_ratio(&w2, Some(&w1), None, now, 0.5);
-        assert_eq!(selected, now + chrono::Duration::days(5));
+        assert_eq!(selected, now + chrono::Duration::days(6));
     }
 
     #[test]

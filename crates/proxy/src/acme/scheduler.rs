@@ -18,13 +18,16 @@ use zentinel_config::server::AcmeChallengeType;
 use super::ari::{
     calculate_retry_delay, clamp_refresh_interval, next_wakeup, select_renewal_time, AriCapability,
     AriError, AriErrorClassification, AriSchedulerState, RenewalWindow,
-    ARI_LONG_TERM_RETRY_INTERVAL,
+    ARI_LONG_TERM_RETRY_INTERVAL, ARI_MIN_CERTIFICATE_AGE,
 };
 use super::challenge::ChallengeManager;
 use super::client::AcmeClient;
 use super::dns::Dns01ChallengeManager;
 use super::error::{is_retryable_acme_error, AcmeError};
 use crate::tls::HotReloadableSniResolver;
+
+/// Startup delay before initial check (10 seconds)
+const STARTUP_DELAY: Duration = Duration::from_secs(10);
 
 /// Default check interval (12 hours)
 const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(12 * 3600);
@@ -94,19 +97,6 @@ impl RenewalScheduler {
         self.ari_state.lock().capability
     }
 
-    /// Set the in-memory ARI capability directly (useful for testing)
-    pub fn set_ari_capability(&self, capability: AriCapability) {
-        self.ari_state.lock().capability = capability;
-    }
-
-    /// Update in-memory ARI state with a closure (useful for testing)
-    pub fn update_ari_state<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut AriSchedulerState) -> R,
-    {
-        f(&mut self.ari_state.lock())
-    }
-
     /// Set the DNS-01 challenge manager
     ///
     /// Required when using DNS-01 challenge type.
@@ -139,13 +129,13 @@ impl RenewalScheduler {
             "Starting certificate renewal scheduler with RFC 9773 ARI support"
         );
 
-        // Initial check after a short delay
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Initial check after startup delay
+        tokio::time::sleep(STARTUP_DELAY).await;
 
         let primary_domain = match self.client.config().domains.first() {
             Some(d) => d.clone(),
             None => {
-                warn!("No domains configured for ACME renewal scheduler");
+                warn!("No domains configured for ACME renewal scheduler; exiting background loop");
                 return;
             }
         };
@@ -205,10 +195,8 @@ impl RenewalScheduler {
 
         // Deadline-based event loop
         loop {
-            let (renewal_deadline, next_refresh) = {
-                let state = self.ari_state.lock();
-                (state.renewal_deadline, state.next_refresh)
-            };
+            let renewal_deadline = self.effective_renewal_deadline(&primary_domain);
+            let next_refresh = self.ari_state.lock().next_refresh;
 
             let now_utc = Utc::now();
             let now_instant = Instant::now();
@@ -258,18 +246,71 @@ impl RenewalScheduler {
         }
     }
 
-    /// Check whether renewal is needed according to ARI or fallback policy
+    /// Calculate the effective renewal deadline taking certificate cooldown into account.
+    ///
+    /// If an ARI renewal deadline is set, it cannot trigger renewal until the certificate has
+    /// reached `ARI_MIN_CERTIFICATE_AGE`. Returning the clamped deadline ensures that `next_wakeup`
+    /// does not wake up in a tight loop while an ARI renewal is deferred.
+    fn effective_renewal_deadline(&self, primary_domain: &str) -> Option<chrono::DateTime<Utc>> {
+        let deadline = self.ari_state.lock().renewal_deadline?;
+        let min_renewal_time = self
+            .client
+            .storage()
+            .load_certificate(primary_domain)
+            .ok()
+            .flatten()
+            .and_then(|cert| {
+                chrono::Duration::from_std(ARI_MIN_CERTIFICATE_AGE)
+                    .ok()
+                    .map(|min_age| cert.meta.issued + min_age)
+            });
+
+        match min_renewal_time {
+            Some(min_time) => Some(deadline.max(min_time)),
+            None => Some(deadline),
+        }
+    }
+
+    /// Check whether renewal is needed according to ARI or fallback policy.
+    ///
+    /// Expiry-based renewal (`renew-before-days`) is independent of ARI: ARI can cause
+    /// renewal earlier, but cannot suppress or delay expiry-based renewal.
+    /// Additionally, an ARI-triggered renewal enforces `ARI_MIN_CERTIFICATE_AGE` cooldown
+    /// to prevent immediate repeated renewals on pathological CA windows.
     pub fn is_renewal_due(&self, domain: &str) -> Result<bool, AcmeError> {
+        // 1. Expiry protection is independent of ARI:
+        // ARI can cause renewal earlier, but can never suppress existing expiry-based renewal.
+        if self.client.needs_renewal(domain)? {
+            return Ok(true);
+        }
+
         let now = Utc::now();
         let ari_due = {
             let state = self.ari_state.lock();
-            state.is_ari_renewal_due(now)
+            state.is_ari_renewal_due(now).unwrap_or(false)
         };
 
-        match ari_due {
-            Some(due) => Ok(due),
-            None => self.client.needs_renewal(domain),
+        if !ari_due {
+            return Ok(false);
         }
+
+        // 2. Cooldown guard for ARI-triggered renewals:
+        // Ensure the certificate has reached ARI_MIN_CERTIFICATE_AGE before renewing via ARI.
+        if let Some(cert) = self.client.storage().load_certificate(domain)? {
+            if let Ok(min_age) = chrono::Duration::from_std(ARI_MIN_CERTIFICATE_AGE) {
+                if now.signed_duration_since(cert.meta.issued) < min_age {
+                    debug!(
+                        domain = %domain,
+                        issued = %cert.meta.issued,
+                        cooldown_secs = ARI_MIN_CERTIFICATE_AGE.as_secs(),
+                        "ARI renewal deadline reached but certificate is within minimum age cooldown; deferring renewal"
+                    );
+                    return Ok(false);
+                }
+            }
+        }
+
+        Ok(true)
     }
 
     /// Refresh ARI information for the active certificate.
@@ -346,6 +387,7 @@ impl RenewalScheduler {
         let now_instant = Instant::now();
 
         let mut state = self.ari_state.lock();
+        let window_changed = state.last_window.as_ref() != Some(&window);
         let renewal_time = select_renewal_time(
             &window,
             state.last_window.as_ref(),
@@ -353,14 +395,37 @@ impl RenewalScheduler {
             now_utc,
         );
 
-        info!(
-            domain = %primary_domain,
-            window_start = %window.start,
-            window_end = %window.end,
-            renewal_deadline = %renewal_time,
-            refresh_in_secs = clamped_refresh.as_secs(),
-            "ARI renewal info updated successfully"
-        );
+        if window_changed {
+            if let Some(ref explanation_url) = renewal_info.explanation_url {
+                info!(
+                    domain = %primary_domain,
+                    window_start = %window.start,
+                    window_end = %window.end,
+                    renewal_deadline = %renewal_time,
+                    refresh_in_secs = clamped_refresh.as_secs(),
+                    explanation_url = %explanation_url,
+                    "ARI renewal info updated with explanation URL"
+                );
+            } else {
+                info!(
+                    domain = %primary_domain,
+                    window_start = %window.start,
+                    window_end = %window.end,
+                    renewal_deadline = %renewal_time,
+                    refresh_in_secs = clamped_refresh.as_secs(),
+                    "ARI renewal info updated successfully"
+                );
+            }
+        } else {
+            debug!(
+                domain = %primary_domain,
+                window_start = %window.start,
+                window_end = %window.end,
+                renewal_deadline = %renewal_time,
+                refresh_in_secs = clamped_refresh.as_secs(),
+                "ARI renewal info unchanged"
+            );
+        }
 
         state.record_success(
             window,
@@ -451,7 +516,7 @@ impl RenewalScheduler {
     }
 
     /// Check all configured domains and renew certificates as needed
-    async fn check_renewals(&self) -> Result<(), AcmeError> {
+    pub async fn check_renewals(&self) -> Result<(), AcmeError> {
         let domains = self.client.config().domains.clone();
 
         if domains.is_empty() {
@@ -562,7 +627,7 @@ impl RenewalScheduler {
     }
 
     /// Renew certificate using HTTP-01 challenge
-    async fn renew_certificate_http01(
+    pub async fn renew_certificate_http01(
         &self,
         predecessor_id: Option<&CertificateIdentifier<'_>>,
     ) -> Result<(), AcmeError> {
@@ -573,16 +638,29 @@ impl RenewalScheduler {
             "Starting certificate renewal with HTTP-01 challenge"
         );
 
-        // Create order and get challenges (with replaces if supported)
-        let order_res = self.client.create_order(predecessor_id).await;
-        let (mut order, challenges) = match order_res {
+        // Create order and get challenges (with replaces if predecessor_id is present)
+        let (mut order, challenges) = match self.client.create_order(predecessor_id).await {
             Ok(res) => res,
-            Err(e) if predecessor_id.is_some() && e.is_replaces_unsupported() => {
-                warn!("CA does not support order with replaces; marking ARI unsupported and retrying without replaces");
-                self.ari_state
-                    .lock()
-                    .record_unsupported(Instant::now() + ARI_LONG_TERM_RETRY_INTERVAL);
-                self.client.create_order(None).await?
+            Err(initial_err) if predecessor_id.is_some() => {
+                warn!(
+                    error = %initial_err,
+                    predecessor_id = ?predecessor_id.map(|p| p.to_string()),
+                    "Order creation with 'replaces' failed; falling back to renewal order without replaces"
+                );
+                match self.client.create_order(None).await {
+                    Ok(fallback_res) => {
+                        info!("Fallback order without 'replaces' succeeded");
+                        fallback_res
+                    }
+                    Err(fallback_err) => {
+                        error!(
+                            initial_error = %initial_err,
+                            fallback_error = %fallback_err,
+                            "Fallback order creation without 'replaces' also failed"
+                        );
+                        return Err(fallback_err);
+                    }
+                }
             }
             Err(e) => return Err(e),
         };
@@ -634,7 +712,7 @@ impl RenewalScheduler {
     }
 
     /// Renew certificate using DNS-01 challenge
-    async fn renew_certificate_dns01(
+    pub async fn renew_certificate_dns01(
         &self,
         predecessor_id: Option<&CertificateIdentifier<'_>>,
     ) -> Result<(), AcmeError> {
@@ -651,16 +729,30 @@ impl RenewalScheduler {
             "Starting certificate renewal with DNS-01 challenge"
         );
 
-        // Create order and get DNS-01 challenges (with replaces if supported)
-        let order_res = self.client.create_order_dns01(predecessor_id).await;
-        let (mut order, mut challenges) = match order_res {
+        // Create order and get DNS-01 challenges (with replaces if predecessor_id is present)
+        let (mut order, mut challenges) = match self.client.create_order_dns01(predecessor_id).await
+        {
             Ok(res) => res,
-            Err(e) if predecessor_id.is_some() && e.is_replaces_unsupported() => {
-                warn!("CA does not support order with replaces; marking ARI unsupported and retrying without replaces");
-                self.ari_state
-                    .lock()
-                    .record_unsupported(Instant::now() + ARI_LONG_TERM_RETRY_INTERVAL);
-                self.client.create_order_dns01(None).await?
+            Err(initial_err) if predecessor_id.is_some() => {
+                warn!(
+                    error = %initial_err,
+                    predecessor_id = ?predecessor_id.map(|p| p.to_string()),
+                    "DNS-01 order creation with 'replaces' failed; falling back to renewal order without replaces"
+                );
+                match self.client.create_order_dns01(None).await {
+                    Ok(fallback_res) => {
+                        info!("Fallback DNS-01 order without 'replaces' succeeded");
+                        fallback_res
+                    }
+                    Err(fallback_err) => {
+                        error!(
+                            initial_error = %initial_err,
+                            fallback_error = %fallback_err,
+                            "Fallback DNS-01 order creation without 'replaces' also failed"
+                        );
+                        return Err(fallback_err);
+                    }
+                }
             }
             Err(e) => return Err(e),
         };
@@ -800,5 +892,177 @@ impl std::fmt::Debug for RenewalScheduler {
             .field("has_sni_resolver", &self.sni_resolver.is_some())
             .field("ari_state", &self.ari_state.lock())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use zentinel_config::server::{AcmeChallengeType, AcmeConfig, AcmeKeyType};
+
+    fn test_fixtures_path() -> PathBuf {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        PathBuf::from(manifest_dir)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/fixtures/tls")
+    }
+
+    fn create_test_scheduler(
+        storage_dir: PathBuf,
+    ) -> (
+        Arc<AcmeClient>,
+        Arc<super::super::storage::CertificateStorage>,
+        RenewalScheduler,
+    ) {
+        let storage =
+            Arc::new(super::super::storage::CertificateStorage::new(&storage_dir).unwrap());
+        let config = AcmeConfig {
+            email: "test@example.com".to_string(),
+            domains: vec!["example.com".to_string()],
+            server_url: None,
+            staging: true,
+            eab: None,
+            storage: storage_dir,
+            renew_before_days: 30,
+            challenge_type: AcmeChallengeType::Http01,
+            key_type: AcmeKeyType::EcdsaP256,
+            dns_provider: None,
+        };
+        let client = Arc::new(AcmeClient::new(config, Arc::clone(&storage)));
+        let challenge_mgr = Arc::new(ChallengeManager::new());
+        let scheduler = RenewalScheduler::new(Arc::clone(&client), challenge_mgr, None);
+        (client, storage, scheduler)
+    }
+
+    #[test]
+    fn test_predecessor_id_only_used_when_supported() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (_client, storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
+        let fixtures = test_fixtures_path();
+        let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+        let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+        storage
+            .save_certificate(
+                "example.com",
+                &cert_pem,
+                &key_pem,
+                Utc::now() + chrono::Duration::days(90),
+                &["example.com".to_string()],
+            )
+            .unwrap();
+
+        // 1. Unknown
+        scheduler.ari_state.lock().capability = AriCapability::Unknown;
+        assert!(scheduler
+            .get_predecessor_id_for_renewal("example.com")
+            .is_none());
+
+        // 2. Unsupported
+        scheduler.ari_state.lock().capability = AriCapability::Unsupported;
+        assert!(scheduler
+            .get_predecessor_id_for_renewal("example.com")
+            .is_none());
+
+        // 3. Supported
+        scheduler.ari_state.lock().capability = AriCapability::Supported;
+        let id = scheduler.get_predecessor_id_for_renewal("example.com");
+        assert!(id.is_some());
+    }
+
+    #[test]
+    fn test_expiry_protection_independent_of_ari() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (_client, storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
+        let fixtures = test_fixtures_path();
+        let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+        let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+        // Certificate expiring in 10 days (< renew_before_days of 30)
+        let expires = Utc::now() + chrono::Duration::days(10);
+        storage
+            .save_certificate(
+                "example.com",
+                &cert_pem,
+                &key_pem,
+                expires,
+                &["example.com".to_string()],
+            )
+            .unwrap();
+
+        // CA returns an excessively late renewal deadline far in future (60 days)
+        scheduler.ari_state.lock().capability = AriCapability::Supported;
+        scheduler.ari_state.lock().renewal_deadline = Some(Utc::now() + chrono::Duration::days(60));
+
+        // Even though ARI renewal_deadline is in the future, expiry protection MUST trigger renewal!
+        assert!(scheduler.is_renewal_due("example.com").unwrap());
+    }
+
+    #[test]
+    fn test_ari_cooldown_prevents_immediate_repeated_renewal() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (_client, storage, scheduler) = create_test_scheduler(temp_dir.path().to_path_buf());
+        let fixtures = test_fixtures_path();
+        let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+        let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+        // Certificate issued now, expiring in 90 days (not due for expiry renewal)
+        let expires = Utc::now() + chrono::Duration::days(90);
+        storage
+            .save_certificate(
+                "example.com",
+                &cert_pem,
+                &key_pem,
+                expires,
+                &["example.com".to_string()],
+            )
+            .unwrap();
+
+        // CA returns a window in the past (e.g. renewal_deadline is now)
+        scheduler.ari_state.lock().capability = AriCapability::Supported;
+        scheduler.ari_state.lock().renewal_deadline =
+            Some(Utc::now() - chrono::Duration::minutes(5));
+
+        // Certificate was just issued (< ARI_MIN_CERTIFICATE_AGE), so ARI renewal is deferred!
+        assert!(!scheduler.is_renewal_due("example.com").unwrap());
+
+        // And effective_renewal_deadline defers next wake until cooldown expires
+        let effective = scheduler.effective_renewal_deadline("example.com").unwrap();
+        assert!(effective > Utc::now());
+    }
+
+    #[test]
+    fn test_ari_cooldown_survives_process_restart() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fixtures = test_fixtures_path();
+        let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+        let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+        // Save certificate
+        let storage =
+            Arc::new(super::super::storage::CertificateStorage::new(temp_dir.path()).unwrap());
+        storage
+            .save_certificate(
+                "example.com",
+                &cert_pem,
+                &key_pem,
+                Utc::now() + chrono::Duration::days(90),
+                &["example.com".to_string()],
+            )
+            .unwrap();
+
+        // Simulate process restart: create a brand new scheduler instance on the existing storage
+        let (_client2, _storage2, scheduler2) =
+            create_test_scheduler(temp_dir.path().to_path_buf());
+        scheduler2.ari_state.lock().capability = AriCapability::Supported;
+        scheduler2.ari_state.lock().renewal_deadline =
+            Some(Utc::now() - chrono::Duration::minutes(5));
+
+        // Stored issuance metadata is read and cooldown is enforced!
+        assert!(!scheduler2.is_renewal_due("example.com").unwrap());
     }
 }
