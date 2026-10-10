@@ -723,12 +723,46 @@ mod tests {
     #[tokio::test]
     async fn test_default_client_rejects_plaintext_http_url() {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let mock = wiremock::MockServer::start().await;
+        let base = mock.uri();
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/directory"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "newNonce": format!("{base}/new-nonce"),
+                    "newAccount": format!("{base}/new-account"),
+                    "newOrder": format!("{base}/new-order"),
+                })),
+            )
+            .mount(&mock)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+            .and(wiremock::matchers::path("/new-nonce"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).insert_header("replay-nonce", "test-nonce-1"),
+            )
+            .mount(&mock)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/new-account"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(201)
+                    .insert_header("replay-nonce", "test-nonce-2")
+                    .insert_header("location", format!("{base}/account/1"))
+                    .set_body_json(serde_json::json!({"status": "valid"})),
+            )
+            .mount(&mock)
+            .await;
+
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(CertificateStorage::new(temp_dir.path()).unwrap());
         let config = AcmeConfig {
             email: "test@example.com".to_string(),
             domains: vec!["example.com".to_string()],
-            server_url: Some("http://127.0.0.1:9999/directory".to_string()),
+            server_url: Some(format!("{base}/directory")),
             staging: false,
             eab: None,
             storage: temp_dir.path().to_path_buf(),
@@ -738,12 +772,48 @@ mod tests {
             dns_provider: None,
         };
 
-        let client = AcmeClient::new(config, storage);
+        // 1. Construct client using default production path (no custom HTTP injected)
+        let client = AcmeClient::new(config.clone(), Arc::clone(&storage));
         assert!(client.custom_http.is_none());
 
-        // Default construction must NOT use a plaintext client; instant-acme's default HTTPS-only
-        // client will fail or reject http:// directory URLs.
+        // 2. Default client must fail because the default production transport does not permit plaintext HTTP
         let result = client.init_account().await;
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "Default production client must fail when pointed at a plaintext HTTP directory"
+        );
+        assert!(
+            client.account.read().await.is_none(),
+            "Default client account must not be initialized over plaintext HTTP"
+        );
+
+        // 3. Inspect received requests: no account creation must have been performed over plaintext HTTP
+        let received = mock.received_requests().await.unwrap();
+        let account_reqs = received
+            .iter()
+            .filter(|r| r.url.path() == "/new-account")
+            .count();
+        assert_eq!(
+            account_reqs, 0,
+            "Default client must not perform account creation over plaintext HTTP"
+        );
+
+        // 4. Counter-proof: prove the mock server was live, reachable, and valid.
+        // When a plaintext-capable HTTP client is explicitly injected, account creation succeeds against the exact same endpoints.
+        let test_client = AcmeClient::new(config, storage).with_custom_http(|| {
+            let connector = hyper_util::client::legacy::connect::HttpConnector::new();
+            let hyper_client: hyper_util::client::legacy::Client<
+                hyper_util::client::legacy::connect::HttpConnector,
+                instant_acme::BodyWrapper<bytes::Bytes>,
+            > = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(connector);
+            Box::new(hyper_client)
+        });
+        let test_result = test_client.init_account().await;
+        assert!(
+            test_result.is_ok(),
+            "Explicit plaintext client must succeed against the live mock server, proving the mock was operational"
+        );
+        assert!(test_client.account.read().await.is_some());
     }
 }
