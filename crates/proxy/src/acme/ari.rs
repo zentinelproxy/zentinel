@@ -33,12 +33,12 @@ pub const ARI_MAX_TEMP_RETRIES: u32 = 3;
 /// Base backoff for temporary failures (1 minute).
 pub const ARI_BASE_TEMP_BACKOFF: Duration = Duration::from_secs(60);
 
-/// Minimum certificate age before an ARI-triggered renewal may execute (1 hour).
+/// Minimum certificate age before an ARI-triggered renewal may execute (24 hours).
 ///
 /// Prevents immediate repeated renewal loops if a CA returns a suggested window
 /// that has already started or is in the past for a newly issued certificate.
 /// Does not affect expiry-based renewals (`renew-before-days`), which remain independent.
-pub const ARI_MIN_CERTIFICATE_AGE: Duration = Duration::from_secs(3600);
+pub const ARI_MIN_CERTIFICATE_AGE: Duration = Duration::from_secs(86400);
 
 /// CA ARI capability status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

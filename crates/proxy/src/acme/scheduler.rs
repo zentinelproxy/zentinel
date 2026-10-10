@@ -1096,6 +1096,97 @@ mod tests {
     }
 
     #[test]
+    fn test_ari_cooldown_24_hour_boundary() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fixtures = test_fixtures_path();
+        let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+        let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+        let storage =
+            Arc::new(super::super::storage::CertificateStorage::new(temp_dir.path()).unwrap());
+        storage
+            .save_certificate(
+                "example.com",
+                &cert_pem,
+                &key_pem,
+                Utc::now() + chrono::Duration::days(90),
+                &["example.com".to_string()],
+            )
+            .unwrap();
+
+        let (_client, _storage, scheduler) =
+            create_test_scheduler(temp_dir.path().to_path_buf());
+        scheduler.ari_state.lock().capability = AriCapability::Supported;
+        scheduler.ari_state.lock().renewal_deadline =
+            Some(Utc::now() - chrono::Duration::minutes(5));
+
+        // 1. Certificate issued 12 hours ago (< 24 hours cooldown)
+        let meta_path = temp_dir.path().join("domains/example.com/meta.json");
+        let mut meta: super::super::storage::CertificateMeta =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        meta.issued = Utc::now() - chrono::Duration::hours(12);
+        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+
+        assert!(
+            !scheduler.is_renewal_due("example.com").unwrap(),
+            "Certificate younger than 24 hours must defer ARI-triggered renewal"
+        );
+        let effective = scheduler.effective_renewal_deadline("example.com").unwrap();
+        assert!(effective > Utc::now(), "Effective renewal deadline must be deferred into future");
+
+        // 2. Certificate issued 25 hours ago (> 24 hours cooldown)
+        meta.issued = Utc::now() - chrono::Duration::hours(25);
+        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+
+        assert!(
+            scheduler.is_renewal_due("example.com").unwrap(),
+            "Certificate older than 24 hours with overdue ARI deadline must trigger renewal"
+        );
+        let effective_past = scheduler.effective_renewal_deadline("example.com").unwrap();
+        assert!(effective_past <= Utc::now(), "Effective renewal deadline is no longer deferred");
+    }
+
+    #[test]
+    fn test_ari_cooldown_does_not_suppress_expiry_protection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fixtures = test_fixtures_path();
+        let cert_pem = std::fs::read_to_string(fixtures.join("server-default.crt")).unwrap();
+        let key_pem = std::fs::read_to_string(fixtures.join("server-default.key")).unwrap();
+
+        let storage =
+            Arc::new(super::super::storage::CertificateStorage::new(temp_dir.path()).unwrap());
+        // Certificate expires in 5 days (renew_before_days is 30 -> due for expiry renewal)
+        storage
+            .save_certificate(
+                "example.com",
+                &cert_pem,
+                &key_pem,
+                Utc::now() + chrono::Duration::days(5),
+                &["example.com".to_string()],
+            )
+            .unwrap();
+
+        let (_client, _storage, scheduler) =
+            create_test_scheduler(temp_dir.path().to_path_buf());
+        scheduler.ari_state.lock().capability = AriCapability::Supported;
+        scheduler.ari_state.lock().renewal_deadline =
+            Some(Utc::now() - chrono::Duration::minutes(5));
+
+        // Certificate issued only 2 hours ago (< 24 hours cooldown)
+        let meta_path = temp_dir.path().join("domains/example.com/meta.json");
+        let mut meta: super::super::storage::CertificateMeta =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        meta.issued = Utc::now() - chrono::Duration::hours(2);
+        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+
+        // Must still trigger renewal because expiry protection takes precedence
+        assert!(
+            scheduler.is_renewal_due("example.com").unwrap(),
+            "24-hour ARI cooldown must NOT suppress expiry-based renewal"
+        );
+    }
+
+    #[test]
     fn test_effective_renewal_deadline_storage_error_suppresses_deadline() {
         let temp_dir = tempfile::tempdir().unwrap();
         let fixtures = test_fixtures_path();
