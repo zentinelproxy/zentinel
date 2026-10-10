@@ -85,7 +85,7 @@ urlencoding = "2.1"
 once_cell = "1.21"
 
 # GeoIP filtering
-maxminddb = "0.30"
+maxminddb = "0.32"
 ip2location = "0.6"
 
 # Schema validation
