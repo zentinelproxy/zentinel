@@ -62,26 +62,13 @@ impl CloudflareProvider {
         Ok(provider)
     }
 
-    /// Get the zone ID for a domain
-    async fn get_zone_id(&self, domain: &str) -> DnsResult<String> {
-        let normalized = normalize_domain(domain);
-
-        // Check cache first
-        {
-            let cache = self.zone_cache.read();
-            if let Some(zone_id) = cache.get(normalized) {
-                trace!(domain = %domain, zone_id = %zone_id, "Zone ID found in cache");
-                return Ok(zone_id.clone());
-            }
-        }
-
-        // Fetch zones from API
-        // We filter by name to get the specific zone
+    /// Query Cloudflare for a zone with the exact specified name.
+    async fn query_zone(&self, name: &str) -> DnsResult<Option<Zone>> {
         let response = self
             .client
             .get(format!("{}/zones", self.base_url))
             .header("Authorization", format!("Bearer {}", self.token))
-            .query(&[("name", normalized)])
+            .query(&[("name", name)])
             .send()
             .await
             .map_err(|e| DnsProviderError::ApiRequest(format!("Failed to list zones: {}", e)))?;
@@ -103,22 +90,51 @@ impl CloudflareProvider {
             )));
         }
 
-        // Find the matching zone
-        let zone = zones_resp
-            .result
-            .and_then(|zones| zones.into_iter().next())
-            .ok_or_else(|| DnsProviderError::ZoneNotFound {
-                domain: normalized.to_string(),
-            })?;
+        Ok(zones_resp.result.and_then(|zones| zones.into_iter().next()))
+    }
 
-        // Cache the result
+    /// Get the zone ID for a domain
+    async fn get_zone_id(&self, domain: &str) -> DnsResult<String> {
+        let normalized = normalize_domain(domain);
+
+        // Check cache first
         {
-            let mut cache = self.zone_cache.write();
-            cache.insert(normalized.to_string(), zone.id.clone());
+            let cache = self.zone_cache.read();
+            if let Some(zone_id) = cache.get(normalized) {
+                trace!(domain = %domain, zone_id = %zone_id, "Zone ID found in cache");
+                return Ok(zone_id.clone());
+            }
         }
 
-        debug!(domain = %domain, zone_id = %zone.id, "Found zone for domain");
-        Ok(zone.id)
+        // Try exact domain first, then progressively strip leftmost labels to try parent domains
+        let mut candidate = normalized;
+        while !candidate.is_empty() {
+            if let Some(zone) = self.query_zone(candidate).await? {
+                // Cache the result
+                {
+                    let mut cache = self.zone_cache.write();
+                    cache.insert(normalized.to_string(), zone.id.clone());
+                }
+
+                debug!(
+                    domain = %domain,
+                    candidate = %candidate,
+                    zone_id = %zone.id,
+                    "Found zone for domain"
+                );
+                return Ok(zone.id);
+            }
+
+            if let Some(pos) = candidate.find('.') {
+                candidate = &candidate[pos + 1..];
+            } else {
+                break;
+            }
+        }
+
+        Err(DnsProviderError::ZoneNotFound {
+            domain: normalized.to_string(),
+        })
     }
 }
 
@@ -334,4 +350,188 @@ struct Record {
     #[serde(default, rename = "type")]
     #[allow(dead_code)]
     type_name: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_get_zone_id_no_matching_zone_returns_original_domain() {
+        let mock_server = MockServer::start().await;
+
+        // All zone queries return empty results
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let err = provider
+            .get_zone_id("deep.unknown.example.com")
+            .await
+            .unwrap_err();
+        match err {
+            DnsProviderError::ZoneNotFound { domain } => {
+                assert_eq!(domain, "deep.unknown.example.com");
+            }
+            other => panic!("expected ZoneNotFound, got {:?}", other),
+        }
+
+        // Wildcard should normalize and report normalized domain on error
+        let err_wildcard = provider
+            .get_zone_id("*.deep.unknown.example.com")
+            .await
+            .unwrap_err();
+        match err_wildcard {
+            DnsProviderError::ZoneNotFound { domain } => {
+                assert_eq!(domain, "deep.unknown.example.com");
+            }
+            other => panic!("expected ZoneNotFound, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_zone_id_label_boundaries_not_substring() {
+        let mock_server = MockServer::start().await;
+
+        // Querying sub.notexample.com should check:
+        // 1. sub.notexample.com
+        // 2. notexample.com
+        // 3. com
+        // It must NOT match or query example.com!
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "sub.notexample.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "notexample.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": "wrong-zone", "name": "example.com" }]
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let err = provider
+            .get_zone_id("sub.notexample.com")
+            .await
+            .unwrap_err();
+        match err {
+            DnsProviderError::ZoneNotFound { domain } => {
+                assert_eq!(domain, "sub.notexample.com");
+            }
+            other => panic!("expected ZoneNotFound, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_zone_id_cache_internals() {
+        let mock_server = MockServer::start().await;
+        let parent_zone_id = "zone-parent-789";
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "sub.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": parent_zone_id, "name": "example.com" }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        // Verify cache is empty before lookup
+        {
+            let cache = provider.zone_cache.read();
+            assert_eq!(cache.get("sub.example.com"), None);
+        }
+
+        // First call populates cache
+        let id1 = provider.get_zone_id("sub.example.com").await.unwrap();
+        assert_eq!(id1, parent_zone_id);
+
+        // Verify cache is populated under the normalized requested domain
+        {
+            let cache = provider.zone_cache.read();
+            assert_eq!(
+                cache.get("sub.example.com"),
+                Some(&parent_zone_id.to_string())
+            );
+        }
+
+        // Second call with same domain uses cache (no API calls, expect(1) would fail if called)
+        let id2 = provider.get_zone_id("sub.example.com").await.unwrap();
+        assert_eq!(id2, parent_zone_id);
+
+        // Third call with wildcard normalizes to sub.example.com and hits cache
+        let id3 = provider.get_zone_id("*.sub.example.com").await.unwrap();
+        assert_eq!(id3, parent_zone_id);
+    }
 }
