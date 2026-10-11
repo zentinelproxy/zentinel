@@ -783,6 +783,295 @@ mod cloudflare_provider {
 
         assert!(matches!(err, DnsProviderError::RecordCreation { .. }));
     }
+
+    #[tokio::test]
+    async fn test_exact_zone_match() {
+        let mock_server = MockServer::start().await;
+        let zone_id = "zone-exact-123";
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": zone_id, "name": "example.com" }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let supported = provider.supports_domain("example.com").await.unwrap();
+        assert!(supported);
+    }
+
+    #[tokio::test]
+    async fn test_parent_zone_fallback() {
+        let mock_server = MockServer::start().await;
+        let parent_zone_id = "zone-parent-456";
+
+        // Subdomain has no direct zone
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "sub.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Parent domain has a zone
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": parent_zone_id, "name": "example.com" }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let supported = provider.supports_domain("sub.example.com").await.unwrap();
+        assert!(supported);
+    }
+
+    #[tokio::test]
+    async fn test_most_specific_zone_selection() {
+        let mock_server = MockServer::start().await;
+        let sub_zone_id = "zone-sub-specific";
+        let record_id = "rec-sub-specific-1";
+
+        // Exact deep subdomain has no zone
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "a.b.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // More specific parent b.example.com has a zone (wins)
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "b.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": sub_zone_id, "name": "b.example.com" }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Less specific root parent example.com must never be queried
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": "zone-root", "name": "example.com" }]
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        // TXT record is created under the more-specific zone sub_zone_id
+        Mock::given(method("POST"))
+            .and(path(format!("/zones/{}/dns_records", sub_zone_id)))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "type": "TXT",
+                "name": "_acme-challenge.a.b.example.com",
+                "content": "challenge-val",
+                "ttl": 60
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": { "id": record_id }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let id = provider
+            .create_txt_record("a.b.example.com", "_acme-challenge", "challenge-val")
+            .await
+            .unwrap();
+        assert_eq!(id, record_id);
+    }
+
+    #[tokio::test]
+    async fn test_api_failure_propagates_without_fallback() {
+        let mock_server = MockServer::start().await;
+
+        // Direct lookup fails with 500 error
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "sub.example.com"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "success": false,
+                "errors": [{ "code": 1000, "message": "Internal error" }],
+                "result": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Parent domain must never be queried when an API error occurs
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": "parent-id", "name": "example.com" }]
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let err = provider
+            .supports_domain("sub.example.com")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DnsProviderError::ApiRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn test_zone_caching_subdomain_parent() {
+        let mock_server = MockServer::start().await;
+        let parent_zone_id = "zone-parent-789";
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "sub.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": parent_zone_id, "name": "example.com" }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        // First call populates cache
+        let supported1 = provider.supports_domain("sub.example.com").await.unwrap();
+        assert!(supported1);
+
+        // Second call with same domain uses cache (no API calls, expect(1) would fail if called)
+        let supported2 = provider.supports_domain("sub.example.com").await.unwrap();
+        assert!(supported2);
+
+        // Third call with wildcard normalizes to sub.example.com and hits cache
+        let supported3 = provider.supports_domain("*.sub.example.com").await.unwrap();
+        assert!(supported3);
+    }
+
+    #[tokio::test]
+    async fn test_create_txt_record_subdomain_uses_parent_zone() {
+        let mock_server = MockServer::start().await;
+        let parent_zone_id = "zone-parent-999";
+        let record_id = "rec-subdomain-123";
+
+        // Subdomain has no exact zone
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "sub.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Parent domain has zone
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(wiremock::matchers::query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": parent_zone_id, "name": "example.com" }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // TXT record is created under the parent zone ID with full subdomain name
+        Mock::given(method("POST"))
+            .and(path(format!("/zones/{}/dns_records", parent_zone_id)))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "type": "TXT",
+                "name": "_acme-challenge.sub.example.com",
+                "content": "challenge-digest-value",
+                "ttl": 60
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": { "id": record_id }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            CloudflareProvider::new_test("token", mock_server.uri(), Duration::from_secs(30))
+                .unwrap();
+
+        let created_id = provider
+            .create_txt_record(
+                "sub.example.com",
+                "_acme-challenge",
+                "challenge-digest-value",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(created_id, record_id);
+    }
 }
 
 mod hetzner_provider {
