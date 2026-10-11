@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_2](#26102---2026-10-11) | 0.6.45 | 2026-10-11 | ACME certificates renew in the window the CA suggests (ACME Renewal Information, RFC 9773), with `renew-before-days` kept as a hard floor; renewal orders name the certificate they replace |
 | [26.10_1](#26101---2026-10-10) | 0.6.44 | 2026-10-10 | Dependency maintenance: `rustls` 0.23.45 (stricter HelloRetryRequest handling), `maxminddb` 0.32 (bounded decoding of crafted GeoIP databases), `jsonschema` 0.56, rust-minor batch (12 updates) |
 | [26.09_6](#26096---2026-09-15) | 0.6.43 | 2026-09-15 | **Pingora 0.9.0**: request-target and authority hardening, hop-by-hop request headers stripped before the upstream, no HTTP/1 upstream reuse after an incomplete response; gRPC-Go advisory in the conformance suite; dependency maintenance |
 | [26.09_5](#26095---2026-09-04) | 0.6.42 | 2026-09-04 | **`zentinel bundle install` failed for every non-root user**, so no agent could be installed by following the documented instructions |
@@ -85,6 +86,47 @@ for details.
 ## [Unreleased]
 
 _Nothing yet._
+
+---
+
+## [26.10_2] - 2026-10-11
+
+**Crate version:** 0.6.45
+
+> **ACME Renewal Information (RFC 9773).** When the ACME server supports ARI (Let's
+> Encrypt does), Zentinel renews certificates inside the renewal window the CA
+> suggests instead of only at a fixed number of days before expiry. No configuration
+> change is needed: ARI is detected from the CA's directory, and `renew-before-days`
+> still applies, both as the fallback and as a deadline ARI can never push back.
+
+### Added
+- **ARI-guided renewal.** For each managed certificate Zentinel asks the CA for its
+  `suggestedWindow` and renews at a uniformly random point inside it (RFC 9773 §4.2),
+  so a fleet of proxies does not renew at the same moment. The window is re-checked
+  on the CA's `Retry-After` schedule, clamped to between 1 minute and 24 hours. If
+  the CA moves the window, for example to revoke and reissue early, Zentinel picks a
+  new time inside it. The CA's `explanationURL`, if any, is logged when the window
+  changes. (#492, thanks to @Curious-r)
+- **Renewal orders name their predecessor** (`replaces`), which lets the CA link the
+  new certificate to the old one and, at Let's Encrypt, exempts the renewal from
+  rate limits. If the CA rejects the field, for instance with `alreadyReplaced` after
+  a crash between issuance and saving, the order is retried once without it. (#492)
+
+### Changed
+- **`renew-before-days` remains a hard floor.** A certificate within
+  `renew-before-days` of expiry is renewed regardless of what the CA's window says,
+  so a late or malformed window can make renewal earlier but never later.
+- **CAs without ARI behave as before**: renewal at `renew-before-days`, checked every
+  12 hours. Transient ARI errors back off (1, 2, 4 minutes, then every 6 hours) and
+  fall back to `renew-before-days` meanwhile.
+- **A certificate is not renewed through ARI until it is 24 hours old**, which bounds
+  how often a CA that keeps returning past windows can trigger reissuance.
+  Expiry-based renewal is exempt.
+- If the certificate store cannot be read, the scheduler waits an hour between
+  attempts instead of retrying continuously.
+
+Verified against Let's Encrypt staging: issuance, then a live ARI query returning a
+valid `suggestedWindow`, from which the next renewal was scheduled.
 
 ---
 
