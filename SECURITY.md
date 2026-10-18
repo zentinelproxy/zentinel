@@ -4,10 +4,18 @@ Zentinel is infrastructure that sits at the edge of the web. Security is foundat
 
 ## Supported Versions
 
-| Version | Supported          |
-|---------|--------------------|
-| 0.3.x   | :white_check_mark: |
-| < 0.3   | :x:                |
+Zentinel releases use CalVer (`YY.MM_PATCH`); the crates are published on the
+0.6.x line on crates.io. The [Release Overview](CHANGELOG.md#release-overview)
+in the changelog maps each release to its crate version.
+
+| Version                                  | Supported          |
+|------------------------------------------|--------------------|
+| Latest release (crate 0.6.x)             | :white_check_mark: |
+| Any earlier release                      | :x:                |
+
+Only the latest release receives security fixes, which ship as a new release.
+There are no long-term-support branches; if you run an older release, upgrade
+to the latest one.
 
 ## Reporting a Vulnerability
 
