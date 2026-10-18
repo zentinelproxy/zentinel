@@ -19,8 +19,7 @@ ignore = [
     "RUSTSEC-2025-0057",
 
     # rustls-pemfile — unmaintained (RUSTSEC-2025-0134)
-    # Direct dep (v2.2) + transitive via pingora-rustls 0.7 and
-    # async-memcached → toxiproxy_rust → reqwest 0.11 (v1.0).
+    # Direct dep (v2.2) + transitive via pingora-rustls 0.7.
     # Functionally complete crate; not a security vulnerability.
     "RUSTSEC-2025-0134",
 ]

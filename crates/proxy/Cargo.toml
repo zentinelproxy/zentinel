@@ -89,7 +89,7 @@ maxminddb = "0.32"
 ip2location = "0.6"
 
 # Schema validation
-jsonschema = "0.56"
+jsonschema = "0.58"
 serde_yaml = "0.9"
 
 # Static file serving
@@ -134,13 +134,13 @@ hex = "0.4"
 
 # Distributed rate limiting
 redis = { version = "1.2", features = ["tokio-comp", "connection-manager"], optional = true }
-async-memcached = { version = "0.7", optional = true }
+async-memcached = { version = "0.8", optional = true }
 
 # OpenTelemetry for distributed tracing
-opentelemetry = { version = "0.32", optional = true }
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"], optional = true }
-opentelemetry-semantic-conventions = { version = "0.32", optional = true }
+opentelemetry = { version = "0.33", optional = true }
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic"], optional = true }
+opentelemetry-semantic-conventions = { version = "0.33", optional = true }
 
 # Hashing
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
