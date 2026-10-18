@@ -188,6 +188,6 @@ spec:
 
 ## Getting Help
 
-- [Zentinel Documentation](https://zentinelproxy.io/docs)
+- [Zentinel Documentation](https://docs.zentinelproxy.io/)
 - [Gateway API Documentation](https://gateway-api.sigs.k8s.io/)
 - [GitHub Issues](https://github.com/zentinelproxy/zentinel/issues)

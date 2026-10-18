@@ -298,4 +298,4 @@ sudo zentinel bundle install --force
 
 - [Agent Protocol](agents.md) - How agents communicate with the proxy
 - [Configuration Reference](../../../config/docs/agents.md) - Agent configuration options
-- [Deployment Guide](https://zentinelproxy.io/docs/deployment/zentinel-stack) - Full stack deployment
+- [Deployment Guide](https://docs.zentinelproxy.io/deployment/zentinel-stack/) - Full stack deployment

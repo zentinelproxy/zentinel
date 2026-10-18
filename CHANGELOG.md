@@ -5,7 +5,7 @@ All notable changes to Zentinel are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Zentinel uses [CalVer](https://calver.org/) (`YY.MM_PATCH`) for releases and
 [SemVer](https://semver.org/) for crate versions on crates.io. CalVer is the
-primary, operator-facing version. See [Versioning](https://zentinelproxy.io/docs/appendix/versioning/)
+primary, operator-facing version. See [Versioning](https://docs.zentinelproxy.io/appendix/versioning/)
 for details.
 
 ## Release Overview

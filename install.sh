@@ -17,7 +17,7 @@
 #
 # After installation, use `zentinel bundle install` to install bundled
 # agents (WAF, rate limiter, denylist).
-# See https://zentinelproxy.io/docs/deployment/bundle/
+# See https://docs.zentinelproxy.io/deployment/bundle/
 #
 # Options:
 #   --help              Show help message
@@ -452,7 +452,7 @@ This downloads and installs:
     - Denylist agent (IP/path blocking)
 
 See the bundle command documentation:
-    https://zentinelproxy.io/docs/deployment/bundle/
+    https://docs.zentinelproxy.io/deployment/bundle/
 
 For more information: https://docs.zentinelproxy.io
 EOF
