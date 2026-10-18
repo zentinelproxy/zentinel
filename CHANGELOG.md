@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_3](#26103---2026-10-18) | 0.6.46 | 2026-10-18 | Security and dependency maintenance: `wasmtime` 49 for the WASM agent runtime (23 advisories, one critical), `rustls` 0.23.46 (4 advisories), OpenTelemetry 0.33; Cloudflare DNS-01 finds zones registered at a parent domain; building from source needs **Rust 1.96** |
 | [26.10_2](#26102---2026-10-11) | 0.6.45 | 2026-10-11 | ACME certificates renew in the window the CA suggests (ACME Renewal Information, RFC 9773), with `renew-before-days` kept as a hard floor; renewal orders name the certificate they replace |
 | [26.10_1](#26101---2026-10-10) | 0.6.44 | 2026-10-10 | Dependency maintenance: `rustls` 0.23.45 (stricter HelloRetryRequest handling), `maxminddb` 0.32 (bounded decoding of crafted GeoIP databases), `jsonschema` 0.56, rust-minor batch (12 updates) |
 | [26.09_6](#26096---2026-09-15) | 0.6.43 | 2026-09-15 | **Pingora 0.9.0**: request-target and authority hardening, hop-by-hop request headers stripped before the upstream, no HTTP/1 upstream reuse after an incomplete response; gRPC-Go advisory in the conformance suite; dependency maintenance |
@@ -86,6 +87,65 @@ for details.
 ## [Unreleased]
 
 _Nothing yet._
+
+---
+
+## [26.10_3] - 2026-10-18
+
+**Crate version:** 0.6.46
+
+Security fixes in dependencies and one bug fix. Nothing in this release changes
+how Zentinel routes, inspects or blocks traffic, and no configuration change is
+needed. Building from source now needs Rust 1.96.
+
+### Security
+- **`wasmtime` 48.0.0 → 49.0.3** in `zentinel-wasm-runtime`, the runtime for WASM
+  agents. Fixes 23 advisories (RUSTSEC-2026-0314 to -0364), among them a critical
+  native stack buffer overflow from an unvalidated async-lifted callback result
+  count (RUSTSEC-2026-0327), a WASI filesystem sandbox escape when renaming
+  symlinks with trailing slashes (RUSTSEC-2026-0352), fuel accounting that guests
+  could bypass, and several ways for a guest to panic the host. Only relevant if
+  you run WASM agents. (#507, supersedes #488)
+- **`rustls` 0.23.45 → 0.23.46.** Fixes RUSTSEC-2026-0346 to -0349, which mostly
+  concern rustls as a TLS client, the role Zentinel has toward upstreams, agents
+  and the ACME server: an unauthenticated ServerHello could downgrade later
+  connections, `Debug` output of client session values exposed TLS secrets,
+  buffered data could reach the outer server after an ECH rejection, and Brotli
+  certificate decompression could allocate up to 1 GiB before authentication.
+  (#507)
+- **`h2` 0.3.27 is gone** from the dependency tree (RUSTSEC-2026-0258, unbounded
+  empty DATA frames): `async-memcached` 0.8 no longer pulls in `toxiproxy_rust`,
+  and with it reqwest 0.11 and hyper 0.14. (#507, supersedes #501)
+- **`crossbeam-epoch` 0.9.18 → 0.9.21** (RUSTSEC-2026-0204, an invalid pointer
+  dereference in its `fmt::Pointer` implementation). (#507)
+- `quinn-proto` 0.11.19 (RUSTSEC-2026-0338 to -0342) is updated in the lockfile
+  as well; it is not built into Zentinel. `cargo audit` is clean.
+
+### Fixed
+- **Cloudflare DNS-01 challenges for subdomains.** The Cloudflare provider looked
+  up only a zone named exactly like the certificate's domain, so a certificate
+  for `app.example.com` could not be issued when the zone is `example.com`. It
+  now tries the domain and then each parent domain, uses the most specific zone
+  that exists, and still reports API and authentication errors as errors rather
+  than as a missing zone. (#499, thanks to @Curious-r)
+
+### Changed
+- **Minimum Rust version 1.96** (was 1.95), required by `wasmtime` 49. The
+  toolchain file, `rust-version` and the Docker build image move together.
+  Prebuilt binaries and container images are not affected. (#507)
+- **OpenTelemetry 0.33** (`opentelemetry`, `opentelemetry_sdk`,
+  `opentelemetry-otlp`, `opentelemetry-semantic-conventions`); no code changes
+  were needed. (#507, supersedes #503 to #506)
+- **`jsonschema` 0.56 → 0.58** in the config and proxy crates, and
+  **`async-memcached` 0.7 → 0.8** for the memcached-backed distributed rate
+  limiter; no code changes were needed. (#507, supersedes #502 and #501)
+- **rust-minor group:** `tokio` 1.53.3, `hyper` 1.12.0, `uuid` 1.28.0, `toml`
+  1.1.8, `time` 0.3.55, `libc` 0.2.191, `signal-hook` 0.4.5, `insta` 1.49.0.
+  (#507, supersedes #500)
+
+`kube` 4 (#331) is not included: the matching `gateway-api` crate uses TLSRoute
+and ReferenceGrant `v1`, which Gateway API only serves from v1.5, while the
+Zentinel gateway controller targets v1.4.1.
 
 ---
 
