@@ -296,11 +296,16 @@ Everything a reader ever sees says **`PUBLISHED`**. `CURRENT` is plumbing.
    > (`26.08_3` carries no semver at all.) So treat a tag message as an informal note and
    > **never as evidence of what a release shipped** — read crates.io, the Release notes,
    > or the CHANGELOG for that. All three agree; the tag message may not.
-5. **Post-release bump (manual, every release):** the workflow force-pushes a
-   `chore/bump-<published>` branch but its `gh pr create` reliably fails, leaving an
-   **orphan branch that only edits `Cargo.toml`**. Open the PR yourself, add a
-   `cargo update --workspace` commit so `Cargo.lock` reflects the new version, and merge.
-   This moves `main` up to the just-published version.
+5. **Post-release bump (every release):** branch protection blocks the workflow's push
+   to `main`, so it pushes a `chore/bump-<published>` branch instead. That branch already
+   updates `Cargo.toml`, the excluded crates' manifests and `Cargo.lock` (the workflow
+   fails if `Cargo.lock` does not reflect the new version). The workflow then opens the PR
+   itself, which needs **Settings → Actions → General → "Allow GitHub Actions to create
+   and approve pull requests"**; without it `gh pr create` fails with *"GitHub Actions is
+   not permitted to create or approve pull requests"* and you open the PR from the branch
+   by hand (as for 26.10_3, #510). Merge it once CI is green; this moves `main` up to the
+   just-published version. `main` requires status checks only, no reviews, so allowing
+   Actions to approve pull requests does not weaken its protection.
 
 > **Don't skip step 3.** If you merge the prepare PR without tagging, no release is cut
 > (this happened to `26.04_6`, PR #207, tagged retroactively).
