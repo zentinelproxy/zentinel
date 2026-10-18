@@ -102,6 +102,7 @@ jobs:
       upload-artifacts: true
       artifact-prefix: zentinel-${{ needs.validate.outputs.calver }}
       version: ${{ needs.validate.outputs.calver }}
+      semver: ${{ needs.validate.outputs.new-semver }}
       # Linux builds pinned to ubuntu-22.04 (glibc 2.35) to stay compatible
       # with the distroless/cc-debian12 runtime (glibc 2.36). ubuntu-latest
       # would produce binaries linked against glibc 2.39 and crash inside

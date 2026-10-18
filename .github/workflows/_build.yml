@@ -26,6 +26,14 @@ on:
         required: false
         default: ''
         type: string
+      semver:
+        description: >-
+          Crate version to build as (optional). The Release workflow publishes
+          Cargo.toml's version plus one; passing that here makes the binaries
+          report the published version instead of the one in the tagged tree.
+        required: false
+        default: ''
+        type: string
       targets:
         description: 'JSON array of target configs'
         required: false
@@ -58,6 +66,23 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.config.target }}
+
+      # Same rewrite as the version bump in release.yml, so `zentinel --version`
+      # reports the crate version that release publishes.
+      - name: Set release crate version
+        if: inputs.semver != ''
+        shell: bash
+        env:
+          NEW_SEMVER: ${{ inputs.semver }}
+        run: |
+          CURRENT_SEMVER=$(grep -m1 'version = "' Cargo.toml | sed 's/.*version = "\([^"]*\)".*/\1/')
+          echo "Building as $NEW_SEMVER (tree has $CURRENT_SEMVER)"
+          if [ "$CURRENT_SEMVER" != "$NEW_SEMVER" ]; then
+            perl -pi -e "s/^version = \"\Q$CURRENT_SEMVER\E\"/version = \"$NEW_SEMVER\"/" Cargo.toml
+            find crates -name Cargo.toml -exec perl -pi -e "s/version = \"\Q$CURRENT_SEMVER\E\"/version = \"$NEW_SEMVER\"/g" {} \;
+          fi
+          grep -q "^version = \"$NEW_SEMVER\"" Cargo.toml \
+            || { echo "::error::Cargo.toml was not set to $NEW_SEMVER"; exit 1; }
 
       - name: Cache cargo registry
         uses: actions/cache@v6
