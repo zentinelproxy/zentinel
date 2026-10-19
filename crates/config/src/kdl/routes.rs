@@ -1210,6 +1210,49 @@ fn parse_api_schema_config_opt(node: &kdl::KdlNode) -> Result<Option<ApiSchemaCo
 ///     }
 /// }
 /// ```
+/// Convert an inline KDL schema to JSON Schema.
+///
+/// `kdl_to_json` turns a node with one argument into a scalar, so
+/// `required "email"` became `"required": "email"`, which JSON Schema rejects:
+/// `required` and `enum` must be arrays however many entries they have. The
+/// schema then failed to compile and the route ran unvalidated (#524).
+fn schema_from_kdl(node: &kdl::KdlNode) -> Result<serde_json::Value> {
+    let mut schema = super::kdl_to_json(node)?;
+    normalize_schema_arrays(&mut schema);
+    Ok(schema)
+}
+
+/// Wrap a scalar `required`, `enum` or `examples` in an array, recursively.
+///
+/// Recursion goes through subschemas only. Under `properties`,
+/// `patternProperties`, `definitions` and `$defs` the keys are names, not
+/// keywords, so a property called `required` is left alone and only its schema
+/// is visited.
+fn normalize_schema_arrays(schema: &mut serde_json::Value) {
+    let serde_json::Value::Object(map) = schema else {
+        return;
+    };
+    for (key, value) in map.iter_mut() {
+        match key.as_str() {
+            "required" | "enum" | "examples" if !value.is_array() && !value.is_object() => {
+                *value = serde_json::Value::Array(vec![value.take()]);
+            }
+            "properties" | "patternProperties" | "definitions" | "$defs" => {
+                if let serde_json::Value::Object(named) = value {
+                    named.values_mut().for_each(normalize_schema_arrays);
+                }
+            }
+            _ => match value {
+                serde_json::Value::Array(items) => {
+                    items.iter_mut().for_each(normalize_schema_arrays)
+                }
+                serde_json::Value::Object(_) => normalize_schema_arrays(value),
+                _ => {}
+            },
+        }
+    }
+}
+
 fn parse_api_schema_config(node: &kdl::KdlNode) -> Result<ApiSchemaConfig> {
     let schema_file = get_string_entry(node, "schema-file").map(PathBuf::from);
     let schema_content = get_string_entry(node, "schema-content");
@@ -1227,7 +1270,7 @@ fn parse_api_schema_config(node: &kdl::KdlNode) -> Result<ApiSchemaConfig> {
     // Parse inline request schema if present
     let request_schema = if let Some(children) = node.children() {
         if let Some(schema_node) = children.get("request-schema") {
-            Some(super::kdl_to_json(schema_node)?)
+            Some(schema_from_kdl(schema_node)?)
         } else {
             None
         }
@@ -1238,7 +1281,7 @@ fn parse_api_schema_config(node: &kdl::KdlNode) -> Result<ApiSchemaConfig> {
     // Parse inline response schema if present
     let response_schema = if let Some(children) = node.children() {
         if let Some(schema_node) = children.get("response-schema") {
-            Some(super::kdl_to_json(schema_node)?)
+            Some(schema_from_kdl(schema_node)?)
         } else {
             None
         }
@@ -3215,5 +3258,113 @@ mod tests {
         let grpc = problems[1].as_deref().unwrap();
         assert!(grpc.contains("is not a service type"), "{grpc}");
         assert!(problems[2].is_none());
+    }
+
+    fn api_route_schema(schema_body: &str) -> serde_json::Value {
+        let routes = parse_routes_from(&format!(
+            r#"
+            routes {{
+                route "api" {{
+                    matches {{ path-prefix "/api" }}
+                    upstream "backend"
+                    api-schema {{
+                        request-schema {{
+{schema_body}
+                        }}
+                    }}
+                }}
+            }}
+            "#
+        ))
+        .unwrap();
+        routes[0]
+            .api_schema
+            .as_ref()
+            .unwrap()
+            .request_schema
+            .clone()
+            .unwrap()
+    }
+
+    /// #524: one name made `required` a string, the schema failed to compile,
+    /// and the route ran without validation.
+    #[test]
+    fn single_required_entry_becomes_an_array() {
+        let schema = api_route_schema(
+            r#"
+            type "object"
+            properties {
+                email { type "string" }
+                address {
+                    type "object"
+                    properties {
+                        city { type "string" }
+                    }
+                    required "city"
+                }
+            }
+            required "email"
+            "#,
+        );
+        assert_eq!(schema["required"], serde_json::json!(["email"]));
+        assert_eq!(
+            schema["properties"]["address"]["required"],
+            serde_json::json!(["city"])
+        );
+        assert!(jsonschema::draft7::new(&schema).is_ok());
+    }
+
+    #[test]
+    fn a_property_named_required_is_not_rewritten() {
+        let schema = api_route_schema(
+            r#"
+            type "object"
+            properties {
+                required { type "boolean" }
+            }
+            required "required" "other"
+            "#,
+        );
+        assert_eq!(
+            schema["properties"]["required"],
+            serde_json::json!({"type": "boolean"})
+        );
+        assert_eq!(schema["required"], serde_json::json!(["required", "other"]));
+    }
+
+    /// A schema that still does not compile is a configuration error, not a
+    /// route that silently runs unvalidated.
+    #[test]
+    fn an_uncompilable_schema_fails_validation() {
+        let kdl = r#"
+            system { worker-threads 1 }
+            listeners {
+                listener "http" {
+                    address "127.0.0.1:8080"
+                    protocol "http"
+                }
+            }
+            routes {
+                route "api" {
+                    matches { path-prefix "/api" }
+                    upstream "backend"
+                    api-schema {
+                        request-schema {
+                            type "object"
+                            minProperties "two"
+                        }
+                    }
+                }
+            }
+            upstreams {
+                upstream "backend" { target "127.0.0.1:3000"; }
+            }
+        "#;
+        let config = crate::Config::from_kdl(kdl).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("request-schema is not a valid JSON Schema"),
+            "{err}"
+        );
     }
 }
