@@ -51,6 +51,24 @@ use zentinel_config::Config;
 pub fn validate(kdl_config: &str) -> ValidationResult {
     match Config::from_kdl(kdl_config) {
         Ok(config) => {
+            // The same semantic checks the proxy runs before it will start:
+            // references between routes, upstreams, filters and agents,
+            // duplicates, listeners, and so on. Without them a config the
+            // proxy refuses would be reported here as valid.
+            if let Err(e) = config.validate() {
+                return ValidationResult {
+                    valid: false,
+                    errors: vec![ValidationError {
+                        message: e.to_string(),
+                        severity: ValidationSeverity::Error,
+                        location: None,
+                        hint: None,
+                    }],
+                    warnings: Vec::new(),
+                    effective_config: None,
+                };
+            }
+
             let mut warnings = Vec::new();
 
             // Check for common misconfigurations
@@ -164,21 +182,6 @@ fn lint_config(config: &Config) -> Vec<Warning> {
                 code: "ROUTE_NO_UPSTREAM".to_string(),
                 message: format!("Route '{}' has no upstream defined", route.id),
             });
-        }
-    }
-
-    // Check for undefined upstream references
-    for route in &config.routes {
-        if let Some(ref upstream) = route.upstream {
-            if !config.upstreams.contains_key(upstream) {
-                warnings.push(Warning {
-                    code: "UNDEFINED_UPSTREAM".to_string(),
-                    message: format!(
-                        "Route '{}' references undefined upstream '{}'",
-                        route.id, upstream
-                    ),
-                });
-            }
         }
     }
 
@@ -368,6 +371,74 @@ mod tests {
         let result = validate(kdl);
         assert!(!result.valid);
         assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_rejects_undefined_upstream() {
+        // Parses, but the proxy refuses to start with it.
+        let kdl = r#"
+            server { }
+            listeners {
+                listener "http" {
+                    address "0.0.0.0:8080"
+                }
+            }
+            routes {
+                route "api" {
+                    matches {
+                        path-prefix "/api"
+                    }
+                    upstream "nope"
+                }
+            }
+            upstreams {
+                upstream "backend" {
+                    target "127.0.0.1:8080"
+                }
+            }
+        "#;
+
+        let result = validate(kdl);
+        assert!(!result.valid, "undefined upstream must be an error");
+        assert!(
+            result.errors[0].message.contains("nope"),
+            "error should name the missing upstream: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_undefined_filter() {
+        let kdl = r#"
+            server { }
+            listeners {
+                listener "http" {
+                    address "0.0.0.0:8080"
+                }
+            }
+            routes {
+                route "api" {
+                    matches {
+                        path-prefix "/api"
+                    }
+                    upstream "backend"
+                    filters "missing-filter"
+                }
+            }
+            upstreams {
+                upstream "backend" {
+                    target "127.0.0.1:8080"
+                }
+            }
+        "#;
+
+        let result = validate(kdl);
+        assert!(!result.valid, "undefined filter must be an error");
+        assert!(
+            result.errors[0].message.contains("missing-filter"),
+            "error should name the missing filter: {:?}",
+            result.errors
+        );
     }
 
     #[test]

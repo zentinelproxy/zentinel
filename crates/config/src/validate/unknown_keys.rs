@@ -527,6 +527,16 @@ pub fn check_unknown_keys(kdl_source: &str, result: &mut ValidationResult) {
 fn walk(node: &kdl::KdlNode, parent: Option<&str>, result: &mut ValidationResult) {
     let name = node.name().value();
 
+    // `service-type` is a known key, so the check below passes it; whether
+    // its value is applied depends on the route's other blocks.
+    if name == "route" {
+        if let Some(route_id) = node.entries().first().and_then(|e| e.value().as_string()) {
+            if let (_, Some(problem)) = crate::kdl::routes::resolve_service_type(node, route_id) {
+                result.add_warning(ValidationWarning::new(problem));
+            }
+        }
+    }
+
     if let Some(block) = block_for(node, parent) {
         if let Some(children) = node.children() {
             for child in children.nodes() {

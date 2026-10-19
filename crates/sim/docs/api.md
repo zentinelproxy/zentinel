@@ -184,7 +184,6 @@ pub struct Warning {
 | Code | Description |
 |------|-------------|
 | `W001` | Route has no upstream (and not static/builtin) |
-| `W002` | Route references undefined upstream |
 | `W003` | Duplicate route ID |
 | `W004` | Shadow config without body buffering |
 | `W005` | WebSocket inspection without WebSocket enabled |

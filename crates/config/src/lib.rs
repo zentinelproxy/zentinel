@@ -772,7 +772,10 @@ impl Config {
             }
 
             if let AgentTransport::UnixSocket { path } = &agent.transport {
-                if !path.exists() && !path.parent().is_some_and(|p| p.exists()) {
+                if validation::HAS_FILESYSTEM
+                    && !path.exists()
+                    && !path.parent().is_some_and(|p| p.exists())
+                {
                     return Err(ZentinelError::Config {
                         message: format!(
                             "Agent '{}' unix socket path parent directory doesn't exist: {:?}",

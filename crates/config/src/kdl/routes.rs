@@ -88,18 +88,8 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     .transpose()?;
 
                 // Parse builtin-handler
-                let builtin_handler =
-                    get_string_entry(child, "builtin-handler").and_then(|s| match s.as_str() {
-                        "status" => Some(BuiltinHandler::Status),
-                        "health" => Some(BuiltinHandler::Health),
-                        "metrics" => Some(BuiltinHandler::Metrics),
-                        "not-found" | "not_found" => Some(BuiltinHandler::NotFound),
-                        "config" => Some(BuiltinHandler::Config),
-                        "upstreams" => Some(BuiltinHandler::Upstreams),
-                        "cache-purge" | "cache_purge" => Some(BuiltinHandler::CachePurge),
-                        "cache-stats" | "cache_stats" => Some(BuiltinHandler::CacheStats),
-                        _ => None,
-                    });
+                let builtin_handler = get_string_entry(child, "builtin-handler")
+                    .and_then(|s| parse_builtin_handler(&s));
 
                 // Parse cache configuration
                 let cache_config = parse_cache_config_opt(child)?;
@@ -108,17 +98,10 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 let shadow = parse_shadow_config_opt(child)?;
 
                 // Determine service type
-                let service_type = if static_files.is_some() {
-                    ServiceType::Static
-                } else if builtin_handler.is_some() {
-                    ServiceType::Builtin
-                } else if api_schema.is_some() {
-                    ServiceType::Api
-                } else if inference.is_some() {
-                    ServiceType::Inference
-                } else {
-                    ServiceType::Web
-                };
+                let (service_type, problem) = resolve_service_type(child, &id);
+                if let Some(problem) = problem {
+                    warn!("{}", problem);
+                }
 
                 trace!(
                     route_id = %id,
@@ -385,6 +368,98 @@ fn parse_upstream_ref(node: &kdl::KdlNode) -> Option<String> {
         }
     }
     None
+}
+
+fn parse_builtin_handler(name: &str) -> Option<BuiltinHandler> {
+    match name {
+        "status" => Some(BuiltinHandler::Status),
+        "health" => Some(BuiltinHandler::Health),
+        "metrics" => Some(BuiltinHandler::Metrics),
+        "not-found" | "not_found" => Some(BuiltinHandler::NotFound),
+        "config" => Some(BuiltinHandler::Config),
+        "upstreams" => Some(BuiltinHandler::Upstreams),
+        "cache-purge" | "cache_purge" => Some(BuiltinHandler::CachePurge),
+        "cache-stats" | "cache_stats" => Some(BuiltinHandler::CacheStats),
+        _ => None,
+    }
+}
+
+/// Work out a route's service type, and whether its `service-type` was ignored.
+///
+/// The type is implied by the route's blocks: `static-files`, a recognised
+/// `builtin-handler`, `api-schema` or `inference`, and `web` otherwise. For a
+/// long time that was all, and `service-type` was accepted and never read: a
+/// route documented as `service-type "api"` served HTML error pages.
+///
+/// An explicit value now applies where the blocks allow it. `api` needs no
+/// block, since it only changes how the route responds. A value that is not a
+/// type, or that the blocks contradict, keeps the implied type and comes back
+/// as a problem: logged at load, and reported by `zentinel lint` through
+/// `validate::unknown_keys`. It is not an error, because configs that carried
+/// such a value have been loading fine and must keep doing so.
+pub(crate) fn resolve_service_type(
+    node: &kdl::KdlNode,
+    route_id: &str,
+) -> (ServiceType, Option<String>) {
+    let has = |name: &str| node.children().and_then(|c| c.get(name)).is_some();
+    let implied = if has("static-files") {
+        ServiceType::Static
+    } else if get_string_entry(node, "builtin-handler")
+        .and_then(|s| parse_builtin_handler(&s))
+        .is_some()
+    {
+        ServiceType::Builtin
+    } else if has("api-schema") {
+        ServiceType::Api
+    } else if has("inference") {
+        ServiceType::Inference
+    } else {
+        ServiceType::Web
+    };
+
+    let Some(value) = get_string_entry(node, "service-type") else {
+        return (implied, None);
+    };
+
+    let explicit = match value.as_str() {
+        "web" => ServiceType::Web,
+        "api" => ServiceType::Api,
+        "static" => ServiceType::Static,
+        "builtin" => ServiceType::Builtin,
+        "inference" => ServiceType::Inference,
+        _ => {
+            return (
+                implied,
+                Some(format!(
+                    "'service-type \"{}\"' on route '{}' is not a service type (web, api, \
+                     static, builtin, inference) and is being ignored.",
+                    value, route_id
+                )),
+            )
+        }
+    };
+
+    if explicit == implied || (explicit == ServiceType::Api && implied == ServiceType::Web) {
+        return (explicit, None);
+    }
+
+    let requirement = match explicit {
+        ServiceType::Static => "needs a static-files block",
+        ServiceType::Builtin => "needs a builtin-handler",
+        ServiceType::Inference => "needs an inference block",
+        ServiceType::Web | ServiceType::Api => {
+            "cannot apply to a route with static-files, a builtin-handler or inference"
+        }
+    };
+    let problem = format!(
+        "'service-type \"{}\"' on route '{}' {}; the route is served as '{}' and the \
+         setting is being ignored.",
+        value,
+        route_id,
+        requirement,
+        format!("{:?}", implied).to_lowercase()
+    );
+    (implied, Some(problem))
 }
 
 fn parse_static_file_config_opt(node: &kdl::KdlNode) -> Result<Option<StaticFileConfig>> {
@@ -3042,5 +3117,103 @@ mod tests {
         )
         .unwrap();
         assert_eq!(routes[0].shadow.as_ref().unwrap().percentage, 75.0);
+    }
+
+    /// `service-type` was accepted and never read, so `service-type "api"`
+    /// left the route as `web` and it served HTML errors instead of JSON.
+    #[test]
+    fn explicit_service_type_is_applied() {
+        let routes = parse_routes_from(
+            r#"
+            routes {
+                route "api" {
+                    matches { path-prefix "/api" }
+                    upstream "backend"
+                    service-type "api"
+                }
+                route "web" {
+                    matches { path-prefix "/" }
+                    upstream "backend"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(routes[0].service_type, ServiceType::Api);
+        assert_eq!(routes[1].service_type, ServiceType::Web);
+    }
+
+    #[test]
+    fn service_type_matching_its_block_is_accepted() {
+        let routes = parse_routes_from(
+            r#"
+            routes {
+                route "health" {
+                    matches { path "/health" }
+                    service-type "builtin"
+                    builtin-handler "health"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(routes[0].service_type, ServiceType::Builtin);
+    }
+
+    /// A value the route's blocks contradict, or one that is not a type, has
+    /// been loading fine for as long as `service-type` was ignored. It keeps
+    /// loading, with the implied type, and is reported instead.
+    #[test]
+    fn contradicting_or_unknown_service_type_keeps_the_implied_type() {
+        let routes = parse_routes_from(
+            r#"
+            routes {
+                route "assets" {
+                    matches { path-prefix "/static" }
+                    upstream "backend"
+                    service-type "static"
+                }
+                route "grpc" {
+                    matches { path-prefix "/grpc" }
+                    upstream "backend"
+                    service-type "grpc"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(routes[0].service_type, ServiceType::Web);
+        assert_eq!(routes[1].service_type, ServiceType::Web);
+    }
+
+    #[test]
+    fn service_type_problems_are_described() {
+        let doc: kdl::KdlDocument = r#"
+            route "assets" {
+                upstream "backend"
+                service-type "static"
+            }
+            route "grpc" {
+                upstream "backend"
+                service-type "grpc"
+            }
+            route "api" {
+                upstream "backend"
+                service-type "api"
+            }
+        "#
+        .parse()
+        .unwrap();
+        let problems: Vec<_> = doc
+            .nodes()
+            .iter()
+            .map(|n| resolve_service_type(n, &get_first_arg_string(n).unwrap()).1)
+            .collect();
+        let assets = problems[0].as_deref().unwrap();
+        assert!(assets.contains("needs a static-files block"), "{assets}");
+        assert!(assets.contains("is being ignored"), "{assets}");
+        let grpc = problems[1].as_deref().unwrap();
+        assert!(grpc.contains("is not a service type"), "{grpc}");
+        assert!(problems[2].is_none());
     }
 }

@@ -19,6 +19,14 @@ use crate::{
 use zentinel_common::ids::Scope;
 use zentinel_common::types::{Priority, TlsVersion};
 
+/// Whether checks that look at the local disk can run.
+///
+/// The playground builds this crate for `wasm32-unknown-unknown`, where there
+/// is no filesystem and every path reports as missing. Skipping those checks
+/// there lets the rest of the semantic validation run in the browser instead
+/// of failing every config that names a path.
+pub(crate) const HAS_FILESYSTEM: bool = !cfg!(all(target_arch = "wasm32", target_os = "unknown"));
+
 // ============================================================================
 // Field Validators
 // ============================================================================
@@ -545,7 +553,9 @@ fn validate_routes(
     // Validate static file configurations
     for route in &config.routes {
         if let Some(ref static_config) = route.static_files {
-            if !static_config.root.exists() {
+            if !HAS_FILESYSTEM {
+                // No disk to check the root against.
+            } else if !static_config.root.exists() {
                 errors.push(format!(
                     "Route '{}' static files root directory '{}' does not exist.",
                     route.id,
