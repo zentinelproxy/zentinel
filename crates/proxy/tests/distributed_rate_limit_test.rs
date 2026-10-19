@@ -87,7 +87,18 @@ mod redis_tests {
         (backend, rate)
     }
 
+    /// Whether to run the Redis tests. Unreachable means skip -- unless
+    /// `ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS` is set, as in CI, where a
+    /// skipped test would pass without having tested anything.
     async fn is_redis_available() -> bool {
+        let reachable = redis_reachable().await;
+        if !reachable && std::env::var("ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS").is_ok() {
+            panic!("Redis is required (ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS) but not reachable");
+        }
+        reachable
+    }
+
+    async fn redis_reachable() -> bool {
         if should_skip_redis() {
             return false;
         }
@@ -417,7 +428,18 @@ mod memcached_tests {
         (backend, rate)
     }
 
+    /// Whether to run the memcached tests. Unreachable means skip -- unless
+    /// `ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS` is set, as in CI, where a
+    /// skipped test would pass without having tested anything.
     async fn is_memcached_available() -> bool {
+        let reachable = memcached_reachable().await;
+        if !reachable && std::env::var("ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS").is_ok() {
+            panic!("memcached is required (ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS) but not reachable");
+        }
+        reachable
+    }
+
+    async fn memcached_reachable() -> bool {
         if should_skip_memcached() {
             return false;
         }

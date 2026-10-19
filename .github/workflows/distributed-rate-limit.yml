@@ -1,0 +1,66 @@
+# Distributed rate limiting against real Redis and memcached.
+#
+# The Redis and memcached rate-limit backends were never exercised by CI: their
+# integration tests skip (and pass) when no server answers, and no job started
+# one. That is how `backend "redis"` / `"memcached"` went unused for so long
+# without anything failing (#543). This job starts both as service containers
+# and sets ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS, so an unreachable server
+# fails the run instead of skipping it.
+
+name: Distributed rate limiting
+
+on:
+  pull_request:
+    paths:
+      - "crates/proxy/src/rate_limit*"
+      - "crates/proxy/src/rate_limit/**"
+      - "crates/proxy/src/distributed_rate_limit*"
+      - "crates/proxy/src/memcached_rate_limit*"
+      - "crates/proxy/tests/distributed_rate_limit_test.rs"
+      - "crates/proxy/Cargo.toml"
+      - ".github/workflows/distributed-rate-limit.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: distributed-rate-limit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  backends:
+    name: Redis and memcached
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 2s --health-retries 15
+      memcached:
+        image: memcached:1.6
+        ports: ["11211:11211"]
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+      MEMCACHED_URL: memcache://127.0.0.1:11211
+      ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+      - name: Integration tests against the real backends
+        run: >-
+          cargo test -p zentinel-proxy --features distributed-rate-limit
+          --test distributed_rate_limit_test -- --nocapture
