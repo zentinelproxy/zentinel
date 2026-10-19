@@ -340,6 +340,23 @@ pub(crate) const RECOGNIZED_AGENT_KEYS: &[&str] = &[
     "protocol-version",
 ];
 
+/// Parse an agent block's `failure-mode`.
+///
+/// Shared by the single-file and multi-file parsers. An unknown value is a
+/// load error rather than a default: the multi-file parser used to read
+/// anything but "closed" as open, so a typo there turned a security agent
+/// fail-open without a word.
+pub(crate) fn parse_agent_failure_mode(mode: &str) -> Result<FailureMode> {
+    match mode {
+        "fail_open" | "fail-open" | "open" => Ok(FailureMode::Open),
+        "fail_closed" | "fail-closed" | "closed" => Ok(FailureMode::Closed),
+        other => Err(anyhow::anyhow!(
+            "Unknown failure mode: '{}'. Use 'open' or 'closed'",
+            other
+        )),
+    }
+}
+
 /// Settings accepted inside an agent's `tls` block.
 pub(crate) const RECOGNIZED_AGENT_TLS_KEYS: &[&str] =
     &["ca-cert", "client-cert", "client-key", "tls-insecure"];
@@ -534,16 +551,7 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
             }
             "failure-mode" => {
                 if let Some(mode) = get_first_arg_string(child) {
-                    failure_mode = match mode.as_str() {
-                        "fail_open" | "fail-open" | "open" => FailureMode::Open,
-                        "fail_closed" | "fail-closed" | "closed" => FailureMode::Closed,
-                        other => {
-                            return Err(anyhow::anyhow!(
-                                "Unknown failure mode: '{}'. Use 'open' or 'closed'",
-                                other
-                            ))
-                        }
-                    };
+                    failure_mode = parse_agent_failure_mode(&mode)?;
                 }
             }
             "events" => {

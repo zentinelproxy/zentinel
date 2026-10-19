@@ -6,6 +6,7 @@
 use anyhow::{anyhow, Result};
 use kdl::KdlNode;
 use std::path::PathBuf;
+use tracing::warn;
 
 use zentinel_common::TraceIdFormat;
 
@@ -161,15 +162,31 @@ pub(super) fn parse_route(node: &KdlNode) -> Result<RouteConfig> {
         matches.push(crate::MatchCondition::PathPrefix("/".to_string()));
     }
 
+    // Read as the single-file parser reads them. Both used to be fixed here
+    // (normal priority, no handler) whatever the file said.
+    let (priority, problem) = crate::kdl::routes::resolve_priority(node, &id);
+    if let Some(problem) = problem {
+        warn!("{}", problem);
+    }
+    let (builtin_handler, problem) = crate::kdl::routes::resolve_builtin_handler(node, &id);
+    if let Some(problem) = problem {
+        warn!("{}", problem);
+    }
+    let service_type = if builtin_handler.is_some() {
+        crate::ServiceType::Builtin
+    } else {
+        crate::ServiceType::Web
+    };
+
     Ok(RouteConfig {
         id,
-        priority: crate::Priority::NORMAL,
+        priority,
         matches,
         upstream: get_string_entry(node, "upstream"),
-        service_type: crate::ServiceType::Web,
+        service_type,
         policies: crate::RoutePolicies::default(),
         filters: Vec::new(),
-        builtin_handler: None,
+        builtin_handler,
         waf_enabled: get_bool_entry(node, "waf-enabled").unwrap_or(false),
         retry_policy: None,
         static_files: None,
@@ -223,6 +240,17 @@ pub(super) fn parse_agent(node: &KdlNode) -> Result<AgentConfig> {
         .map(parse_circuit_breaker_faildefault)
         .transpose()?;
 
+    // The single-file parser's reading, unknown values rejected. This
+    // used to treat anything but "closed" as open, so `failure-mode
+    // "closd"` ran a security agent fail-open.
+    let failure_mode = get_string_entry(node, "failure-mode")
+        .map(|mode| {
+            crate::kdl::parse_agent_failure_mode(&mode)
+                .map_err(|e| anyhow!("Agent '{}': {}", id, e))
+        })
+        .transpose()?
+        .unwrap_or(crate::FailureMode::Open);
+
     Ok(AgentConfig {
         id,
         agent_type,
@@ -232,10 +260,7 @@ pub(super) fn parse_agent(node: &KdlNode) -> Result<AgentConfig> {
         timeout_ms: get_int_entry(node, "timeout-ms")
             .map(|v| v as u64)
             .unwrap_or(100),
-        failure_mode: match get_string_entry(node, "failure-mode").as_deref() {
-            Some("closed") => crate::FailureMode::Closed,
-            _ => crate::FailureMode::Open,
-        },
+        failure_mode,
         max_request_body_bytes: get_int_entry(node, "max-request-body-bytes").map(|v| v as usize),
         max_response_body_bytes: get_int_entry(node, "max-response-body-bytes").map(|v| v as usize),
         circuit_breaker,
@@ -627,5 +652,55 @@ mod tests {
         let cbconfig = upstream.circuit_breaker;
 
         assert!(cbconfig.is_none());
+    }
+
+    fn agent_from(kdl: &str) -> Result<AgentConfig> {
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        parse_agent(doc.nodes().first().unwrap())
+    }
+
+    fn route_from(kdl: &str) -> RouteConfig {
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        parse_route(doc.nodes().first().unwrap()).unwrap()
+    }
+
+    /// Anything but "closed" used to mean open, so a typo turned a security
+    /// agent fail-open. The single-file parser rejects it; so does this now.
+    #[test]
+    fn an_unknown_agent_failure_mode_is_rejected() {
+        let err = agent_from(r#"agent "waf" { failure-mode "closd" }"#).unwrap_err();
+        assert!(
+            err.to_string().contains("Unknown failure mode: 'closd'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn agent_failure_modes_match_the_single_file_parser() {
+        for (value, expected) in [
+            ("open", crate::FailureMode::Open),
+            ("fail-open", crate::FailureMode::Open),
+            ("closed", crate::FailureMode::Closed),
+            ("fail_closed", crate::FailureMode::Closed),
+        ] {
+            let agent = agent_from(&format!("agent \"a\" {{ failure-mode \"{value}\" }}"));
+            assert_eq!(agent.unwrap().failure_mode, expected, "{value}");
+        }
+        // Unset keeps the multi-file default.
+        let agent = agent_from(r#"agent "a" { timeout-ms 5 }"#).unwrap();
+        assert_eq!(agent.failure_mode, crate::FailureMode::Open);
+    }
+
+    #[test]
+    fn route_priority_and_builtin_handler_are_read() {
+        let route = route_from(r#"route "h" { priority "high"; builtin-handler "health"; }"#);
+        assert_eq!(route.priority, crate::Priority::HIGH);
+        assert_eq!(route.builtin_handler, Some(crate::BuiltinHandler::Health));
+        assert_eq!(route.service_type, crate::ServiceType::Builtin);
+
+        let route = route_from(r#"route "w" { priority 7; upstream "b"; }"#);
+        assert_eq!(route.priority, crate::Priority(7));
+        assert_eq!(route.builtin_handler, None);
+        assert_eq!(route.service_type, crate::ServiceType::Web);
     }
 }
