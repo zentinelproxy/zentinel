@@ -947,4 +947,164 @@ mod tests {
         server_handle.abort();
         let _ = std::fs::remove_file(&socket_path_clone);
     }
+
+    fn test_request(correlation_id: &str) -> RequestHeadersEvent {
+        RequestHeadersEvent {
+            metadata: RequestMetadata {
+                correlation_id: correlation_id.to_string(),
+                request_id: "req".to_string(),
+                client_ip: "127.0.0.1".to_string(),
+                client_port: 12345,
+                server_name: None,
+                protocol: "HTTP/1.1".to_string(),
+                tls_version: None,
+                tls_cipher: None,
+                route_id: None,
+                upstream_id: None,
+                timestamp: "0".to_string(),
+                traceparent: None,
+            },
+            method: "GET".to_string(),
+            uri: "/".to_string(),
+            headers: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Run an agent on its own runtime, so that stopping it closes every
+    /// connection it accepted -- as an agent process exiting does. Aborting a
+    /// server task is not enough: its per-connection tasks would keep running.
+    fn start_agent_process(
+        name: &'static str,
+        socket_path: &str,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let _ = std::fs::remove_file(socket_path);
+        let socket_path = socket_path.to_string();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                let server = UdsAgentServerV2::new(name, &socket_path, Box::new(TestHandler));
+                tokio::select! {
+                    _ = server.run() => {}
+                    _ = stop_rx => {}
+                }
+            });
+            // Dropping the runtime here ends the connection tasks too.
+        });
+        (stop_tx, thread)
+    }
+
+    async fn wait_for_socket(socket_path: &str) {
+        for _ in 0..100 {
+            if std::path::Path::new(socket_path).exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("agent never bound {socket_path}");
+    }
+
+    /// #528: when the agent went away, the client kept reporting itself
+    /// connected, because only `close()` ever cleared the flag. The pool
+    /// therefore never replaced the connection, and a restarted agent was not
+    /// reconnected until the proxy restarted.
+    #[tokio::test]
+    async fn client_notices_when_its_agent_goes_away() {
+        use crate::v2::uds::AgentClientV2Uds;
+        use std::time::Duration;
+
+        let socket_path = format!("/tmp/zt-gone-{}.sock", std::process::id());
+        let (stop, agent) = start_agent_process("gone", &socket_path);
+        wait_for_socket(&socket_path).await;
+
+        let client = AgentClientV2Uds::new("gone", &socket_path, Duration::from_secs(5))
+            .await
+            .unwrap();
+        client.connect().await.unwrap();
+        assert!(client.is_connected().await);
+
+        stop.send(()).unwrap();
+        agent.join().unwrap();
+
+        let mut connected = true;
+        for _ in 0..200 {
+            connected = client.is_connected().await;
+            if !connected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !connected,
+            "client still reports connected after its agent exited"
+        );
+
+        // And a request fails promptly rather than waiting out the 5 s timeout.
+        let started = std::time::Instant::now();
+        let result = client
+            .send_request_headers("after-exit", &test_request("after-exit"))
+            .await;
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// #528 end to end: the agent restarts on the same socket while the pool
+    /// keeps running, and the pool must recover on its own. Multi-threaded, as
+    /// in the proxy: connection selection may block briefly on a lock that
+    /// maintenance holds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pool_reconnects_an_agent_that_restarted() {
+        use crate::v2::pool::{AgentPool, AgentPoolConfig};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let socket_path = format!("/tmp/zt-restart-{}.sock", std::process::id());
+        let (stop, agent) = start_agent_process("restart", &socket_path);
+        wait_for_socket(&socket_path).await;
+
+        let pool = Arc::new(AgentPool::with_config(AgentPoolConfig {
+            connections_per_agent: 1,
+            health_check_interval: Duration::from_millis(50),
+            reconnect_interval: Duration::from_millis(50),
+            request_timeout: Duration::from_secs(1),
+            ..Default::default()
+        }));
+        let maintenance = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move { pool.run_maintenance().await })
+        };
+        pool.add_agent("restart", format!("unix:{socket_path}"))
+            .await
+            .unwrap();
+        pool.send_request_headers("restart", "before", &test_request("before"))
+            .await
+            .expect("agent answers before the restart");
+
+        // The agent exits and comes back on the same socket.
+        stop.send(()).unwrap();
+        agent.join().unwrap();
+        let (stop, agent) = start_agent_process("restart", &socket_path);
+        wait_for_socket(&socket_path).await;
+
+        // Send nothing while the agent is away. In the proxy that is what an
+        // open circuit breaker does, and it is why this went unnoticed: with no
+        // traffic, the pool's consecutive-error count never reached the point
+        // that marks a connection unhealthy, and the connection itself kept
+        // claiming to be connected. Maintenance alone has to repair it.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        pool.send_request_headers("restart", "after", &test_request("after"))
+            .await
+            .expect("first request after the restart reaches the new agent");
+
+        maintenance.abort();
+        stop.send(()).unwrap();
+        agent.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
 }
