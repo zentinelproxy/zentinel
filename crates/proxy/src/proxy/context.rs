@@ -594,6 +594,18 @@ impl RequestContext {
         &self.client_ip
     }
 
+    /// The client IP as the `SocketAddr` upstream selection takes.
+    ///
+    /// `client_ip` holds a bare address, so the port is 0: `ip-hash` and
+    /// client-IP consistent hashing must map one client to one target, not
+    /// one connection.
+    pub(crate) fn client_socket_addr(&self) -> Option<std::net::SocketAddr> {
+        self.client_ip
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .map(|ip| std::net::SocketAddr::new(ip, 0))
+    }
+
     /// Get the User-Agent header, if present.
     #[inline]
     pub fn user_agent(&self) -> Option<&str> {
