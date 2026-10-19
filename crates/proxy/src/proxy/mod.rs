@@ -58,7 +58,7 @@ use crate::routing::RouteMatcher;
 
 use crate::scoped_routing::ScopedRouteMatcher;
 use crate::static_files::StaticFileServer;
-use crate::upstream::{ActiveHealthChecker, HealthCheckRunner, UpstreamPool};
+use crate::upstream::{HealthCheckRunner, UpstreamPool};
 use crate::validation::SchemaValidator;
 use listener_addr::ListenerMatchers;
 
@@ -197,26 +197,18 @@ impl ZentinelProxy {
                 .context("Failed to create scoped route matcher")?,
         ));
 
-        // Create upstream pools and active health checkers (global only)
+        // Create upstream pools (global only)
         let mut pools = HashMap::new();
-        let mut health_check_runner = HealthCheckRunner::new();
-
         for (upstream_id, upstream_config) in &config.upstreams {
             let mut config_with_id = upstream_config.clone();
             config_with_id.id = upstream_id.clone();
-            let pool = Arc::new(UpstreamPool::new(config_with_id.clone()).await?);
+            let pool = Arc::new(UpstreamPool::new(config_with_id).await?);
             pools.insert(upstream_id.clone(), pool);
-
-            // Create active health checker if health check is configured
-            if let Some(checker) = ActiveHealthChecker::new(&config_with_id) {
-                health_check_runner.add_checker(checker);
-            }
         }
         let upstream_pools = Registry::from_map(pools);
 
         // Create scoped upstream pools from flattened config
-        let scoped_upstream_pools =
-            Self::create_scoped_upstream_pools(&flattened, &mut health_check_runner).await?;
+        let scoped_upstream_pools = Self::create_scoped_upstream_pools(&flattened).await?;
 
         // Keep discovery-backed pools up to date. The supervisor reads both
         // registries on each tick, so it also covers pools installed by a later
@@ -226,7 +218,11 @@ impl ZentinelProxy {
             scoped_upstream_pools.clone(),
         );
 
-        let health_check_runner = Arc::new(health_check_runner);
+        // Active health checks are started further down, once, from the
+        // flattened config: it already contains the global upstreams, so
+        // registering from `config.upstreams` as well probed every global
+        // target twice per interval.
+        let health_check_runner = Arc::new(HealthCheckRunner::new());
 
         // Create passive health checker
         let passive_health = Arc::new(PassiveHealthChecker::new(
@@ -260,6 +256,7 @@ impl ZentinelProxy {
             upstream_pools.clone(),
             scoped_route_matcher.clone(),
             scoped_upstream_pools.clone(),
+            health_check_runner.clone(),
         )
         .await;
 
@@ -304,13 +301,11 @@ impl ZentinelProxy {
             debug!("Registered audit reload hook");
         }
 
-        // Start active health check runner in background
+        // Start active health checking (one probe loop per upstream)
+        health_check_runner.apply(Self::health_check_upstreams(&flattened));
         if health_check_runner.checker_count() > 0 {
-            let runner = health_check_runner.clone();
-            tokio::spawn(async move {
-                runner.run().await;
-            });
             info!(
+                upstreams = ?health_check_runner.upstream_ids(),
                 "Started active health checking for {} upstreams",
                 health_check_runner.checker_count()
             );
@@ -467,6 +462,7 @@ impl ZentinelProxy {
         upstream_pools: Registry<UpstreamPool>,
         scoped_route_matcher: Arc<tokio::sync::RwLock<ScopedRouteMatcher>>,
         scoped_upstream_pools: ScopedRegistry<UpstreamPool>,
+        health_check_runner: Arc<HealthCheckRunner>,
     ) {
         let mut reload_rx = config_manager.subscribe();
         let config_manager_clone = config_manager.clone();
@@ -513,6 +509,20 @@ impl ZentinelProxy {
                     {
                         error!("Failed to reload scoped routes: {}", e);
                     }
+
+                    // Reconcile active health checks with the new config:
+                    // start added checks, restart changed ones, stop removed
+                    // ones. Done before the pool update so a pool-build
+                    // timeout cannot leave the old probes in place.
+                    let changes =
+                        health_check_runner.apply(Self::health_check_upstreams(&flattened));
+                    info!(
+                        started = changes.started,
+                        restarted = changes.restarted,
+                        stopped = changes.stopped,
+                        unchanged = changes.unchanged,
+                        "Health checks reloaded"
+                    );
 
                     // Update upstream pools with timeout to avoid blocking
                     // the reload handler on DNS resolution / connection attempts
@@ -561,7 +571,6 @@ impl ZentinelProxy {
     /// Create scoped upstream pools from flattened config
     async fn create_scoped_upstream_pools(
         flattened: &FlattenedConfig,
-        health_check_runner: &mut HealthCheckRunner,
     ) -> Result<ScopedRegistry<UpstreamPool>> {
         let registry = ScopedRegistry::new();
 
@@ -588,11 +597,6 @@ impl ZentinelProxy {
                 registry.insert(qid.clone(), pool).await;
             }
 
-            // Create active health checker if configured
-            if let Some(checker) = ActiveHealthChecker::new(&config_with_id) {
-                health_check_runner.add_checker(checker);
-            }
-
             debug!(
                 upstream_id = %qid.canonical(),
                 scope = ?qid.scope,
@@ -604,6 +608,20 @@ impl ZentinelProxy {
         info!("Created {} scoped upstream pools", registry.len().await);
 
         Ok(registry)
+    }
+
+    /// Every upstream (global and namespaced) with its canonical id set, which
+    /// is what the health check runner keys its probe loops by. Global
+    /// upstreams appear in the flattened config under `Scope::Global`, whose
+    /// canonical id is the plain upstream id.
+    fn health_check_upstreams(
+        flattened: &FlattenedConfig,
+    ) -> impl Iterator<Item = zentinel_config::UpstreamConfig> + '_ {
+        flattened.upstreams.iter().map(|(qid, upstream)| {
+            let mut config = upstream.clone();
+            config.id = qid.canonical();
+            config
+        })
     }
 
     /// Build list of scoped pools for atomic replacement
@@ -1200,5 +1218,98 @@ mod listener_matcher_tests {
         assert_eq!(listener.id, "public");
         assert_eq!(listener.request_timeout_secs, 17);
         assert_eq!(listener.keepalive_timeout_secs, 23);
+    }
+}
+
+#[cfg(test)]
+mod health_check_wiring_tests {
+    use super::*;
+    use crate::reload::ReloadTrigger;
+
+    fn config_kdl(health_check: &str) -> String {
+        format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{
+                listener "http" {{ address "127.0.0.1:19290" protocol "http" }}
+            }}
+            routes {{
+                route "default" {{
+                    matches {{ path-prefix "/" }}
+                    upstream "backend"
+                }}
+            }}
+            upstreams {{
+                upstream "backend" {{
+                    target "127.0.0.1:19291"
+                    {health_check}
+                }}
+            }}
+            "#
+        )
+    }
+
+    const CHECK: &str = r#"health-check { type "tcp"; interval-secs 2 }"#;
+
+    fn init_crypto_provider() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
+    /// Two defects, one test: `ZentinelProxy::new` registers process-global
+    /// metrics, so only one proxy can be built per test binary.
+    ///
+    /// 1. Startup registered each global upstream's health check twice: once
+    ///    from `config.upstreams`, once from the flattened config, which lists
+    ///    the global upstreams again. Every target was probed twice per
+    ///    interval, and the log said "health checking for 2 upstreams" for one.
+    /// 2. A SIGHUP reload rebuilt routes and pools but never touched the
+    ///    health check runner, so a check added by a reload never probed and
+    ///    one removed by a reload kept probing.
+    #[tokio::test]
+    async fn health_checks_are_registered_once_and_follow_reloads() {
+        init_crypto_provider();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("zentinel.kdl");
+        std::fs::write(&path, config_kdl(CHECK)).expect("write config");
+
+        let proxy = ZentinelProxy::new(Some(path.to_str().unwrap()))
+            .await
+            .expect("proxy builds");
+        assert_eq!(
+            proxy.health_check_runner.checker_count(),
+            1,
+            "one upstream with a health check must get exactly one checker"
+        );
+
+        async fn reload_and_wait_for(proxy: &ZentinelProxy, expected: usize) -> usize {
+            proxy
+                .config_manager
+                .reload(ReloadTrigger::Signal)
+                .await
+                .expect("reload succeeds");
+            // The reload handler applies the new config on its own task.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while proxy.health_check_runner.checker_count() != expected
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            proxy.health_check_runner.checker_count()
+        }
+
+        std::fs::write(&path, config_kdl("")).expect("write config");
+        assert_eq!(
+            reload_and_wait_for(&proxy, 0).await,
+            0,
+            "a health check removed by reload was not stopped"
+        );
+
+        std::fs::write(&path, config_kdl(CHECK)).expect("write config");
+        assert_eq!(
+            reload_and_wait_for(&proxy, 1).await,
+            1,
+            "a health check added by reload was not started"
+        );
     }
 }

@@ -9,7 +9,7 @@ use pingora_load_balancing::{
     health_check::{HealthCheck as PingoraHealthCheck, HttpHealthCheck, TcpHealthCheck},
     Backend, Backends,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -302,109 +302,211 @@ impl ActiveHealthChecker {
     }
 }
 
-/// Health check runner that manages multiple upstream health checkers
+/// Health check runner that manages one probing task per upstream.
+///
+/// The set of checkers is not fixed at startup: [`HealthCheckRunner::apply`]
+/// reconciles it against a configuration, so a reload that adds, changes or
+/// removes a `health-check` starts, restarts or stops the matching probe loop.
+/// Before this, checkers were collected once at startup into a `Vec` that a
+/// reload never touched -- a check added by SIGHUP never probed, a changed
+/// interval or path kept the old one, and a removed check kept probing.
+///
+/// Checkers are keyed by the upstream's canonical id, so an upstream can only
+/// ever have one probe loop. Startup used to register every global upstream
+/// twice (once from `config.upstreams`, once from the flattened config, where
+/// global upstreams appear again under `Scope::Global`), which probed every
+/// target twice per interval.
+///
+/// Each upstream runs on its own interval. The old single loop ticked at the
+/// minimum interval across all upstreams and probed every upstream on each
+/// tick, so one upstream with `interval-secs 1` made all others probe every
+/// second too.
 pub struct HealthCheckRunner {
-    /// Health checkers per upstream
-    checkers: Vec<ActiveHealthChecker>,
-    /// Whether the runner is active
-    running: Arc<RwLock<bool>>,
+    checkers: parking_lot::Mutex<HashMap<String, RunningChecker>>,
+}
+
+/// A checker together with the task that drives it.
+struct RunningChecker {
+    /// What the probe loop was built from; a change means a restart.
+    fingerprint: String,
+    checker: Arc<ActiveHealthChecker>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for RunningChecker {
+    fn drop(&mut self) {
+        // Dropping a `JoinHandle` detaches the task rather than stopping it,
+        // which is exactly how a removed check would keep probing.
+        self.task.abort();
+    }
+}
+
+/// What [`HealthCheckRunner::apply`] did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct HealthCheckChanges {
+    /// Upstreams that gained a health check
+    pub started: usize,
+    /// Upstreams whose health check (or targets) changed
+    pub restarted: usize,
+    /// Upstreams that lost their health check, or were removed
+    pub stopped: usize,
+    /// Upstreams whose probe loop was left running untouched
+    pub unchanged: usize,
 }
 
 impl HealthCheckRunner {
-    /// Create a new health check runner
+    /// Create a runner with no checkers
     pub fn new() -> Self {
         Self {
-            checkers: Vec::new(),
-            running: Arc::new(RwLock::new(false)),
+            checkers: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
-    /// Add a health checker for an upstream
-    pub fn add_checker(&mut self, checker: ActiveHealthChecker) {
-        info!(
-            upstream_id = %checker.upstream_id,
-            interval_secs = checker.interval.as_secs(),
-            "Added health checker to runner"
-        );
-        self.checkers.push(checker);
-    }
-
-    /// Get the number of health checkers
-    pub fn checker_count(&self) -> usize {
-        self.checkers.len()
-    }
-
-    /// Start the health check loop (runs until stopped)
-    pub async fn run(&self) {
-        if self.checkers.is_empty() {
-            info!("No health checkers configured, skipping health check loop");
-            return;
-        }
-
-        *self.running.write().await = true;
-
-        info!(
-            checker_count = self.checkers.len(),
-            "Starting health check runner"
-        );
-
-        // Find minimum interval
-        let min_interval = self
-            .checkers
+    /// Everything a probe loop is built from. Two configs with the same
+    /// fingerprint produce identical probing, so the running loop (and the
+    /// health state it has accumulated) is kept.
+    fn fingerprint(config: &UpstreamConfig) -> Option<String> {
+        let hc = config.health_check.as_ref()?;
+        let targets: Vec<(&str, u32)> = config
+            .targets
             .iter()
-            .map(|c| c.interval)
-            .min()
-            .unwrap_or(Duration::from_secs(10));
+            .map(|t| (t.address.as_str(), t.weight))
+            .collect();
+        Some(format!("{hc:?}|{targets:?}"))
+    }
 
-        let mut interval = tokio::time::interval(min_interval);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    /// Reconcile the running checkers with `upstreams`.
+    ///
+    /// Each upstream's `id` must already be its canonical id. Upstreams with a
+    /// health check get exactly one probe loop; a loop whose upstream is gone,
+    /// or no longer has a health check, is stopped. A loop is restarted only
+    /// when what it probes changed. Must be called within a Tokio runtime.
+    pub fn apply<I>(&self, upstreams: I) -> HealthCheckChanges
+    where
+        I: IntoIterator<Item = UpstreamConfig>,
+    {
+        let mut changes = HealthCheckChanges::default();
+        let mut desired: HashMap<String, (String, UpstreamConfig)> = HashMap::new();
+        for config in upstreams {
+            if let Some(fp) = Self::fingerprint(&config) {
+                desired.insert(config.id.clone(), (fp, config));
+            }
+        }
+
+        let mut checkers = self.checkers.lock();
+
+        let before = checkers.len();
+        checkers.retain(|id, _| desired.contains_key(id));
+        changes.stopped = before - checkers.len();
+
+        for (id, (fingerprint, config)) in desired {
+            let existed = match checkers.get(&id) {
+                Some(running) if running.fingerprint == fingerprint => {
+                    changes.unchanged += 1;
+                    continue;
+                }
+                Some(_) => true,
+                None => false,
+            };
+
+            // Remove (and so abort) the old loop before deciding about the
+            // new one, so a check that can no longer be built stops probing.
+            checkers.remove(&id);
+
+            let Some(checker) = ActiveHealthChecker::new(&config) else {
+                if existed {
+                    changes.stopped += 1;
+                }
+                continue;
+            };
+            let checker = Arc::new(checker);
+            let task = tokio::spawn(Self::probe_loop(checker.clone()));
+            checkers.insert(
+                id,
+                RunningChecker {
+                    fingerprint,
+                    checker,
+                    task,
+                },
+            );
+            if existed {
+                changes.restarted += 1;
+            } else {
+                changes.started += 1;
+            }
+        }
+
+        changes
+    }
+
+    /// Probe one upstream on its own interval until aborted.
+    async fn probe_loop(checker: Arc<ActiveHealthChecker>) {
+        // `tokio::time::interval` panics on a zero period.
+        let period = checker.interval.max(Duration::from_secs(1));
+        let mut ticker = tokio::time::interval(period);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        debug!(
+            upstream_id = %checker.upstream_id,
+            interval_secs = period.as_secs(),
+            "Health check loop started"
+        );
 
         loop {
-            interval.tick().await;
+            ticker.tick().await;
+            checker.run_health_check().await;
 
-            if !*self.running.read().await {
-                info!("Health check runner stopped");
-                break;
-            }
-
-            // Run health checks for all upstreams
-            for checker in &self.checkers {
-                checker.run_health_check().await;
-
-                // Log current health statuses
-                let statuses = checker.get_health_statuses();
-                for (addr, healthy) in &statuses {
-                    trace!(
-                        upstream_id = %checker.upstream_id,
-                        backend = %addr,
-                        healthy = healthy,
-                        "Backend health status"
-                    );
-                }
+            for (addr, healthy) in checker.get_health_statuses() {
+                trace!(
+                    upstream_id = %checker.upstream_id,
+                    backend = %addr,
+                    healthy = healthy,
+                    "Backend health status"
+                );
             }
         }
     }
 
-    /// Stop the health check loop
-    pub async fn stop(&self) {
+    /// Number of upstreams with a running health check
+    pub fn checker_count(&self) -> usize {
+        self.checkers.lock().len()
+    }
+
+    /// Ids of the upstreams with a running health check, sorted
+    pub fn upstream_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.checkers.lock().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    /// Interval of the running health check for an upstream
+    pub fn interval_of(&self, upstream_id: &str) -> Option<Duration> {
+        self.checkers
+            .lock()
+            .get(upstream_id)
+            .map(|r| r.checker.interval)
+    }
+
+    /// Stop every probe loop
+    pub fn stop(&self) {
         info!("Stopping health check runner");
-        *self.running.write().await = false;
+        self.checkers.lock().clear();
     }
 
     /// Get health status for a specific upstream and backend
     pub fn get_health(&self, upstream_id: &str, address: &str) -> Option<bool> {
         self.checkers
-            .iter()
-            .find(|c| c.upstream_id == upstream_id)
-            .map(|c| c.is_backend_healthy(address))
+            .lock()
+            .get(upstream_id)
+            .map(|r| r.checker.is_backend_healthy(address))
     }
 
     /// Get all health statuses for an upstream
     pub fn get_upstream_health(&self, upstream_id: &str) -> Option<Vec<(String, bool)>> {
         self.checkers
-            .iter()
-            .find(|c| c.upstream_id == upstream_id)
-            .map(|c| c.get_health_statuses())
+            .lock()
+            .get(upstream_id)
+            .map(|r| r.checker.get_health_statuses())
     }
 }
 
@@ -417,7 +519,7 @@ impl Default for HealthCheckRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Once;
     use zentinel_common::types::LoadBalancingAlgorithm;
     use zentinel_config::{
@@ -538,16 +640,144 @@ mod tests {
         assert!(checker.is_none());
     }
 
-    #[test]
-    fn test_health_check_runner() {
+    #[tokio::test]
+    async fn test_health_check_runner() {
         init_crypto_provider();
-        let mut runner = HealthCheckRunner::new();
+        let runner = HealthCheckRunner::new();
         assert_eq!(runner.checker_count(), 0);
 
-        let config = create_test_config();
-        if let Some(checker) = ActiveHealthChecker::new(&config) {
-            runner.add_checker(checker);
-            assert_eq!(runner.checker_count(), 1);
-        }
+        let changes = runner.apply([create_test_config()]);
+        assert_eq!(changes.started, 1);
+        assert_eq!(runner.checker_count(), 1);
+        assert_eq!(runner.upstream_ids(), vec!["test-upstream".to_string()]);
+    }
+
+    /// A TCP listener that counts the connections made to it, and a config
+    /// whose TCP health check points at it.
+    async fn counting_backend(interval_secs: u64) -> (UpstreamConfig, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        let probes = Arc::new(AtomicUsize::new(0));
+        let seen = probes.clone();
+        tokio::spawn(async move {
+            while listener.accept().await.is_ok() {
+                seen.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let mut config = create_test_config();
+        config.targets[0].address = addr;
+        config.health_check = Some(HealthCheckConfig {
+            check_type: HealthCheckType::Tcp,
+            interval_secs,
+            timeout_secs: 1,
+            healthy_threshold: 1,
+            unhealthy_threshold: 1,
+        });
+        (config, probes)
+    }
+
+    async fn wait(ms: u64) {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+    }
+
+    /// Startup registered every global upstream twice -- once from
+    /// `config.upstreams` and once from the flattened config, where global
+    /// upstreams appear again -- and every target was probed twice per
+    /// interval. Keyed by upstream id, the same upstream can only ever own one
+    /// probe loop; measured at the backend, not by counting checkers.
+    #[tokio::test]
+    async fn an_upstream_registered_twice_is_probed_once_per_interval() {
+        init_crypto_provider();
+        let (config, probes) = counting_backend(1).await;
+        let runner = HealthCheckRunner::new();
+
+        let changes = runner.apply([config.clone(), config]);
+        assert_eq!(runner.checker_count(), 1);
+        assert_eq!(changes.started, 1);
+
+        // Ticks at ~0 s, 1 s, 2 s, 3 s: four probes, never eight.
+        wait(3500).await;
+        let n = probes.load(Ordering::SeqCst);
+        assert!((3..=5).contains(&n), "expected ~4 probes in 3.5 s, got {n}");
+    }
+
+    /// A reload used to leave the checker set exactly as startup built it. The
+    /// runner now reconciles: a new check starts probing, a changed one is
+    /// restarted with its new settings, and a removed one stops.
+    #[tokio::test]
+    async fn apply_starts_restarts_and_stops_probe_loops() {
+        init_crypto_provider();
+        let (with_check, probes) = counting_backend(1).await;
+        let mut without_check = with_check.clone();
+        without_check.health_check = None;
+
+        let runner = HealthCheckRunner::new();
+
+        // No check configured: nothing probes.
+        assert_eq!(
+            runner.apply([without_check.clone()]),
+            HealthCheckChanges::default()
+        );
+        wait(1200).await;
+        assert_eq!(probes.load(Ordering::SeqCst), 0);
+
+        // Added: probing starts.
+        let changes = runner.apply([with_check.clone()]);
+        assert_eq!(changes.started, 1);
+        wait(1500).await;
+        assert!(
+            probes.load(Ordering::SeqCst) >= 1,
+            "added check never probed"
+        );
+
+        // Same config again: the running loop is kept.
+        let changes = runner.apply([with_check.clone()]);
+        assert_eq!(changes.unchanged, 1);
+        assert_eq!(changes.restarted, 0);
+
+        // Changed interval: restarted with the new interval.
+        let mut slower = with_check.clone();
+        slower.health_check.as_mut().unwrap().interval_secs = 7;
+        let changes = runner.apply([slower]);
+        assert_eq!(changes.restarted, 1);
+        assert_eq!(
+            runner.interval_of("test-upstream"),
+            Some(Duration::from_secs(7))
+        );
+
+        // Removed: probing stops.
+        let changes = runner.apply([without_check]);
+        assert_eq!(changes.stopped, 1);
+        assert_eq!(runner.checker_count(), 0);
+        wait(200).await;
+        let after_stop = probes.load(Ordering::SeqCst);
+        wait(2500).await;
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            after_stop,
+            "a removed health check kept probing"
+        );
+    }
+
+    /// Each upstream probes on its own interval. The old single loop ticked at
+    /// the smallest interval of all upstreams and probed every one of them on
+    /// each tick.
+    #[tokio::test]
+    async fn each_upstream_probes_on_its_own_interval() {
+        init_crypto_provider();
+        let (mut fast, fast_probes) = counting_backend(1).await;
+        fast.id = "fast".to_string();
+        let (mut slow, slow_probes) = counting_backend(10).await;
+        slow.id = "slow".to_string();
+
+        let runner = HealthCheckRunner::new();
+        runner.apply([fast, slow]);
+        wait(3500).await;
+
+        assert!(fast_probes.load(Ordering::SeqCst) >= 3);
+        assert_eq!(slow_probes.load(Ordering::SeqCst), 1);
     }
 }
