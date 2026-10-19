@@ -5,7 +5,6 @@
 //! health tracking in load balancers by periodically probing backends.
 
 use pingora_load_balancing::{
-    discovery::Static,
     health_check::{HealthCheck as PingoraHealthCheck, HttpHealthCheck, TcpHealthCheck},
     Backend, Backends,
 };
@@ -16,6 +15,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
 use crate::grpc_health::GrpcHealthCheck;
+use crate::upstream::active_health::{ActiveHealthView, ViewDiscovery};
 use crate::upstream::inference_health::InferenceHealthCheck;
 use crate::upstream::mcp_health::McpHealthCheck;
 
@@ -37,6 +37,8 @@ pub struct ActiveHealthChecker {
     parallel: bool,
     /// Callback to notify load balancer of health changes
     health_callback: Arc<RwLock<Option<HealthChangeCallback>>>,
+    /// Where probe results are published for the upstream's pools
+    view: Arc<ActiveHealthView>,
 }
 
 /// Callback type for health status changes
@@ -45,6 +47,13 @@ pub type HealthChangeCallback = Box<dyn Fn(&str, bool) + Send + Sync>;
 impl ActiveHealthChecker {
     /// Create a new active health checker from upstream config
     pub fn new(config: &UpstreamConfig) -> Option<Self> {
+        Self::with_view(config, Arc::new(ActiveHealthView::new()))
+    }
+
+    /// Create a checker that publishes its results to `view`, and probes the
+    /// targets the upstream's pools publish there (falling back to the
+    /// configured targets until a pool has).
+    pub fn with_view(config: &UpstreamConfig, view: Arc<ActiveHealthView>) -> Option<Self> {
         let health_config = config.health_check.as_ref()?;
 
         info!(
@@ -78,7 +87,9 @@ impl ActiveHealthChecker {
             }
         }
 
-        if backend_set.is_empty() {
+        // A discovery-backed upstream may have no configured targets at all:
+        // its targets arrive through the view once its pool publishes them.
+        if backend_set.is_empty() && config.discovery.is_none() {
             warn!(
                 upstream_id = %config.id,
                 "No backends created for health checking"
@@ -86,8 +97,16 @@ impl ActiveHealthChecker {
             return None;
         }
 
-        // Create static discovery (Static::new returns Box<Self>)
-        let discovery = Static::new(backend_set);
+        let weights = config
+            .targets
+            .iter()
+            .map(|t| (t.address.clone(), t.weight as usize))
+            .collect();
+        let discovery = Box::new(ViewDiscovery {
+            view: view.clone(),
+            configured: backend_set,
+            weights,
+        });
         let mut backends = Backends::new(discovery);
 
         // Create and configure health check
@@ -102,6 +121,7 @@ impl ActiveHealthChecker {
             interval: Duration::from_secs(health_config.interval_secs),
             parallel: true,
             health_callback: Arc::new(RwLock::new(None)),
+            view,
         })
     }
 
@@ -123,17 +143,39 @@ impl ActiveHealthChecker {
                 hc.consecutive_success = config.healthy_threshold as usize;
                 hc.consecutive_failure = config.unhealthy_threshold as usize;
 
-                // Configure request path
-                // Note: HttpHealthCheck sends GET to / by default
-                // We customize by modifying hc.req for non-root paths
+                // Configure request path. The request is rebuilt for the path,
+                // so the Host header `HttpHealthCheck::new` set has to be
+                // carried over: without it an HTTP/1.1 server may answer 400,
+                // which now takes the target out of rotation.
                 if path != "/" {
-                    // Create custom request header for the health check path
-                    if let Ok(req) =
+                    if let Ok(mut req) =
                         pingora_http::RequestHeader::build("GET", path.as_bytes(), None)
                     {
-                        hc.req = req;
+                        if req.append_header("Host", hostname).is_ok() {
+                            hc.req = req;
+                        }
                     }
                 }
+
+                // `expected-status` and `timeout-secs` were accepted and
+                // ignored: Pingora's default accepts only 200 and waits 1 s.
+                let expected = *expected_status;
+                hc.validator = Some(Box::new(move |resp: &pingora_http::ResponseHeader| {
+                    if resp.status.as_u16() == expected {
+                        Ok(())
+                    } else {
+                        pingora_core::Error::e_explain(
+                            pingora_core::ErrorType::CustomCode(
+                                "unexpected health check status",
+                                resp.status.as_u16(),
+                            ),
+                            "during http healthcheck",
+                        )
+                    }
+                }));
+                let timeout = Duration::from_secs(config.timeout_secs.max(1));
+                hc.peer_template.options.connection_timeout = Some(timeout);
+                hc.peer_template.options.read_timeout = Some(timeout);
 
                 // Note: health_changed_callback requires implementing HealthObserve trait
                 // We use polling via run_health_check() and get_health_statuses() instead
@@ -264,6 +306,15 @@ impl ActiveHealthChecker {
         }
 
         self.backends.run_health_check(self.parallel).await;
+
+        // Publish the outcome for the pools. `ready()` already applies
+        // healthy-threshold / unhealthy-threshold.
+        self.view.record(self.get_health_statuses());
+    }
+
+    /// The view this checker publishes to
+    pub fn view(&self) -> &Arc<ActiveHealthView> {
+        &self.view
     }
 
     /// Check if a specific backend is healthy
@@ -323,6 +374,10 @@ impl ActiveHealthChecker {
 /// second too.
 pub struct HealthCheckRunner {
     checkers: parking_lot::Mutex<HashMap<String, RunningChecker>>,
+    /// Probe results per upstream id, shared with the pools. Kept for the
+    /// runner's lifetime so pools built before, during or after a reload all
+    /// see the same results.
+    views: parking_lot::Mutex<HashMap<String, Arc<ActiveHealthView>>>,
 }
 
 /// A checker together with the task that drives it.
@@ -359,7 +414,18 @@ impl HealthCheckRunner {
     pub fn new() -> Self {
         Self {
             checkers: parking_lot::Mutex::new(HashMap::new()),
+            views: parking_lot::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The health view for an upstream id, created on first use. Pools attach
+    /// to it to have probe results applied to their target selection.
+    pub fn view(&self, upstream_id: &str) -> Arc<ActiveHealthView> {
+        self.views
+            .lock()
+            .entry(upstream_id.to_string())
+            .or_insert_with(|| Arc::new(ActiveHealthView::new()))
+            .clone()
     }
 
     /// Everything a probe loop is built from. Two configs with the same
@@ -396,7 +462,15 @@ impl HealthCheckRunner {
         let mut checkers = self.checkers.lock();
 
         let before = checkers.len();
-        checkers.retain(|id, _| desired.contains_key(id));
+        checkers.retain(|id, _| {
+            let keep = desired.contains_key(id);
+            if !keep {
+                // No check any more: nothing may stay out of rotation on the
+                // strength of an old probe result.
+                self.view(id).reset();
+            }
+            keep
+        });
         changes.stopped = before - checkers.len();
 
         for (id, (fingerprint, config)) in desired {
@@ -411,9 +485,12 @@ impl HealthCheckRunner {
 
             // Remove (and so abort) the old loop before deciding about the
             // new one, so a check that can no longer be built stops probing.
+            // Results of the old check do not carry over to the new one.
             checkers.remove(&id);
+            let view = self.view(&id);
+            view.reset();
 
-            let Some(checker) = ActiveHealthChecker::new(&config) else {
+            let Some(checker) = ActiveHealthChecker::with_view(&config, view) else {
                 if existed {
                     changes.stopped += 1;
                 }

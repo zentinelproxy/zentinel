@@ -1063,8 +1063,18 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
+        // Every target out of rotation (e.g. all failing their health check)
+        // is "no healthy upstream": 503, as documented, not a 500.
+        let error_type = if matches!(
+            last_error,
+            Some(zentinel_common::errors::ZentinelError::NoHealthyUpstream)
+        ) {
+            ErrorType::HTTPStatus(503)
+        } else {
+            ErrorType::InternalError
+        };
         Err(Error::explain(
-            ErrorType::InternalError,
+            error_type,
             format!("All upstream attempts failed: {:?}", last_error),
         ))
     }

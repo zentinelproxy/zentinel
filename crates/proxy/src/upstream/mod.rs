@@ -91,6 +91,7 @@ impl UpstreamTarget {
 // ============================================================================
 
 // Load balancing algorithm implementations
+pub mod active_health;
 pub mod adaptive;
 pub mod consistent_hash;
 pub mod discovery_refresh;
@@ -242,11 +243,12 @@ pub struct UpstreamPool {
     /// every outstanding affinity cookie, resetting all sessions each time a
     /// backend appeared or disappeared.
     sticky_runtime: Option<StickySessionRuntimeConfig>,
+    /// Active health check results for this upstream, shared with the checker
+    /// and with every other pool for the same upstream.
+    active_health: Option<Arc<active_health::ActiveHealthView>>,
+    /// The view generation last applied to `load_balancer`.
+    active_health_applied: AtomicU64,
 }
-
-// Note: Active health checking is handled by the PassiveHealthChecker in health.rs
-// and via load balancer health reporting. A future enhancement could add active
-// HTTP/TCP health probes here.
 
 /// Connection pool configuration for Pingora's built-in pooling
 ///
@@ -1003,6 +1005,8 @@ impl UpstreamPool {
             static_targets,
             config,
             sticky_runtime,
+            active_health: None,
+            active_health_applied: AtomicU64::new(0),
         };
 
         info!(
@@ -1252,25 +1256,88 @@ impl UpstreamPool {
             }
         };
 
-        Some(UpstreamPool {
-            id: self.id.clone(),
-            targets,
-            load_balancer,
-            pool_config: self.pool_config.clone(),
-            http_version: self.http_version.clone(),
-            tls_enabled: self.tls_enabled,
-            tls_sni: self.tls_sni.clone(),
-            tls_config: self.tls_config.clone(),
-            // Shared, not copied: breaker state and counters must survive the
-            // swap or a flapping backend would look healthy on every refresh.
-            circuit_breakers: Arc::clone(&self.circuit_breakers),
-            stats: Arc::clone(&self.stats),
-            discovery: self.discovery.clone(),
-            discovery_interval: self.discovery_interval,
-            static_targets: self.static_targets.clone(),
-            config: self.config.clone(),
-            sticky_runtime: self.sticky_runtime.clone(),
-        })
+        Some(
+            UpstreamPool {
+                id: self.id.clone(),
+                targets,
+                load_balancer,
+                pool_config: self.pool_config.clone(),
+                http_version: self.http_version.clone(),
+                tls_enabled: self.tls_enabled,
+                tls_sni: self.tls_sni.clone(),
+                tls_config: self.tls_config.clone(),
+                // Shared, not copied: breaker state and counters must survive the
+                // swap or a flapping backend would look healthy on every refresh.
+                circuit_breakers: Arc::clone(&self.circuit_breakers),
+                stats: Arc::clone(&self.stats),
+                discovery: self.discovery.clone(),
+                discovery_interval: self.discovery_interval,
+                static_targets: self.static_targets.clone(),
+                config: self.config.clone(),
+                sticky_runtime: self.sticky_runtime.clone(),
+                active_health: None,
+                active_health_applied: AtomicU64::new(0),
+            }
+            .with_optional_active_health(self.active_health.clone()),
+        )
+    }
+
+    /// Attach the upstream's active health results.
+    ///
+    /// Probe results are applied to this pool's load balancer before each
+    /// selection, so a target the checker marks unhealthy is excluded by
+    /// every algorithm, and re-admitted once it recovers. The pool's targets
+    /// are published to the view so the checker probes what is actually
+    /// routed to, discovered targets included.
+    pub fn with_active_health(mut self, view: Arc<active_health::ActiveHealthView>) -> Self {
+        view.publish_targets(self.targets.iter().map(|t| t.full_address()).collect());
+        self.active_health = Some(view);
+        self
+    }
+
+    fn with_optional_active_health(
+        self,
+        view: Option<Arc<active_health::ActiveHealthView>>,
+    ) -> Self {
+        match view {
+            Some(view) => self.with_active_health(view),
+            None => self,
+        }
+    }
+
+    /// Push active health results the load balancer has not seen yet.
+    ///
+    /// One atomic load per request when nothing changed. A pool built after
+    /// the results were recorded (reload, discovery refresh) starts at
+    /// generation 0 and so applies them on its first selection, rather than
+    /// treating every target as healthy until the next probe.
+    async fn apply_active_health(&self) {
+        let Some(view) = self.active_health.as_ref() else {
+            return;
+        };
+        let generation = view.generation();
+        if self.active_health_applied.load(Ordering::Acquire) == generation {
+            return;
+        }
+        for (address, healthy) in view.snapshot() {
+            if self.targets.iter().any(|t| t.full_address() == address) {
+                self.load_balancer.report_health(&address, healthy).await;
+            }
+        }
+        // Read before the snapshot: if it moved meanwhile, the next request
+        // applies again.
+        self.active_health_applied
+            .store(generation, Ordering::Release);
+    }
+
+    /// A successful request restores a target in the load balancer. That must
+    /// not override an active check that holds the target out of rotation.
+    async fn reassert_active_health(&self, target: &str) {
+        if let Some(view) = self.active_health.as_ref() {
+            if view.is_unhealthy(target) {
+                self.load_balancer.report_health(target, false).await;
+            }
+        }
     }
 
     /// Whether two target sets are the same, ignoring order.
@@ -1482,8 +1549,11 @@ impl UpstreamPool {
             "Starting peer selection with metadata"
         );
 
+        self.apply_active_health().await;
+
         let mut attempts = 0;
         let max_attempts = self.targets.len() * 2;
+        let mut no_healthy_target = false;
 
         while attempts < max_attempts {
             attempts += 1;
@@ -1498,6 +1568,7 @@ impl UpstreamPool {
             let selection = match self.load_balancer.select(context).await {
                 Ok(s) => s,
                 Err(e) => {
+                    no_healthy_target = matches!(e, ZentinelError::NoHealthyUpstream);
                     warn!(
                         upstream_id = %self.id,
                         attempt = attempts,
@@ -1507,6 +1578,7 @@ impl UpstreamPool {
                     continue;
                 }
             };
+            no_healthy_target = false;
 
             trace!(
                 upstream_id = %self.id,
@@ -1559,6 +1631,11 @@ impl UpstreamPool {
             max_attempts = max_attempts,
             "Failed to select upstream after max attempts"
         );
+        if no_healthy_target {
+            // Every target is out of rotation (e.g. all failing their health
+            // check): 503, as documented, rather than a generic upstream error.
+            return Err(ZentinelError::NoHealthyUpstream);
+        }
         Err(ZentinelError::upstream(
             self.id.to_string(),
             "Failed to select upstream after max attempts",
@@ -1786,6 +1863,7 @@ impl UpstreamPool {
                 );
             }
             self.load_balancer.report_health(target, true).await;
+            self.reassert_active_health(target).await;
         } else {
             let breaker_opened =
                 if let Some(breaker) = self.circuit_breakers.read().await.get(target) {
@@ -1849,6 +1927,7 @@ impl UpstreamPool {
             self.load_balancer
                 .report_result_with_latency(target, true, latency)
                 .await;
+            self.reassert_active_health(target).await;
         } else {
             // Record the failure in the circuit breaker (this may open it). We
             // do NOT propagate a health-down to the load balancer on open: the
@@ -1922,6 +2001,7 @@ impl UpstreamPool {
     ///
     /// Returns true if at least one target is healthy, false if all targets are unhealthy.
     pub async fn has_healthy_targets(&self) -> bool {
+        self.apply_active_health().await;
         let healthy = self.load_balancer.healthy_targets().await;
         !healthy.is_empty()
     }
@@ -1934,6 +2014,7 @@ impl UpstreamPool {
         &self,
         context: Option<&RequestContext>,
     ) -> ZentinelResult<ShadowTarget> {
+        self.apply_active_health().await;
         // Use load balancer to select target
         let selection = self.load_balancer.select(context).await?;
 
