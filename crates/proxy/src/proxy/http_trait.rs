@@ -76,22 +76,37 @@ impl ZentinelProxy {
         matchers.get(addr).cloned()
     }
 
-    /// Record the client IP in `ctx` before anything reads it.
+    /// Set the `X-Forwarded-*` headers on the downstream request and record
+    /// the client IP in `ctx`. The trust rule lives in [`super::forwarded`].
     ///
-    /// It used to be filled in only in `upstream_peer`, which Pingora runs
-    /// *after* `request_filter`. Rate limiting (route filters and `global`
-    /// limits with key `client-ip`), inference rate limiting and geo filters
-    /// all run in `request_filter`, so they read an empty string: every client
-    /// shared one rate-limit bucket, and one client could throttle everyone.
-    /// Where it was set, it was the peer formatted as "ip:port", which varies
-    /// per connection. It is now the bare address, set in
-    /// `early_request_filter`.
-    fn set_client_ip(&self, session: &Session, ctx: &mut RequestContext) {
+    /// The client IP must be set here, before `request_filter`: rate limiting,
+    /// geo filters and agents read it there, and it used to be set only later
+    /// in `upstream_peer`, which left every client sharing one rate-limit key.
+    fn apply_forwarded(&self, session: &mut Session, ctx: &mut RequestContext) {
         // Listener addresses are validated as IP:PORT, so the peer is always an
-        // inet address; anything else keeps the old fallback in upstream_peer.
-        if let Some(peer) = session.client_addr().and_then(to_socket_addr) {
-            ctx.client_ip = super::listener_addr::client_ip_string(peer);
-        }
+        // inet address; anything else is left as it was.
+        let Some(peer) = session.client_addr().and_then(to_socket_addr) else {
+            return;
+        };
+        let tls = session.digest().is_some_and(|d| d.ssl_digest.is_some());
+        let config = std::sync::Arc::clone(
+            ctx.config
+                .get_or_insert_with(|| self.config_manager.current()),
+        );
+        let trusted = session
+            .downstream_session
+            .server_addr()
+            .and_then(to_socket_addr)
+            .and_then(|local| listener_for_addr(&config.listeners, local))
+            .map(|listener| listener.trusted_proxies.as_slice())
+            .unwrap_or(&[]);
+        let client = super::forwarded::apply_forwarded_headers(
+            session.req_header_mut(),
+            peer.ip(),
+            tls,
+            trusted,
+        );
+        ctx.client_ip = client.to_string();
     }
 }
 
@@ -240,8 +255,9 @@ impl ProxyHttp for ZentinelProxy {
         // (proxied, builtin, static, rejected). Paired with dec_requests() in logging().
         self.reload_coordinator.inc_requests();
 
-        // The client IP, before rate limiting, geo filters and agents read it.
-        self.set_client_ip(session, ctx);
+        // X-Forwarded-* and the client IP, before anything reads either: route
+        // matching on headers, rate limiting, geo filters and agents (#515).
+        self.apply_forwarded(session, ctx);
 
         // Extract request info for routing
         let req_header = session.req_header();
@@ -1706,10 +1722,11 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
-        // The client as agents see it: the same address rate limiting uses.
-        // This was the raw peer formatted as "ip:port", and the port was
-        // always sent as 0. The port is now the peer's when the peer is the
-        // client, and 0 otherwise.
+        // The client as agents see it: the same address rate limiting and the
+        // upstream's X-Forwarded-For use. This was the raw peer formatted as
+        // "ip:port", and the port was always sent as 0. The port is now the
+        // peer's when the peer is the client, and 0 when the client address
+        // came from a trusted proxy's X-Forwarded-For (its port is unknown).
         let peer = session.client_addr().and_then(to_socket_addr);
         let client_addr = if ctx.client_ip.is_empty() {
             "unknown".to_string()

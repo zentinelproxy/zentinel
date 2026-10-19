@@ -124,6 +124,8 @@ pub(super) fn parse_server(node: &KdlNode) -> Result<ServerConfig> {
 pub(super) fn parse_listener(node: &KdlNode) -> Result<ListenerConfig> {
     let id = get_first_arg_string(node).ok_or_else(|| anyhow!("Listener requires an ID"))?;
 
+    let trusted_proxies = crate::kdl::server::parse_trusted_proxies(node, &id)?;
+
     Ok(ListenerConfig {
         id,
         address: get_string_entry(node, "address").unwrap_or_else(|| "0.0.0.0:8080".to_string()),
@@ -144,6 +146,7 @@ pub(super) fn parse_listener(node: &KdlNode) -> Result<ListenerConfig> {
             .map(|v| v as u32)
             .unwrap_or(100),
         keepalive_max_requests: get_int_entry(node, "keepalive-max-requests").map(|v| v as u32),
+        trusted_proxies,
     })
 }
 

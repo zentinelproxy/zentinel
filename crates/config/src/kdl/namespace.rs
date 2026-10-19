@@ -237,6 +237,8 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
         None
     };
 
+    let trusted_proxies = crate::kdl::server::parse_trusted_proxies(node, &id)?;
+
     Ok(ListenerConfig {
         id,
         address,
@@ -254,6 +256,7 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
             .map(|v| v as u32)
             .unwrap_or(100),
         keepalive_max_requests: get_int_entry(node, "keepalive-max-requests").map(|v| v as u32),
+        trusted_proxies,
     })
 }
 

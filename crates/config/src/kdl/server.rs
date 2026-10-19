@@ -57,6 +57,7 @@ pub(crate) const RECOGNIZED_LISTENER_KEYS: &[&str] = &[
     "keepalive-timeout-secs",
     "max-concurrent-streams",
     "keepalive-max-requests",
+    "trusted-proxies",
 ];
 
 /// Settings of the `system` block that are parsed and not applied, as messages.
@@ -81,6 +82,42 @@ pub(crate) fn unapplied_system_settings(node: &kdl::KdlNode, block: &str) -> Vec
         ));
     }
     problems
+}
+
+/// Parse a listener's `trusted-proxies "10.0.0.0/8" "192.0.2.7" ...`.
+///
+/// Every argument of every `trusted-proxies` node counts, so a long list can
+/// be split over several lines. An entry that is not an address or CIDR
+/// network is an error rather than skipped: silently trusting less than the
+/// operator wrote breaks client-IP logging, and an entry silently *dropped*
+/// from a typo would be just as invisible.
+pub(crate) fn parse_trusted_proxies(
+    node: &kdl::KdlNode,
+    listener_id: &str,
+) -> Result<Vec<crate::server::IpCidr>> {
+    let mut trusted = Vec::new();
+    let Some(children) = node.children() else {
+        return Ok(trusted);
+    };
+    for child in children
+        .nodes()
+        .iter()
+        .filter(|n| n.name().value() == "trusted-proxies")
+    {
+        for entry in child.entries() {
+            let value = entry.value().as_string().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Listener '{}': trusted-proxies entries must be strings, e.g. trusted-proxies \"10.0.0.0/8\"",
+                    listener_id
+                )
+            })?;
+            let cidr = value.parse().map_err(|e: String| {
+                anyhow::anyhow!("Listener '{}': trusted-proxies {}", listener_id, e)
+            })?;
+            trusted.push(cidr);
+        }
+    }
+    Ok(trusted)
 }
 
 pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
@@ -186,6 +223,8 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                     "Parsed listener"
                 );
 
+                let trusted_proxies = parse_trusted_proxies(child, &id)?;
+
                 listeners.push(ListenerConfig {
                     id,
                     address,
@@ -204,6 +243,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                         .unwrap_or_else(default_max_concurrent_streams),
                     keepalive_max_requests: get_int_entry(child, "keepalive-max-requests")
                         .map(|v| v as u32),
+                    trusted_proxies,
                 });
             }
         }
@@ -1009,6 +1049,48 @@ mod tests {
         assert_eq!(public.namespace, None);
         assert_eq!(admin.namespace, Some("ops".to_string()));
         assert_eq!(admin.address, "127.0.0.1:9000");
+    }
+
+    /// Default: nobody is trusted. Entries on several nodes accumulate.
+    #[test]
+    fn parses_trusted_proxies() {
+        let listeners = parse(
+            r#"
+            listeners {
+                listener "public" {
+                    address "0.0.0.0:8080"
+                }
+                listener "behind-lb" {
+                    address "0.0.0.0:8081"
+                    trusted-proxies "10.0.0.0/8" "2001:db8::/32"
+                    trusted-proxies "192.0.2.7"
+                }
+            }
+            "#,
+        );
+        let public = listeners.iter().find(|l| l.id == "public").unwrap();
+        assert!(public.trusted_proxies.is_empty());
+        let lb = listeners.iter().find(|l| l.id == "behind-lb").unwrap();
+        let got: Vec<String> = lb.trusted_proxies.iter().map(|c| c.to_string()).collect();
+        assert_eq!(got, ["10.0.0.0/8", "2001:db8::/32", "192.0.2.7/32"]);
+    }
+
+    /// A typo must not silently shrink (or empty) the trusted set.
+    #[test]
+    fn rejects_invalid_trusted_proxy() {
+        for bad in [r#""10.0.0.0/40""#, r#""lb.internal""#, "10"] {
+            let input = format!(
+                "listeners {{\n listener \"x\" {{\n  address \"0.0.0.0:8080\"\n  trusted-proxies {bad}\n }}\n}}"
+            );
+            let doc: kdl::KdlDocument = input.parse().unwrap();
+            let err = parse_listeners(doc.nodes().first().unwrap())
+                .expect_err(bad)
+                .to_string();
+            assert!(
+                err.contains("Listener 'x'") && err.contains("trusted-proxies"),
+                "{err}"
+            );
+        }
     }
 
     fn parse_tls(input: &str) -> Result<TlsConfig> {

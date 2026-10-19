@@ -196,6 +196,7 @@ pub fn create_default_config() -> Config {
                 keepalive_timeout_secs: 75,
                 max_concurrent_streams: 100,
                 keepalive_max_requests: None,
+                trusted_proxies: Vec::new(),
             },
             ListenerConfig {
                 id: "admin".to_string(),
@@ -208,6 +209,7 @@ pub fn create_default_config() -> Config {
                 keepalive_timeout_secs: 30,
                 max_concurrent_streams: 100,
                 keepalive_max_requests: None,
+                trusted_proxies: Vec::new(),
             },
         ],
         routes: vec![

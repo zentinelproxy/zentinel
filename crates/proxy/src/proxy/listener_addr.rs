@@ -37,13 +37,6 @@ pub(crate) fn canonical_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// The client IP Zentinel records for a connection from `peer`: the bare,
-/// canonical address. No port, which would make every connection a different
-/// client for rate limiting and hashing.
-pub(crate) fn client_ip_string(peer: SocketAddr) -> String {
-    canonical_ip(peer.ip()).to_string()
-}
-
 /// [`canonical_ip`] applied to a whole socket address.
 fn canonical_addr(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(canonical_ip(addr.ip()), addr.port())
@@ -177,23 +170,6 @@ impl ListenerMatchers {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Two connections from one client are one rate-limit key; two clients
-    /// are two. The key used to be "" for everyone (#518 verification).
-    #[test]
-    fn client_ip_is_the_bare_canonical_peer_address() {
-        assert_eq!(client_ip_string(addr("192.0.2.1:50000")), "192.0.2.1");
-        assert_eq!(
-            client_ip_string(addr("192.0.2.1:50000")),
-            client_ip_string(addr("192.0.2.1:50001"))
-        );
-        assert_ne!(
-            client_ip_string(addr("127.0.0.1:50000")),
-            client_ip_string(addr("[::1]:50000"))
-        );
-        assert_eq!(client_ip_string(addr("[::ffff:192.0.2.1]:1")), "192.0.2.1");
-        assert_eq!(client_ip_string(addr("[2001:db8::1]:443")), "2001:db8::1");
-    }
 
     fn addr(s: &str) -> SocketAddr {
         s.parse().expect("test address parses")

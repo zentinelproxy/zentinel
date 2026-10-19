@@ -116,6 +116,112 @@ pub struct ListenerConfig {
     /// Equivalent to nginx's keepalive_requests. None = unlimited.
     #[serde(default)]
     pub keepalive_max_requests: Option<u32>,
+
+    /// Peers whose `X-Forwarded-*` headers this listener believes.
+    ///
+    /// KDL: `trusted-proxies "10.0.0.0/8" "2001:db8::/32" "192.0.2.7"`.
+    ///
+    /// Empty by default, which means *no* client is trusted: `X-Forwarded-For`
+    /// is replaced by the TCP peer's address, and `X-Forwarded-Proto` /
+    /// `X-Forwarded-Host` by what this listener itself observed. Anything else
+    /// would let any client choose the IP address that backends and agents (IP
+    /// reputation, rate limiting) see.
+    ///
+    /// When the peer is inside one of these networks (a load balancer or CDN
+    /// in front of Zentinel), the peer's address is appended to the incoming
+    /// `X-Forwarded-For`, incoming `X-Forwarded-Proto`/`-Host` are kept, and the
+    /// client IP Zentinel itself uses is the right-most chain entry that is not
+    /// a trusted proxy.
+    ///
+    /// This is per listener because trust is a property of who can connect to
+    /// a socket: an internal port behind a load balancer and a public port on
+    /// the same proxy need different answers.
+    #[serde(default)]
+    pub trusted_proxies: Vec<IpCidr>,
+}
+
+/// An IP network in CIDR notation (`10.0.0.0/8`, `2001:db8::/32`). A bare
+/// address is a single-host network (`/32` or `/128`).
+///
+/// Host bits below the prefix are ignored, so `10.1.2.3/8` means `10.0.0.0/8`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct IpCidr {
+    network: std::net::IpAddr,
+    prefix_len: u8,
+}
+
+impl IpCidr {
+    /// Whether `ip` lies inside this network.
+    ///
+    /// Callers should pass canonical addresses: an IPv4-mapped IPv6 address
+    /// (`::ffff:10.0.0.1`, as a dual-stack socket reports IPv4 peers) is not
+    /// inside an IPv4 network.
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+        match (self.network, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix_len))
+                    .unwrap_or(0);
+                u32::from(net) & mask == u32::from(ip) & mask
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix_len))
+                    .unwrap_or(0);
+                u128::from(net) & mask == u128::from(ip) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl std::str::FromStr for IpCidr {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let (addr, prefix) = match s.split_once('/') {
+            Some((addr, prefix)) => (addr, Some(prefix)),
+            None => (s, None),
+        };
+        let network: std::net::IpAddr = addr
+            .parse()
+            .map_err(|_| format!("'{s}' is not an IP address or CIDR network"))?;
+        let max = if network.is_ipv4() { 32 } else { 128 };
+        let prefix_len = match prefix {
+            None => max,
+            Some(p) => match p.parse::<u8>() {
+                Ok(n) if n <= max => n,
+                _ => return Err(format!("'{s}' has an invalid prefix length (0-{max})")),
+            },
+        };
+        Ok(Self {
+            network,
+            prefix_len,
+        })
+    }
+}
+
+impl std::fmt::Display for IpCidr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.network, self.prefix_len)
+    }
+}
+
+impl TryFrom<String> for IpCidr {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl From<IpCidr> for String {
+    fn from(c: IpCidr) -> Self {
+        c.to_string()
+    }
 }
 
 /// Listener protocol

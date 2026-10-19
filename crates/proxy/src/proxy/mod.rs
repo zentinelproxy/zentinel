@@ -11,6 +11,7 @@ mod context;
 mod fallback;
 mod fallback_metrics;
 pub(crate) mod filters;
+mod forwarded;
 mod handlers;
 mod http_trait;
 mod listener_addr;

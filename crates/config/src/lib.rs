@@ -106,7 +106,7 @@ pub use routes::{
 
 // Server
 pub use server::{
-    CertFolderReloadMode, ListenerConfig, ListenerProtocol, ServerConfig, SniCertFolder,
+    CertFolderReloadMode, IpCidr, ListenerConfig, ListenerProtocol, ServerConfig, SniCertFolder,
     SniCertificate, TlsConfig,
 };
 
@@ -896,6 +896,7 @@ impl Config {
                 keepalive_timeout_secs: 75,
                 max_concurrent_streams: 100,
                 keepalive_max_requests: None,
+                trusted_proxies: Vec::new(),
             }],
             routes: vec![RouteConfig {
                 id: "default".to_string(),
