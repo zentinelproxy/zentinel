@@ -99,8 +99,9 @@ async fn selected(pool: &UpstreamPool) -> Result<BTreeSet<String>, ZentinelError
     Ok(seen)
 }
 
-// Consistent hash rebuilds its ring with `block_in_place`.
-#[tokio::test(flavor = "multi_thread")]
+// A current-thread runtime on purpose: consistent hash used to build its ring
+// with `block_in_place`, which panics there.
+#[tokio::test]
 async fn unhealthy_targets_are_excluded_by_every_algorithm() {
     let only_bad: BTreeSet<String> = [BAD.to_string()].into();
     let only_good: BTreeSet<String> = [GOOD.to_string()].into();

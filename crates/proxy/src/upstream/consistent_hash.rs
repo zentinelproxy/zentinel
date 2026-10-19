@@ -136,7 +136,7 @@ impl ConsistentHashBalancer {
             .map(|_| Arc::new(AtomicU64::new(0)))
             .collect();
 
-        let balancer = Self {
+        let mut balancer = Self {
             config,
             targets: targets.clone(),
             ring: Arc::new(RwLock::new(BTreeMap::new())),
@@ -147,10 +147,14 @@ impl ConsistentHashBalancer {
             generation: Arc::new(AtomicUsize::new(0)),
         };
 
-        // Build initial ring
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(balancer.rebuild_ring());
-        });
+        // Build the initial ring synchronously. Nothing else can hold the
+        // locks yet, and every target starts healthy, so there is nothing to
+        // wait for. This used to go through `block_in_place` + `block_on`,
+        // which panics on a current-thread runtime and outside a runtime --
+        // and pools (with this balancer) are rebuilt on every reload and
+        // discovery refresh, not only at startup.
+        let ring = balancer.build_ring(&HashMap::new());
+        balancer.ring = Arc::new(RwLock::new(ring));
 
         debug!(
             target_count = targets.len(),
@@ -162,6 +166,28 @@ impl ConsistentHashBalancer {
 
     /// Rebuild the hash ring based on current targets and health
     async fn rebuild_ring(&self) {
+        let new_ring = {
+            let health = self.health_status.read().await;
+            self.build_ring(&health)
+        };
+
+        *self.ring.write().await = new_ring;
+
+        // Clear cache on ring change
+        let cache_size = self.lookup_cache.read().await.len();
+        self.lookup_cache.write().await.clear();
+        let new_generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+        trace!(
+            cache_entries_cleared = cache_size,
+            new_generation = new_generation,
+            "Ring rebuild complete, cache cleared"
+        );
+    }
+
+    /// Compute the ring for the given health statuses. Pure computation, so
+    /// it can run without a runtime.
+    fn build_ring(&self, health: &HashMap<String, bool>) -> BTreeMap<u64, VirtualNode> {
         trace!(
             total_targets = self.targets.len(),
             virtual_nodes_per_target = self.config.virtual_nodes,
@@ -169,7 +195,6 @@ impl ConsistentHashBalancer {
         );
 
         let mut new_ring = BTreeMap::new();
-        let health = self.health_status.read().await;
 
         for (index, target) in self.targets.iter().enumerate() {
             let target_id = format!("{}:{}", target.address, target.port);
@@ -223,18 +248,7 @@ impl ConsistentHashBalancer {
             );
         }
 
-        *self.ring.write().await = new_ring;
-
-        // Clear cache on ring change
-        let cache_size = self.lookup_cache.read().await.len();
-        self.lookup_cache.write().await.clear();
-        let new_generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-
-        trace!(
-            cache_entries_cleared = cache_size,
-            new_generation = new_generation,
-            "Ring rebuild complete, cache cleared"
-        );
+        new_ring
     }
 
     /// Hash a key using the configured hash function
@@ -737,6 +751,38 @@ mod tests {
 
         // Should not select the overloaded target (index 0)
         assert_ne!(index, 0);
+    }
+
+    // Pools are built and their health reported from whatever runtime the
+    // caller has. `block_in_place` panics on a current-thread runtime, which
+    // is what `#[tokio::test]` gives -- so this test did not run before.
+    #[tokio::test]
+    async fn works_on_a_current_thread_runtime() {
+        let balancer = ConsistentHashBalancer::new(create_test_targets(3), Default::default());
+        assert_eq!(balancer.healthy_targets().await.len(), 3);
+
+        balancer.report_health("10.0.0.1:8080", false).await;
+        let healthy = balancer.healthy_targets().await;
+        assert_eq!(healthy.len(), 2);
+        for i in 0..50 {
+            let context = RequestContext {
+                client_ip: Some(format!("192.168.1.{i}:1234").parse().unwrap()),
+                headers: HashMap::new(),
+                path: "/".to_string(),
+                method: "GET".to_string(),
+            };
+            let selection = balancer.select(Some(&context)).await.unwrap();
+            assert_ne!(selection.address, "10.0.0.1:8080");
+        }
+
+        balancer.report_health("10.0.0.1:8080", true).await;
+        assert_eq!(balancer.healthy_targets().await.len(), 3);
+    }
+
+    #[test]
+    fn builds_outside_a_runtime() {
+        let balancer = ConsistentHashBalancer::new(create_test_targets(3), Default::default());
+        assert_eq!(balancer.ring.try_read().unwrap().len(), 3 * 150);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
