@@ -868,6 +868,11 @@ impl RateLimitManager {
 
     /// Check if a specific route has rate limiting configured (fast path)
     #[inline]
+    /// Whether this route has a limiter of its own (not counting the global one)
+    pub fn has_route_specific_limiter(&self, route_id: &str) -> bool {
+        self.route_limiters.contains_key(route_id)
+    }
+
     pub fn has_route_limiter(&self, route_id: &str) -> bool {
         self.global_limiter.is_some() || self.route_limiters.contains_key(route_id)
     }

@@ -746,6 +746,17 @@ impl ZentinelProxy {
             RateLimitManager::new()
         };
 
+        let default_limit = Self::default_route_rate_limit(&config.rate_limits);
+        if let Some(ref default) = default_limit {
+            info!(
+                max_rps = default.max_rps,
+                burst = default.burst,
+                key = ?default.key,
+                "Default rate limit applies to routes without their own limit"
+            );
+        }
+        let mut defaulted_routes = 0usize;
+
         for route in &config.routes {
             // Check for rate limit in route policies
             if let Some(ref rate_limit) = route.policies.rate_limit {
@@ -797,16 +808,53 @@ impl ZentinelProxy {
                     }
                 }
             }
+
+            // `rate-limits { default-rps }` covers every route that has no
+            // limit of its own. A route's own limit (policy or filter) replaces
+            // the default rather than stacking with it.
+            if let Some(ref default) = default_limit {
+                if !manager.has_route_specific_limiter(&route.id) {
+                    manager.register_route(&route.id, default.clone());
+                    defaulted_routes += 1;
+                    debug!(route_id = %route.id, "Registered default rate limiter for route");
+                }
+            }
         }
 
         if manager.route_count() > 0 {
             info!(
                 route_count = manager.route_count(),
-                "Rate limiting initialized"
+                defaulted_routes, "Rate limiting initialized"
             );
         }
 
         manager
+    }
+
+    /// The limiter for routes without one of their own, from
+    /// `rate-limits { default-rps N default-burst M key "..." }`.
+    ///
+    /// These keys were parsed and documented ("Default for routes without
+    /// explicit limits") but nothing outside the config crate read them, so a
+    /// configured default limited nothing. It uses the same limiter as a
+    /// route's `rate-limit` filter: rejects with 429 and the usual
+    /// `X-RateLimit-*` / `Retry-After` headers, keyed by `key` (client IP
+    /// unless set). Each route gets its own bucket, as with a per-route filter.
+    fn default_route_rate_limit(
+        rate_limits: &zentinel_config::GlobalRateLimitConfig,
+    ) -> Option<RateLimitConfig> {
+        let max_rps = rate_limits.default_rps?;
+        Some(RateLimitConfig {
+            max_rps,
+            burst: rate_limits.default_burst.unwrap_or(max_rps),
+            key: rate_limits.key.clone(),
+            action: zentinel_config::RateLimitAction::Reject,
+            status_code: 429,
+            message: None,
+            backend: zentinel_config::RateLimitBackend::Local,
+            max_delay_ms: 5000,
+            max_keys: crate::rate_limit::DEFAULT_MAX_RATE_LIMIT_KEYS,
+        })
     }
 
     /// Initialize inference rate limiters from configuration
@@ -1310,6 +1358,111 @@ mod health_check_wiring_tests {
             reload_and_wait_for(&proxy, 1).await,
             1,
             "a health check added by reload was not started"
+        );
+    }
+}
+
+#[cfg(test)]
+mod default_rate_limit_tests {
+    use super::*;
+
+    struct NoHeaders;
+    impl crate::rate_limit::HeaderAccessor for NoHeaders {
+        fn get_header(&self, _name: &str) -> Option<String> {
+            None
+        }
+    }
+
+    fn config(rate_limits: &str) -> Config {
+        let kdl = format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{
+                listener "http" {{ address "127.0.0.1:19290" protocol "http" }}
+            }}
+            {rate_limits}
+            filters {{
+                filter "own-limit" {{
+                    type "rate-limit"
+                    max-rps 4
+                }}
+            }}
+            routes {{
+                route "plain" {{
+                    matches {{ path-prefix "/plain" }}
+                    upstream "backend"
+                }}
+                route "own" {{
+                    matches {{ path-prefix "/own" }}
+                    upstream "backend"
+                    filters "own-limit"
+                }}
+            }}
+            upstreams {{
+                upstream "backend" {{ target "127.0.0.1:19291" }}
+            }}
+            "#
+        );
+        Config::from_kdl(&kdl).expect("config parses")
+    }
+
+    /// Status of `n` back-to-back requests from one client to a route.
+    fn statuses(manager: &RateLimitManager, route: &str, n: usize) -> Vec<u16> {
+        (0..n)
+            .map(|_| {
+                let r = manager.check(route, "203.0.113.7", "/", Option::<&NoHeaders>::None);
+                if r.allowed {
+                    200
+                } else {
+                    r.status_code
+                }
+            })
+            .collect()
+    }
+
+    /// `rate-limits { default-rps }` was parsed and documented as the limit
+    /// for routes without one of their own, and nothing read it: every
+    /// request to such a route was allowed.
+    #[test]
+    fn default_rps_limits_routes_without_their_own_limit() {
+        let config = config("rate-limits { default-rps 2; default-burst 2 }");
+        assert_eq!(config.rate_limits.default_rps, Some(2));
+        let manager = ZentinelProxy::initialize_rate_limiters(&config);
+
+        assert_eq!(statuses(&manager, "plain", 4), vec![200, 200, 429, 429]);
+
+        // The headers come from the same result: limit and remaining.
+        let limited = manager.check("plain", "203.0.113.7", "/", Option::<&NoHeaders>::None);
+        assert_eq!(limited.limit, 2);
+        assert_eq!(limited.remaining, 0);
+
+        // Another client has its own bucket.
+        let other = manager.check("plain", "198.51.100.1", "/", Option::<&NoHeaders>::None);
+        assert!(other.allowed);
+    }
+
+    #[test]
+    fn a_route_with_its_own_limit_ignores_the_default() {
+        let config = config("rate-limits { default-rps 2 }");
+        let manager = ZentinelProxy::initialize_rate_limiters(&config);
+
+        assert_eq!(
+            statuses(&manager, "own", 6),
+            vec![200, 200, 200, 200, 429, 429]
+        );
+    }
+
+    #[test]
+    fn without_a_default_unlimited_routes_stay_unlimited() {
+        let config = config("");
+        let manager = ZentinelProxy::initialize_rate_limiters(&config);
+
+        assert!(!manager.has_route_limiter("plain"));
+        assert_eq!(statuses(&manager, "plain", 10), vec![200; 10]);
+        assert_eq!(
+            statuses(&manager, "own", 6),
+            vec![200, 200, 200, 200, 429, 429]
         );
     }
 }
