@@ -251,14 +251,16 @@ impl ZentinelProxy {
         // Retry buffering keeps pingora's body loop running after the body
         // has been consumed here, which is what lets `request_body_filter`
         // hand it back for forwarding (see `validated_request_body`). The
-        // buffer is sized to the body limit: pingora's default of 64 KiB
-        // dropped anything larger, the loop never ran, and the upstream waited
-        // for a body that never came (#531).
-        let limit = ctx
+        // buffer is sized to the body limit -- the route's own if it has one,
+        // never above the global one: pingora's default of 64 KiB dropped
+        // anything larger, the loop never ran, and the upstream waited for a
+        // body that never came (#531).
+        let global_limit = ctx
             .config
             .get_or_insert_with(|| self.config_manager.current())
             .limits
             .max_body_size_bytes;
+        let limit = ctx.max_body_size(global_limit);
         session.enable_retry_buffering_with_limit(limit);
         let mut body = Vec::new();
         while let Some(chunk) = session.read_request_body().await.map_err(|e| {

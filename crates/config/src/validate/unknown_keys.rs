@@ -194,6 +194,25 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
         nesting: Nesting::Anywhere,
         keys: crate::kdl::routes::RECOGNIZED_ROUTE_CHILDREN,
     },
+    // `limits` appears at the top level and inside a namespace or service,
+    // all read by `parse_limits_config`. Listed by position rather than as
+    // `Anywhere` so a `limits` node inside free-form agent configuration is
+    // left alone.
+    ClosedBlock {
+        name: "limits",
+        nesting: Nesting::Root,
+        keys: crate::kdl::RECOGNIZED_LIMITS_KEYS,
+    },
+    ClosedBlock {
+        name: "limits",
+        nesting: Nesting::In("namespace"),
+        keys: crate::kdl::RECOGNIZED_LIMITS_KEYS,
+    },
+    ClosedBlock {
+        name: "limits",
+        nesting: Nesting::In("service"),
+        keys: crate::kdl::RECOGNIZED_LIMITS_KEYS,
+    },
     ClosedBlock {
         name: "system",
         nesting: Nesting::Anywhere,
@@ -631,6 +650,22 @@ fn unknown_key_message(block: &ClosedBlock, key: &str) -> String {
             describe(other),
             describe(block)
         );
+    }
+
+    // The directory-config spelling of a limit. The edit distance from
+    // `max-body-size-bytes` to `max-body-size` is within the suggestion budget
+    // anyway, but the reason it is ignored is not a typo, and saying so stops
+    // the next person from "fixing" the parser instead.
+    if block.name == "limits" {
+        if let Some(single_file) = key
+            .strip_suffix("-bytes")
+            .filter(|stem| block.keys.contains(stem))
+        {
+            return format!(
+                "'{key}' is the directory-config name for this limit and is ignored in a \
+                 single-file config. Did you mean '{single_file}'?"
+            );
+        }
     }
 
     match closest_key(block, key) {
@@ -1918,6 +1953,66 @@ mod tests {
             "{:?}",
             warnings_for(kdl)
         );
+    }
+
+    /// #517: in a single-file config the `-bytes` names belong to the
+    /// directory-config parser and were dropped without a word, so a 1 KB
+    /// body limit written that way let a 5 KB body through.
+    #[test]
+    fn directory_config_limit_names_are_reported_in_a_single_file_config() {
+        let warnings = warnings_for(
+            r#"
+            limits {
+                max-body-size-bytes 1024
+                max-header-size-bytes 4096
+                max-header-count 50
+            }
+            "#,
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("'max-body-size-bytes'"));
+        assert!(warnings[0].contains("Did you mean 'max-body-size'?"));
+        assert!(warnings[1].contains("Did you mean 'max-header-size'?"));
+    }
+
+    #[test]
+    fn a_limit_with_no_single_file_name_is_reported_without_a_bogus_suggestion() {
+        let warnings = warnings_for("limits {\n  max-header-name-bytes 256\n}\n");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("'max-header-name-bytes'"));
+        assert!(!warnings[0].contains("directory-config"));
+    }
+
+    #[test]
+    fn namespace_and_service_limits_are_checked_too() {
+        let warnings = warnings_for(
+            r#"
+            namespace "ns" {
+                limits { max-body-size-bytes 1 }
+                service "svc" {
+                    limits { max-body-size-bytes 1 }
+                }
+            }
+            "#,
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_valid_limits_block_produces_no_warnings() {
+        let warnings = warnings_for(
+            r#"
+            limits {
+                max-header-size 8192
+                max-header-count 100
+                max-body-size 1048576
+                max-connections-per-client 100
+                max-total-connections 10000
+                max-in-flight-requests 10000
+            }
+            "#,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     fn warning_texts(result: &ValidationResult) -> Vec<String> {

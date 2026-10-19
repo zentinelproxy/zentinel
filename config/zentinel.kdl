@@ -368,41 +368,18 @@ waf {
 }
 
 // Resource limits
+//
+// These are the settings a single-file config's `limits` block reads. A
+// directory config reads a longer list under different names
+// (`max-body-size-bytes`, `max-header-size-bytes`, ...); written here, those
+// are ignored and `zentinel lint` reports them.
 limits {
-    // Header limits
-    max-header-size-bytes 8192
+    max-header-size 8192
     max-header-count 100
-    max-header-name-bytes 256
-    max-header-value-bytes 4096
-
-    // Body limits
-    max-body-size-bytes 10485760  // 10MB
-    max-body-buffer-bytes 1048576  // 1MB
-    max-body-inspection-bytes 1048576  // 1MB
-
-    // Decompression limits
-    max-decompression-ratio 100.0
-    max-decompressed-size-bytes 104857600  // 100MB
-
-    // Connection limits
+    max-body-size 10485760  // 10MB
     max-connections-per-client 100
-    max-connections-per-route 1000
     max-total-connections 10000
-    max-idle-connections-per-upstream 100
-
-    // Request limits
     max-in-flight-requests 10000
-    max-in-flight-requests-per-worker 1000
-    max-queued-requests 1000
-
-    // Agent limits
-    max-agent-queue-depth 100
-    max-agent-body-bytes 1048576  // 1MB
-    max-agent-response-bytes 10240  // 10KB
-
-    // Rate limits
-    max-requests-per-second-global 50000
-    max-requests-per-second-per-client 100
 }
 
 // Observability configuration

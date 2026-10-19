@@ -1053,6 +1053,22 @@ fn parse_body_inspection_policy(node: &kdl::KdlNode) -> Result<crate::waf::BodyI
 // Limits Parsing
 // ============================================================================
 
+/// Every key `parse_limits_config` reads.
+///
+/// Kept beside the parser for the same reason as the system and listener key
+/// lists: the unknown-key lint reads it. It matters more here than most, since
+/// a directory config's `limits` block is read by a different parser with
+/// different names (`max-body-size-bytes`, `max-header-size-bytes`, ...), and
+/// those names written in a single-file config were silently ignored (#517).
+pub(crate) const RECOGNIZED_LIMITS_KEYS: &[&str] = &[
+    "max-header-size",
+    "max-header-count",
+    "max-body-size",
+    "max-connections-per-client",
+    "max-total-connections",
+    "max-in-flight-requests",
+];
+
 /// Parse limits configuration block
 pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
     let mut limits = Limits::default();
@@ -1065,6 +1081,12 @@ pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
     }
     if let Some(v) = get_int_entry(node, "max-body-size") {
         limits.max_body_size_bytes = v as usize;
+        // The body buffer cannot exceed the body it buffers, and validation
+        // rejects a config where it does. A single-file config has no key for
+        // the buffer, so with its 1 MiB default any `max-body-size` below
+        // 1 MiB failed validation with an error about a setting the operator
+        // could not change. Nothing reads the buffer size at request time.
+        limits.max_body_buffer_bytes = limits.max_body_buffer_bytes.min(limits.max_body_size_bytes);
     }
     if let Some(v) = get_int_entry(node, "max-connections-per-client") {
         limits.max_connections_per_client = v as usize;
@@ -1586,6 +1608,56 @@ fn parse_tracing_backend(node: &kdl::KdlNode) -> Result<crate::observability::Tr
 
 #[cfg(test)]
 mod tests {
+    fn config_with_limits(limits: &str) -> anyhow::Result<crate::Config> {
+        crate::Config::from_kdl(&format!(
+            r#"
+            system {{
+                worker-threads 1
+            }}
+            listeners {{
+                listener "l" {{
+                    address "127.0.0.1:8080"
+                }}
+            }}
+            routes {{
+                route "r" {{
+                    matches {{
+                        path "/"
+                    }}
+                    service-type "builtin"
+                    builtin-handler "health"
+                }}
+            }}
+            limits {{
+                {limits}
+            }}
+            "#
+        ))
+    }
+
+    /// #517: a single-file config has no key for the body buffer, so its
+    /// 1 MiB default made every `max-body-size` below 1 MiB fail validation
+    /// ("max_body_buffer_bytes cannot exceed max_body_size_bytes").
+    #[test]
+    fn a_body_limit_below_the_default_buffer_size_validates() {
+        let config = config_with_limits("max-body-size 1024").unwrap();
+        assert_eq!(config.limits.max_body_size_bytes, 1024);
+        assert_eq!(config.limits.max_body_buffer_bytes, 1024);
+        config
+            .validate()
+            .expect("a 1 KiB body limit is a valid config");
+    }
+
+    #[test]
+    fn a_large_body_limit_keeps_the_default_buffer() {
+        let config = config_with_limits("max-body-size 52428800").unwrap();
+        assert_eq!(config.limits.max_body_size_bytes, 52428800);
+        assert_eq!(
+            config.limits.max_body_buffer_bytes,
+            zentinel_common::Limits::default().max_body_buffer_bytes
+        );
+    }
+
     /// Tracing used to be switched on by the presence of the block alone, so
     /// `enabled #false` was read by nothing and tracing started regardless.
     #[test]

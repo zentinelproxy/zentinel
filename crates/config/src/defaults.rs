@@ -123,9 +123,9 @@ routes {
 }
 
 limits {
-    max-header-size-bytes 8192
+    max-header-size 8192
     max-header-count 100
-    max-body-size-bytes 1048576  // 1MB default
+    max-body-size 10485760  // 10MB default
     max-connections-per-client 100
 }
 

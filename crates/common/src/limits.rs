@@ -146,7 +146,11 @@ impl Limits {
 
         if self.max_body_buffer_bytes > self.max_body_size_bytes {
             return Err(ZentinelError::Config {
-                message: "max_body_buffer_bytes cannot exceed max_body_size_bytes".to_string(),
+                message: format!(
+                    "limits: max-body-buffer-bytes ({}) cannot exceed max-body-size-bytes ({}); \
+                     raise max-body-size-bytes or lower max-body-buffer-bytes",
+                    self.max_body_buffer_bytes, self.max_body_size_bytes
+                ),
                 source: None,
             });
         }

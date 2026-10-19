@@ -1027,6 +1027,35 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
+        // Refuse a body declared larger than the limit before reading any of
+        // it or connecting upstream. Chunked bodies, which declare no length,
+        // are counted as they stream in `request_body_filter`.
+        let declared_length = session
+            .req_header()
+            .headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        if let Some(declared) = declared_length {
+            let global_limit = ctx
+                .config
+                .get_or_insert_with(|| self.config_manager.current())
+                .limits
+                .max_body_size_bytes;
+            let limit = ctx.max_body_size(global_limit);
+            if declared > limit as u64 {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    content_length = declared,
+                    limit = limit,
+                    "Request body size limit exceeded"
+                );
+                self.metrics.record_blocked_request("body_size_exceeded");
+                return Err(body_too_large());
+            }
+        }
+
         // Check rate limiting early (before other processing)
         // Fast path: skip if no rate limiting is configured for this route
         if let Some(route_id) = ctx.route_id.as_deref() {
@@ -1857,22 +1886,25 @@ impl ProxyHttp for ZentinelProxy {
                 "Processing request body chunk"
             );
 
-            // Check body size limit (use cached config)
-            let config = ctx
+            // Check body size limit (use cached config). This catches bodies
+            // whose length was not declared up front; a Content-Length over
+            // the limit is refused in `request_filter` before any upstream is
+            // contacted.
+            let global_limit = ctx
                 .config
-                .get_or_insert_with(|| self.config_manager.current());
-            if ctx.request_body_bytes > config.limits.max_body_size_bytes as u64 {
+                .get_or_insert_with(|| self.config_manager.current())
+                .limits
+                .max_body_size_bytes;
+            let limit = ctx.max_body_size(global_limit);
+            if ctx.request_body_bytes > limit as u64 {
                 warn!(
                     correlation_id = %ctx.trace_id,
                     body_bytes = ctx.request_body_bytes,
-                    limit = config.limits.max_body_size_bytes,
+                    limit = limit,
                     "Request body size limit exceeded"
                 );
                 self.metrics.record_blocked_request("body_size_exceeded");
-                return Err(Error::explain(
-                    ErrorType::InternalError,
-                    "Request body too large",
-                ));
+                return Err(body_too_large());
             }
         }
 
@@ -3597,15 +3629,22 @@ impl ProxyHttp for ZentinelProxy {
         );
 
         // Record failure with circuit breaker via upstream pool
-        // This is done asynchronously since we can't await in a sync fn
-        let peer_address = peer.address().to_string();
-        let upstream_pools = self.upstream_pools.clone();
-        let upstream_id_owned = upstream_id.to_string();
-        tokio::spawn(async move {
-            if let Some(pool) = upstream_pools.get(&upstream_id_owned).await {
-                pool.report_result(&peer_address, false).await;
-            }
-        });
+        // This is done asynchronously since we can't await in a sync fn.
+        //
+        // Not for an error the client caused -- an oversized body refused
+        // mid-stream, a client that went away. The peer did nothing wrong,
+        // and counting these let a client trip the circuit breaker on a
+        // healthy upstream.
+        if *e.esource() != pingora::ErrorSource::Downstream {
+            let peer_address = peer.address().to_string();
+            let upstream_pools = self.upstream_pools.clone();
+            let upstream_id_owned = upstream_id.to_string();
+            tokio::spawn(async move {
+                if let Some(pool) = upstream_pools.get(&upstream_id_owned).await {
+                    pool.report_result(&peer_address, false).await;
+                }
+            });
+        }
 
         // Metrics tracking
         self.metrics
@@ -4027,6 +4066,20 @@ impl ProxyHttp for ZentinelProxy {
 // =============================================================================
 // Helper methods for body streaming (not part of ProxyHttp trait)
 // =============================================================================
+
+/// The error for a request body over its limit: 413, attributed to the client.
+///
+/// It used to be an `InternalError`, so the client got a 500 for its own
+/// oversized request (#517). Marking it downstream matters as much as the
+/// status: raised while the body streams, it reaches `error_while_proxy`,
+/// which would otherwise count it against the upstream peer.
+fn body_too_large() -> Box<Error> {
+    Error::explain(
+        ErrorType::HTTPStatus(413),
+        "Request body exceeds the configured limit",
+    )
+    .into_down()
+}
 
 /// The JSON body `fail_to_proxy` answers with: `{"error":"<code> <reason>",
 /// "trace_id":"..."}`.
