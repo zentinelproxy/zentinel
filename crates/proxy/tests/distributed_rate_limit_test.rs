@@ -445,10 +445,14 @@ mod memcached_tests {
         if should_skip_memcached() {
             return false;
         }
-        let addr = memcached_url()
-            .trim_start_matches("memcache://")
-            .trim_start_matches("memcached://")
+        // Same normalisation as the limiter: a bare IP:port is not a URL.
+        let rest = memcached_url();
+        let rest = rest
+            .strip_prefix("memcache://")
+            .or_else(|| rest.strip_prefix("memcached://"))
+            .unwrap_or(&rest)
             .to_string();
+        let addr = format!("tcp://{rest}");
         matches!(
             tokio::time::timeout(Duration::from_secs(2), async_memcached::Client::new(addr)).await,
             Ok(Ok(_))

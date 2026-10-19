@@ -42,6 +42,24 @@ use zentinel_config::MemcachedBackendConfig;
 use crate::rate_limit::RateLimitCheckInfo;
 use crate::rate_limit::{BucketState, RateLimitConfig, RateLimitOutcome, TokenBucket};
 
+/// The address `async_memcached::Client::new` needs for a configured URL.
+///
+/// The client parses its argument as a URL: `tcp://host:port` and
+/// `unix:///path` work, and a bare `host:port` only happens to work for a
+/// hostname -- `127.0.0.1:11211` is not a valid URL, so it failed to connect,
+/// and `url "memcache://127.0.0.1:11211"` (the documented form) never reached
+/// memcached: every check fell back. Always hand it an explicit scheme.
+pub(crate) fn memcached_dsn(url: &str) -> String {
+    if url.starts_with("tcp://") || url.starts_with("unix://") {
+        return url.to_string();
+    }
+    let rest = url
+        .strip_prefix("memcache://")
+        .or_else(|| url.strip_prefix("memcached://"))
+        .unwrap_or(url);
+    format!("tcp://{rest}")
+}
+
 /// Statistics for Memcached-based distributed rate limiting
 #[derive(Debug, Default)]
 pub struct MemcachedRateLimitStats {
@@ -322,12 +340,7 @@ impl MemcachedRateLimiter {
         rate_config: &RateLimitConfig,
         key_prefix: String,
     ) -> Self {
-        // Parse the URL to get host:port
-        let addr = backend_config
-            .url
-            .trim_start_matches("memcache://")
-            .trim_start_matches("memcached://")
-            .to_string();
+        let addr = memcached_dsn(&backend_config.url);
         Self {
             addr,
             client: tokio::sync::Mutex::new(None),
@@ -479,6 +492,32 @@ pub async fn create_memcached_rate_limiter(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn memcached_urls_become_explicit_tcp_dsns() {
+        // An IP without a scheme is not a URL; this is the form that never connected.
+        assert_eq!(
+            super::memcached_dsn("memcache://127.0.0.1:11211"),
+            "tcp://127.0.0.1:11211"
+        );
+        assert_eq!(
+            super::memcached_dsn("memcached://cache.internal:11211"),
+            "tcp://cache.internal:11211"
+        );
+        assert_eq!(
+            super::memcached_dsn("127.0.0.1:11211"),
+            "tcp://127.0.0.1:11211"
+        );
+        assert_eq!(
+            super::memcached_dsn("tcp://10.0.0.5:11211"),
+            "tcp://10.0.0.5:11211"
+        );
+        assert_eq!(
+            super::memcached_dsn("unix:///run/memcached.sock"),
+            "unix:///run/memcached.sock"
+        );
+    }
+
     use super::*;
     use std::collections::HashMap;
 
