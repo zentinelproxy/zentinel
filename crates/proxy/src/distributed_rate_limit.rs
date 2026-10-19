@@ -74,7 +74,7 @@ impl DistributedRateLimitStats {
 
 /// One token-bucket step on the server: `TokenBucket::take_at` in Lua.
 ///
-/// KEYS[1] is the bucket; ARGV[1] its size and ARGV[2] the refill rate per
+/// `KEYS[1]` is the bucket; `ARGV[1]` its size and `ARGV[2]` the refill rate per
 /// second. Returns `{allowed (0|1), tokens left}`; tokens come back as a
 /// string because Redis truncates Lua numbers in replies to integers.
 ///

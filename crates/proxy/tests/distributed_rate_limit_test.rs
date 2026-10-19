@@ -434,7 +434,9 @@ mod memcached_tests {
     async fn is_memcached_available() -> bool {
         let reachable = memcached_reachable().await;
         if !reachable && std::env::var("ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS").is_ok() {
-            panic!("memcached is required (ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS) but not reachable");
+            panic!(
+                "memcached is required (ZENTINEL_REQUIRE_DISTRIBUTED_BACKENDS) but not reachable"
+            );
         }
         reachable
     }
