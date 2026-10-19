@@ -860,6 +860,64 @@ impl RateLimitManager {
         self.route_limiters.get(route_id).map(|p| p.value().clone())
     }
 
+    /// Replace this manager's limiters with `new`'s, as built from a
+    /// reloaded config.
+    ///
+    /// Limiters were built once at startup and never again, so a changed,
+    /// added or removed `rate-limit` filter, route policy, `global` limit or
+    /// `default-rps` needed a restart. A limiter whose config is unchanged
+    /// keeps its pool, and so its buckets and backend connection: reloading
+    /// an unrelated part of the config must not hand every client a fresh
+    /// burst. Changed limiters start with full buckets, as at startup.
+    pub fn reconcile(&self, new: RateLimitManager) -> RateLimitReconcile {
+        let mut changes = RateLimitReconcile::default();
+
+        let new_global = new.global_limiter.into_inner();
+        {
+            let mut global = self.global_limiter.write();
+            match (global.as_ref(), new_global) {
+                (Some(old), Some(new)) if old.config() == new.config() => changes.unchanged += 1,
+                (old, new) => {
+                    match (old.is_some(), new.is_some()) {
+                        (true, true) => changes.replaced += 1,
+                        (false, true) => changes.added += 1,
+                        (true, false) => changes.removed += 1,
+                        (false, false) => {}
+                    }
+                    *global = new;
+                }
+            }
+        }
+
+        // Drop routes that no longer have a limiter before adding new ones,
+        // so the map never holds both a stale and a fresh limit for a route.
+        self.route_limiters.retain(|route_id, _| {
+            let keep = new.route_limiters.contains_key(route_id);
+            if !keep {
+                changes.removed += 1;
+            }
+            keep
+        });
+        for (route_id, pool) in new.route_limiters {
+            let unchanged = self
+                .route(&route_id)
+                .map(|old| old.config() == pool.config());
+            match unchanged {
+                Some(true) => changes.unchanged += 1,
+                Some(false) => {
+                    changes.replaced += 1;
+                    self.route_limiters.insert(route_id, pool);
+                }
+                None => {
+                    changes.added += 1;
+                    self.route_limiters.insert(route_id, pool);
+                }
+            }
+        }
+
+        changes
+    }
+
     /// Evaluate the limiters that key on something only the body supplies.
     ///
     /// The counterpart to [`Self::check`], which skips these. Called once the
@@ -1032,6 +1090,16 @@ impl RateLimitManager {
     pub fn has_route_limiter(&self, route_id: &str) -> bool {
         self.global_limiter.read().is_some() || self.route_limiters.contains_key(route_id)
     }
+}
+
+/// What [`RateLimitManager::reconcile`] changed, counted in limiters
+/// (each route's limiter and the global one).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimitReconcile {
+    pub added: usize,
+    pub replaced: usize,
+    pub removed: usize,
+    pub unchanged: usize,
 }
 
 /// The result for a request `pool` limited.
