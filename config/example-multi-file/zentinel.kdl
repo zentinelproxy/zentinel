@@ -16,7 +16,6 @@ system {
 
 limits {
     max-header-count 100
-    max-connections 50000
 }
 
 include "listeners/*.kdl"
