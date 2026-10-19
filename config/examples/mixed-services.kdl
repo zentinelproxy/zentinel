@@ -9,7 +9,6 @@
 
 system {
     worker-threads 0
-    max-connections 20000
     graceful-shutdown-timeout-secs 30
 }
 

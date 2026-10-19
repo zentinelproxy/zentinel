@@ -658,6 +658,12 @@ fn check_values(
         ("agent", Some(agent_id)) if parent == Some("agents") => {
             report(agent_failure_mode_problem(node, agent_id, context));
         }
+        ("system" | "server", _) if parent.is_none() => {
+            for problem in crate::kdl::server::unapplied_system_settings(node, node.name().value())
+            {
+                report(Some(problem));
+            }
+        }
         ("matches", _) if parent == Some("route") => check_run_together_matches(node, result),
         _ => {}
     }
@@ -1038,12 +1044,13 @@ mod tests {
         assert!(warnings[0].contains("is being ignored"));
     }
 
+    /// `max-connections` is a known key and absent here: it is reported for
+    /// not being applied (#527), see `system_max_connections_is_reported`.
     #[test]
     fn a_valid_system_block_produces_no_warnings() {
         let kdl = r#"
             system {
                 worker-threads 4
-                max-connections 10000
                 graceful-shutdown-timeout-secs 30
                 daemon #false
                 pid-file "/var/run/zentinel.pid"
@@ -2345,6 +2352,19 @@ mod tests {
         for warning in &warnings {
             assert!(warning.contains("is being ignored"), "{warning}");
         }
+    }
+
+    /// #527: known, parsed, and never applied.
+    #[test]
+    fn system_max_connections_is_reported() {
+        let warnings = warnings_for("system { max-connections 10000; daemon #false; }");
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("'max-connections' in the 'system' block"));
+        assert!(warnings[0].contains("is being ignored"));
+
+        // The upstream connection pool's setting of the same name is applied.
+        let pool = r#"upstreams { upstream "b" { connection-pool { max-connections 5; } } }"#;
+        assert_eq!(warnings_for(pool), Vec::<String>::new());
     }
 
     fn warning_texts(result: &ValidationResult) -> Vec<String> {

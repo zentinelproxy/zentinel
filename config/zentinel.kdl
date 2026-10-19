@@ -4,7 +4,6 @@
 // Server-wide configuration
 system {
     worker-threads 0  // 0 = number of CPU cores
-    max-connections 10000
     graceful-shutdown-timeout-secs 30
     daemon #false
     pid-file "/var/run/zentinel.pid"

@@ -741,6 +741,18 @@ fn init_logging(verbose: bool, timestamps: bool) {
     }
 }
 
+/// Pingora's command-line options, from the CLI flags and the config.
+///
+/// `system { daemon #true }` was parsed and never read: only `-d` started a
+/// daemon (#527). Either now does. There is no way to switch daemon mode off
+/// from the command line, as there was none before.
+fn pingora_options(daemon: bool, upgrade: bool, server: &zentinel_config::ServerConfig) -> Opt {
+    let mut opt = Opt::default();
+    opt.daemon = daemon || server.daemon;
+    opt.upgrade = upgrade;
+    opt
+}
+
 /// Run the proxy server
 fn run_server(
     config_path: Option<String>,
@@ -757,12 +769,6 @@ fn run_server(
     // are buffered here and emitted as soon as the subscriber exists rather than
     // being lost.
     let mut startup_log = StartupLog::default();
-
-    // Build Pingora options
-    let mut pingora_opt = Opt::default();
-    pingora_opt.daemon = daemon;
-    pingora_opt.upgrade = upgrade;
-    // Note: We'll configure threads via ServerConf after loading our config
 
     // Get config path with priority: CLI arg > env var > None (embedded default)
     let effective_config_path = config_path.or_else(|| std::env::var("ZENTINEL_CONFIG").ok());
@@ -933,6 +939,10 @@ fn run_server(
     }
 
     // Create Pingora server with our configuration
+    let pingora_opt = pingora_options(daemon, upgrade, &config.server);
+    if pingora_opt.daemon {
+        info!(from_cli = daemon, "Running as a daemon");
+    }
     let mut server = Server::new_with_opt_and_conf(Some(pingora_opt), pingora_conf);
     server.bootstrap();
 
@@ -1529,5 +1539,23 @@ mod tests {
         assert!(ignored[0].contains("'adress'") && ignored[0].contains("is being ignored"));
 
         assert!(ignored_settings(None).is_empty());
+    }
+
+    #[test]
+    fn daemon_mode_comes_from_the_flag_or_the_config() {
+        let mut server = Config::default_for_testing().server;
+        for (flag, config, expected) in [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            server.daemon = config;
+            assert_eq!(
+                pingora_options(flag, false, &server).daemon,
+                expected,
+                "flag {flag}, config {config}"
+            );
+        }
     }
 }

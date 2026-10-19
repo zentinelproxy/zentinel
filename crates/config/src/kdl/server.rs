@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::path::PathBuf;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use zentinel_common::types::{TlsVersion, TraceIdFormat};
 
@@ -59,8 +59,36 @@ pub(crate) const RECOGNIZED_LISTENER_KEYS: &[&str] = &[
     "keepalive-max-requests",
 ];
 
+/// Settings of the `system` block that are parsed and not applied, as messages.
+///
+/// `max-connections` has never been read by the proxy: Pingora offers no
+/// limit on accepted connections (its accept-time `ConnectionFilter` cannot
+/// count connections, as it is never told when one closes), and Zentinel has
+/// not built one. Rejecting the key would break configs that have been
+/// loading, every shipped example among them until #527, so it is logged at
+/// load and reported by `zentinel lint` through `validate::unknown_keys`.
+pub(crate) fn unapplied_system_settings(node: &kdl::KdlNode, block: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    if node
+        .children()
+        .is_some_and(|c| c.get("max-connections").is_some())
+    {
+        problems.push(format!(
+            "'max-connections' in the '{block}' block is not applied and is being ignored: \
+             Zentinel does not limit client connections. Bound load with rate limits, or \
+             cap connections in front of the proxy (a load balancer, or the file \
+             descriptor limit)."
+        ));
+    }
+    problems
+}
+
 pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
     trace!("Parsing server configuration block");
+
+    for problem in unapplied_system_settings(node, node.name().value()) {
+        warn!("{}", problem);
+    }
 
     let trace_id_format = get_string_entry(node, "trace-id-format")
         .map(|s| TraceIdFormat::from_str_loose(&s))

@@ -20,7 +20,6 @@ schema-version "1.0"
 
 system {
     worker-threads 0  // Auto-detect CPU cores
-    max-connections 10000
     graceful-shutdown-timeout-secs 30
 }
 
