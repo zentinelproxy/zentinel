@@ -779,10 +779,14 @@ fn check_run_together(block: &ClosedBlock, child: &kdl::KdlNode, result: &mut Va
 }
 
 /// Build the run-together warning.
+///
+/// Every finding of this module says "is being ignored": `zentinel test`
+/// prints them under that heading, and docs CI and the playground filter on
+/// the phrase.
 fn run_together_message(block: &str, key: &str, swallowed: &str) -> String {
     format!(
-        "'{swallowed}' is being read as an argument to '{key}' rather than as a setting, \
-         so it is ignored. In the '{block}' block, put each setting on its own line \
+        "'{swallowed}' is read as an argument to '{key}' rather than as a setting, \
+         and is being ignored. In the '{block}' block, put each setting on its own line \
          (or separate them with ';')."
     )
 }
@@ -810,7 +814,7 @@ fn unknown_key_message(block: &ClosedBlock, key: &str) -> String {
     // edit-distance guess, which would otherwise suggest the key back to itself.
     if let Some(other) = sibling_block_defining(block, key) {
         return format!(
-            "'{key}' is a setting of {}, not of {}, so it is ignored here.",
+            "'{key}' is a setting of {}, not of {}, and is being ignored here.",
             describe(other),
             describe(block)
         );
@@ -2247,7 +2251,7 @@ mod tests {
             r#"routes { route "a" { matches { path-prefix "/api" host "a.com"; } } }"#,
         );
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
-        assert!(warnings[0].contains("'host' is being read as an argument to 'path-prefix'"));
+        assert!(warnings[0].contains("'host' is read as an argument to 'path-prefix'"));
         assert!(warnings[0].contains("'matches' block"));
     }
 
@@ -2256,7 +2260,7 @@ mod tests {
         let warnings =
             warnings_for(r#"routes { route "a" { matches { header "x-a" "1" method "GET"; } } }"#);
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
-        assert!(warnings[0].contains("'method' is being read as an argument to 'header'"));
+        assert!(warnings[0].contains("'method' is read as an argument to 'header'"));
     }
 
     fn agent_config(agent_mode: &str, filter_mode: &str) -> String {
@@ -2320,6 +2324,27 @@ mod tests {
             r#"failure-mode "fail-open""#,
         ));
         assert_eq!(warnings.len(), 2, "{warnings:#?}");
+    }
+
+    /// Docs CI and the playground pick findings out by this phrase, so a
+    /// finding worded differently is a finding they never see.
+    #[test]
+    fn every_kind_of_finding_says_it_is_being_ignored() {
+        let kdl = r#"
+            listeners { listener "l" { adress "x"; address "y" namespace "n"; } }
+            routes {
+                route "a" {
+                    priority "urgent"
+                    matches { path-prefix "/api" host "a.com"; }
+                    cache { backend "disk"; }
+                }
+            }
+        "#;
+        let warnings = warnings_for(kdl);
+        assert_eq!(warnings.len(), 5, "{warnings:#?}");
+        for warning in &warnings {
+            assert!(warning.contains("is being ignored"), "{warning}");
+        }
     }
 
     fn warning_texts(result: &ValidationResult) -> Vec<String> {

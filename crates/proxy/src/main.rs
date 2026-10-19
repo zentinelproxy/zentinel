@@ -76,6 +76,11 @@ enum Commands {
         /// Configuration file to test
         #[arg(short = 'c', long = "config")]
         config: Option<String>,
+
+        /// Fail if any setting is being ignored (unknown keys, run-together
+        /// lines, values that fall back to a default)
+        #[arg(long = "strict")]
+        strict: bool,
     },
     /// Run the proxy server (default)
     Run {
@@ -123,12 +128,14 @@ fn main() -> Result<()> {
 
     // Handle test flag or test subcommand
     if cli.test {
-        return test_config(cli.config.as_deref());
+        return test_config(cli.config.as_deref(), false);
     }
 
     // Handle subcommands
     match cli.command {
-        Some(Commands::Test { config }) => test_config(config.as_deref().or(cli.config.as_deref())),
+        Some(Commands::Test { config, strict }) => {
+            test_config(config.as_deref().or(cli.config.as_deref()), strict)
+        }
         Some(Commands::Run { config }) => {
             run_server(config.or(cli.config), cli.verbose, cli.daemon, cli.upgrade)
         }
@@ -160,7 +167,14 @@ fn main() -> Result<()> {
 }
 
 /// Test configuration file and exit
-fn test_config(config_path: Option<&str>) -> Result<()> {
+///
+/// Also prints every setting that is being ignored -- the findings of the
+/// unknown-key check that `lint` runs, without lint's best-practice advice.
+/// `test` is what operators run before a reload, so a typo'd key reported
+/// only by `lint` reached almost nobody. The findings are warnings and leave
+/// the exit code alone, since such configs have always passed; `strict` makes
+/// them fatal.
+fn test_config(config_path: Option<&str>, strict: bool) -> Result<()> {
     // Initialize minimal logging for config test
     tracing_subscriber::fmt()
         .with_target(false)
@@ -205,12 +219,47 @@ fn test_config(config_path: Option<&str>) -> Result<()> {
         }
     }
 
+    let ignored = ignored_settings(config_path);
+    for message in &ignored {
+        println!("  ⚠  {}", message);
+    }
+    if strict && !ignored.is_empty() {
+        anyhow::bail!(
+            "configuration file {} has {} setting(s) that are being ignored (--strict)",
+            config_path.unwrap_or("(embedded)"),
+            ignored.len()
+        );
+    }
+
     println!(
         "zentinel: configuration file {} test is successful",
         config_path.unwrap_or("(embedded)")
     );
 
     Ok(())
+}
+
+/// Settings in the configuration file that no parser applies.
+///
+/// This needs the source text rather than the parsed config: by the time a
+/// `Config` exists, keys no parser recognised have already been dropped. So it
+/// is only meaningful for a config read from a file; the embedded default and
+/// a directory of files yield nothing.
+fn ignored_settings(config_path: Option<&str>) -> Vec<String> {
+    let Some(path) = config_path else {
+        return Vec::new();
+    };
+    match std::fs::read_to_string(path) {
+        Ok(source) => {
+            let mut result = zentinel_config::validate::ValidationResult::new();
+            zentinel_config::validate::unknown_keys::check_unknown_keys(&source, &mut result);
+            result.warnings.into_iter().map(|w| w.message).collect()
+        }
+        Err(e) => {
+            warn!(path = %path, error = %e, "Could not re-read config to check for ignored settings");
+            Vec::new()
+        }
+    }
 }
 
 /// Validate configuration with connectivity checks
@@ -337,18 +386,8 @@ fn lint_config(config_path: Option<&str>) -> Result<()> {
     // Lint for best practices
     let mut result = zentinel_config::validate::lint::lint_config(&config);
 
-    // Unknown-key checking needs the source text, not the parsed config: by
-    // the time a Config exists, keys no parser recognised have already been
-    // dropped. Only meaningful for a config read from a file.
-    if let Some(path) = config_path {
-        match std::fs::read_to_string(path) {
-            Ok(source) => {
-                zentinel_config::validate::unknown_keys::check_unknown_keys(&source, &mut result)
-            }
-            Err(e) => {
-                warn!(path = %path, error = %e, "Could not re-read config to check for unknown keys")
-            }
-        }
+    for message in ignored_settings(config_path) {
+        result.add_warning(zentinel_config::validate::ValidationWarning::new(message));
     }
 
     // Print results
@@ -1468,5 +1507,27 @@ async fn run_signal_handler(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `zentinel test` reports what `lint` reports as ignored (#523).
+    #[test]
+    fn ignored_settings_reads_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("typo.kdl");
+        std::fs::write(
+            &path,
+            "listeners { listener \"l\" { adress \"127.0.0.1:1\"; } }\n",
+        )
+        .unwrap();
+        let ignored = ignored_settings(path.to_str());
+        assert_eq!(ignored.len(), 1, "{ignored:?}");
+        assert!(ignored[0].contains("'adress'") && ignored[0].contains("is being ignored"));
+
+        assert!(ignored_settings(None).is_empty());
     }
 }
