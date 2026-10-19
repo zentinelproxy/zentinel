@@ -26,6 +26,11 @@ use super::ZentinelProxy;
 
 use zentinel_common::CorrelationId;
 
+/// Largest request body an API-schema-validated route can forward: the size of
+/// pingora's retry buffer, which is what carries a body read during
+/// `request_filter` on to the upstream.
+const VALIDATED_BODY_MAX_BYTES: usize = 64 * 1024;
+
 impl ZentinelProxy {
     /// Handle static file route
     pub(super) async fn handle_static_route(
@@ -245,15 +250,40 @@ impl ZentinelProxy {
             return Ok(None);
         }
 
-        // Read the request body for validation
-        let body_bytes = session.read_request_body().await.map_err(|e| {
+        // Read the whole body: validating only the first chunk let anything
+        // after it through unchecked.
+        //
+        // Retry buffering keeps pingora's body loop running after the body
+        // has been consumed here, which is what lets `request_body_filter`
+        // hand it back for forwarding (see `validated_request_body`). That
+        // only works while the body fits pingora's retry buffer: past it the
+        // buffer is dropped, the loop never runs and the upstream waits for a
+        // body that never comes. So a larger body is refused with 413 rather
+        // than left to hang.
+        session.enable_retry_buffering();
+        let limit = ctx
+            .config
+            .get_or_insert_with(|| self.config_manager.current())
+            .limits
+            .max_body_size_bytes
+            .min(VALIDATED_BODY_MAX_BYTES);
+        let mut body = Vec::new();
+        while let Some(chunk) = session.read_request_body().await.map_err(|e| {
             Error::explain(
                 ErrorType::InternalError,
                 format!("Failed to read body: {}", e),
             )
-        })?;
+        })? {
+            if body.len() + chunk.len() > limit {
+                return Err(Error::explain(
+                    ErrorType::HTTPStatus(413),
+                    "Request body exceeds the configured limit",
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
 
-        let body_slice = body_bytes.as_ref().map(|b| b.as_ref()).unwrap_or(&[]);
+        let body_slice = body.as_slice();
 
         // Validate the request body
         if let Err(validation_error) = validator
@@ -306,6 +336,7 @@ impl ZentinelProxy {
             "Request validation passed"
         );
 
+        ctx.validated_request_body = Some(bytes::Bytes::from(body));
         Ok(None)
     }
 

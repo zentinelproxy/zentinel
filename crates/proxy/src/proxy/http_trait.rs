@@ -1791,6 +1791,16 @@ impl ProxyHttp for ZentinelProxy {
             return Ok(());
         }
 
+        // A body consumed for API schema validation is forwarded from here, in
+        // one piece at end of stream; everything below then sees it as usual.
+        if ctx.validated_request_body.is_some() {
+            *body = if end_of_stream {
+                ctx.validated_request_body.take()
+            } else {
+                None
+            };
+        }
+
         // MCP / A2A policy. Runs before agent inspection because it decides
         // whether the request may be made at all, from data already in hand;
         // agents decide whether its contents are safe.

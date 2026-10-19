@@ -207,6 +207,14 @@ pub struct RequestContext {
     /// to forward.
     pub(crate) mcp_proxied_call: Option<crate::agentic::multiplex::ProxiedCall>,
 
+    /// A request body read whole in `request_filter` for API schema
+    /// validation, waiting to be handed back to pingora.
+    ///
+    /// Reading the body there consumes it. Without this, a request that passed
+    /// validation reached the upstream with headers promising a body that never
+    /// came, and timed out (504 after 30 s) instead of being served.
+    pub(crate) validated_request_body: Option<bytes::Bytes>,
+
     // === Body Decompression ===
     /// Whether decompression is enabled for body inspection
     pub(crate) decompression_enabled: bool,
@@ -413,6 +421,7 @@ impl RequestContext {
             mcp_listing: None,
             mcp_listing_body: Vec::new(),
             mcp_proxied_call: None,
+            validated_request_body: None,
             a2a_method: None,
             body_inspection_agents: Vec::new(),
             decompression_enabled: false,

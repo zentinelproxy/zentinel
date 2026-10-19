@@ -398,6 +398,10 @@ pub fn validate_config_semantics(config: &Config) -> Result<(), validator::Valid
     trace!("Validating routes");
     validate_routes(config, &route_ids, &upstream_ids, &filter_ids, &mut errors);
 
+    // Validate inline API schemas compile
+    #[cfg(feature = "runtime")]
+    validate_api_schemas(config, &mut errors);
+
     // Validate listeners
     trace!("Validating listeners");
     validate_listeners(config, &route_ids, &mut errors);
@@ -450,6 +454,37 @@ pub fn validate_config_semantics(config: &Config) -> Result<(), validator::Valid
     }
 
     build_validation_result(errors)
+}
+
+/// Compile every inline `request-schema` / `response-schema` the way the proxy
+/// will.
+///
+/// The proxy compiles them when it builds a route, and a schema that did not
+/// compile used to cost only a startup warning: the route then ran with no
+/// validation at all, so `api-schema` failed open on a security control while
+/// `zentinel test` reported the file fine (#524). Rejecting it here makes
+/// `test`, startup and reload all refuse it.
+#[cfg(feature = "runtime")]
+fn validate_api_schemas(config: &Config, errors: &mut Vec<String>) {
+    for route in &config.routes {
+        let Some(api_schema) = &route.api_schema else {
+            continue;
+        };
+        for (kind, schema) in [
+            ("request-schema", &api_schema.request_schema),
+            ("response-schema", &api_schema.response_schema),
+        ] {
+            if let Some(schema) = schema {
+                if let Err(e) = jsonschema::draft7::new(schema) {
+                    errors.push(format!(
+                        "Route '{}' {} is not a valid JSON Schema: {}. \
+                         The route would run without validation.",
+                        route.id, kind, e
+                    ));
+                }
+            }
+        }
+    }
 }
 
 fn validate_routes(
