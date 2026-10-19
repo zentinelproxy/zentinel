@@ -372,13 +372,20 @@ waf {
 // directory config reads a longer list under different names
 // (`max-body-size-bytes`, `max-header-size-bytes`, ...); written here, those
 // are ignored and `zentinel lint` reports them.
+//
+// The concurrency limits are unlimited unless written. Over
+// `max-in-flight-requests` a request gets 503; over a connection limit the
+// connection is closed before any request is read.
 limits {
     max-header-size 8192
     max-header-count 100
     max-body-size 10485760  // 10MB
-    max-connections-per-client 100
     max-total-connections 10000
     max-in-flight-requests 10000
+    // Counts connections by TCP peer address. Behind a load balancer or a
+    // NAT every connection is the balancer's, so this would cap the
+    // balancer; enable it only where clients connect directly.
+    // max-connections-per-client 100
 }
 
 // Observability configuration

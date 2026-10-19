@@ -125,7 +125,6 @@ limits {
     max-header-size 8192
     max-header-count 100
     max-body-size 10485760  // 10MB default
-    max-connections-per-client 100
 }
 
 // Observability uses defaults:
