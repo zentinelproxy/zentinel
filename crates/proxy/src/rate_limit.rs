@@ -667,12 +667,18 @@ impl RateLimitManager {
         }
     }
 
-    /// Create a new rate limit manager with a global rate limit
+    /// Create a new rate limit manager with a global rate limit keyed by
+    /// client IP
     pub fn with_global_limit(max_rps: u32, burst: u32) -> Self {
+        Self::with_global_limit_keyed(max_rps, burst, RateLimitKey::ClientIp)
+    }
+
+    /// Create a new rate limit manager with a global rate limit keyed by `key`
+    pub fn with_global_limit_keyed(max_rps: u32, burst: u32, key: RateLimitKey) -> Self {
         let config = RateLimitConfig {
             max_rps,
             burst,
-            key: RateLimitKey::ClientIp,
+            key,
             action: RateLimitAction::Reject,
             status_code: 429,
             message: None,

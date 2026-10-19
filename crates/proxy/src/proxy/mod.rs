@@ -753,7 +753,13 @@ impl ZentinelProxy {
                 key = ?global.key,
                 "Initializing global rate limiter"
             );
-            RateLimitManager::with_global_limit(global.max_rps, global.burst)
+            // `key` was parsed and dropped: the global limit was always per
+            // client IP whatever the config said.
+            RateLimitManager::with_global_limit_keyed(
+                global.max_rps,
+                global.burst,
+                global.key.clone(),
+            )
         } else {
             RateLimitManager::new()
         };
@@ -1547,6 +1553,29 @@ mod default_rate_limit_tests {
             statuses(&manager, "own", 6),
             vec![200, 200, 200, 200, 429, 429]
         );
+    }
+
+    /// `global { key }` was parsed and ignored: the global limiter was
+    /// always keyed by client IP. Keyed by path, clients share one bucket
+    /// per path.
+    #[test]
+    fn the_global_limit_uses_its_configured_key() {
+        let config = config("rate-limits { global { max-rps 2; burst 2; key \"path\" } }");
+        let manager = ZentinelProxy::initialize_rate_limiters(&config);
+        let check = |ip: &str, path: &str| {
+            manager
+                .check("plain", ip, path, Option::<&NoHeaders>::None)
+                .allowed
+        };
+
+        assert!(check("198.51.100.1", "/x"));
+        assert!(check("198.51.100.2", "/x"));
+        assert!(
+            !check("198.51.100.3", "/x"),
+            "a path-keyed global limit was applied per client IP"
+        );
+        // Another path has its own bucket.
+        assert!(check("198.51.100.1", "/y"));
     }
 
     #[test]

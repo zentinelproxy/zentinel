@@ -80,11 +80,15 @@ fn selection_context(
     }
 }
 
-/// Helper type for rate limiting when we don't need header access
-struct NoHeaderAccessor;
-impl HeaderAccessor for NoHeaderAccessor {
-    fn get_header(&self, _name: &str) -> Option<String> {
-        None
+/// Request headers for rate-limit keys such as `header:X-API-Key`.
+struct RequestHeaderAccessor<'a>(&'a pingora_http::RequestHeader);
+impl HeaderAccessor for RequestHeaderAccessor<'_> {
+    fn get_header(&self, name: &str) -> Option<String> {
+        self.0
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
     }
 }
 
@@ -1146,11 +1150,15 @@ impl ProxyHttp for ZentinelProxy {
         // Fast path: skip if no rate limiting is configured for this route
         if let Some(route_id) = ctx.route_id.as_deref() {
             if self.rate_limit_manager.has_route_limiter(route_id) {
+                // Headers are passed so a `header:<name>` key sees the
+                // request's value. Passing none put every request into one
+                // shared "unknown" bucket, whatever the header said.
+                let headers = RequestHeaderAccessor(session.req_header());
                 let rate_result = self.rate_limit_manager.check(
                     route_id,
                     &ctx.client_ip,
                     &ctx.path,
-                    Option::<&NoHeaderAccessor>::None,
+                    Some(&headers),
                 );
 
                 // Store rate limit info for response headers (even if allowed)
