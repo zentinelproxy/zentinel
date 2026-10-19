@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_4](#26104---2026-10-19) | 0.6.47 | 2026-10-19 | **An agent that restarts while the proxy runs is reconnected** (with `failure-mode "closed"` its routes returned 503 until the proxy restarted); **API schema validation works**: a schema that does not compile is a configuration error instead of silently disabling validation, and requests that pass validation reach the upstream instead of timing out; `service-type` is applied |
 | [26.10_3](#26103---2026-10-18) | 0.6.46 | 2026-10-18 | Security and dependency maintenance: `wasmtime` 49 for the WASM agent runtime (23 advisories, one critical), `rustls` 0.23.46 (4 advisories), OpenTelemetry 0.33; Cloudflare DNS-01 finds zones registered at a parent domain; building from source needs **Rust 1.96** |
 | [26.10_2](#26102---2026-10-11) | 0.6.45 | 2026-10-11 | ACME certificates renew in the window the CA suggests (ACME Renewal Information, RFC 9773), with `renew-before-days` kept as a hard floor; renewal orders name the certificate they replace |
 | [26.10_1](#26101---2026-10-10) | 0.6.44 | 2026-10-10 | Dependency maintenance: `rustls` 0.23.45 (stricter HelloRetryRequest handling), `maxminddb` 0.32 (bounded decoding of crafted GeoIP databases), `jsonschema` 0.56, rust-minor batch (12 updates) |
@@ -87,6 +88,75 @@ for details.
 ## [Unreleased]
 
 _Nothing yet._
+
+---
+
+## [26.10_4] - 2026-10-19
+
+**Crate version:** 0.6.47
+
+Agents that restart are reconnected, and API schema validation works. Both were
+broken in ways that looked fine from the outside. **If you run agents, or use
+`api-schema`, upgrade.** One configuration change may be needed: an inline
+schema that does not compile is now a configuration error (see below).
+
+### Fixed
+- **An agent that restarts while the proxy keeps running is reconnected.** An
+  agent restarted under a running proxy (a deploy, a crash, an OOM kill) was
+  never reconnected. With `failure-mode "closed"`, its routes returned 503 until
+  the proxy was restarted. With `"open"`, traffic passed uninspected. 26.09_4
+  fixed agents that were down when the proxy *started*; its entry also claimed
+  restarts, which was not true.
+  - **Cause:** a connection never learned that its agent had gone. The gRPC and
+    Unix-socket clients cleared their "connected" state only when the proxy
+    closed them, so pool maintenance found nothing to repair. The pool's other
+    signal, three consecutive errors, never fired either, because the proxy's
+    circuit breaker stops calling an agent after its first failure.
+  - **Fix:** both clients now notice the stream ending and fail pending calls at
+    once. Maintenance replaces the dead connection, and requests recover within
+    one maintenance interval (5 s by default), over gRPC and Unix sockets.
+  - **Also fixed:** a race in the pool's correlation-affinity cleanup could
+    underflow. In debug builds that panicked and stopped maintenance; in release
+    builds the `affinity evictions` metric jumped by about 2^64. (#528, #530)
+- **An API schema that does not compile is a configuration error.** It used to
+  cost only a startup warning, after which the route ran with **no request
+  validation at all**, while `zentinel test` reported the file as valid.
+  `test`, startup and reload now refuse it and name the route. (#524, #532)
+- **`required` with a single name works in inline schemas.**
+  `required "email"` was converted to a string rather than a list, which JSON
+  Schema rejects. That was the most common way to hit the problem above.
+  `required`, `enum` and `examples` are now always lists. (#524, #532)
+- **Requests that pass API schema validation reach the upstream.** On a
+  validated route, every request whose body *passed* validation hung for 30 s
+  and returned 504: the body was consumed for validation and never forwarded.
+  - It is now forwarded unchanged.
+  - The whole body is validated, not only its first chunk.
+  - Bodies larger than 64 KiB on a validated route get `413` until the
+    underlying limit is lifted (#531).
+
+  (#532)
+- **`service-type` is applied.** It was accepted, and lint passed it, but the
+  parser never read it: a route's type came only from its blocks, so
+  `service-type "api"` alone left the route `web`.
+  - An explicit value now applies where the route's blocks allow it.
+  - A value that is not a service type, or that contradicts the route's blocks,
+    keeps the inferred type as before and is reported by `zentinel lint` as
+    being ignored. Configurations that loaded before still load.
+
+  (#514)
+- **Release archives contain executable binaries.** `zentinel`,
+  `zentinel-gateway` and `zentinel-echo-agent` were archived with mode `0644`,
+  so a manual install from an archive failed with "permission denied". (#519,
+  #533)
+- **`zentinel --version` reports the published crate version.** 26.10_3's
+  binaries printed `0.6.45`. (#513)
+
+### Changed
+- **The browser playground runs the proxy's own validation.** It only parsed
+  the configuration before, so a route pointing at an upstream, filter or agent
+  that does not exist, duplicate IDs and the other checks the proxy runs before
+  starting all showed as valid. The playground on zentinelproxy.io picks this
+  up once its payload is rebuilt for this release. (#514)
 
 ---
 
