@@ -99,8 +99,14 @@ pub struct AgentClientV2 {
     outbound_tx: Mutex<Option<mpsc::Sender<ProxyToAgent>>>,
     /// Sequence counter for pings
     ping_sequence: AtomicU64,
-    /// Connection state
-    connected: RwLock<bool>,
+    /// Connection state.
+    ///
+    /// Shared with the reader task, which clears it when the agent's stream
+    /// ends. Before, only `close()` cleared it, so a connection whose agent had
+    /// gone away kept reporting itself connected: the pool's maintenance never
+    /// saw anything to repair, and a restarted agent was never reconnected
+    /// (#528).
+    connected: Arc<RwLock<bool>>,
     /// Flow control state
     flow_state: RwLock<FlowState>,
     /// Last known health state
@@ -144,7 +150,7 @@ impl AgentClientV2 {
             pending: Arc::new(Mutex::new(HashMap::new())),
             outbound_tx: Mutex::new(None),
             ping_sequence: AtomicU64::new(0),
-            connected: RwLock::new(false),
+            connected: Arc::new(RwLock::new(false)),
             flow_state: RwLock::new(FlowState::Normal),
             health_state: RwLock::new(1), // HEALTHY
             in_flight: AtomicU64::new(0),
@@ -254,6 +260,8 @@ impl AgentClientV2 {
         let metrics_callback = self.metrics_callback.clone();
         let config_update_callback = self.config_update_callback.clone();
 
+        let connected = Arc::clone(&self.connected);
+
         tokio::spawn(async move {
             while let Ok(Some(msg)) = inbound.message().await {
                 match msg.message {
@@ -347,7 +355,13 @@ impl AgentClientV2 {
                 }
             }
 
-            debug!(agent_id = %agent_id, "Response handler ended");
+            // The stream is gone, so this connection can carry nothing more.
+            // Say so, so that the pool replaces it, and fail the requests
+            // still waiting for a response instead of leaving them to time
+            // out: dropping their senders wakes them with an error.
+            *connected.write().await = false;
+            pending.lock().await.clear();
+            warn!(agent_id = %agent_id, "Agent stream ended; connection marked disconnected");
         });
 
         Ok(())
@@ -465,6 +479,12 @@ impl AgentClientV2 {
         correlation_id: &str,
         msg: ProxyToAgent,
     ) -> Result<AgentResponse, AgentProtocolError> {
+        // Once the stream has ended, nothing will answer: fail now rather than
+        // queue the message and wait out the full timeout.
+        if !*self.connected.read().await {
+            return Err(AgentProtocolError::ConnectionClosed);
+        }
+
         // Create response channel
         let (tx, rx) = oneshot::channel();
 

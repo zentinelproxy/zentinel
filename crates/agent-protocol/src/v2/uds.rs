@@ -348,8 +348,14 @@ pub struct AgentClientV2Uds {
     outbound_tx: Mutex<Option<mpsc::Sender<(MessageType, Vec<u8>)>>>,
     /// Sequence counter for pings
     ping_sequence: AtomicU64,
-    /// Connection state
-    connected: RwLock<bool>,
+    /// Connection state.
+    ///
+    /// Shared with the reader task, which clears it when the agent's stream
+    /// ends. Before, only `close()` cleared it, so a connection whose agent had
+    /// gone away kept reporting itself connected: the pool's maintenance never
+    /// saw anything to repair, and a restarted agent was never reconnected
+    /// (#528).
+    connected: Arc<RwLock<bool>>,
     /// Flow control state
     flow_state: RwLock<FlowState>,
     /// Last known health state
@@ -389,7 +395,7 @@ impl AgentClientV2Uds {
             pending: Arc::new(Mutex::new(HashMap::new())),
             outbound_tx: Mutex::new(None),
             ping_sequence: AtomicU64::new(0),
-            connected: RwLock::new(false),
+            connected: Arc::new(RwLock::new(false)),
             flow_state: RwLock::new(FlowState::Normal),
             health_state: RwLock::new(1), // HEALTHY
             in_flight: AtomicU64::new(0),
@@ -535,6 +541,7 @@ impl AgentClientV2Uds {
         let config_update_callback = self.config_update_callback.clone();
         // Encoding is fixed after handshake, so we can copy it
         let reader_encoding = negotiated_encoding;
+        let connected = Arc::clone(&self.connected);
 
         tokio::spawn(async move {
             loop {
@@ -637,7 +644,11 @@ impl AgentClientV2Uds {
                     }
                 }
             }
-            debug!(agent_id = %agent_id, "UDS reader task ended");
+            // See the gRPC client: mark the connection dead so the pool
+            // replaces it, and fail requests still waiting on it.
+            *connected.write().await = false;
+            pending.lock().await.clear();
+            warn!(agent_id = %agent_id, "Agent socket closed; connection marked disconnected");
         });
 
         Ok(())
@@ -917,6 +928,12 @@ impl AgentClientV2Uds {
         correlation_id: &str,
         event: &T,
     ) -> Result<AgentResponse, AgentProtocolError> {
+        // Once the reader has seen the socket close, nothing will answer: fail
+        // now rather than queue the event and wait out the full timeout.
+        if !*self.connected.read().await {
+            return Err(AgentProtocolError::ConnectionClosed);
+        }
+
         // Create response channel
         let (tx, rx) = oneshot::channel();
         self.pending
