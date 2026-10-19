@@ -210,7 +210,13 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
         let sticky_session = if load_balancing == LoadBalancingAlgorithm::Sticky {
             load_balancing_node
                 .and_then(|n| n.children())
-                .map(parse_sticky_session_config)
+                .map(|children| {
+                    let (config, problems) = resolve_sticky_session_config(children, &id);
+                    for problem in problems {
+                        warn!("{}", problem);
+                    }
+                    config
+                })
         } else {
             None
         };
@@ -458,8 +464,17 @@ pub(crate) fn resolve_load_balancing(
 ///     fallback "round-robin"
 /// }
 /// ```
-fn parse_sticky_session_config(children: &kdl::KdlDocument) -> StickySessionConfig {
+///
+/// Unknown `fallback` and `cookie-same-site` values keep their old defaults
+/// (round robin and lax) -- configs carrying them have been loading -- and
+/// come back as problems, logged at load and reported by `zentinel lint`
+/// through `validate::unknown_keys`, rather than silently.
+pub(crate) fn resolve_sticky_session_config(
+    children: &kdl::KdlDocument,
+    upstream_id: &str,
+) -> (StickySessionConfig, Vec<String>) {
     let nodes = children.nodes();
+    let mut problems = Vec::new();
 
     let cookie_name =
         find_string_entry(nodes, "cookie-name").unwrap_or_else(|| "SERVERID".to_string());
@@ -479,26 +494,58 @@ fn parse_sticky_session_config(children: &kdl::KdlDocument) -> StickySessionConf
         .and_then(|e| e.value().as_bool())
         .unwrap_or(true); // Default to secure
 
-    let cookie_same_site = find_string_entry(nodes, "cookie-same-site")
-        .map(|s| match s.to_lowercase().as_str() {
+    let cookie_same_site = match find_string_entry(nodes, "cookie-same-site") {
+        None => SameSitePolicy::default(),
+        Some(value) => match value.to_lowercase().as_str() {
             "strict" => SameSitePolicy::Strict,
             "none" => SameSitePolicy::None,
-            _ => SameSitePolicy::Lax,
-        })
-        .unwrap_or_default();
+            "lax" => SameSitePolicy::Lax,
+            _ => {
+                problems.push(format!(
+                    "'cookie-same-site \"{}\"' on upstream '{}' is not a SameSite policy \
+                     (strict, lax, none) and is being ignored; the cookie uses lax.",
+                    value, upstream_id
+                ));
+                SameSitePolicy::Lax
+            }
+        },
+    };
 
-    let fallback = find_string_entry(nodes, "fallback")
-        .and_then(|s| parse_load_balancing(&s))
-        .unwrap_or(LoadBalancingAlgorithm::RoundRobin);
+    let fallback = match find_string_entry(nodes, "fallback") {
+        None => LoadBalancingAlgorithm::RoundRobin,
+        Some(name) => parse_load_balancing(&name).unwrap_or_else(|| {
+            let suggestion = super::helpers::did_you_mean(&name, LOAD_BALANCING_NAMES)
+                .map(|s| format!(" Did you mean '{}'?", s))
+                .unwrap_or_default();
+            problems.push(format!(
+                "'fallback \"{}\"' in the sticky load-balancing of upstream '{}' is not a \
+                 load-balancing algorithm and is being ignored; requests without a valid \
+                 affinity cookie use round_robin.{} Valid algorithms: {}.",
+                name,
+                upstream_id,
+                suggestion,
+                LOAD_BALANCING_NAMES
+                    .iter()
+                    .filter(|n| **n != "sticky")
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            LoadBalancingAlgorithm::RoundRobin
+        }),
+    };
 
-    StickySessionConfig {
-        cookie_name,
-        cookie_ttl_secs,
-        cookie_path,
-        cookie_secure,
-        cookie_same_site,
-        fallback,
-    }
+    (
+        StickySessionConfig {
+            cookie_name,
+            cookie_ttl_secs,
+            cookie_path,
+            cookie_secure,
+            cookie_same_site,
+            fallback,
+        },
+        problems,
+    )
 }
 
 /// Parse duration string like "1h", "30m", "1d" to seconds

@@ -707,7 +707,23 @@ fn check_values(
         }
         ("pages", _) if parent == Some("error-pages") => check_error_page_keys(node, result),
         ("upstream", Some(upstream_id)) => {
-            report(crate::kdl::upstreams::resolve_load_balancing(node, upstream_id).1);
+            let (algorithm, problem) =
+                crate::kdl::upstreams::resolve_load_balancing(node, upstream_id);
+            report(problem);
+            // The sticky settings are read only when the algorithm is sticky.
+            if algorithm == crate::LoadBalancingAlgorithm::Sticky {
+                if let Some(sticky) = node
+                    .children()
+                    .and_then(|c| c.get("load-balancing"))
+                    .and_then(|n| n.children())
+                {
+                    let (_, problems) =
+                        crate::kdl::upstreams::resolve_sticky_session_config(sticky, upstream_id);
+                    for problem in problems {
+                        report(Some(problem));
+                    }
+                }
+            }
             if let Some(check) = node.children().and_then(|c| c.get("health-check")) {
                 report(crate::kdl::upstreams::health_check_type_problem(
                     check,
@@ -2670,5 +2686,50 @@ mod tests {
         );
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
         assert!(warnings[0].contains("timeout-ms 1000"));
+    }
+
+    /// #542: an unknown sticky `fallback` silently became round robin, and an
+    /// unknown `cookie-same-site` lax. Both behaviours stay, and are reported
+    /// like the other #521 values.
+    #[test]
+    fn unknown_sticky_fallback_and_same_site_are_reported() {
+        let config = |fallback: &str, same_site: &str| {
+            format!(
+                r#"upstreams {{
+                    upstream "u" {{
+                        target "127.0.0.1:9000"
+                        load-balancing "sticky" {{
+                            cookie-name "S"
+                            cookie-same-site "{same_site}"
+                            fallback "{fallback}"
+                        }}
+                    }}
+                }}"#
+            )
+        };
+
+        assert!(warnings_for(&config("least-connections", "strict")).is_empty());
+
+        let warnings = warnings_for(&config("least-conections", "strct"));
+        assert_eq!(warnings.len(), 2, "{warnings:#?}");
+        assert!(warnings.iter().all(|w| w.contains("is being ignored")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("'fallback \"least-conections\"'")
+                && w.contains("Did you mean 'least_connections'?")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("'cookie-same-site \"strct\"'")));
+
+        // The fallback the parser applies is still round robin.
+        let config = crate::Config::from_kdl(&format!(
+            "system {{ worker-threads 1 }}\n\
+             listeners {{ listener \"l\" {{ address \"127.0.0.1:8080\"; protocol \"http\" }} }}\n\
+             {}",
+            config("least-conections", "strct")
+        ))
+        .expect("loads");
+        let sticky = config.upstreams["u"].sticky_session.as_ref().unwrap();
+        assert_eq!(sticky.fallback, crate::LoadBalancingAlgorithm::RoundRobin);
     }
 }
