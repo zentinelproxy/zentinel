@@ -827,11 +827,17 @@ pub struct AgentFilter {
     /// Agent ID (must match an agent in the agents configuration)
     pub agent: String,
 
-    /// Execution phase for this agent filter
+    /// Execution phase for this agent filter.
+    ///
+    /// Not applied: the agent block's `events` decide which events the agent
+    /// receives, and `zentinel lint` reports a `phase` as ignored.
     #[serde(default)]
     pub phase: Option<FilterPhase>,
 
-    /// Timeout override for this filter invocation (milliseconds)
+    /// Timeout for this filter's request-headers call (milliseconds).
+    ///
+    /// Shortens the agent's own `timeout-ms` and cannot extend it; see
+    /// `kdl::filters::resolve_agent_filter_timeout`.
     #[serde(rename = "timeout-ms")]
     pub timeout_ms: Option<u64>,
 

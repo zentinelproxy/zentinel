@@ -51,6 +51,31 @@ fn agent_circuit_breaker(config: &AgentConfig) -> CircuitBreaker {
     )
 }
 
+/// An agent as one route's filter chain calls it.
+#[derive(Debug, Clone)]
+pub struct FilterAgent {
+    /// The agent's id.
+    pub id: String,
+    /// What a failed call means: the filter's failure mode, else the route's.
+    pub failure_mode: FailureMode,
+    /// The filter's `timeout-ms`, if it set one.
+    pub timeout_ms: Option<u64>,
+}
+
+impl FilterAgent {
+    /// How long this filter waits for its agent, given the agent's own
+    /// `timeout-ms`.
+    ///
+    /// The shorter of the two. The agent's timeout is also its connection
+    /// pool's request timeout, so a filter asking to wait longer would be cut
+    /// off there anyway; a filter asking for less is a route tightening its
+    /// latency budget for this agent, which is what it was written for.
+    pub fn effective_timeout_ms(&self, agent_timeout_ms: u64) -> u64 {
+        self.timeout_ms
+            .map_or(agent_timeout_ms, |t| t.min(agent_timeout_ms))
+    }
+}
+
 impl AgentManager {
     /// Create new agent manager.
     ///
@@ -128,12 +153,13 @@ impl AgentManager {
     /// # Arguments
     /// * `ctx` - Agent call context with correlation ID and metadata
     /// * `headers` - Request headers to send to agents
-    /// * `route_agents` - List of (agent_id, failure_mode) tuples from filter chain
+    /// * `route_agents` - The agents of the route's filter chain, each with
+    ///   its filter's failure mode and timeout
     pub async fn process_request_headers(
         &self,
         ctx: &AgentCallContext,
         mut headers: HashMap<String, Vec<String>>,
-        route_agents: &[(String, FailureMode)],
+        route_agents: &[FilterAgent],
     ) -> ZentinelResult<AgentDecision> {
         let method = headers
             .remove(":method")
@@ -888,13 +914,13 @@ impl AgentManager {
         &self,
         event_type: EventType,
         event: &T,
-        route_agents: &[(String, FailureMode)],
+        route_agents: &[FilterAgent],
         ctx: &AgentCallContext,
     ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
             event_type = ?event_type,
-            route_agents = ?route_agents.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            route_agents = ?route_agents.iter().map(|a| &a.id).collect::<Vec<_>>(),
             "Starting parallel agent event processing"
         );
 
@@ -905,13 +931,19 @@ impl AgentManager {
         // Collect agent info upfront to minimize lock duration
         let agent_info: Vec<_> = route_agents
             .iter()
-            .filter_map(|(id, failure_mode)| {
-                let agent = agents.get(id)?;
+            .filter_map(|filter| {
+                let agent = agents.get(&filter.id)?;
                 if !agent.handles_event(event_type) {
                     return None;
                 }
-                let semaphore = semaphores.get(id).cloned();
-                Some((Arc::clone(agent), *failure_mode, semaphore))
+                let semaphore = semaphores.get(&filter.id).cloned();
+                let timeout_ms = filter.effective_timeout_ms(agent.timeout_ms());
+                Some((
+                    Arc::clone(agent),
+                    filter.failure_mode,
+                    timeout_ms,
+                    semaphore,
+                ))
             })
             .collect();
 
@@ -932,16 +964,17 @@ impl AgentManager {
             correlation_id = %ctx.correlation_id,
             event_type = ?event_type,
             agent_count = agent_info.len(),
-            agent_ids = ?agent_info.iter().map(|(a, _, _)| a.id()).collect::<Vec<_>>(),
+            agent_ids = ?agent_info.iter().map(|(a, _, _, _)| a.id()).collect::<Vec<_>>(),
             "Processing event through agents in parallel"
         );
 
         // Spawn all agent calls concurrently
         let futures: Vec<_> = agent_info
             .iter()
-            .map(|(agent, filter_failure_mode, semaphore)| {
+            .map(|(agent, filter_failure_mode, timeout_ms, semaphore)| {
                 let agent = Arc::clone(agent);
                 let filter_failure_mode = *filter_failure_mode;
+                let timeout_ms = *timeout_ms;
                 let semaphore = semaphore.clone();
                 let correlation_id = ctx.correlation_id.clone();
 
@@ -984,7 +1017,7 @@ impl AgentManager {
 
                     // Call agent with timeout
                     let start = Instant::now();
-                    let timeout_duration = Duration::from_millis(agent.timeout_ms());
+                    let timeout_duration = Duration::from_millis(timeout_ms);
 
                     match timeout(timeout_duration, agent.call_event(event_type, event)).await {
                         Ok(Ok(response)) => {
@@ -1019,7 +1052,7 @@ impl AgentManager {
                             warn!(
                                 agent_id = %agent.id(),
                                 correlation_id = %correlation_id,
-                                timeout_ms = agent.timeout_ms(),
+                                timeout_ms = timeout_ms,
                                 filter_failure_mode = ?filter_failure_mode,
                                 "Parallel agent call timed out"
                             );
@@ -1529,5 +1562,19 @@ mod tests {
         assert!(outcome.allowed.is_empty());
         assert!(outcome.skipped.is_empty());
         assert!(outcome.blocked_by.is_none());
+    }
+
+    /// #542: a filter's `timeout-ms` shortens its agent's timeout and never
+    /// extends it; without one, the agent's applies.
+    #[test]
+    fn a_filter_timeout_can_only_shorten_the_agents() {
+        let filter = |timeout_ms| FilterAgent {
+            id: "a".to_string(),
+            failure_mode: FailureMode::Closed,
+            timeout_ms,
+        };
+        assert_eq!(filter(None).effective_timeout_ms(1000), 1000);
+        assert_eq!(filter(Some(100)).effective_timeout_ms(1000), 100);
+        assert_eq!(filter(Some(5000)).effective_timeout_ms(1000), 1000);
     }
 }

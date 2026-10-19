@@ -364,18 +364,23 @@ impl ZentinelProxy {
             .config
             .get_or_insert_with(|| self.config_manager.current());
 
-        // Extract agent IDs and their failure modes from filter chain by looking up filter definitions
-        let agent_filters: Vec<(String, zentinel_config::FailureMode)> = route_config
+        // The agents of the filter chain, each with its filter's failure mode
+        // and timeout. `phase` is not read: the agent's own `events` decide
+        // what it receives (reported by lint, #542).
+        let agent_filters: Vec<crate::agents::FilterAgent> = route_config
             .filters
             .iter()
             .filter_map(|filter_id| {
                 config.filters.get(filter_id).and_then(|filter_config| {
                     if let zentinel_config::Filter::Agent(agent_filter) = &filter_config.filter {
-                        // Use filter's failure mode if specified, otherwise fall back to route's policy
-                        let failure_mode = agent_filter
-                            .failure_mode
-                            .unwrap_or(route_config.policies.failure_mode);
-                        Some((agent_filter.agent.clone(), failure_mode))
+                        Some(crate::agents::FilterAgent {
+                            id: agent_filter.agent.clone(),
+                            // Filter's failure mode if specified, otherwise the route's policy
+                            failure_mode: agent_filter
+                                .failure_mode
+                                .unwrap_or(route_config.policies.failure_mode),
+                            timeout_ms: agent_filter.timeout_ms,
+                        })
                     } else {
                         None
                     }
@@ -388,7 +393,7 @@ impl ZentinelProxy {
         }
 
         // Extract just the agent IDs for logging and body inspection
-        let agent_ids: Vec<String> = agent_filters.iter().map(|(id, _)| id.clone()).collect();
+        let agent_ids: Vec<String> = agent_filters.iter().map(|a| a.id.clone()).collect();
 
         // Save agent IDs in context for response-phase processing
         ctx.route_agent_ids = agent_ids.clone();

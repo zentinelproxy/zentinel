@@ -50,7 +50,7 @@ pub const DEFAULT_AGENT_MAX_BODY_BYTES: usize = 1024 * 1024;
 pub use agent_v2::AgentV2;
 pub use context::AgentCallContext;
 pub use decision::{AgentAction, AgentDecision};
-pub use manager::AgentManager;
+pub use manager::{AgentManager, FilterAgent};
 pub use metrics::AgentMetrics;
 
 #[cfg(test)]

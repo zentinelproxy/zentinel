@@ -341,6 +341,10 @@ pub(crate) const RECOGNIZED_AGENT_KEYS: &[&str] = &[
     "protocol-version",
 ];
 
+/// An agent block's `timeout-ms` when it sets none. The lint compares agent
+/// filter timeouts against it, so it lives in one place.
+pub(crate) const DEFAULT_AGENT_TIMEOUT_MS: u64 = 1000;
+
 /// Parse an agent block's `failure-mode`.
 ///
 /// Shared by the single-file and multi-file parsers. An unknown value is a
@@ -504,7 +508,7 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
         .ok_or_else(|| anyhow::anyhow!("Agent '{}' requires configuration block", id))?;
 
     let mut transport = None;
-    let mut timeout_ms = 1000u64;
+    let mut timeout_ms = DEFAULT_AGENT_TIMEOUT_MS;
     let mut failure_mode = FailureMode::Open;
     let mut events = Vec::new();
     let mut circuit_breaker = None;

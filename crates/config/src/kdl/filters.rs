@@ -255,13 +255,75 @@ pub(crate) fn resolve_agent_filter_failure_mode(
     }
 }
 
+/// Read an agent filter's `timeout-ms`, and whether its value was ignored.
+///
+/// The filter's timeout applies to the request-headers call, the same call
+/// its `failure-mode` decides, and can only shorten the agent's own
+/// `timeout-ms`: that value is also the agent connection pool's request
+/// timeout, so a longer wait would be cut off underneath anyway. A value
+/// that is not a positive number of milliseconds used to be read as a
+/// timeout too (zero failed every call, a negative one wrapped to years);
+/// it is now ignored and reported.
+pub(crate) fn resolve_agent_filter_timeout(
+    node: &kdl::KdlNode,
+    filter_id: &str,
+) -> (Option<u64>, Option<String>) {
+    let Some(entry) = node
+        .children()
+        .and_then(|c| c.get("timeout-ms"))
+        .and_then(|n| n.entries().first())
+    else {
+        return (None, None);
+    };
+    match entry.value().as_integer() {
+        Some(v) if v > 0 => (Some(v.min(u64::MAX as i128) as u64), None),
+        _ => (
+            None,
+            Some(format!(
+                "'timeout-ms {}' on filter '{}' is not a positive number of milliseconds and is \
+                 being ignored; the agent's own timeout-ms applies.",
+                entry.value(),
+                filter_id
+            )),
+        ),
+    }
+}
+
+/// Whether an agent filter's `phase` is set, which nothing reads.
+///
+/// Which events an agent receives is decided by its own `events` list, and
+/// every agent filter on a route calls its agent for each of those events.
+/// Honouring `phase` would take events away from agents that asked for them:
+/// `phase "response"` on a security agent would stop it seeing request
+/// headers, so it would stop blocking requests without any other sign. The
+/// value is kept in the model and reported instead.
+pub(crate) fn agent_filter_phase_problem(node: &kdl::KdlNode, filter_id: &str) -> Option<String> {
+    let value = node.children()?.get("phase")?.entries().first()?.value();
+    let phase = match value.as_string() {
+        Some(s) => format!("\"{s}\""),
+        None => value.to_string(),
+    };
+    Some(format!(
+        "'phase {}' on filter '{}' is being ignored: the events an agent receives are set by \
+         the agent block's 'events' (request-headers, request-body, response-headers, \
+         response-body, ...), not by the filter.",
+        phase, filter_id
+    ))
+}
+
 fn parse_agent_filter(node: &kdl::KdlNode) -> Result<Filter> {
     let agent = get_string_entry(node, "agent").ok_or_else(|| {
         anyhow::anyhow!("Agent filter requires an 'agent' field referencing an agent definition")
     })?;
 
-    let timeout_ms = get_int_entry(node, "timeout-ms").map(|v| v as u64);
     let filter_id = get_first_arg_string(node).unwrap_or_default();
+    let (timeout_ms, problem) = resolve_agent_filter_timeout(node, &filter_id);
+    if let Some(problem) = problem {
+        warn!("{}", problem);
+    }
+    if let Some(problem) = agent_filter_phase_problem(node, &filter_id) {
+        warn!("{}", problem);
+    }
     let (failure_mode, problem) = resolve_agent_filter_failure_mode(node, &filter_id);
     if let Some(problem) = problem {
         warn!("{}", problem);
