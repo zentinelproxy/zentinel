@@ -164,6 +164,11 @@ jobs:
 
               ARCHIVE_NAME="zentinel-${VERSION}-${SUFFIX}.tar.gz"
 
+              # upload-artifact/download-artifact do not keep file modes, so
+              # the binaries arrive here as 0644 and used to be archived that
+              # way: a manual install failed with "permission denied" (#519).
+              find "$dir" -type f ! -name VERSION -exec chmod 0755 {} +
+
               tar -czvf "signed/$ARCHIVE_NAME" -C "$dir" .
 
               cosign sign-blob --yes "signed/$ARCHIVE_NAME" \
