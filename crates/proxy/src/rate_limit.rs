@@ -16,7 +16,6 @@
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
-use pingora_limits::rate::Rate;
 use prometheus::{register_int_counter_vec, register_int_gauge_vec, IntCounterVec, IntGaugeVec};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -50,6 +49,10 @@ pub struct RateLimitCheckInfo {
     pub remaining: u32,
     /// Unix timestamp (seconds) when the window resets
     pub reset_at: u64,
+    /// How long until the next request would be allowed, when the backend
+    /// knows exactly (the local token bucket does). `None` falls back to
+    /// estimating it from `current_count` and `limit`.
+    pub retry_after_ms: Option<u64>,
 }
 
 /// Rate limiter configuration
@@ -98,23 +101,52 @@ impl Default for RateLimitConfig {
     }
 }
 
-/// Per-key rate limiter using pingora-limits Rate
+/// Per-key token bucket.
 ///
-/// Uses a sliding window algorithm with 1-second granularity.
+/// Holds up to `burst` tokens and refills at `max_rps` tokens per second;
+/// each request takes one. That is what `max-rps` and `burst` are documented
+/// to mean ("token bucket", "burst: token bucket size"). The previous limiter
+/// counted requests in a one-second window and ignored `burst` entirely, so
+/// `burst` changed nothing for route filters, `global` or `default-burst`.
 struct KeyRateLimiter {
-    /// The rate limiter instance (tracks requests in current window)
-    rate: Rate,
-    /// Maximum requests per window
-    max_requests: isize,
+    bucket: parking_lot::Mutex<Bucket>,
+    /// Bucket size
+    capacity: f64,
+    /// Tokens added per second
+    refill_per_sec: f64,
     /// Unix timestamp (seconds) of the last check, for idle eviction
     last_seen: AtomicU64,
 }
 
+struct Bucket {
+    tokens: f64,
+    refilled_at: std::time::Instant,
+}
+
+/// Result of taking a token from a [`KeyRateLimiter`].
+struct BucketCheck {
+    outcome: RateLimitOutcome,
+    /// Whole tokens left after this request
+    remaining: u32,
+    /// Tokens in use (bucket size minus what is left), for logs
+    used: i64,
+    /// Milliseconds until a token is available (0 when one is)
+    retry_after_ms: u64,
+    /// Milliseconds until the bucket is full again
+    refill_ms: u64,
+}
+
 impl KeyRateLimiter {
-    fn new(max_rps: u32) -> Self {
+    fn new(max_rps: u32, burst: u32) -> Self {
+        // A bucket smaller than one token could never admit anything.
+        let capacity = f64::from(burst.max(1));
         Self {
-            rate: Rate::new(Duration::from_secs(1)),
-            max_requests: max_rps as isize,
+            bucket: parking_lot::Mutex::new(Bucket {
+                tokens: capacity,
+                refilled_at: std::time::Instant::now(),
+            }),
+            capacity,
+            refill_per_sec: f64::from(max_rps),
             last_seen: AtomicU64::new(current_unix_timestamp()),
         }
     }
@@ -128,15 +160,63 @@ impl KeyRateLimiter {
         now.saturating_sub(self.last_seen.load(Ordering::Relaxed))
     }
 
-    /// Check if a request should be allowed
-    fn check(&self) -> RateLimitOutcome {
-        // Rate::observe() returns the current count and whether it was a new window
-        let curr_count = self.rate.observe(&(), 1);
-
-        if curr_count > self.max_requests {
-            RateLimitOutcome::Limited
+    fn ms_for(&self, tokens: f64) -> u64 {
+        if tokens <= 0.0 {
+            0
+        } else if self.refill_per_sec <= 0.0 {
+            u64::MAX / 2
         } else {
+            (tokens / self.refill_per_sec * 1000.0).ceil() as u64
+        }
+    }
+
+    /// Take a token if one is available
+    fn check(&self) -> BucketCheck {
+        let mut bucket = self.bucket.lock();
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(bucket.refilled_at).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        bucket.refilled_at = now;
+
+        let outcome = if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
             RateLimitOutcome::Allowed
+        } else {
+            RateLimitOutcome::Limited
+        };
+
+        BucketCheck {
+            outcome,
+            remaining: bucket.tokens.floor() as u32,
+            used: (self.capacity - bucket.tokens).ceil() as i64,
+            retry_after_ms: self.ms_for(1.0 - bucket.tokens),
+            refill_ms: self.ms_for(self.capacity - bucket.tokens),
+        }
+    }
+
+    /// Check a request and describe the result
+    fn check_info(&self, max_rps: u32) -> RateLimitCheckInfo {
+        self.touch();
+        let check = self.check();
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as u64;
+        // When limited, the window "resets" when the next token arrives (this
+        // drives Retry-After); otherwise when the bucket is full again.
+        let until_ms = if check.outcome == RateLimitOutcome::Limited {
+            check.retry_after_ms
+        } else {
+            check.refill_ms
+        };
+        RateLimitCheckInfo {
+            outcome: check.outcome,
+            current_count: check.used,
+            limit: max_rps,
+            remaining: check.remaining,
+            reset_at: (now_ms + until_ms).div_ceil(1000).max(now_ms / 1000 + 1),
+            retry_after_ms: (check.outcome == RateLimitOutcome::Limited)
+                .then_some(check.retry_after_ms),
         }
     }
 }
@@ -246,6 +326,7 @@ impl RateLimiterPool {
     pub fn check(&self, key: &str) -> RateLimitCheckInfo {
         let config = self.config.read();
         let max_rps = config.max_rps;
+        let burst = config.burst;
         let max_keys = config.max_keys;
         drop(config);
 
@@ -256,24 +337,8 @@ impl RateLimiterPool {
         };
 
         // Get or create limiter for this key, enforcing the key-map bound
-        let limiter = self.get_or_create_limiter(limiters, key, max_rps, max_keys);
-
-        limiter.touch();
-        let outcome = limiter.check();
-        let count = limiter.rate.observe(&(), 0); // Get current count without incrementing
-        let remaining = if count >= max_rps as isize {
-            0
-        } else {
-            (max_rps as isize - count) as u32
-        };
-
-        RateLimitCheckInfo {
-            outcome,
-            current_count: count as i64,
-            limit: max_rps,
-            remaining,
-            reset_at: calculate_reset_timestamp(),
-        }
+        let limiter = self.get_or_create_limiter(limiters, key, max_rps, burst, max_keys);
+        limiter.check_info(max_rps)
     }
 
     /// Check if a request should be rate limited (async, supports distributed backends)
@@ -303,6 +368,7 @@ impl RateLimiterPool {
                             limit: max_rps,
                             remaining,
                             reset_at: calculate_reset_timestamp(),
+                            retry_after_ms: None,
                         }
                     }
                     Err(e) => {
@@ -315,25 +381,18 @@ impl RateLimiterPool {
 
                         // Fallback to local
                         if redis.fallback_enabled() {
-                            let max_keys = self.config.read().max_keys;
-                            let limiter =
-                                self.get_or_create_limiter(local_fallback, key, max_rps, max_keys);
-
-                            limiter.touch();
-                            let outcome = limiter.check();
-                            let count = limiter.rate.observe(&(), 0);
-                            let remaining = if count >= max_rps as isize {
-                                0
-                            } else {
-                                (max_rps as isize - count) as u32
+                            let (burst, max_keys) = {
+                                let config = self.config.read();
+                                (config.burst, config.max_keys)
                             };
-                            RateLimitCheckInfo {
-                                outcome,
-                                current_count: count as i64,
-                                limit: max_rps,
-                                remaining,
-                                reset_at: calculate_reset_timestamp(),
-                            }
+                            let limiter = self.get_or_create_limiter(
+                                local_fallback,
+                                key,
+                                max_rps,
+                                burst,
+                                max_keys,
+                            );
+                            limiter.check_info(max_rps)
                         } else {
                             // Fail open if no fallback
                             RateLimitCheckInfo {
@@ -342,6 +401,7 @@ impl RateLimiterPool {
                                 limit: max_rps,
                                 remaining: max_rps,
                                 reset_at: calculate_reset_timestamp(),
+                                retry_after_ms: None,
                             }
                         }
                     }
@@ -456,6 +516,7 @@ impl RateLimiterPool {
         limiters: &DashMap<String, Arc<KeyRateLimiter>>,
         key: &str,
         max_rps: u32,
+        burst: u32,
         max_keys: usize,
     ) -> Arc<KeyRateLimiter> {
         if let Some(limiter) = limiters.get(key) {
@@ -468,7 +529,7 @@ impl RateLimiterPool {
 
         let limiter = limiters
             .entry(key.to_string())
-            .or_insert_with(|| Arc::new(KeyRateLimiter::new(max_rps)))
+            .or_insert_with(|| Arc::new(KeyRateLimiter::new(max_rps, burst)))
             .clone();
 
         if let Some(metrics) = POOL_METRICS.as_ref() {
@@ -684,7 +745,9 @@ impl RateLimitManager {
                 count = check_info.current_count,
                 "Request rate limited by MCP tool limiter"
             );
-            let suggested_delay_ms = if check_info.current_count > check_info.limit as i64 {
+            let suggested_delay_ms = if let Some(ms) = check_info.retry_after_ms {
+                Some(ms)
+            } else if check_info.current_count > check_info.limit as i64 {
                 let excess = check_info.current_count - check_info.limit as i64;
                 Some((excess as u64 * 1000) / check_info.limit as u64)
             } else {
@@ -744,7 +807,9 @@ impl RateLimitManager {
                     "Request rate limited by global limiter"
                 );
                 // Calculate suggested delay based on how far over limit
-                let suggested_delay_ms = if check_info.current_count > check_info.limit as i64 {
+                let suggested_delay_ms = if let Some(ms) = check_info.retry_after_ms {
+                    Some(ms)
+                } else if check_info.current_count > check_info.limit as i64 {
                     let excess = check_info.current_count - check_info.limit as i64;
                     Some((excess as u64 * 1000) / check_info.limit as u64)
                 } else {
@@ -785,7 +850,9 @@ impl RateLimitManager {
                     "Request rate limited by route limiter"
                 );
                 // Calculate suggested delay based on how far over limit
-                let suggested_delay_ms = if check_info.current_count > check_info.limit as i64 {
+                let suggested_delay_ms = if let Some(ms) = check_info.retry_after_ms {
+                    Some(ms)
+                } else if check_info.current_count > check_info.limit as i64 {
                     let excess = check_info.current_count - check_info.limit as i64;
                     Some((excess as u64 * 1000) / check_info.limit as u64)
                 } else {
@@ -917,7 +984,7 @@ mod tests {
     fn test_rate_limiter_allows_under_limit() {
         let config = RateLimitConfig {
             max_rps: 10,
-            burst: 5,
+            burst: 10,
             key: RateLimitKey::ClientIp,
             ..Default::default()
         };
@@ -936,7 +1003,7 @@ mod tests {
     fn test_rate_limiter_blocks_over_limit() {
         let config = RateLimitConfig {
             max_rps: 5,
-            burst: 2,
+            burst: 5,
             key: RateLimitKey::ClientIp,
             ..Default::default()
         };
@@ -958,7 +1025,7 @@ mod tests {
     fn test_rate_limiter_separate_keys() {
         let config = RateLimitConfig {
             max_rps: 2,
-            burst: 1,
+            burst: 2,
             key: RateLimitKey::ClientIp,
             ..Default::default()
         };
@@ -987,7 +1054,7 @@ mod tests {
     fn test_rate_limit_info_fields() {
         let config = RateLimitConfig {
             max_rps: 5,
-            burst: 2,
+            burst: 5,
             key: RateLimitKey::ClientIp,
             ..Default::default()
         };
@@ -1008,7 +1075,7 @@ mod tests {
             "api",
             RateLimitConfig {
                 max_rps: 5,
-                burst: 2,
+                burst: 5,
                 key: RateLimitKey::ClientIp,
                 ..Default::default()
             },
@@ -1043,7 +1110,7 @@ mod tests {
             "api",
             RateLimitConfig {
                 max_rps: 2,
-                burst: 1,
+                burst: 2,
                 key: RateLimitKey::ClientIp,
                 ..Default::default()
             },
@@ -1069,7 +1136,7 @@ mod tests {
 
     #[test]
     fn test_global_rate_limiter() {
-        let manager = RateLimitManager::with_global_limit(3, 1);
+        let manager = RateLimitManager::with_global_limit(3, 3);
 
         // Global limiter should apply to all routes
         for i in 0..3 {
@@ -1092,14 +1159,14 @@ mod tests {
 
     #[test]
     fn test_global_and_route_limiters() {
-        let manager = RateLimitManager::with_global_limit(10, 5);
+        let manager = RateLimitManager::with_global_limit(10, 10);
 
         // Register a more restrictive route limiter
         manager.register_route(
             "strict-api",
             RateLimitConfig {
                 max_rps: 2,
-                burst: 1,
+                burst: 2,
                 key: RateLimitKey::ClientIp,
                 ..Default::default()
             },
@@ -1129,7 +1196,7 @@ mod tests {
             "api",
             RateLimitConfig {
                 max_rps: 10,
-                burst: 5,
+                burst: 10,
                 key: RateLimitKey::ClientIp,
                 ..Default::default()
             },
@@ -1157,7 +1224,7 @@ mod tests {
     fn test_reset_timestamp_is_future() {
         let config = RateLimitConfig {
             max_rps: 5,
-            burst: 2,
+            burst: 5,
             key: RateLimitKey::ClientIp,
             ..Default::default()
         };
@@ -1181,7 +1248,7 @@ mod tests {
     fn test_rate_limit_check_info_remaining_clamps_to_zero() {
         let config = RateLimitConfig {
             max_rps: 2,
-            burst: 1,
+            burst: 2,
             key: RateLimitKey::ClientIp,
             ..Default::default()
         };
@@ -1233,7 +1300,7 @@ mod tests {
             "test-route",
             RateLimitConfig {
                 max_rps: 10,
-                burst: 5,
+                burst: 10,
                 key: RateLimitKey::ClientIp,
                 ..Default::default()
             },
@@ -1244,7 +1311,7 @@ mod tests {
 
     #[test]
     fn test_global_limiter_is_enabled() {
-        let manager = RateLimitManager::with_global_limit(100, 50);
+        let manager = RateLimitManager::with_global_limit(100, 100);
         // Global limiter should be enabled
         assert!(manager.is_enabled());
     }
@@ -1254,7 +1321,7 @@ mod tests {
         let empty_manager = RateLimitManager::new();
         assert!(!empty_manager.is_enabled());
 
-        let global_manager = RateLimitManager::with_global_limit(100, 50);
+        let global_manager = RateLimitManager::with_global_limit(100, 100);
         assert!(global_manager.is_enabled());
 
         let route_manager = RateLimitManager::new();
@@ -1262,7 +1329,7 @@ mod tests {
             "test",
             RateLimitConfig {
                 max_rps: 10,
-                burst: 5,
+                burst: 10,
                 key: RateLimitKey::ClientIp,
                 ..Default::default()
             },
@@ -1300,6 +1367,7 @@ mod tests {
     fn eviction_keeps_recently_seen_keys_usable() {
         let config = RateLimitConfig {
             max_rps: 2,
+            burst: 2,
             max_keys: 5,
             ..Default::default()
         };
@@ -1343,6 +1411,7 @@ mod mcp_tool_key_tests {
     fn pool_keyed(key: RateLimitKey, max_rps: u32) -> RateLimiterPool {
         RateLimiterPool::new(RateLimitConfig {
             max_rps,
+            burst: max_rps,
             key,
             ..Default::default()
         })
@@ -1424,5 +1493,79 @@ mod mcp_tool_key_tests {
             RateLimitOutcome::Limited,
             "a different tool must have its own quota"
         );
+    }
+}
+
+#[cfg(test)]
+mod burst_tests {
+    use super::*;
+
+    fn outcomes(pool: &RateLimiterPool, n: usize) -> Vec<RateLimitOutcome> {
+        (0..n).map(|_| pool.check("203.0.113.7").outcome).collect()
+    }
+
+    use RateLimitOutcome::{Allowed as A, Limited as L};
+
+    /// `burst` is documented as the token bucket size, and was ignored: the
+    /// local limiter counted requests per one-second window and admitted
+    /// `max_rps` of them back to back whatever `burst` said.
+    #[test]
+    fn burst_is_the_bucket_size() {
+        let pool = RateLimiterPool::new(RateLimitConfig {
+            max_rps: 10,
+            burst: 3,
+            ..Default::default()
+        });
+        assert_eq!(outcomes(&pool, 5), vec![A, A, A, L, L]);
+    }
+
+    #[test]
+    fn the_bucket_refills_at_max_rps_and_never_beyond_burst() {
+        let pool = RateLimiterPool::new(RateLimitConfig {
+            max_rps: 10,
+            burst: 3,
+            ..Default::default()
+        });
+        assert_eq!(outcomes(&pool, 4), vec![A, A, A, L]);
+
+        // 10 tokens/s: after 150 ms one token is back, not three.
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(outcomes(&pool, 2), vec![A, L]);
+
+        // A long idle period refills to `burst`, not to idle_time * max_rps.
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(outcomes(&pool, 4), vec![A, A, A, L]);
+    }
+
+    #[test]
+    fn a_limited_request_says_when_to_retry() {
+        let pool = RateLimiterPool::new(RateLimitConfig {
+            max_rps: 2,
+            burst: 1,
+            ..Default::default()
+        });
+        assert_eq!(pool.check("k").outcome, A);
+        let limited = pool.check("k");
+        assert_eq!(limited.outcome, L);
+        assert_eq!(limited.remaining, 0);
+        // One token at 2/s is at most 500 ms away.
+        let wait = limited
+            .retry_after_ms
+            .expect("local limiter knows the wait");
+        assert!(wait > 0 && wait <= 500, "retry after {wait} ms");
+        assert!(limited.reset_at > current_unix_timestamp());
+    }
+
+    #[test]
+    fn the_global_limit_honours_its_burst() {
+        let manager = RateLimitManager::with_global_limit(10, 2);
+        let allowed: Vec<bool> = (0..4)
+            .map(|_| {
+                manager
+                    .check("any", "203.0.113.7", "/", Option::<&NoHeaders>::None)
+                    .allowed
+            })
+            .collect();
+        assert_eq!(allowed, vec![true, true, false, false]);
     }
 }

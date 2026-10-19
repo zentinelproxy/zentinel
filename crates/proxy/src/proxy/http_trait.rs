@@ -1196,12 +1196,17 @@ impl ProxyHttp for ZentinelProxy {
                                 .unwrap_or_else(|| "Rate limit exceeded".to_string());
 
                             // Build response with rate limit headers
-                            let retry_after = rate_result.reset_at.saturating_sub(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs(),
-                            );
+                            // The local token bucket knows exactly when the next
+                            // token arrives; round that up to whole seconds.
+                            let retry_after = match rate_result.suggested_delay_ms {
+                                Some(ms) => ms.div_ceil(1000).max(1),
+                                None => rate_result.reset_at.saturating_sub(
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs(),
+                                ),
+                            };
                             crate::http_helpers::write_rate_limit_error(
                                 session,
                                 rate_result.status_code,

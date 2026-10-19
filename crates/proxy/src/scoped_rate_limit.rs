@@ -71,8 +71,11 @@ impl ScopedRateLimitManager {
         // Use global RPS limit for scope-level limiting; per-client/per-route
         // limits are handled by the RateLimitManager internally
         if let Some(max_rps) = limits.max_requests_per_second_global {
-            // Default burst to 10x RPS (same as MultiRateLimiter)
-            let burst = max_rps * 10;
+            // Bucket size = one second's worth. This was `max_rps * 10`, which
+            // did nothing while the limiter ignored `burst`; now that the bucket
+            // size is enforced, 10x would let a scope take ten seconds of quota
+            // at once. Equal to `max_rps` keeps the behaviour scopes have had.
+            let burst = max_rps;
             let scope_manager = RateLimitManager::with_global_limit(max_rps, burst);
 
             debug!(

@@ -1481,6 +1481,7 @@ mod default_rate_limit_tests {
                 filter "own-limit" {{
                     type "rate-limit"
                     max-rps 4
+                    burst 4
                 }}
             }}
             routes {{
