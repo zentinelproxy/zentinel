@@ -1017,13 +1017,17 @@ fn run_server(
     let connection_app = zentinel_proxy::connection_limit::ConnectionLimitedApp::new(
         http_proxy,
         zentinel_common::limits::ConnectionLimiter::new(),
-        move |local| {
+        move |peer, local| {
             zentinel_proxy::connection_limit::ConnectionLimits::for_connection(
                 &limits_config.current(),
+                peer,
                 local,
             )
         },
     );
+    for note in zentinel_proxy::connection_limit::per_client_limit_notes(&config) {
+        info!("{}", note);
+    }
     let mut proxy_service = pingora_core::services::listening::Service::new(
         "Zentinel Proxy".to_string(),
         connection_app,

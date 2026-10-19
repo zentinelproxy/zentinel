@@ -11,9 +11,14 @@
 //! the connection ends, whichever way it ends.
 //!
 //! The client is the TCP peer. Behind a load balancer every connection comes
-//! from the balancer, so a per-client limit there limits the balancer;
-//! `trusted-proxies` cannot help, because no request (and so no
-//! `X-Forwarded-For`) has been read when the connection is counted.
+//! from the balancer, and no request (so no `X-Forwarded-For`) has been read
+//! when the connection is counted, so the real clients cannot be told apart.
+//! A peer in the listener's `trusted-proxies` is therefore exempt from
+//! `max-connections-per-client`: it carries many clients by definition, and
+//! counting it as one would cap all of them together (an existing install
+//! with the old starter's `max-connections-per-client 100` behind a balancer
+//! would otherwise be limited to 100 connections in total on upgrade).
+//! `max-total-connections` still counts it.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -62,11 +67,16 @@ impl ConnectionLimits {
         }
     }
 
-    /// The limits for a connection accepted on local address `local`.
-    pub fn for_connection(config: &Config, local: Option<SocketAddr>) -> Self {
+    /// The limits for a connection from `peer`, accepted on local address
+    /// `local`.
+    pub fn for_connection(
+        config: &Config,
+        peer: Option<IpAddr>,
+        local: Option<SocketAddr>,
+    ) -> Self {
         let mut limits = Self::from_limits(&config.limits);
-        limits.namespace = local
-            .and_then(|local| listener_for_addr(&config.listeners, local))
+        let listener = local.and_then(|local| listener_for_addr(&config.listeners, local));
+        limits.namespace = listener
             .and_then(|listener| listener.namespace.as_ref())
             .map(|id| {
                 let scoped = config
@@ -80,11 +90,57 @@ impl ConnectionLimits {
                     max_per_client: scoped.and_then(|l| l.max_connections_per_client),
                 }
             });
+        let trusted_peer = peer.is_some_and(|ip| {
+            listener.is_some_and(|l| l.trusted_proxies.iter().any(|cidr| cidr.contains(ip)))
+        });
+        if trusted_peer {
+            limits.max_per_client = None;
+            if let Some(ns) = limits.namespace.as_mut() {
+                ns.max_per_client = None;
+            }
+        }
         limits
     }
 }
 
-type LimitsSource = Arc<dyn Fn(Option<SocketAddr>) -> ConnectionLimits + Send + Sync>;
+/// One line per listener where a per-client connection limit applies but
+/// no `trusted-proxies` is set, for the startup log.
+///
+/// Informational, not a lint finding: the limit is applied as written, and
+/// is right for clients that connect directly. Behind a load balancer it is
+/// not, and nothing at runtime can tell the two apart.
+pub fn per_client_limit_notes(config: &Config) -> Vec<String> {
+    config
+        .listeners
+        .iter()
+        .filter(|listener| listener.trusted_proxies.is_empty())
+        .filter_map(|listener| {
+            let namespace_limit = listener.namespace.as_ref().and_then(|id| {
+                config
+                    .namespaces
+                    .iter()
+                    .find(|ns| &ns.id == id)?
+                    .limits
+                    .as_ref()?
+                    .max_connections_per_client
+            });
+            let limit = match (config.limits.max_connections_per_client, namespace_limit) {
+                (Some(a), Some(b)) => a.min(b),
+                (a, b) => a.or(b)?,
+            };
+            Some(format!(
+                "Listener '{}' limits each client to {limit} connections, counted by TCP \
+                 peer address. Behind a load balancer or NAT the balancer counts as one \
+                 client; list it in the listener's trusted-proxies to exempt it from \
+                 max-connections-per-client.",
+                listener.id
+            ))
+        })
+        .collect()
+}
+
+type LimitsSource =
+    Arc<dyn Fn(Option<IpAddr>, Option<SocketAddr>) -> ConnectionLimits + Send + Sync>;
 
 /// A [`ServerApp`] that counts the connections it serves and closes any that
 /// would exceed the configured limits before the wrapped app sees them.
@@ -102,12 +158,12 @@ pub struct ConnectionLimitedApp<A> {
 type Permits = (ConnectionPermit, Option<ConnectionPermit>);
 
 impl<A> ConnectionLimitedApp<A> {
-    /// `limits` is given the connection's local address and returns the
-    /// limits that apply to it.
+    /// `limits` is given the connection's peer IP and local address and
+    /// returns the limits that apply to it.
     pub fn new(
         inner: A,
         limiter: Arc<ConnectionLimiter>,
-        limits: impl Fn(Option<SocketAddr>) -> ConnectionLimits + Send + Sync + 'static,
+        limits: impl Fn(Option<IpAddr>, Option<SocketAddr>) -> ConnectionLimits + Send + Sync + 'static,
     ) -> Self {
         Self {
             inner: Arc::new(inner),
@@ -127,7 +183,7 @@ impl<A> ConnectionLimitedApp<A> {
 
     /// Take the slots for a connection from `peer`, or log why there are none.
     fn admit(&self, peer: Option<IpAddr>, local: Option<SocketAddr>) -> Option<Permits> {
-        let limits = (self.limits)(local);
+        let limits = (self.limits)(peer, local);
         let refused = |scope: &str, refusal| {
             warn!(
                 client_ip = peer.map(|ip| ip.to_string()).unwrap_or_default(),
@@ -246,7 +302,7 @@ mod tests {
                 started: started_tx,
             },
             Arc::clone(&limiter),
-            |_| ConnectionLimits {
+            |_, _| ConnectionLimits {
                 max_per_client: Some(2),
                 ..Default::default()
             },
@@ -302,7 +358,7 @@ mod tests {
                 started: started_tx,
             },
             Arc::clone(&limiter),
-            |_| ConnectionLimits {
+            |_, _| ConnectionLimits {
                 max_total: Some(1),
                 ..Default::default()
             },
@@ -342,7 +398,8 @@ mod tests {
         )
         .unwrap();
 
-        let tenant = ConnectionLimits::for_connection(&config, "127.0.0.1:19791".parse().ok());
+        let tenant =
+            ConnectionLimits::for_connection(&config, None, "127.0.0.1:19791".parse().ok());
         assert_eq!(tenant.max_total, Some(100));
         assert_eq!(tenant.max_per_client, None);
         assert_eq!(
@@ -355,7 +412,7 @@ mod tests {
         );
 
         // A wildcard listener resolves from the concrete local address.
-        let public = ConnectionLimits::for_connection(&config, "10.1.2.3:19790".parse().ok());
+        let public = ConnectionLimits::for_connection(&config, None, "10.1.2.3:19790".parse().ok());
         assert_eq!(public.max_total, Some(100));
         assert_eq!(public.namespace, None);
     }
@@ -370,7 +427,7 @@ mod tests {
                 started: started_tx,
             },
             Arc::clone(&limiter),
-            |_| ConnectionLimits {
+            |_, _| ConnectionLimits {
                 namespace: Some(NamespaceConnectionLimits {
                     id: "ns".to_string(),
                     max_total: Some(1),
@@ -395,5 +452,54 @@ mod tests {
         done.send(()).unwrap();
         first.await.unwrap();
         assert_eq!((limiter.total(), app.namespace_connections("ns")), (0, 0));
+    }
+
+    /// A balancer in `trusted-proxies` carries many clients, so
+    /// `max-connections-per-client` does not count it as one;
+    /// `max-total-connections` still does.
+    #[test]
+    fn a_trusted_proxy_peer_is_exempt_from_the_per_client_limit_only() {
+        let config = Config::from_kdl(
+            r#"
+            schema-version "1.0"
+            system { worker-threads 1 }
+            listeners {
+                listener "lb" {
+                    address "127.0.0.1:19792"
+                    trusted-proxies "10.0.0.0/8"
+                    namespace "tenant"
+                }
+                listener "direct" { address "127.0.0.1:19793"; }
+            }
+            limits {
+                max-connections-per-client 2
+                max-total-connections 50
+            }
+            namespace "tenant" {
+                limits { max-connections-per-client 1 }
+            }
+            "#,
+        )
+        .unwrap();
+        let balancer = "10.1.2.3".parse().ok();
+        let lb = "127.0.0.1:19792".parse().ok();
+
+        let trusted = ConnectionLimits::for_connection(&config, balancer, lb);
+        assert_eq!(trusted.max_per_client, None);
+        assert_eq!(trusted.max_total, Some(50));
+        assert_eq!(trusted.namespace.unwrap().max_per_client, None);
+
+        let untrusted = ConnectionLimits::for_connection(&config, "192.0.2.9".parse().ok(), lb);
+        assert_eq!(untrusted.max_per_client, Some(2));
+        assert_eq!(untrusted.namespace.unwrap().max_per_client, Some(1));
+
+        // Trust is per listener.
+        let direct =
+            ConnectionLimits::for_connection(&config, balancer, "127.0.0.1:19793".parse().ok());
+        assert_eq!(direct.max_per_client, Some(2));
+
+        let notes = per_client_limit_notes(&config);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("'direct'") && notes[0].contains("trusted-proxies"));
     }
 }
