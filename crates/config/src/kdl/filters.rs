@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::filters::*;
 use crate::routes::FailureMode;
@@ -226,17 +226,46 @@ fn parse_rate_limit_backend(node: &kdl::KdlNode) -> Result<RateLimitBackend> {
     }
 }
 
+/// Read an agent filter's `failure-mode`, and whether its value was ignored.
+///
+/// Only `open` and `closed` are failure modes here. Anything else — including
+/// `fail-open`, which the agent block accepts — has always been read as unset,
+/// which hands the decision to the route's `policies { failure-mode }` and,
+/// when that is unset too, to closed. Honouring such a value now could turn a
+/// setup that has been failing closed into one that fails open, so the
+/// fallback stays; the value is logged at load and reported by `zentinel lint`
+/// through `validate::unknown_keys`.
+pub(crate) fn resolve_agent_filter_failure_mode(
+    node: &kdl::KdlNode,
+    filter_id: &str,
+) -> (Option<FailureMode>, Option<String>) {
+    match get_string_entry(node, "failure-mode").as_deref() {
+        None => (None, None),
+        Some("open") => (Some(FailureMode::Open), None),
+        Some("closed") => (Some(FailureMode::Closed), None),
+        Some(other) => (
+            None,
+            Some(format!(
+                "'failure-mode \"{}\"' on filter '{}' is not a failure mode (open, closed) and \
+                 is being ignored; the route's policies failure-mode applies instead, and that \
+                 defaults to closed.",
+                other, filter_id
+            )),
+        ),
+    }
+}
+
 fn parse_agent_filter(node: &kdl::KdlNode) -> Result<Filter> {
     let agent = get_string_entry(node, "agent").ok_or_else(|| {
         anyhow::anyhow!("Agent filter requires an 'agent' field referencing an agent definition")
     })?;
 
     let timeout_ms = get_int_entry(node, "timeout-ms").map(|v| v as u64);
-    let failure_mode = get_string_entry(node, "failure-mode").and_then(|s| match s.as_str() {
-        "open" => Some(FailureMode::Open),
-        "closed" => Some(FailureMode::Closed),
-        _ => None,
-    });
+    let filter_id = get_first_arg_string(node).unwrap_or_default();
+    let (failure_mode, problem) = resolve_agent_filter_failure_mode(node, &filter_id);
+    if let Some(problem) = problem {
+        warn!("{}", problem);
+    }
 
     let phase = get_string_entry(node, "phase").and_then(|s| match s.as_str() {
         "request" => Some(FilterPhase::Request),
@@ -573,6 +602,26 @@ mod tests {
         let doc: kdl::KdlDocument = kdl.parse().expect("kdl parses");
         let node = doc.nodes().first().expect("one node");
         parse_single_filter_definition(node).expect("filter parses")
+    }
+
+    /// An unrecognised failure mode keeps meaning "unset", which defers to
+    /// the route and then to closed; honouring `fail-open` would turn a setup
+    /// that has been failing closed into one that fails open (#529).
+    #[test]
+    fn an_unknown_agent_filter_failure_mode_stays_unset() {
+        for (value, expected) in [
+            ("open", Some(FailureMode::Open)),
+            ("closed", Some(FailureMode::Closed)),
+            ("fail-open", None),
+        ] {
+            let filter = parse_filter(&format!(
+                "filter \"f\" {{\n type \"agent\"\n agent \"a\"\n failure-mode \"{value}\"\n}}"
+            ));
+            let Filter::Agent(agent) = filter else {
+                panic!("expected an agent filter");
+            };
+            assert_eq!(agent.failure_mode, expected, "{value}");
+        }
     }
 
     #[test]

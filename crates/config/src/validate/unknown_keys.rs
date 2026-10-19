@@ -533,8 +533,49 @@ pub fn check_unknown_keys(kdl_source: &str, result: &mut ValidationResult) {
         return;
     };
 
+    let context = Context::of(&document);
     for node in document.nodes() {
-        walk(node, None, result);
+        walk(node, None, &context, result);
+    }
+}
+
+/// What a check needs to know about the rest of the document.
+struct Context {
+    /// For each agent id, the agent filters that use it and set no failure
+    /// mode of their own (or one that is ignored).
+    filters_without_failure_mode: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl Context {
+    fn of(document: &kdl::KdlDocument) -> Self {
+        let mut context = Context {
+            filters_without_failure_mode: Default::default(),
+        };
+        for node in document.nodes() {
+            context.collect(node);
+        }
+        context
+    }
+
+    fn collect(&mut self, node: &kdl::KdlNode) {
+        if node.name().value() == "filter" && child_value(node, "type") == Some("agent") {
+            if let (Some(filter_id), Some(agent_id)) = (first_arg(node), child_value(node, "agent"))
+            {
+                let (mode, _) =
+                    crate::kdl::filters::resolve_agent_filter_failure_mode(node, filter_id);
+                if mode.is_none() {
+                    self.filters_without_failure_mode
+                        .entry(agent_id.to_string())
+                        .or_default()
+                        .push(filter_id.to_string());
+                }
+            }
+        }
+        if let Some(children) = node.children() {
+            for child in children.nodes() {
+                self.collect(child);
+            }
+        }
     }
 }
 
@@ -543,10 +584,15 @@ pub fn check_unknown_keys(kdl_source: &str, result: &mut ValidationResult) {
 /// `parent` is the name of the block this node sits directly inside, or `None`
 /// at the top level. It is what lets two blocks share a name and keep separate
 /// key lists -- see [`Nesting`].
-fn walk(node: &kdl::KdlNode, parent: Option<&str>, result: &mut ValidationResult) {
+fn walk(
+    node: &kdl::KdlNode,
+    parent: Option<&str>,
+    context: &Context,
+    result: &mut ValidationResult,
+) {
     let name = node.name().value();
 
-    check_values(node, parent, result);
+    check_values(node, parent, context, result);
 
     if let Some(block) = block_for(node, parent) {
         if let Some(children) = node.children() {
@@ -562,7 +608,7 @@ fn walk(node: &kdl::KdlNode, parent: Option<&str>, result: &mut ValidationResult
 
     if let Some(children) = node.children() {
         for child in children.nodes() {
-            walk(child, Some(name), result);
+            walk(child, Some(name), context, result);
         }
     }
 }
@@ -576,7 +622,12 @@ fn walk(node: &kdl::KdlNode, parent: Option<&str>, result: &mut ValidationResult
 /// and must keep doing so; what changes is that they are reported. Whether a
 /// value is known is decided by the parser's own function in each case, so
 /// this check and the parser cannot disagree.
-fn check_values(node: &kdl::KdlNode, parent: Option<&str>, result: &mut ValidationResult) {
+fn check_values(
+    node: &kdl::KdlNode,
+    parent: Option<&str>,
+    context: &Context,
+    result: &mut ValidationResult,
+) {
     let id = first_arg(node);
     let mut report = |problem: Option<String>| {
         if let Some(problem) = problem {
@@ -601,9 +652,53 @@ fn check_values(node: &kdl::KdlNode, parent: Option<&str>, result: &mut Validati
                 ));
             }
         }
+        ("filter", Some(filter_id)) if child_value(node, "type") == Some("agent") => {
+            report(crate::kdl::filters::resolve_agent_filter_failure_mode(node, filter_id).1);
+        }
+        ("agent", Some(agent_id)) if parent == Some("agents") => {
+            report(agent_failure_mode_problem(node, agent_id, context));
+        }
         ("matches", _) if parent == Some("route") => check_run_together_matches(node, result),
         _ => {}
     }
+}
+
+/// Whether an agent block's `failure-mode` is being relied on where it does
+/// not apply.
+///
+/// The agent's own `failure-mode` decides what happens when the agent fails
+/// on a request body, a response or a WebSocket frame, and when a body is
+/// over its inspection limit (`AgentManager::process_event` and
+/// `apply_body_limits`). It does not decide the request-headers call, which
+/// is where most agents act: that uses the agent filter's `failure-mode`,
+/// then the route's `policies { failure-mode }`, then closed
+/// (`process_agents` in the proxy's handlers). An agent written with
+/// `failure-mode "open"` and a filter without one therefore blocks requests
+/// when the agent is down.
+///
+/// Honouring the agent's value there would turn setups that have been
+/// failing closed into ones that fail open, so the behaviour stays and this
+/// reports it instead -- only when some filter using the agent leaves the
+/// decision open, since a filter with its own value states the intent.
+fn agent_failure_mode_problem(
+    agent: &kdl::KdlNode,
+    agent_id: &str,
+    context: &Context,
+) -> Option<String> {
+    let value = child_value(agent, "failure-mode")?;
+    let filters = context.filters_without_failure_mode.get(agent_id)?;
+    let filters = filters
+        .iter()
+        .map(|f| format!("'{f}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "'failure-mode \"{value}\"' on agent '{agent_id}' is being ignored for request \
+         headers: that is decided by the agent filter's failure-mode, then the route's \
+         policies failure-mode, and is closed when neither is set. Set failure-mode on \
+         filter {filters} as well. The agent's own setting applies only to request bodies, \
+         responses, WebSocket frames and its body-size limits."
+    ))
 }
 
 /// The run-together check for a route's `matches` block.
@@ -2162,6 +2257,69 @@ mod tests {
             warnings_for(r#"routes { route "a" { matches { header "x-a" "1" method "GET"; } } }"#);
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
         assert!(warnings[0].contains("'method' is being read as an argument to 'header'"));
+    }
+
+    fn agent_config(agent_mode: &str, filter_mode: &str) -> String {
+        format!(
+            r#"
+            agents {{
+                agent "waf" {{
+                    unix-socket "/tmp/waf.sock"
+                    {agent_mode}
+                }}
+            }}
+            filters {{
+                filter "waf-filter" {{
+                    type "agent"
+                    agent "waf"
+                    {filter_mode}
+                }}
+            }}
+        "#
+        )
+    }
+
+    /// #529: the agent block's failure-mode does not decide the
+    /// request-headers call, which is where it is usually meant to.
+    #[test]
+    fn an_agent_failure_mode_without_a_filter_one_is_reported() {
+        let warnings = warnings_for(&agent_config(r#"failure-mode "open""#, ""));
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("on agent 'waf' is being ignored for request headers"));
+        assert!(
+            warnings[0].contains("filter 'waf-filter'"),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn an_agent_failure_mode_is_not_reported_when_the_filter_sets_one() {
+        let kdl = agent_config(r#"failure-mode "open""#, r#"failure-mode "open""#);
+        assert_eq!(warnings_for(&kdl), Vec::<String>::new());
+        // Neither is an agent without a failure-mode of its own.
+        assert_eq!(warnings_for(&agent_config("", "")), Vec::<String>::new());
+    }
+
+    /// `fail-open` is accepted on the agent block, not on the filter, where
+    /// it has always meant "unset" and so, by default, closed.
+    #[test]
+    fn an_unknown_filter_failure_mode_is_reported() {
+        let warnings = warnings_for(&agent_config("", r#"failure-mode "fail-open""#));
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("'failure-mode \"fail-open\"' on filter 'waf-filter'"));
+        assert!(warnings[0].contains("is being ignored"));
+    }
+
+    /// An ignored filter value leaves the decision open, so the agent's
+    /// value is reported as well.
+    #[test]
+    fn an_ignored_filter_value_counts_as_unset() {
+        let warnings = warnings_for(&agent_config(
+            r#"failure-mode "open""#,
+            r#"failure-mode "fail-open""#,
+        ));
+        assert_eq!(warnings.len(), 2, "{warnings:#?}");
     }
 
     fn warning_texts(result: &ValidationResult) -> Vec<String> {
