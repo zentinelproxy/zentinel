@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 
@@ -201,10 +201,10 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
                 .find(|n| n.name().value() == "load-balancing")
         });
 
-        let load_balancing = load_balancing_node
-            .and_then(get_first_arg_string)
-            .map(|s| parse_load_balancing(&s))
-            .unwrap_or(LoadBalancingAlgorithm::RoundRobin);
+        let (load_balancing, problem) = resolve_load_balancing(child, &id);
+        if let Some(problem) = problem {
+            warn!("{}", problem);
+        }
 
         // Parse sticky session config (if load-balancing is "sticky" with children)
         let sticky_session = if load_balancing == LoadBalancingAlgorithm::Sticky {
@@ -231,7 +231,12 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
                     .iter()
                     .find(|n| n.name().value() == "health-check")
             })
-            .and_then(|n| parse_health_check(n).ok());
+            .and_then(|n| {
+                if let Some(problem) = health_check_type_problem(n, &id) {
+                    warn!("{}", problem);
+                }
+                parse_health_check(n).ok()
+            });
 
         if health_check.is_some() {
             trace!(
@@ -351,14 +356,36 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
     Ok(upstreams)
 }
 
-/// Parse load balancing algorithm from string
-fn parse_load_balancing(s: &str) -> LoadBalancingAlgorithm {
-    match s.to_lowercase().as_str() {
+/// The canonical name of every load-balancing algorithm, for messages.
+const LOAD_BALANCING_NAMES: &[&str] = &[
+    "round_robin",
+    "least_connections",
+    "weighted",
+    "ip_hash",
+    "random",
+    "consistent_hash",
+    "power_of_two_choices",
+    "adaptive",
+    "least_tokens_queued",
+    "maglev",
+    "locality_aware",
+    "peak_ewma",
+    "deterministic_subset",
+    "weighted_least_connections",
+    "sticky",
+];
+
+/// Parse a load balancing algorithm name, or `None` if it names none.
+///
+/// Case-insensitive, and hyphens are read as underscores, so
+/// `least-connections` is `least_connections`. Only the underscore spelling
+/// used to be accepted here while route-level strategies took both, and the
+/// hyphenated one silently became round robin.
+fn parse_load_balancing(s: &str) -> Option<LoadBalancingAlgorithm> {
+    let algorithm = match s.to_lowercase().replace('-', "_").as_str() {
         "round_robin" | "roundrobin" => LoadBalancingAlgorithm::RoundRobin,
         "least_connections" | "leastconnections" => LoadBalancingAlgorithm::LeastConnections,
-        "weighted" | "weighted_round_robin" | "weighted-round-robin" => {
-            LoadBalancingAlgorithm::Weighted
-        }
+        "weighted" | "weighted_round_robin" => LoadBalancingAlgorithm::Weighted,
         "ip_hash" | "iphash" => LoadBalancingAlgorithm::IpHash,
         "random" => LoadBalancingAlgorithm::Random,
         "consistent_hash" | "consistenthash" => LoadBalancingAlgorithm::ConsistentHash,
@@ -377,8 +404,45 @@ fn parse_load_balancing(s: &str) -> LoadBalancingAlgorithm {
             LoadBalancingAlgorithm::WeightedLeastConnections
         }
         "sticky" | "sticky_session" | "stickysession" => LoadBalancingAlgorithm::Sticky,
-        _ => LoadBalancingAlgorithm::RoundRobin,
+        _ => return None,
+    };
+    Some(algorithm)
+}
+
+/// Work out an upstream's load-balancing algorithm, and whether its
+/// `load-balancing` value was ignored.
+///
+/// An unknown name keeps round robin, as it always has — configs carrying one
+/// have been loading and must keep doing so — but it comes back as a problem
+/// for `zentinel lint` (through `validate::unknown_keys`) rather than silently.
+pub(crate) fn resolve_load_balancing(
+    upstream: &kdl::KdlNode,
+    upstream_id: &str,
+) -> (LoadBalancingAlgorithm, Option<String>) {
+    let Some(name) = upstream
+        .children()
+        .and_then(|c| c.get("load-balancing"))
+        .and_then(get_first_arg_string)
+    else {
+        return (LoadBalancingAlgorithm::RoundRobin, None);
+    };
+    if let Some(algorithm) = parse_load_balancing(&name) {
+        return (algorithm, None);
     }
+    let suggestion = super::helpers::did_you_mean(&name, LOAD_BALANCING_NAMES)
+        .map(|s| format!(" Did you mean '{}'?", s))
+        .unwrap_or_default();
+    (
+        LoadBalancingAlgorithm::RoundRobin,
+        Some(format!(
+            "'load-balancing \"{}\"' on upstream '{}' is not a load-balancing algorithm and \
+             is being ignored; the upstream uses round_robin.{} Valid algorithms: {}.",
+            name,
+            upstream_id,
+            suggestion,
+            LOAD_BALANCING_NAMES.join(", ")
+        )),
+    )
 }
 
 /// Parse sticky session configuration
@@ -424,7 +488,7 @@ fn parse_sticky_session_config(children: &kdl::KdlDocument) -> StickySessionConf
         .unwrap_or_default();
 
     let fallback = find_string_entry(nodes, "fallback")
-        .map(|s| parse_load_balancing(&s))
+        .and_then(|s| parse_load_balancing(&s))
         .unwrap_or(LoadBalancingAlgorithm::RoundRobin);
 
     StickySessionConfig {
@@ -820,6 +884,39 @@ pub(crate) fn parse_discovery(node: &kdl::KdlNode, upstream_id: &str) -> Result<
             other
         )),
     }
+}
+
+/// Every health-check type `parse_health_check` reads settings for.
+const HEALTH_CHECK_TYPES: &[&str] = &["tcp", "http", "grpc", "inference", "mcp"];
+
+/// Whether a health check's `type` value is ignored, as a message.
+///
+/// A name that is not a type (`type "htttp"`) is probed as TCP, and the settings
+/// written for the intended type go with it. That fallback is kept, because
+/// configs carrying such a value have been loading, and reported here for
+/// `zentinel lint` (through `validate::unknown_keys`).
+pub(crate) fn health_check_type_problem(
+    health_check: &kdl::KdlNode,
+    upstream_id: &str,
+) -> Option<String> {
+    let name = health_check
+        .children()?
+        .get("type")
+        .and_then(get_first_arg_string)?;
+    if HEALTH_CHECK_TYPES.contains(&name.to_lowercase().as_str()) {
+        return None;
+    }
+    let suggestion = super::helpers::did_you_mean(&name.to_lowercase(), HEALTH_CHECK_TYPES)
+        .map(|s| format!(" Did you mean '{}'?", s))
+        .unwrap_or_default();
+    Some(format!(
+        "health-check 'type \"{}\"' on upstream '{}' is not a health-check type ({}) and is \
+         being ignored; the upstream is checked over TCP.{}",
+        name,
+        upstream_id,
+        HEALTH_CHECK_TYPES.join(", "),
+        suggestion
+    ))
 }
 
 /// Parse health check configuration
@@ -1742,5 +1839,124 @@ mod tests {
             message.contains("target") && message.contains("discovery"),
             "error should offer both ways out, got: {message}"
         );
+    }
+
+    /// Unknown values keep today's fallback and are reported (#521).
+    mod ignored_values {
+        use super::*;
+
+        fn upstream(body: &str) -> UpstreamConfig {
+            let kdl =
+                format!("upstreams {{ upstream \"b\" {{ target \"127.0.0.1:1\"\n{body} }} }}");
+            parse_kdl_upstreams(&kdl).unwrap().remove("b").unwrap()
+        }
+
+        fn upstream_node(body: &str) -> kdl::KdlDocument {
+            format!("upstream \"b\" {{ target \"127.0.0.1:1\"\n{body} }}")
+                .parse()
+                .unwrap()
+        }
+
+        /// Route-level strategies accept both spellings; this one silently
+        /// turned the hyphenated name into round robin.
+        #[test]
+        fn hyphenated_algorithm_names_are_accepted() {
+            for (name, expected) in [
+                (
+                    "least-connections",
+                    LoadBalancingAlgorithm::LeastConnections,
+                ),
+                ("ip-hash", LoadBalancingAlgorithm::IpHash),
+                ("consistent-hash", LoadBalancingAlgorithm::ConsistentHash),
+                (
+                    "power-of-two-choices",
+                    LoadBalancingAlgorithm::PowerOfTwoChoices,
+                ),
+                ("peak-ewma", LoadBalancingAlgorithm::PeakEwma),
+                (
+                    "weighted-least-connections",
+                    LoadBalancingAlgorithm::WeightedLeastConnections,
+                ),
+                ("weighted-round-robin", LoadBalancingAlgorithm::Weighted),
+                (
+                    "Least_Connections",
+                    LoadBalancingAlgorithm::LeastConnections,
+                ),
+            ] {
+                let config = upstream(&format!("load-balancing \"{name}\""));
+                assert_eq!(config.load_balancing, expected, "{name}");
+            }
+        }
+
+        #[test]
+        fn every_listed_algorithm_name_parses() {
+            for name in LOAD_BALANCING_NAMES {
+                assert!(parse_load_balancing(name).is_some(), "{name}");
+            }
+        }
+
+        #[test]
+        fn an_unknown_algorithm_keeps_round_robin_and_is_reported() {
+            let config = upstream(r#"load-balancing "totally_bogus""#);
+            assert_eq!(config.load_balancing, LoadBalancingAlgorithm::RoundRobin);
+
+            let doc = upstream_node(r#"load-balancing "least-conections""#);
+            let problem = resolve_load_balancing(doc.nodes().first().unwrap(), "b")
+                .1
+                .expect("an unknown algorithm should be reported");
+            assert!(problem.contains("is being ignored"), "{problem}");
+            assert!(
+                problem.contains("Did you mean 'least_connections'?"),
+                "{problem}"
+            );
+        }
+
+        #[test]
+        fn known_and_absent_algorithms_are_not_reported() {
+            for body in [
+                "load-balancing \"p2c\"",
+                "load-balancing \"least-connections\"",
+                "",
+            ] {
+                let doc = upstream_node(body);
+                assert_eq!(
+                    resolve_load_balancing(doc.nodes().first().unwrap(), "b").1,
+                    None
+                );
+            }
+        }
+
+        #[test]
+        fn an_unknown_health_check_type_keeps_tcp_and_is_reported() {
+            let body = r#"health-check { type "htttp" { path "/healthz" } }"#;
+            let config = upstream(body);
+            assert!(matches!(
+                config.health_check.unwrap().check_type,
+                HealthCheckType::Tcp
+            ));
+
+            let doc = upstream_node(body);
+            let check = doc.nodes()[0]
+                .children()
+                .unwrap()
+                .get("health-check")
+                .unwrap();
+            let problem = health_check_type_problem(check, "b").expect("should be reported");
+            assert!(problem.contains("is being ignored"), "{problem}");
+            assert!(problem.contains("Did you mean 'http'?"), "{problem}");
+        }
+
+        #[test]
+        fn known_health_check_types_are_not_reported() {
+            for name in ["tcp", "http", "HTTP", "grpc", "inference", "mcp"] {
+                let doc = upstream_node(&format!("health-check {{ type \"{name}\" }}"));
+                let check = doc.nodes()[0]
+                    .children()
+                    .unwrap()
+                    .get("health-check")
+                    .unwrap();
+                assert_eq!(health_check_type_problem(check, "b"), None, "{name}");
+            }
+        }
     }
 }

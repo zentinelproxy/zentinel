@@ -546,15 +546,7 @@ pub fn check_unknown_keys(kdl_source: &str, result: &mut ValidationResult) {
 fn walk(node: &kdl::KdlNode, parent: Option<&str>, result: &mut ValidationResult) {
     let name = node.name().value();
 
-    // `service-type` is a known key, so the check below passes it; whether
-    // its value is applied depends on the route's other blocks.
-    if name == "route" {
-        if let Some(route_id) = node.entries().first().and_then(|e| e.value().as_string()) {
-            if let (_, Some(problem)) = crate::kdl::routes::resolve_service_type(node, route_id) {
-                result.add_warning(ValidationWarning::new(problem));
-            }
-        }
-    }
+    check_values(node, parent, result);
 
     if let Some(block) = block_for(node, parent) {
         if let Some(children) = node.children() {
@@ -571,6 +563,83 @@ fn walk(node: &kdl::KdlNode, parent: Option<&str>, result: &mut ValidationResult
     if let Some(children) = node.children() {
         for child in children.nodes() {
             walk(child, Some(name), result);
+        }
+    }
+}
+
+/// Report known keys whose *value* is ignored.
+///
+/// The keys below pass the check for unknown keys, but each parser falls back
+/// to a default when the value names nothing it knows: `load-balancing
+/// "least-conections"` is round robin, `priority "urgent"` is normal. Those
+/// fallbacks are kept, since configs carrying such values have been loading
+/// and must keep doing so; what changes is that they are reported. Whether a
+/// value is known is decided by the parser's own function in each case, so
+/// this check and the parser cannot disagree.
+fn check_values(node: &kdl::KdlNode, parent: Option<&str>, result: &mut ValidationResult) {
+    let id = first_arg(node);
+    let mut report = |problem: Option<String>| {
+        if let Some(problem) = problem {
+            result.add_warning(ValidationWarning::new(problem));
+        }
+    };
+
+    match (node.name().value(), id) {
+        ("route", Some(route_id)) => {
+            // `service-type` is applied or not depending on the route's
+            // other blocks.
+            report(crate::kdl::routes::resolve_service_type(node, route_id).1);
+            report(crate::kdl::routes::resolve_priority(node, route_id).1);
+            report(crate::kdl::routes::resolve_builtin_handler(node, route_id).1);
+        }
+        ("upstream", Some(upstream_id)) => {
+            report(crate::kdl::upstreams::resolve_load_balancing(node, upstream_id).1);
+            if let Some(check) = node.children().and_then(|c| c.get("health-check")) {
+                report(crate::kdl::upstreams::health_check_type_problem(
+                    check,
+                    upstream_id,
+                ));
+            }
+        }
+        ("matches", _) if parent == Some("route") => check_run_together_matches(node, result),
+        _ => {}
+    }
+}
+
+/// The run-together check for a route's `matches` block.
+///
+/// `matches` is not a closed block — an unknown condition is already a hard
+/// error at load — but a condition written on the same line as another one,
+///
+/// ```kdl
+/// matches { path-prefix "/api" host "a.com" }
+/// ```
+///
+/// is read as `path-prefix` with three arguments, and `host` is dropped. The
+/// route then matches every host, which is the direction a silent match
+/// failure must never go. Unlike [`check_run_together`], each condition's own
+/// value arguments are exempt, since `header "x-kind" "path"` is a header
+/// value and not a swallowed condition.
+fn check_run_together_matches(matches: &kdl::KdlNode, result: &mut ValidationResult) {
+    let Some(children) = matches.children() else {
+        return;
+    };
+    for condition in children.nodes() {
+        let key = condition.name().value();
+        let own = crate::kdl::routes::match_condition_own_args(key);
+        for entry in condition
+            .entries()
+            .iter()
+            .filter(|e| e.name().is_none())
+            .skip(own)
+        {
+            if let Some(value) = entry.value().as_string() {
+                if crate::kdl::routes::is_match_condition(value) {
+                    result.add_warning(ValidationWarning::new(run_together_message(
+                        "matches", key, value,
+                    )));
+                }
+            }
         }
     }
 }
@@ -2013,6 +2082,86 @@ mod tests {
             "#,
         );
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// The values from #521 that each fell back to a default without a word.
+    #[test]
+    fn ignored_values_are_reported() {
+        let kdl = r#"
+            routes {
+                route "a" {
+                    priority "urgent"
+                    builtin-handler "helth"
+                }
+            }
+            upstreams {
+                upstream "b" {
+                    target "127.0.0.1:1"
+                    load-balancing "totally_bogus"
+                    health-check { type "htttp" }
+                }
+            }
+        "#;
+        let warnings = warnings_for(kdl);
+        assert_eq!(warnings.len(), 4, "{warnings:#?}");
+        for fragment in [
+            "'priority \"urgent\"'",
+            "'builtin-handler \"helth\"'",
+            "'load-balancing \"totally_bogus\"'",
+            "'type \"htttp\"'",
+        ] {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains(fragment) && w.contains("is being ignored")),
+                "expected {fragment} to be reported, got {warnings:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_values_are_not_reported() {
+        let kdl = r#"
+            routes {
+                route "a" {
+                    priority "HIGH"
+                    builtin-handler "not_found"
+                    matches {
+                        method "GET" "POST"
+                        header "x-kind" "path"
+                        query-param "host" "method"
+                    }
+                }
+            }
+            upstreams {
+                upstream "b" {
+                    target "127.0.0.1:1"
+                    load-balancing "least-connections"
+                    health-check { type "grpc" }
+                }
+            }
+        "#;
+        assert_eq!(warnings_for(kdl), Vec::<String>::new());
+    }
+
+    /// The run-together check from #365 did not cover `matches`, where a
+    /// dropped condition makes the route match more than intended.
+    #[test]
+    fn a_run_together_match_condition_is_reported() {
+        let warnings = warnings_for(
+            r#"routes { route "a" { matches { path-prefix "/api" host "a.com"; } } }"#,
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("'host' is being read as an argument to 'path-prefix'"));
+        assert!(warnings[0].contains("'matches' block"));
+    }
+
+    #[test]
+    fn a_condition_run_into_a_header_match_is_reported_after_its_value() {
+        let warnings =
+            warnings_for(r#"routes { route "a" { matches { header "x-a" "1" method "GET"; } } }"#);
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("'method' is being read as an argument to 'header'"));
     }
 
     fn warning_texts(result: &ValidationResult) -> Vec<String> {

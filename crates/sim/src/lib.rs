@@ -523,4 +523,44 @@ mod tests {
         );
         assert!(!decision.match_trace.is_empty()); // Should have trace showing why no match
     }
+
+    /// `method "GET" "POST"` used to parse as GET alone, so the playground and
+    /// the proxy both turned POST away. Both matchers take a list; the parser
+    /// now hands them every argument (#521).
+    #[test]
+    fn test_simulate_matches_every_listed_method() {
+        let kdl = r#"
+            server { }
+            listeners {
+                listener "http" {
+                    address "0.0.0.0:8080"
+                }
+            }
+            routes {
+                route "write" {
+                    matches {
+                        path-prefix "/api"
+                        method "GET" "POST"
+                    }
+                    upstream "backend"
+                }
+            }
+            upstreams {
+                upstream "backend" {
+                    target "127.0.0.1:8080"
+                }
+            }
+        "#;
+
+        let result = validate(kdl);
+        let config = result.effective_config.expect("config should be valid");
+        for (method, matched) in [("GET", true), ("POST", true), ("DELETE", false)] {
+            let request = SimulatedRequest::new(method, "example.com", "/api/x");
+            assert_eq!(
+                simulate(&config, &request).matched_route.is_some(),
+                matched,
+                "{method}"
+            );
+        }
+    }
 }

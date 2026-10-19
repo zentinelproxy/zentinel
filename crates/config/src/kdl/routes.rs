@@ -60,7 +60,10 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 let matches = parse_match_conditions(child)?;
 
                 // Parse priority
-                let priority = parse_priority(child);
+                let (priority, problem) = resolve_priority(child, &id);
+                if let Some(problem) = problem {
+                    warn!("{}", problem);
+                }
 
                 // Parse upstream
                 let upstream = parse_upstream_ref(child);
@@ -88,8 +91,10 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     .transpose()?;
 
                 // Parse builtin-handler
-                let builtin_handler = get_string_entry(child, "builtin-handler")
-                    .and_then(|s| parse_builtin_handler(&s));
+                let (builtin_handler, problem) = resolve_builtin_handler(child, &id);
+                if let Some(problem) = problem {
+                    warn!("{}", problem);
+                }
 
                 // Parse cache configuration
                 let cache_config = parse_cache_config_opt(child)?;
@@ -190,12 +195,34 @@ const VALID_MATCH_CONDITIONS: &[(&str, &str)] = &[
         "header",
         "header \"x-version\" (or header \"x-version\" \"2\")",
     ),
-    ("method", "method \"GET\""),
+    ("method", "method \"GET\" (or method \"GET\" \"POST\")"),
     (
         "query-param",
         "query-param \"debug\" (or query-param \"debug\" \"true\")",
     ),
 ];
+
+/// Whether `name` is a condition a `matches` block accepts.
+pub(crate) fn is_match_condition(name: &str) -> bool {
+    VALID_MATCH_CONDITIONS.iter().any(|(n, _)| *n == name)
+}
+
+/// How many leading arguments of a match condition are its own values, before
+/// anything after them can only be a mistake.
+///
+/// `header` and `query-param` take a name and an optional value, so their
+/// second argument may legitimately be any string, including one spelled like
+/// a condition (`header "x-kind" "path"`). `method` takes a list, but no HTTP
+/// method is spelled like a condition, so only its first argument is exempt.
+/// The lint uses this to find run-together lines such as
+/// `path-prefix "/api" host "a.com"`, where `host` is read as a second argument
+/// and dropped.
+pub(crate) fn match_condition_own_args(name: &str) -> usize {
+    match name {
+        "header" | "query-param" => 2,
+        _ => 1,
+    }
+}
 
 /// Build the error for a match condition whose first argument is missing or
 /// not a string (e.g. `path-prefix` with no value, or `method 42`).
@@ -278,10 +305,20 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
                             });
                         }
                         "method" => {
-                            let method = get_first_arg_string(match_node).ok_or_else(|| {
+                            // `method "GET" "POST"` means either. Only the first
+                            // argument used to be read, so the route silently
+                            // stopped matching POST; every argument is now kept,
+                            // and the matchers already accept any of a list.
+                            get_first_arg_string(match_node).ok_or_else(|| {
                                 match_condition_value_error(&route_id, match_node)
                             })?;
-                            matches.push(MatchCondition::Method(vec![method]));
+                            let methods: Vec<String> = match_node
+                                .entries()
+                                .iter()
+                                .filter(|e| e.name().is_none())
+                                .filter_map(|e| e.value().as_string().map(str::to_string))
+                                .collect();
+                            matches.push(MatchCondition::Method(methods));
                         }
                         "query-param" => {
                             let entries: Vec<_> = match_node.entries().iter().collect();
@@ -327,34 +364,56 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
     Ok(matches)
 }
 
-/// Parse a `priority` child node into a [`Priority`](zentinel_common::types::Priority).
+/// Work out a route's priority, and whether its `priority` value was ignored.
 ///
-/// Accepts either:
-/// - An integer: `priority 100` → `Priority(100)`
-/// - A named string alias: `priority "high"` → `Priority::HIGH`
+/// Accepts an integer (`priority 100`) or a named alias, case-insensitively:
+/// `"low"`, `"normal"`, `"high"`, `"critical"`. No value means normal.
 ///
-/// Supported string aliases (case-insensitive): `"low"`, `"normal"`, `"high"`,
-/// `"critical"`. Unrecognized strings and missing values fall back to
-/// [`Priority::NORMAL`](zentinel_common::types::Priority::NORMAL).
-fn parse_priority(node: &kdl::KdlNode) -> zentinel_common::types::Priority {
+/// Anything that is neither an integer nor one of the aliases — `"urgent"`,
+/// `1.5` — falls back to normal. That is kept, because configs carrying such a
+/// value have been loading and must keep doing so, but the value comes back as
+/// a problem for `zentinel lint` (through `validate::unknown_keys`) instead of
+/// vanishing: a route meant to win over its neighbours silently did not.
+pub(crate) fn resolve_priority(
+    node: &kdl::KdlNode,
+    route_id: &str,
+) -> (zentinel_common::types::Priority, Option<String>) {
     use zentinel_common::types::Priority;
 
-    // Integer form takes precedence: `priority 100`
-    if let Some(n) = get_int_entry(node, "priority") {
-        return Priority(n as i32);
+    let Some(value) = node
+        .children()
+        .and_then(|c| c.get("priority"))
+        .and_then(|n| n.entries().first())
+        .map(|e| e.value())
+    else {
+        return (Priority::NORMAL, None);
+    };
+
+    // Integer form: `priority 100`
+    if let Some(n) = value.as_integer() {
+        return (Priority(n as i32), None);
     }
 
     // Named string alias: `priority "high"`
-    match get_string_entry(node, "priority")
-        .as_deref()
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("critical") => Priority::CRITICAL,
-        Some("high") => Priority::HIGH,
-        Some("low") => Priority::LOW,
-        Some("normal") => Priority::NORMAL,
-        _ => Priority::NORMAL,
+    let alias = value.as_string().map(str::to_ascii_lowercase);
+    // Quoted, as it would be written; KDL's own display drops the quotes.
+    let written = match value.as_string() {
+        Some(s) => format!("\"{s}\""),
+        None => value.to_string(),
+    };
+    match alias.as_deref() {
+        Some("critical") => (Priority::CRITICAL, None),
+        Some("high") => (Priority::HIGH, None),
+        Some("low") => (Priority::LOW, None),
+        Some("normal") => (Priority::NORMAL, None),
+        _ => (
+            Priority::NORMAL,
+            Some(format!(
+                "'priority {}' on route '{}' is not a priority (low, normal, high, critical, \
+                 or an integer) and is being ignored; the route has normal priority.",
+                written, route_id
+            )),
+        ),
     }
 }
 
@@ -368,6 +427,51 @@ fn parse_upstream_ref(node: &kdl::KdlNode) -> Option<String> {
         }
     }
     None
+}
+
+/// Every name `parse_builtin_handler` accepts, for messages and suggestions.
+const BUILTIN_HANDLER_NAMES: &[&str] = &[
+    "status",
+    "health",
+    "metrics",
+    "not-found",
+    "config",
+    "upstreams",
+    "cache-purge",
+    "cache-stats",
+];
+
+/// Work out a route's builtin handler, and whether its `builtin-handler` value
+/// was ignored.
+///
+/// A name that is not a handler leaves the route without one, so it is served
+/// as a plain web route — usually with no upstream, so every request fails.
+/// Loading such a config keeps working, as it always has; the problem goes to
+/// `zentinel lint` through `validate::unknown_keys`.
+pub(crate) fn resolve_builtin_handler(
+    node: &kdl::KdlNode,
+    route_id: &str,
+) -> (Option<BuiltinHandler>, Option<String>) {
+    let Some(name) = get_string_entry(node, "builtin-handler") else {
+        return (None, None);
+    };
+    if let Some(handler) = parse_builtin_handler(&name) {
+        return (Some(handler), None);
+    }
+    let suggestion = super::helpers::did_you_mean(&name, BUILTIN_HANDLER_NAMES)
+        .map(|s| format!(" Did you mean '{}'?", s))
+        .unwrap_or_default();
+    (
+        None,
+        Some(format!(
+            "'builtin-handler \"{}\"' on route '{}' is not a builtin handler ({}) and is \
+             being ignored.{}",
+            name,
+            route_id,
+            BUILTIN_HANDLER_NAMES.join(", "),
+            suggestion
+        )),
+    )
 }
 
 fn parse_builtin_handler(name: &str) -> Option<BuiltinHandler> {
@@ -2782,7 +2886,7 @@ mod tests {
     fn parse_priority_from(kdl: &str) -> Priority {
         let doc: ::kdl::KdlDocument = kdl.parse().expect("KDL parses");
         let route_node = doc.get("route").expect("route node present");
-        parse_priority(route_node)
+        resolve_priority(route_node, "r").0
     }
 
     #[test]
@@ -3366,5 +3470,92 @@ mod tests {
             err.contains("request-schema is not a valid JSON Schema"),
             "{err}"
         );
+    }
+
+    /// Values that name nothing the parser knows keep today's fallback, and
+    /// are reported instead of vanishing (#521).
+    mod ignored_values {
+        use super::*;
+
+        fn route_node(body: &str) -> kdl::KdlDocument {
+            format!("route \"r\" {{\n{body}\n}}")
+                .parse()
+                .expect("kdl should parse")
+        }
+
+        fn methods_of(matches: &str) -> Vec<String> {
+            let doc: kdl::KdlDocument =
+                format!("routes {{ route \"r\" {{ matches {{ {matches} }}\n upstream \"b\" }} }}")
+                    .parse()
+                    .expect("kdl should parse");
+            let route = parse_routes(doc.nodes().first().unwrap())
+                .expect("routes should parse")
+                .remove(0);
+            match &route.matches[..] {
+                [MatchCondition::Method(methods)] => methods.clone(),
+                other => panic!("expected one method condition, got {other:?}"),
+            }
+        }
+
+        /// Every argument used to be dropped after the first, so the route
+        /// below matched GET and never POST.
+        #[test]
+        fn every_method_argument_is_kept() {
+            assert_eq!(methods_of(r#"method "GET" "POST""#), ["GET", "POST"]);
+            assert_eq!(methods_of(r#"method "PUT""#), ["PUT"]);
+        }
+
+        #[test]
+        fn a_non_string_method_is_still_rejected() {
+            let doc: kdl::KdlDocument = "routes { route \"r\" { matches { method 42 } } }"
+                .parse()
+                .unwrap();
+            assert!(parse_routes(doc.nodes().first().unwrap()).is_err());
+        }
+
+        #[test]
+        fn an_unknown_priority_keeps_normal_and_is_reported() {
+            let doc = route_node(r#"priority "urgent""#);
+            let (priority, problem) = resolve_priority(doc.nodes().first().unwrap(), "r");
+            assert_eq!(priority, Priority::NORMAL);
+            let problem = problem.expect("an unknown priority should be reported");
+            assert!(problem.contains("\"urgent\""), "{problem}");
+            assert!(problem.contains("is being ignored"), "{problem}");
+        }
+
+        #[test]
+        fn known_priorities_are_not_reported() {
+            for value in ["100", "\"high\"", "\"LOW\"", "-5"] {
+                let doc = route_node(&format!("priority {value}"));
+                assert_eq!(resolve_priority(doc.nodes().first().unwrap(), "r").1, None);
+            }
+            let doc = route_node("upstream \"b\"");
+            assert_eq!(resolve_priority(doc.nodes().first().unwrap(), "r").1, None);
+        }
+
+        #[test]
+        fn an_unknown_builtin_handler_is_reported_with_a_suggestion() {
+            let doc = route_node(r#"builtin-handler "helth""#);
+            let (handler, problem) = resolve_builtin_handler(doc.nodes().first().unwrap(), "r");
+            assert_eq!(handler, None);
+            let problem = problem.expect("an unknown handler should be reported");
+            assert!(problem.contains("is being ignored"), "{problem}");
+            assert!(problem.contains("Did you mean 'health'?"), "{problem}");
+        }
+
+        #[test]
+        fn every_listed_builtin_handler_is_one() {
+            for name in BUILTIN_HANDLER_NAMES {
+                assert!(parse_builtin_handler(name).is_some(), "{name}");
+            }
+        }
+
+        #[test]
+        fn known_builtin_handlers_are_not_reported() {
+            let doc = route_node(r#"builtin-handler "cache_purge""#);
+            let (handler, problem) = resolve_builtin_handler(doc.nodes().first().unwrap(), "r");
+            assert_eq!(handler, Some(BuiltinHandler::CachePurge));
+            assert_eq!(problem, None);
+        }
     }
 }
