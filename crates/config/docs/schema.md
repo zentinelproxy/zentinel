@@ -619,13 +619,15 @@ Metrics, logging, and tracing configuration.
 
 ## Limits
 
-Global resource limits.
+Global resource limits. These are the single-file names; a directory config also
+accepts the older `-bytes` spellings (`max-header-size-bytes`, `max-body-size-bytes`),
+which a single-file config ignores.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `max-header-size-bytes` | `u64` | `8192` | Max header size |
+| `max-header-size` | `u64` | `8192` | Max header size |
 | `max-header-count` | `u32` | `100` | Max number of headers |
-| `max-body-size-bytes` | `u64` | `1048576` | Max request body size |
+| `max-body-size` | `u64` | `10485760` | Max request body size |
 | `max-connections-per-client` | `u32` | `100` | Max connections per client IP |
 
 ---

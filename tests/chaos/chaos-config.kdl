@@ -250,9 +250,9 @@ upstreams {
 
 // Resource limits
 limits {
-    max-header-size-bytes 8192
+    max-header-size 8192
     max-header-count 100
-    max-body-size-bytes 1048576
+    max-body-size 1048576
     max-connections-per-client 100
 }
 

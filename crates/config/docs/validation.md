@@ -118,9 +118,9 @@ Minimum supported: `1.0`
 
 | Property | Validation |
 |----------|------------|
-| `max-header-size-bytes` | `> 0` |
+| `max-header-size` | `> 0` |
 | `max-header-count` | `> 0` |
-| `max-body-size-bytes` | `> 0` |
+| `max-body-size` | `> 0` |
 
 ## Reference Integrity
 
@@ -278,9 +278,9 @@ Configuration validation failed:
 
 | Property | Default | Rationale |
 |----------|---------|-----------|
-| `max-header-size-bytes` | `8192` | 8KB header limit |
+| `max-header-size` | `8192` | 8KB header limit |
 | `max-header-count` | `100` | Reasonable header count |
-| `max-body-size-bytes` | `1048576` | 1MB body limit |
+| `max-body-size` | `10485760` | 10MB body limit |
 | `max-connections-per-client` | `100` | Per-client limit |
 
 ### Cache Defaults

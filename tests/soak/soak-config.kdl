@@ -66,9 +66,9 @@ upstreams {
 }
 
 limits {
-    max-header-size-bytes 16384
+    max-header-size 16384
     max-header-count 100
-    max-body-size-bytes 1048576
+    max-body-size 1048576
 }
 
 observability {

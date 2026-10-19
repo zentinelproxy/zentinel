@@ -753,9 +753,9 @@ listeners {
 }
 
 limits {
-    max-header-size-bytes 16384
+    max-header-size 16384
     max-header-count 100
-    max-body-size-bytes 10485760
+    max-body-size 10485760
     max-connections-per-client 100
 }
 
