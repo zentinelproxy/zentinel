@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_5](#26105---2026-10-19) | 0.6.48 | 2026-10-19 | **Failing health checks take targets out of rotation**; rate limits count each client separately and `default-rps`/`burst` apply; Zentinel sends `X-Forwarded-*` and trusts incoming ones only from `trusted-proxies`; upstream error responses pass through unchanged; body limits answer 413; **read the upgrade notes** |
 | [26.10_4](#26104---2026-10-19) | 0.6.47 | 2026-10-19 | **An agent that restarts while the proxy runs is reconnected** (with `failure-mode "closed"` its routes returned 503 until the proxy restarted); **API schema validation works**: a schema that does not compile is a configuration error instead of silently disabling validation, and requests that pass validation reach the upstream instead of timing out; `service-type` is applied |
 | [26.10_3](#26103---2026-10-18) | 0.6.46 | 2026-10-18 | Security and dependency maintenance: `wasmtime` 49 for the WASM agent runtime (23 advisories, one critical), `rustls` 0.23.46 (4 advisories), OpenTelemetry 0.33; Cloudflare DNS-01 finds zones registered at a parent domain; building from source needs **Rust 1.96** |
 | [26.10_2](#26102---2026-10-11) | 0.6.45 | 2026-10-11 | ACME certificates renew in the window the CA suggests (ACME Renewal Information, RFC 9773), with `renew-before-days` kept as a hard floor; renewal orders name the certificate they replace |
@@ -88,6 +89,135 @@ for details.
 ## [Unreleased]
 
 _Nothing yet._
+
+---
+
+## [26.10_5] - 2026-10-19
+
+**Crate version:** 0.6.48
+
+Health checks steer routing, rate limits count each client separately, and
+Zentinel sends and protects forwarded headers. Several settings that were
+parsed and ignored now take effect. **Read the upgrade notes before deploying:**
+some of these change what your backends and clients see.
+
+### Upgrade notes
+- **Behind a load balancer? List it in `trusted-proxies`.** Zentinel now sends
+  `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`.
+  - **From an untrusted peer:** client-sent `X-Forwarded-*` headers are
+    replaced, and `Forwarded` and `X-Real-IP` are dropped.
+  - **From a listed peer:** they are kept.
+  - **Without the setting:** if your backends read the headers your load
+    balancer sets, they now see the load balancer's address instead.
+
+  ```kdl
+  listener "public" {
+      address "0.0.0.0:8080"
+      protocol "http"
+      trusted-proxies "10.0.0.0/8"
+  }
+  ```
+
+  (#515, #539)
+- **Failing health checks now take targets out of rotation.** Until now probe
+  results were never consulted: a target failing its checks kept receiving
+  traffic. When every target of an upstream fails, requests get `503`. Check
+  that your `health-check` paths answer `expected-status` (default 200), and
+  that the `Host` header they now send is accepted. (#540)
+- **Rate limits apply as configured.** Three changes can produce `429`s that
+  were not produced before:
+  - **`default-rps`:** `rate-limits { default-rps default-burst }` now limits
+    every route without a limit of its own.
+  - **`burst`:** now enforced as the token-bucket size. Its default is 10, so
+    `max-rps 100` without `burst` admits 10 at once, then 100 per second.
+  - **Per-client counting:** `client-ip` limits count each client separately.
+    Before, all clients shared one bucket.
+
+  (#518, #540, #539)
+- **Body limits apply as configured.**
+  - A route's `policies { max-body-size }` is now enforced.
+  - Exceeding a body limit answers `413` (was `500`).
+  - In a single-file configuration only `max-body-size`, `max-header-size` and
+    `max-header-count` are read: the `-bytes` spellings were silently ignored
+    and are now reported by `zentinel lint` and `zentinel test`.
+  - The shipped example configurations used the `-bytes` names; their limits
+    now take effect.
+
+  (#517, #537)
+- **Upstream error responses pass through unchanged.** A backend's own
+  4xx/5xx now reaches the client with its own `Content-Type`. Zentinel used to
+  relabel it `text/html`, or `application/json` on API routes. (#522, #537)
+- **An agent `failure-mode` typo in a multi-file configuration is a load
+  error.** Any value other than `"closed"` used to mean open, so a typo ran a
+  security agent fail-open. (#529, #538)
+
+### Fixed
+- **Health checks follow reloads, and each target is probed once per
+  interval.**
+  - **Reloads:** a `SIGHUP` reload now starts, restarts and stops health checks
+    for the upstreams it changes. Before, a check added by reload never probed,
+    and a removed one kept probing.
+  - **Double probing:** every target was probed twice per interval.
+  - **Discovery:** discovery-backed upstreams are now probed at their
+    discovered addresses.
+  - **HTTP check:** it sends `Host`, and honours `expected-status` and
+    `timeout-secs`.
+
+  (#516, #540)
+- **Rate limiting:**
+  - **Client IP:** the client IP was read before it was set, so every client
+    shared one bucket.
+  - **`global { key }`:** now honoured; it was hardcoded to the client IP.
+  - **`header:<name>` keys:** they received no headers and all shared one
+    bucket.
+
+  (#539, #540)
+- **`ip-hash` and consistent hashing spread clients; sticky sessions work.**
+  Peer selection received no client address and no headers, so every client
+  hashed to the same target and sticky-session cookies were never read.
+  (#539)
+- **Proxy-generated errors carry the right reason.** A no-route request
+  answered `404` with body `"404 Internal Server Error"` and an empty trace id.
+  It now reads `"404 Not Found"`, with a trace id. (#525, #537)
+- **A chunked request body over a route's limit reached the backend empty.**
+  It is now refused with `413`. A client sending oversized bodies could also
+  open the circuit breaker of a healthy upstream; client-caused errors no
+  longer count against the upstream. (#537)
+- **Request bodies over 64 KiB are forwarded on API-schema-validated routes
+  and MCP multiplexing.** 26.10_4 refused them with `413`; before that they
+  hung. Requires `zentinel-pingora-core` 0.9.1. (#531, #536)
+- **A listener address that is not `IP:PORT` fails `zentinel test`.**
+  `address "${PORT}"` passed the test, then panicked at start; the message now
+  says environment variables are not substituted. (#520, #539)
+- **`method "GET" "POST"` matches every listed method;** it kept only the
+  first. Hyphenated `load-balancing` names (`"least-connections"`) are
+  accepted. (#521, #538)
+- **`system { daemon #true }` daemonizes;** only the `-d` flag did. (#527,
+  #538)
+
+### Changed
+- **`zentinel test` reports settings that are being ignored**, as `zentinel
+  lint` does, without changing its exit code. **`zentinel test --strict`**
+  fails on them, for CI. (#523, #538)
+- **More values are reported when ignored:** an unknown `priority`,
+  `builtin-handler`, health-check `type` or `load-balancing` algorithm, a
+  condition run into another on one line inside `matches`, an agent block's
+  `failure-mode` that does not decide request headers, an unknown filter
+  `failure-mode`, and `system { max-connections }` (Zentinel has no client
+  connection limit). Each keeps its previous behaviour. (#521, #527, #529,
+  #538)
+- **Stale "Unwired feature" warnings removed** for listener TLS
+  `cipher-suite`, `min-version` and `max-version`, which have worked since
+  26.08_3. (#526, #538)
+- **New listener setting `trusted-proxies`** (addresses or CIDR networks). (#539)
+- **Agent circuit breakers log their name and the failure count** that opened
+  them. (#539)
+- **`zentinel-pingora-core` 0.9.1.** (#536)
+
+Still open: directory (multi-file) configurations cannot be loaded from the
+CLI (#541); several settings are still parsed and not applied (#542); Redis
+and memcached rate limiting ignore `burst`, and limiters are not rebuilt on
+reload (#543); hostname targets are not health-checked (#544).
 
 ---
 
