@@ -175,13 +175,17 @@ config/
     └── waf.kdl        # WAF agent
 ```
 
-Load with:
+Each file uses the ordinary configuration format (`routes { ... }` and so
+on); the files are read as one document by the same parser as a single file.
+A file that another file includes is read once, through the `include`.
+
+Load with `zentinel -c config/`, or:
 
 ```rust
-use zentinel_config::MultiFileLoader;
+use zentinel_config::{Config, MultiFileLoader};
 
-let loader = MultiFileLoader::new("config/");
-let config = loader.load()?;
+let config = Config::from_file("config/")?; // a directory is accepted
+let config = MultiFileLoader::new("config/").load()?;
 ```
 
 ## Default Configuration

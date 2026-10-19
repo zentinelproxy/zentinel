@@ -45,7 +45,7 @@ const VERSION: &str = concat!(
 #[command(author, version = VERSION, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
-    /// Configuration file path
+    /// Configuration file, or a directory of KDL files read as one configuration
     #[arg(short = 'c', long = "config", env = "ZENTINEL_CONFIG")]
     config: Option<String>,
 
@@ -73,7 +73,7 @@ struct Cli {
 enum Commands {
     /// Validate configuration file and exit
     Test {
-        /// Configuration file to test
+        /// Configuration file (or directory) to test
         #[arg(short = 'c', long = "config")]
         config: Option<String>,
 
@@ -84,13 +84,13 @@ enum Commands {
     },
     /// Run the proxy server (default)
     Run {
-        /// Configuration file path
+        /// Configuration file (or directory)
         #[arg(short = 'c', long = "config")]
         config: Option<String>,
     },
     /// Validate configuration with connectivity checks
     Validate {
-        /// Configuration file to validate
+        /// Configuration file (or directory) to validate
         #[arg(short = 'c', long = "config")]
         config: Option<String>,
 
@@ -108,7 +108,7 @@ enum Commands {
     },
     /// Lint configuration for best practices
     Lint {
-        /// Configuration file to lint
+        /// Configuration file (or directory) to lint
         #[arg(short = 'c', long = "config")]
         config: Option<String>,
     },
@@ -243,16 +243,38 @@ fn test_config(config_path: Option<&str>, strict: bool) -> Result<()> {
 ///
 /// This needs the source text rather than the parsed config: by the time a
 /// `Config` exists, keys no parser recognised have already been dropped. So it
-/// is only meaningful for a config read from a file; the embedded default and
-/// a directory of files yield nothing.
+/// is only meaningful for a configuration read from files, and the embedded
+/// default yields nothing.
+///
+/// Every file the configuration is read from is checked -- the files of a
+/// directory, and whatever `include` pulls in. Only the named file used to be,
+/// so `test --strict` passed a typo in any included file. When there is more
+/// than one file, each warning starts with the file it is in.
 fn ignored_settings(config_path: Option<&str>) -> Vec<String> {
     let Some(path) = config_path else {
         return Vec::new();
     };
-    match std::fs::read_to_string(path) {
-        Ok(source) => {
+    let read = || -> Result<Vec<(std::path::PathBuf, String)>> {
+        Config::source_files(path)?
+            .into_iter()
+            .map(|file| {
+                let text = std::fs::read_to_string(&file)
+                    .with_context(|| format!("Failed to read {}", file.display()))?;
+                Ok((file, text))
+            })
+            .collect()
+    };
+    match read() {
+        Ok(sources) => {
             let mut result = zentinel_config::validate::ValidationResult::new();
-            zentinel_config::validate::unknown_keys::check_unknown_keys(&source, &mut result);
+            if let [(_, source)] = sources.as_slice() {
+                zentinel_config::validate::unknown_keys::check_unknown_keys(source, &mut result);
+            } else {
+                zentinel_config::validate::unknown_keys::check_unknown_keys_in_files(
+                    &sources,
+                    &mut result,
+                );
+            }
             result.warnings.into_iter().map(|w| w.message).collect()
         }
         Err(e) => {

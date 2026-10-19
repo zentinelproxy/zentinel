@@ -328,9 +328,18 @@ pub fn check_schema_compatibility(config_version: &str) -> SchemaCompatibility {
 // ============================================================================
 
 impl Config {
-    /// Load configuration from a file
+    /// Load configuration from a file, or from a directory of KDL files.
+    ///
+    /// A directory is handed to [`Config::from_directory`]. This is the one
+    /// entry point the CLI, the proxy and reload all go through, so accepting a
+    /// directory here is what makes `zentinel -c <dir>` work everywhere at once;
+    /// it used to fail with "Is a directory" (#541).
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+
+        if path.is_dir() {
+            return Self::load_directory(path);
+        }
 
         trace!(
             path = %path.display(),
@@ -393,7 +402,51 @@ impl Config {
         }
 
         let mut visited = HashSet::new();
-        Self::expand_includes_recursive(content, source_path, &mut visited)
+        let mut files = Vec::new();
+        Self::expand_includes_recursive(content, source_path, &mut visited, &mut files)
+    }
+
+    #[cfg(feature = "runtime")]
+    fn load_directory(path: &Path) -> Result<Self> {
+        Self::from_directory(path)
+    }
+
+    #[cfg(not(feature = "runtime"))]
+    fn load_directory(path: &Path) -> Result<Self> {
+        Err(anyhow::anyhow!(
+            "'{}' is a directory; loading a directory of configuration files requires \
+             the 'runtime' feature",
+            path.display()
+        ))
+    }
+
+    /// Every file that loading `path` reads, in the order they are read.
+    ///
+    /// For a single file that is the file itself followed by whatever its
+    /// `include` directives pull in; for a directory, every file the directory
+    /// loader reads. Checks that work on KDL source text rather than on the
+    /// parsed `Config` (the unknown-key check: by the time a `Config` exists,
+    /// keys no parser reads are gone) need this list, or they only ever see the
+    /// entry file and miss everything included.
+    #[cfg(feature = "runtime")]
+    pub fn source_files(path: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        let path = path.as_ref();
+        if path.is_dir() {
+            return Ok(MultiFileLoader::new(path).read()?.files);
+        }
+        let is_kdl = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_none_or(|ext| ext == "kdl");
+        if !is_kdl {
+            return Ok(vec![path.to_path_buf()]);
+        }
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config file: {:?}", path))?;
+        let mut visited = HashSet::new();
+        let mut files = Vec::new();
+        Self::expand_includes_recursive(&content, path, &mut visited, &mut files)?;
+        Ok(files)
     }
 
     /// Fallback when the `runtime` feature is not enabled.
@@ -421,11 +474,14 @@ impl Config {
     /// Parses the KDL content, replaces `include` nodes with the contents of
     /// the referenced files, and returns the merged KDL string. Uses a visited
     /// set of canonical paths to detect and prevent circular includes.
+    ///
+    /// `files` receives each file read, in order, as the path it was reached by.
     #[cfg(feature = "runtime")]
-    fn expand_includes_recursive(
+    pub(crate) fn expand_includes_recursive(
         content: &str,
         source_path: &Path,
         visited: &mut HashSet<PathBuf>,
+        files: &mut Vec<PathBuf>,
     ) -> Result<String> {
         let canonical = source_path
             .canonicalize()
@@ -437,6 +493,7 @@ impl Config {
                 source_path.display()
             ));
         }
+        files.push(source_path.to_path_buf());
 
         let base_dir = canonical.parent().ok_or_else(|| {
             anyhow::anyhow!(
@@ -517,7 +574,7 @@ impl Config {
                     })?;
 
                     let expanded =
-                        Self::expand_includes_recursive(&included_content, &path, visited)?;
+                        Self::expand_includes_recursive(&included_content, &path, visited, files)?;
                     output.push_str(&expanded);
                     output.push('\n');
                 }

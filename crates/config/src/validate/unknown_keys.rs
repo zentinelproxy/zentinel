@@ -533,9 +533,41 @@ pub fn check_unknown_keys(kdl_source: &str, result: &mut ValidationResult) {
         return;
     };
 
-    let context = Context::of(&document);
+    let context = Context::of([&document]);
     for node in document.nodes() {
         walk(node, None, &context, result);
+    }
+}
+
+/// [`check_unknown_keys`] for a configuration read from several files.
+///
+/// Each file is checked on its own text, so a run-together line is found where
+/// it was written, and each warning names its file. What a check needs to know
+/// about the rest of the configuration (which filters use an agent) comes from
+/// all of them, since that can sit in another file. Checking only the entry
+/// file, as `test --strict` once did, passed any typo in an included file.
+pub fn check_unknown_keys_in_files(
+    sources: &[(std::path::PathBuf, String)],
+    result: &mut ValidationResult,
+) {
+    let documents: Vec<_> = sources
+        .iter()
+        .filter_map(|(path, text)| Some((path, text.parse::<kdl::KdlDocument>().ok()?)))
+        .collect();
+
+    let context = Context::of(documents.iter().map(|(_, document)| document));
+    for (path, document) in &documents {
+        let mut found = ValidationResult::new();
+        for node in document.nodes() {
+            walk(node, None, &context, &mut found);
+        }
+        for warning in found.warnings {
+            result.add_warning(ValidationWarning::new(format!(
+                "{}: {}",
+                path.display(),
+                warning.message
+            )));
+        }
     }
 }
 
@@ -547,12 +579,14 @@ struct Context {
 }
 
 impl Context {
-    fn of(document: &kdl::KdlDocument) -> Self {
+    fn of<'a>(documents: impl IntoIterator<Item = &'a kdl::KdlDocument>) -> Self {
         let mut context = Context {
             filters_without_failure_mode: Default::default(),
         };
-        for node in document.nodes() {
-            context.collect(node);
+        for document in documents {
+            for node in document.nodes() {
+                context.collect(node);
+            }
         }
         context
     }
@@ -2310,6 +2344,44 @@ mod tests {
         assert_eq!(warnings_for(&kdl), Vec::<String>::new());
         // Neither is an agent without a failure-mode of its own.
         assert_eq!(warnings_for(&agent_config("", "")), Vec::<String>::new());
+    }
+
+    /// #541: a configuration split over files is checked file by file, each
+    /// warning naming its file, with what one check needs to know about the
+    /// rest (the filters using an agent) taken from every file.
+    #[test]
+    fn several_files_are_each_checked_and_named() {
+        let sources = vec![
+            (
+                std::path::PathBuf::from("conf/agents.kdl"),
+                "agents {\n    agent \"waf\" {\n        unix-socket \"/tmp/waf.sock\"\n        failure-mode \"open\"\n    }\n}\n".to_string(),
+            ),
+            (
+                std::path::PathBuf::from("conf/filters.kdl"),
+                "filters {\n    filter \"waf-filter\" {\n        type \"agent\"\n        agent \"waf\"\n    }\n}\n".to_string(),
+            ),
+            (
+                std::path::PathBuf::from("conf/limits.kdl"),
+                "limits {\n    max-body-size-bytes 1024\n}\n".to_string(),
+            ),
+        ];
+        let mut result = ValidationResult::new();
+        check_unknown_keys_in_files(&sources, &mut result);
+        let warnings: Vec<_> = result.warnings.into_iter().map(|w| w.message).collect();
+
+        assert_eq!(warnings.len(), 2, "{warnings:#?}");
+        assert!(
+            warnings[0].starts_with("conf/agents.kdl: ")
+                && warnings[0].contains("filter 'waf-filter'"),
+            "{}",
+            warnings[0]
+        );
+        assert!(
+            warnings[1].starts_with("conf/limits.kdl: ")
+                && warnings[1].contains("max-body-size-bytes"),
+            "{}",
+            warnings[1]
+        );
     }
 
     /// `fail-open` is accepted on the agent block, not on the filter, where

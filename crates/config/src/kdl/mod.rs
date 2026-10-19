@@ -30,7 +30,7 @@ pub use helpers::{
 pub use filters::parse_filter_definitions;
 pub use routes::parse_routes;
 pub use server::{parse_listeners, parse_server_config};
-pub use upstreams::{parse_upstream, parse_upstreams};
+pub use upstreams::parse_upstreams;
 
 use anyhow::Result;
 use std::collections::HashMap;

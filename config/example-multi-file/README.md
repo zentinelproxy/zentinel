@@ -16,11 +16,31 @@ example-multi-file/
     └── static.kdl        catch-all route
 ```
 
-Validate the whole tree:
+Validate the whole tree, through its entry point or as a directory:
 
 ```bash
-zentinel test --config config/example-multi-file/zentinel.kdl
+zentinel test --strict --config config/example-multi-file/zentinel.kdl
+zentinel test --strict --config config/example-multi-file
 ```
+
+Both read the same files. `--strict` checks every one of them for settings
+that are being ignored, and names the file each finding is in.
+
+## Loading a directory
+
+`zentinel -c <dir>` (or `ZENTINEL_CONFIG=<dir>`) reads every `*.kdl` file
+under the directory, recursively and in path order, as one configuration.
+`run`, `test`, `lint`, `validate` and reloads (SIGHUP, and `auto-reload`,
+which then watches the whole directory) all accept one.
+
+- A file that another file of the directory includes is read once, through
+  the `include`. This tree therefore loads the same either way; a directory of
+  standalone files with no `include` at all (`conf.d` style) works too.
+- Hidden files and directories (editor lock files, the `..data` links of a
+  Kubernetes ConfigMap mount), `*.example.*` and `*.bak` files and
+  `environments/` are skipped.
+- The files use the ordinary configuration format. Bare top-level `route` or
+  `server` nodes are rejected, as they are in a single file.
 
 ## How includes work
 
@@ -33,8 +53,8 @@ zentinel test --config config/example-multi-file/zentinel.kdl
   rejected.
 - A glob matching no files warns rather than failing, so an empty
   `routes/` directory does not break startup.
-- `include` only works when loading from a file. Parsing a KDL *string*
-  rejects it, since there is no base path to resolve against.
+- `include` only works when loading from a file or a directory. Parsing a
+  KDL *string* rejects it, since there is no base path to resolve against.
 
 ## Ordering
 

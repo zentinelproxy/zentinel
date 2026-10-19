@@ -68,8 +68,8 @@ fn examples_directory_is_not_empty() {
 
 #[test]
 fn multi_file_example_loads_and_validates() {
-    // The `include` directive only works when loading from a file, so this
-    // tree is checked through its entry point rather than file by file.
+    // Checked through its entry point here, and as a directory below: the
+    // files are fragments, so they cannot be checked one by one.
     let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../config/example-multi-file/zentinel.kdl")
         .canonicalize()
@@ -92,6 +92,57 @@ fn multi_file_example_loads_and_validates() {
         !config.listeners.is_empty(),
         "includes contributed no listeners"
     );
+}
+
+/// #541: the example is also a directory configuration, `zentinel -c
+/// config/example-multi-file`. Loaded that way it must read exactly what its
+/// entry point reads: each included file once, nothing dropped.
+#[test]
+fn multi_file_example_loads_as_a_directory() {
+    let dir = repo_root().join("config/example-multi-file");
+
+    let from_dir = Config::from_file(&dir)
+        .unwrap_or_else(|e| panic!("multi-file example directory failed to load: {e:#}"));
+    from_dir
+        .validate()
+        .unwrap_or_else(|e| panic!("multi-file example directory failed to validate: {e}"));
+    let from_entry = Config::from_file(dir.join("zentinel.kdl")).unwrap();
+
+    let ids = |config: &Config| {
+        let mut routes: Vec<_> = config.routes.iter().map(|r| r.id.clone()).collect();
+        let mut upstreams: Vec<_> = config.upstreams.keys().cloned().collect();
+        let mut listeners: Vec<_> = config.listeners.iter().map(|l| l.id.clone()).collect();
+        routes.sort();
+        upstreams.sort();
+        listeners.sort();
+        (routes, upstreams, listeners)
+    };
+    assert_eq!(ids(&from_dir), ids(&from_entry));
+    assert!(
+        from_dir.listeners.iter().any(|l| l.tls.is_some()),
+        "the https listener's TLS settings were dropped"
+    );
+    assert_eq!(from_dir.limits.max_header_count, 100);
+}
+
+/// `test --strict` on the example must have nothing to report, whether given
+/// the directory or its entry point, in any of the files.
+#[test]
+fn multi_file_example_has_no_ignored_settings() {
+    let dir = repo_root().join("config/example-multi-file");
+    let files = Config::source_files(&dir).expect("example files should be listed");
+    assert_eq!(files.len(), 6, "{files:#?}");
+
+    let sources: Vec<_> = files
+        .into_iter()
+        .map(|f| {
+            let text = std::fs::read_to_string(&f).unwrap();
+            (f, text)
+        })
+        .collect();
+    let mut result = zentinel_config::validate::ValidationResult::new();
+    zentinel_config::validate::unknown_keys::check_unknown_keys_in_files(&sources, &mut result);
+    assert!(result.warnings.is_empty(), "{:#?}", result.warnings);
 }
 
 #[test]

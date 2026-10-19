@@ -4,8 +4,9 @@
 // configuration can be split by concern. Each included file contains
 // ordinary top-level blocks; they are merged into one configuration.
 //
-// Validate the whole tree with:
+// Validate the whole tree with either of:
 //     zentinel test --config config/example-multi-file/zentinel.kdl
+//     zentinel test --config config/example-multi-file
 
 schema-version "1.0"
 

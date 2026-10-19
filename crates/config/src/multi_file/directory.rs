@@ -3,7 +3,7 @@
 //! This module provides `ConfigDirectory` for loading configuration
 //! from a structured directory layout.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
 use crate::Config;
@@ -48,38 +48,26 @@ impl ConfigDirectory {
 
     /// Load configuration using convention-based structure.
     ///
-    /// Optionally applies environment-specific overrides.
+    /// Every file of the directory is read, as by [`MultiFileLoader`]; the
+    /// layout above is a convention, not a filter. `environments/` is the
+    /// exception: only the chosen environment's file is read, and last, so
+    /// that its `system`, `limits` and other single blocks replace the base
+    /// ones.
     pub fn load(&self, environment: Option<&str>) -> Result<Config> {
         let mut loader = MultiFileLoader::new(&self.root);
 
-        // Load main configuration
-        if self.root.join("zentinel.kdl").exists() {
-            loader = loader.with_include("zentinel.kdl");
-        }
-
-        // Load from subdirectories
-        let subdirs = ["listeners", "routes", "upstreams", "agents"];
-        for subdir in subdirs {
-            let dir = self.root.join(subdir);
-            if dir.exists() {
-                loader = loader.with_include(format!("{}/*.kdl", subdir));
-            }
-        }
-
-        // Load environment-specific overrides
         if let Some(env) = environment {
-            let env_file = format!("environments/{}.kdl", env);
-            let env_path = self.root.join(&env_file);
-            if env_path.exists() {
-                loader = loader.with_include(env_file);
+            let env_path = self.root.join("environments").join(format!("{env}.kdl"));
+            if !env_path.is_file() {
+                // Asking for an environment that has no file used to load the
+                // base configuration as if nothing had been asked.
+                return Err(anyhow!(
+                    "No overrides for environment '{env}': {:?} does not exist",
+                    env_path
+                ));
             }
+            loader = loader.with_overlay(env_path);
         }
-
-        // Exclude example and backup files
-        loader = loader
-            .with_exclude("*.example.kdl")
-            .with_exclude("*.bak")
-            .with_exclude("*~");
 
         loader.load()
     }

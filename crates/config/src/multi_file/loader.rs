@@ -1,24 +1,45 @@
 //! Multi-file configuration loader.
 //!
-//! This module provides `MultiFileLoader` for loading and merging
-//! configurations from multiple KDL files.
+//! This module provides `MultiFileLoader` for loading a configuration that is
+//! split across the KDL files of a directory.
+//!
+//! Every file is written in the ordinary configuration format -- `system { }`,
+//! `listeners { }`, `routes { }` and so on -- and the files are read as one
+//! document by the same parser that reads a single file. This loader used to
+//! have a parser of its own for a different dialect (bare top-level `route`,
+//! `listener`, `server` nodes) that read a fraction of the settings: listener
+//! TLS, route policies, filters, matches other than a path were all dropped
+//! without a word, and the blocks the documentation and the shipped example
+//! use (`routes { }`, `system { }`) were skipped as unknown. Sharing the
+//! single-file parser means a directory reads exactly what the same text in
+//! one file would, and rejects what it would reject.
 
 use anyhow::{anyhow, Context, Result};
 use glob::glob;
-use kdl::KdlDocument;
-use std::collections::HashSet;
-use std::fs;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use crate::Config;
 
-use super::builder::{ConfigBuilder, PartialConfig};
+/// Directory holding per-environment overrides.
+///
+/// Its files are alternatives to one another (`staging.kdl`,
+/// `production.kdl`), so loading all of them would apply every environment at
+/// once, the last one silently winning. They are only read when one is chosen,
+/// through [`super::ConfigDirectory`].
+const ENVIRONMENTS_DIR: &str = "environments";
 
 /// Multi-file configuration loader.
 ///
 /// Provides a builder-style API for configuring how configuration files
 /// are discovered and loaded from a directory.
+///
+/// Files are found recursively and read in path order. A file that another
+/// file in the directory pulls in with `include` is read once, through that
+/// `include`, rather than a second time on its own -- so a directory with a
+/// `zentinel.kdl` that includes `routes/*.kdl` (the documented layout) and a
+/// directory of standalone fragments (`conf.d` style) both load.
 ///
 /// # Example
 ///
@@ -35,17 +56,23 @@ pub struct MultiFileLoader {
     base_dir: PathBuf,
     /// File patterns to include
     include_patterns: Vec<String>,
-    /// File patterns to exclude
+    /// File patterns to exclude, matched against the file name and against
+    /// the path relative to `base_dir`
     exclude_patterns: Vec<String>,
     /// Enable recursive directory scanning
     recursive: bool,
-    /// Allow duplicate definitions (last wins)
-    #[allow(dead_code)]
-    allow_duplicates: bool,
     /// Strict mode - fail on warnings
     strict: bool,
-    /// Loaded files tracking
-    loaded_files: HashSet<PathBuf>,
+    /// Files read after everything else, in order (environment overrides)
+    overlays: Vec<PathBuf>,
+}
+
+/// The files of a directory, read as one document.
+pub(crate) struct DirectorySources {
+    /// KDL text of every file, includes expanded, in load order
+    pub kdl: String,
+    /// Every file read, in load order
+    pub files: Vec<PathBuf>,
 }
 
 impl MultiFileLoader {
@@ -56,9 +83,8 @@ impl MultiFileLoader {
             include_patterns: vec!["*.kdl".to_string()],
             exclude_patterns: vec![],
             recursive: true,
-            allow_duplicates: false,
             strict: false,
-            loaded_files: HashSet::new(),
+            overlays: vec![],
         }
     }
 
@@ -80,15 +106,16 @@ impl MultiFileLoader {
         self
     }
 
-    /// Allow duplicate definitions.
-    pub fn allow_duplicates(mut self, allow: bool) -> Self {
-        self.allow_duplicates = allow;
-        self
-    }
-
     /// Enable strict mode.
     pub fn strict(mut self, strict: bool) -> Self {
         self.strict = strict;
+        self
+    }
+
+    /// Read `file` after every other file, so its singleton blocks
+    /// (`system`, `limits`, ...) replace the ones before it.
+    pub(crate) fn with_overlay(mut self, file: impl Into<PathBuf>) -> Self {
+        self.overlays.push(file.into());
         self
     }
 
@@ -96,27 +123,24 @@ impl MultiFileLoader {
     pub fn load(&mut self) -> Result<Config> {
         info!("Loading configuration from directory: {:?}", self.base_dir);
 
-        // Find all configuration files
-        let files = self.find_config_files()?;
+        let sources = self.read()?;
+        let config = Config::from_kdl(&sources.kdl).with_context(|| {
+            format!(
+                "Failed to load configuration directory {:?} ({} files)",
+                self.base_dir,
+                sources.files.len()
+            )
+        })?;
 
-        if files.is_empty() {
-            return Err(anyhow!(
-                "No configuration files found in {:?}",
-                self.base_dir
-            ));
-        }
-
-        info!("Found {} configuration files", files.len());
-
-        // Load and merge configurations
-        let mut merged = ConfigBuilder::new();
-
-        for file in files {
-            self.load_file_recursive(&file, &mut merged)?;
-        }
-
-        // Build final configuration
-        let config = merged.build()?;
+        info!(
+            path = %self.base_dir.display(),
+            files = sources.files.len(),
+            routes = config.routes.len(),
+            upstreams = config.upstreams.len(),
+            agents = config.agents.len(),
+            listeners = config.listeners.len(),
+            "Configuration loaded successfully"
+        );
 
         // Validate if in strict mode
         if self.strict {
@@ -128,59 +152,65 @@ impl MultiFileLoader {
         Ok(config)
     }
 
-    /// Load a file and recursively process its includes.
-    fn load_file_recursive(&mut self, path: &Path, merged: &mut ConfigBuilder) -> Result<()> {
-        // Canonicalize path to detect circular includes
-        let canonical = path
-            .canonicalize()
-            .with_context(|| format!("Failed to resolve path: {:?}", path))?;
+    /// Read every file of the directory into one KDL document.
+    pub(crate) fn read(&self) -> Result<DirectorySources> {
+        let candidates = self.find_config_files()?;
 
-        // Check for circular includes
-        if self.loaded_files.contains(&canonical) {
-            debug!("Skipping already loaded file: {:?}", canonical);
-            return Ok(());
+        if candidates.is_empty() {
+            return Err(anyhow!(
+                "No configuration files found in {:?}",
+                self.base_dir
+            ));
         }
 
-        debug!("Loading configuration from: {:?}", path);
-
-        // Mark as loaded before processing to prevent circular includes
-        self.loaded_files.insert(canonical.clone());
-
-        // Load and parse the file
-        let config = self.load_file(path)?;
-
-        // Process includes first (depth-first)
-        for include_path in &config.includes {
-            let resolved = self.resolve_include_path(path, include_path)?;
-
-            if !resolved.exists() {
-                warn!(
-                    "Include file not found: {:?} (referenced from {:?})",
-                    resolved, path
-                );
-                continue;
+        // A file included by another file of the directory is not loaded on
+        // its own as well: that would define its routes twice (a duplicate ID
+        // error) or, for blocks such as `limits`, apply it twice in an order
+        // nobody chose.
+        let mut included = HashSet::new();
+        for file in &candidates {
+            let (_, files) = expand(file)?;
+            for reached in files.iter().skip(1) {
+                included.insert(canonical(reached)?);
             }
-
-            self.load_file_recursive(&resolved, merged)?;
         }
 
-        // Merge this file's config
-        merged.merge(config)?;
-
-        Ok(())
-    }
-
-    /// Resolve an include path relative to the including file.
-    fn resolve_include_path(&self, from_file: &Path, include: &Path) -> Result<PathBuf> {
-        if include.is_absolute() {
-            Ok(include.to_path_buf())
-        } else {
-            // Relative to the directory containing the including file
-            let base_dir = from_file
-                .parent()
-                .ok_or_else(|| anyhow!("Cannot determine parent directory of {:?}", from_file))?;
-            Ok(base_dir.join(include))
+        let mut roots = Vec::new();
+        for file in candidates {
+            if included.contains(&canonical(&file)?) {
+                debug!(file = %file.display(), "Read through an include, not on its own");
+            } else {
+                roots.push(file);
+            }
         }
+        roots.extend(self.overlays.iter().cloned());
+
+        debug!(entry_files = roots.len(), "Reading configuration directory");
+
+        let mut kdl = String::new();
+        let mut files = Vec::new();
+        // Which root reached each file: two roots including the same file
+        // would read it twice.
+        let mut read_by: HashMap<PathBuf, PathBuf> = HashMap::new();
+        for root in roots {
+            let (text, reached) = expand(&root)?;
+            for file in &reached {
+                if let Some(other) = read_by.insert(canonical(file)?, root.clone()) {
+                    return Err(anyhow!(
+                        "{:?} is included by both {:?} and {:?}; each file of a \
+                         configuration directory may be read only once",
+                        file,
+                        other,
+                        root
+                    ));
+                }
+            }
+            kdl.push_str(&text);
+            kdl.push('\n');
+            files.extend(reached);
+        }
+
+        Ok(DirectorySources { kdl, files })
     }
 
     /// Find all configuration files matching patterns.
@@ -230,31 +260,64 @@ impl MultiFileLoader {
 
     /// Check if a file should be excluded.
     fn should_exclude(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
+        // Only the part below the base directory counts: the base directory
+        // itself may well sit under a hidden one (`~/.config/zentinel`).
+        let relative = path
+            .strip_prefix(&self.base_dir)
+            .ok()
+            .or_else(|| path.file_name().map(Path::new))
+            .unwrap_or(path);
 
+        // Hidden files and directories: editor lock files (`.#zentinel.kdl`),
+        // `.git`, and the `..data` symlink farm of a Kubernetes ConfigMap
+        // mount, whose files would otherwise be read twice.
+        if relative.components().any(|c| {
+            matches!(c, std::path::Component::Normal(name)
+                if name.to_string_lossy().starts_with('.'))
+        }) {
+            return true;
+        }
+
+        if relative
+            .components()
+            .next()
+            .is_some_and(|c| c.as_os_str() == ENVIRONMENTS_DIR)
+        {
+            return true;
+        }
+
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        // Patterns are globs ("*.example.kdl"). They were once compared as
+        // plain substrings, which no glob pattern ever matched.
         for pattern in &self.exclude_patterns {
-            if path_str.contains(pattern) {
+            let matches = glob::Pattern::new(pattern)
+                .map(|p| p.matches(&file_name) || p.matches_path(relative))
+                .unwrap_or(false);
+            if matches || file_name == *pattern {
                 return true;
             }
         }
 
         // Common exclusions
-        if path_str.contains(".example.") || path_str.contains(".bak") || path_str.ends_with("~") {
-            return true;
-        }
-
-        false
+        file_name.contains(".example.") || file_name.contains(".bak") || file_name.ends_with('~')
     }
+}
 
-    /// Load a single configuration file.
-    fn load_file(&self, path: &Path) -> Result<PartialConfig> {
-        let content =
-            fs::read_to_string(path).with_context(|| format!("Failed to read file: {:?}", path))?;
+/// Read a file with its includes expanded, and every file that took.
+fn expand(path: &Path) -> Result<(String, Vec<PathBuf>)> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file: {:?}", path))?;
+    let mut visited = HashSet::new();
+    let mut files = Vec::new();
+    let text = Config::expand_includes_recursive(&content, path, &mut visited, &mut files)?;
+    Ok((text, files))
+}
 
-        let doc: KdlDocument = content
-            .parse()
-            .with_context(|| format!("Failed to parse KDL file: {:?}", path))?;
-
-        PartialConfig::from_kdl(doc, path)
-    }
+fn canonical(path: &Path) -> Result<PathBuf> {
+    path.canonicalize()
+        .with_context(|| format!("Failed to resolve path: {:?}", path))
 }

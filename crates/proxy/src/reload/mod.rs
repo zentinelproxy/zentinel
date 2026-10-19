@@ -245,9 +245,21 @@ impl ConfigManager {
                 source: None,
             })?;
 
+        // A directory configuration (`-c <dir>`) is every file under it, so
+        // the directory itself is what to watch. Watching its parent, as for a
+        // file, would watch everything next to it -- all of `/etc`.
+        let is_directory = config_path.is_dir();
+
         // Watch the config file itself
         watcher
-            .watch(&config_path, RecursiveMode::NonRecursive)
+            .watch(
+                &config_path,
+                if is_directory {
+                    RecursiveMode::Recursive
+                } else {
+                    RecursiveMode::NonRecursive
+                },
+            )
             .map_err(|e| ZentinelError::Config {
                 message: format!("Failed to watch config file: {}", e),
                 source: None,
@@ -256,7 +268,7 @@ impl ConfigManager {
         // Also watch the config file's parent directory to catch included files.
         // Multi-file configs use `include "routes/*.kdl"` — those files live
         // alongside or under the main config directory.
-        if let Some(parent) = config_path.parent() {
+        if let Some(parent) = config_path.parent().filter(|_| !is_directory) {
             if let Err(e) = watcher.watch(parent, RecursiveMode::Recursive) {
                 warn!(
                     path = %parent.display(),
@@ -319,12 +331,49 @@ impl ConfigManager {
                 f.read_exact(&mut buf).ok()?;
                 Some((len, buf))
             };
-            let mut last_sig = content_sig(&poll_path);
+            // For a directory: every KDL file's path, size and modification
+            // time. Opening the directory as a file never yields a signature,
+            // so without this the poll could never see a change.
+            let directory_sig = |p: &std::path::Path| -> Option<(u64, Vec<u8>)> {
+                let mut entries = Vec::new();
+                let mut pending = vec![p.to_path_buf()];
+                while let Some(dir) = pending.pop() {
+                    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+                        let path = entry.path();
+                        let meta = std::fs::metadata(&path).ok()?;
+                        if meta.is_dir() {
+                            pending.push(path);
+                        } else if path.extension().is_some_and(|ext| ext == "kdl") {
+                            let modified = meta
+                                .modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .unwrap_or_default();
+                            entries.push(format!(
+                                "{}\0{}\0{}",
+                                path.display(),
+                                meta.len(),
+                                modified.as_nanos()
+                            ));
+                        }
+                    }
+                }
+                entries.sort();
+                Some((entries.len() as u64, entries.join("\n").into_bytes()))
+            };
+            let signature = |p: &std::path::Path| {
+                if p.is_dir() {
+                    directory_sig(p)
+                } else {
+                    content_sig(p)
+                }
+            };
+            let mut last_sig = signature(&poll_path);
 
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
 
-                let current_sig = content_sig(&poll_path);
+                let current_sig = signature(&poll_path);
                 if current_sig != last_sig {
                     last_sig = current_sig;
                     debug!("Config file content changed (poll fallback), triggering reload");
@@ -1040,6 +1089,92 @@ routes {
             1,
             "Successful reload should be recorded"
         );
+    }
+
+    /// A configuration directory split the way `config/example-multi-file`
+    /// is: an entry file including the routes, which live in their own file.
+    fn write_config_directory(dir: &Path, route_prefix: &str) {
+        std::fs::create_dir_all(dir.join("routes")).unwrap();
+        std::fs::write(
+            dir.join("zentinel.kdl"),
+            r#"
+system {
+    worker-threads 1
+}
+listeners {
+    listener "http" {
+        address "127.0.0.1:8080"
+        protocol "http"
+    }
+}
+upstreams {
+    upstream "backend" {
+        target "127.0.0.1:3000"
+    }
+}
+include "routes/*.kdl"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("routes/api.kdl"),
+            format!(
+                "routes {{\n    route \"api\" {{\n        matches {{\n            path-prefix \"{route_prefix}\"\n        }}\n        upstream \"backend\"\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn api_prefix(manager: &ConfigManager) -> String {
+        format!("{:?}", manager.current().routes[0].matches)
+    }
+
+    /// #541: reloading (SIGHUP, the admin endpoint) a configuration loaded
+    /// from a directory re-reads every file of it.
+    #[tokio::test]
+    async fn reload_rereads_a_configuration_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().join("conf");
+        write_config_directory(&dir, "/v1/");
+        let initial = Config::from_file(&dir).unwrap();
+        let manager = ConfigManager::new(&dir, initial).await.unwrap();
+        assert!(api_prefix(&manager).contains("/v1/"));
+
+        write_config_directory(&dir, "/v2/");
+        manager
+            .reload(ReloadTrigger::Signal)
+            .await
+            .expect("reloading a directory should succeed");
+
+        assert!(
+            api_prefix(&manager).contains("/v2/"),
+            "{}",
+            api_prefix(&manager)
+        );
+    }
+
+    /// #541: auto-reload watches the directory, so editing any file in it
+    /// takes effect.
+    #[tokio::test]
+    async fn auto_reload_watches_a_configuration_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().join("conf");
+        write_config_directory(&dir, "/v1/");
+        let initial = Config::from_file(&dir).unwrap();
+        let manager = ConfigManager::new(&dir, initial).await.unwrap();
+        manager.start_watching().await.unwrap();
+
+        write_config_directory(&dir, "/v2/");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !api_prefix(&manager).contains("/v2/") {
+            assert!(
+                Instant::now() < deadline,
+                "a change in the directory was not picked up: {}",
+                api_prefix(&manager)
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     // ========================================================================

@@ -1,13 +1,16 @@
 //! Multi-file configuration support for Zentinel.
 //!
-//! This module provides the ability to load and merge configurations from
-//! multiple KDL files, supporting modular configuration management.
+//! This module loads one configuration from the KDL files of a directory. It
+//! is what `zentinel -c <dir>` uses: [`Config::from_file`] hands directories
+//! here.
 //!
 //! # Features
 //!
-//! - Load configuration from multiple files in a directory
-//! - Glob-based file pattern matching
-//! - Convention-based directory structure support
+//! - Load configuration from every `*.kdl` file in a directory, recursively
+//! - Files use the ordinary configuration format and are read by the same
+//!   parser as a single file, so a file can be moved into a directory as is
+//! - `include` directives inside the files work as in a single file; a file
+//!   that is included is not read a second time on its own
 //! - Environment-specific overrides
 //! - Duplicate detection and validation
 //!
@@ -35,13 +38,11 @@
 //!   ├── routes/              # Route definitions
 //!   ├── upstreams/           # Upstream definitions
 //!   ├── agents/              # Agent configurations
-//!   └── environments/        # Environment overrides
+//!   └── environments/        # Environment overrides (read only when chosen)
 //! ```
 
-mod builder;
 mod directory;
 mod loader;
-mod parsers;
 
 pub use directory::ConfigDirectory;
 pub use loader::MultiFileLoader;
@@ -55,7 +56,7 @@ use crate::Config;
 impl Config {
     /// Load configuration from a directory.
     ///
-    /// Scans the directory for KDL files and merges them into a single configuration.
+    /// Reads every KDL file of the directory as one configuration.
     pub fn from_directory(path: impl AsRef<Path>) -> Result<Self> {
         let mut loader = MultiFileLoader::new(path);
         loader.load()
@@ -112,294 +113,278 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_multi_file_loading() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path();
+    const SYSTEM: &str = "system {\n    worker-threads 2\n}\n";
+    const LISTENERS: &str =
+        "listeners {\n    listener \"http\" {\n        address \"127.0.0.1:8080\"\n        protocol \"http\"\n    }\n}\n";
+    const UPSTREAMS: &str =
+        "upstreams {\n    upstream \"backend\" {\n        target \"127.0.0.1:9000\"\n    }\n}\n";
 
-        // Create test configuration files with required server block
-        fs::write(
-            config_dir.join("main.kdl"),
-            r#"
-            server {
-                worker-threads 2
-                max-connections 1000
-            }
-            limits {
-                max-header-size 8192
-            }
-            "#,
-        )
-        .unwrap();
-
-        fs::create_dir(config_dir.join("routes")).unwrap();
-        fs::write(
-            config_dir.join("routes/api.kdl"),
-            r#"
-            route "api" {
-                path "/api/*"
-                upstream "backend"
-            }
-            "#,
-        )
-        .unwrap();
-
-        // Load configuration
-        let mut loader = MultiFileLoader::new(config_dir);
-        let config = loader.load();
-
-        assert!(config.is_ok(), "Config load failed: {:?}", config.err());
+    fn write(dir: &Path, name: &str, content: &str) {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
     }
 
-    #[test]
-    fn test_duplicate_detection() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path();
-
-        // Create files with duplicate routes
-        fs::write(
-            config_dir.join("routes1.kdl"),
-            r#"
-            route "api" {
-                path "/api/*"
-            }
-            "#,
+    fn route(id: &str, prefix: &str) -> String {
+        format!(
+            "routes {{\n    route \"{id}\" {{\n        matches {{\n            path-prefix \"{prefix}\"\n        }}\n        upstream \"backend\"\n    }}\n}}\n"
         )
-        .unwrap();
-
-        fs::write(
-            config_dir.join("routes2.kdl"),
-            r#"
-            route "api" {
-                path "/api/v2/*"
-            }
-            "#,
-        )
-        .unwrap();
-
-        let mut loader = MultiFileLoader::new(config_dir);
-        let result = loader.load();
-
-        // Should fail due to duplicate route ID
-        assert!(result.is_err());
     }
 
+    /// The layout the documentation and `config/example-multi-file` use: an
+    /// entry file that includes the rest. Each file must be read once, through
+    /// its include, and not again on its own.
     #[test]
-    fn test_environment_overrides() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path();
+    fn entry_file_with_includes_reads_each_file_once() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(
+            dir,
+            "zentinel.kdl",
+            &format!("{SYSTEM}include \"listeners/*.kdl\"\ninclude \"upstreams/*.kdl\"\ninclude \"routes/*.kdl\"\n"),
+        );
+        write(dir, "listeners/http.kdl", LISTENERS);
+        write(dir, "upstreams/backends.kdl", UPSTREAMS);
+        write(dir, "routes/api.kdl", &route("api", "/api"));
+        write(dir, "routes/web.kdl", &route("web", "/"));
 
-        // Create main config with required server block
-        fs::write(
-            config_dir.join("zentinel.kdl"),
-            r#"
-            server {
-                worker-threads 2
-                max-connections 1000
-            }
-            limits {
-                max-connections 1000
-            }
-            "#,
-        )
-        .unwrap();
-
-        // Create environment override
-        fs::create_dir(config_dir.join("environments")).unwrap();
-        fs::write(
-            config_dir.join("environments/production.kdl"),
-            r#"
-            limits {
-                max-connections 10000
-            }
-            "#,
-        )
-        .unwrap();
-
-        // Load with production environment
-        let config_dir = ConfigDirectory::new(config_dir);
-        let config = config_dir.load(Some("production"));
-
-        assert!(config.is_ok(), "Config load failed: {:?}", config.err());
-        // In a real implementation, we'd verify the override was applied
+        let config = Config::from_directory(dir).expect("directory should load");
+        assert_eq!(config.listeners.len(), 1);
+        assert_eq!(config.upstreams.len(), 1);
+        let mut ids: Vec<_> = config.routes.iter().map(|r| r.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["api", "web"]);
     }
 
+    /// A `conf.d` directory: fragments that know nothing of each other.
     #[test]
-    fn test_include_processing() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path();
+    fn standalone_fragments_are_merged() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(dir, "00-system.kdl", SYSTEM);
+        write(dir, "10-listeners.kdl", LISTENERS);
+        write(dir, "20-upstreams.kdl", UPSTREAMS);
+        write(dir, "routes/api.kdl", &route("api", "/api"));
 
-        // Create shared routes file
-        fs::write(
-            config_dir.join("routes.kdl"),
-            r#"
-            route "api" {
-                path "/api/*"
-                upstream "backend"
-            }
-            "#,
-        )
-        .unwrap();
-
-        // Create main config that includes routes
-        fs::write(
-            config_dir.join("main.kdl"),
-            r#"
-            include "routes.kdl"
-
-            server {
-                worker-threads 2
-                max-connections 1000
-            }
-
-            upstream "backend" {
-                address "127.0.0.1:8080"
-            }
-            "#,
-        )
-        .unwrap();
-
-        // Load configuration
-        let mut loader = MultiFileLoader::new(config_dir);
-        let config = loader.load();
-
-        assert!(config.is_ok(), "Config load failed: {:?}", config.err());
-        let config = config.unwrap();
-
-        // Verify the included route was loaded
+        let config = Config::from_directory(dir).expect("directory should load");
         assert_eq!(config.routes.len(), 1);
-        assert_eq!(config.routes[0].id, "api");
+        assert_eq!(config.routes[0].upstream.as_deref(), Some("backend"));
+    }
+
+    /// The loader used to parse with a reduced parser of its own, which
+    /// dropped listener TLS, route policies and filters without a word. The
+    /// same text must read the same from a directory as from one file.
+    #[test]
+    fn a_directory_reads_what_a_single_file_reads() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let text = format!(
+            "{SYSTEM}{UPSTREAMS}\
+             listeners {{\n    listener \"https\" {{\n        address \"127.0.0.1:8443\"\n        protocol \"https\"\n        tls {{\n            cert-file \"/tmp/c.crt\"\n            key-file \"/tmp/c.key\"\n        }}\n    }}\n}}\n\
+             routes {{\n    route \"api\" {{\n        matches {{\n            path-prefix \"/api\"\n            method \"GET\"\n        }}\n        upstream \"backend\"\n        policies {{\n            timeout-secs 7\n        }}\n    }}\n}}\n"
+        );
+        write(dir, "zentinel.kdl", &text);
+
+        let from_dir = Config::from_directory(dir).unwrap();
+        let from_text = Config::from_kdl(&text).unwrap();
+
+        assert!(
+            from_dir.listeners[0].tls.is_some(),
+            "listener TLS was dropped"
+        );
+        assert_eq!(from_dir.routes[0].policies.timeout_secs, Some(7));
+        assert_eq!(
+            format!("{:?}", from_dir.routes[0].matches),
+            format!("{:?}", from_text.routes[0].matches)
+        );
+        assert_eq!(from_dir.routes[0].matches.len(), 2);
+    }
+
+    /// The old loader's dialect -- bare `route` and `server` nodes at the top
+    /// level -- is rejected loudly, as it would be in a single file, rather
+    /// than half read.
+    #[test]
+    fn bare_top_level_nodes_are_rejected() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(dir, "main.kdl", &format!("{SYSTEM}{LISTENERS}"));
+        write(
+            dir,
+            "routes.kdl",
+            "route \"api\" {\n    path \"/api/*\"\n}\n",
+        );
+
+        let error = format!("{:#}", Config::from_directory(dir).unwrap_err());
+        assert!(error.contains("'route'"), "{error}");
+        assert!(error.contains("Did you mean 'routes'"), "{error}");
     }
 
     #[test]
-    fn test_circular_include_prevention() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path();
+    fn duplicate_route_across_files_is_rejected() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(dir, "main.kdl", &format!("{SYSTEM}{LISTENERS}{UPSTREAMS}"));
+        write(dir, "routes1.kdl", &route("api", "/api"));
+        write(dir, "routes2.kdl", &route("api", "/api/v2"));
 
-        // Create files that include each other
-        fs::write(
-            config_dir.join("a.kdl"),
-            r#"
-            include "b.kdl"
-            server {
-                worker-threads 2
-            }
-            "#,
-        )
-        .unwrap();
-
-        fs::write(
-            config_dir.join("b.kdl"),
-            r#"
-            include "a.kdl"
-            route "test" {
-                path "/*"
-            }
-            "#,
-        )
-        .unwrap();
-
-        // Load configuration - should not hang or fail due to circular includes
-        let mut loader = MultiFileLoader::new(config_dir);
-        let config = loader.load();
-
-        // Should succeed (circular includes are detected and skipped)
-        assert!(config.is_ok(), "Config load failed: {:?}", config.err());
+        let error = format!("{:#}", Config::from_directory(dir).unwrap_err());
+        assert!(error.contains("Duplicate route ID 'api'"), "{error}");
     }
 
     #[test]
-    fn test_namespace_loading() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path();
+    fn a_file_included_twice_is_rejected() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(
+            dir,
+            "a.kdl",
+            &format!("{SYSTEM}{LISTENERS}include \"shared/*.kdl\"\n"),
+        );
+        write(dir, "b.kdl", "include \"shared/*.kdl\"\n");
+        write(dir, "shared/upstreams.kdl", UPSTREAMS);
 
-        // Create config with namespace
-        fs::write(
-            config_dir.join("main.kdl"),
-            r#"
-            server {
-                worker-threads 2
-                max-connections 1000
-            }
+        let error = format!("{:#}", Config::from_directory(dir).unwrap_err());
+        assert!(error.contains("is included by both"), "{error}");
+    }
 
-            namespace "api" {
-                upstream "backend" {
-                    address "127.0.0.1:8080"
-                }
+    /// Circular includes are an error, as they are for a single file. The
+    /// loader used to skip them silently.
+    #[test]
+    fn circular_includes_are_rejected() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(dir, "a.kdl", &format!("include \"b.kdl\"\n{SYSTEM}"));
+        write(dir, "b.kdl", &format!("include \"a.kdl\"\n{LISTENERS}"));
 
-                route "api-route" {
-                    path "/api/*"
-                    upstream "backend"
-                }
+        let error = format!("{:#}", Config::from_directory(dir).unwrap_err());
+        assert!(error.contains("Circular include"), "{error}");
+    }
 
-                service "payments" {
-                    route "checkout" {
-                        path "/checkout/*"
-                    }
-                }
+    #[test]
+    fn hidden_backup_and_example_files_are_skipped() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(dir, "main.kdl", &format!("{SYSTEM}{LISTENERS}{UPSTREAMS}"));
+        write(dir, "routes.kdl", &route("api", "/api"));
+        // Each of these would be a duplicate route if it were read.
+        write(dir, ".#routes.kdl", &route("api", "/api"));
+        write(dir, "..data/routes.kdl", &route("api", "/api"));
+        write(dir, "routes.example.kdl", &route("api", "/api"));
+        write(dir, "routes.kdl.bak", &route("api", "/api"));
 
-                exports {
-                    upstreams "backend"
-                }
-            }
-            "#,
-        )
-        .unwrap();
+        let config = Config::from_directory(dir).expect("only main and routes are read");
+        assert_eq!(config.routes.len(), 1);
+    }
 
-        // Load configuration
-        let mut loader = MultiFileLoader::new(config_dir);
-        let config = loader.load();
+    #[test]
+    fn exclude_patterns_are_globs() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(dir, "main.kdl", &format!("{SYSTEM}{LISTENERS}{UPSTREAMS}"));
+        write(dir, "routes.kdl", &route("api", "/api"));
+        write(dir, "routes.draft.kdl", &route("api", "/api"));
 
-        assert!(config.is_ok(), "Config load failed: {:?}", config.err());
-        let config = config.unwrap();
+        let config = MultiFileLoader::new(dir)
+            .with_exclude("*.draft.kdl")
+            .load()
+            .expect("the draft is excluded");
+        assert_eq!(config.routes.len(), 1);
+    }
 
-        // Verify namespace was loaded
+    #[test]
+    fn environment_overrides_apply_only_when_chosen() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(
+            dir,
+            "zentinel.kdl",
+            &format!("{SYSTEM}{LISTENERS}limits {{\n    max-header-count 100\n}}\n"),
+        );
+        write(
+            dir,
+            "environments/production.kdl",
+            "limits {\n    max-header-count 50\n}\n",
+        );
+        write(
+            dir,
+            "environments/staging.kdl",
+            "limits {\n    max-header-count 75\n}\n",
+        );
+
+        // Without an environment, none of them is read.
+        let base = Config::from_directory(dir).unwrap();
+        assert_eq!(base.limits.max_header_count, 100);
+
+        let production = Config::from_directory_with_env(dir, "production").unwrap();
+        assert_eq!(production.limits.max_header_count, 50);
+
+        let error = Config::from_directory_with_env(dir, "qa").unwrap_err();
+        assert!(error.to_string().contains("'qa'"), "{error}");
+    }
+
+    #[test]
+    fn namespaces_load_from_a_directory() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(dir, "main.kdl", &format!("{SYSTEM}{LISTENERS}"));
+        write(
+            dir,
+            "namespaces/api.kdl",
+            "namespace \"api\" {\n    upstreams {\n        upstream \"backend\" {\n            target \"127.0.0.1:8080\"\n        }\n    }\n}\n",
+        );
+
+        let config = Config::from_directory(dir).unwrap();
         assert_eq!(config.namespaces.len(), 1);
         assert_eq!(config.namespaces[0].id, "api");
         assert_eq!(config.namespaces[0].upstreams.len(), 1);
-        assert_eq!(config.namespaces[0].routes.len(), 1);
-        assert_eq!(config.namespaces[0].services.len(), 1);
-        assert_eq!(config.namespaces[0].services[0].id, "payments");
-        assert_eq!(config.namespaces[0].exports.upstreams.len(), 1);
+    }
+
+    /// `Config::from_file` is what the CLI, the proxy and reload call; a
+    /// directory used to fail there with "Is a directory" (#541).
+    #[test]
+    fn from_file_accepts_a_directory() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(dir, "main.kdl", &format!("{SYSTEM}{LISTENERS}{UPSTREAMS}"));
+        write(dir, "routes/api.kdl", &route("api", "/api"));
+
+        let config = Config::from_file(dir).expect("a directory should load");
+        assert_eq!(config.routes.len(), 1);
     }
 
     #[test]
-    fn test_duplicate_namespace_detection() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path();
+    fn source_files_lists_every_file_read() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        write(
+            dir,
+            "zentinel.kdl",
+            &format!("{SYSTEM}{LISTENERS}include \"upstreams.kdl\"\n"),
+        );
+        write(dir, "upstreams.kdl", UPSTREAMS);
+        write(dir, "routes/api.kdl", &route("api", "/api"));
 
-        // Create config with duplicate namespace IDs
-        fs::write(
-            config_dir.join("ns1.kdl"),
-            r#"
-            namespace "api" {
-                route "route1" {
-                    path "/v1/*"
-                }
-            }
-            "#,
-        )
-        .unwrap();
+        // Included files are reached through the canonical path (on macOS the
+        // temporary directory is a symlink), so compare canonical paths.
+        let root = dir.canonicalize().unwrap();
+        let names = |files: Vec<std::path::PathBuf>| -> Vec<String> {
+            files
+                .iter()
+                .map(|f| {
+                    let f = f.canonicalize().unwrap();
+                    f.strip_prefix(&root).unwrap().display().to_string()
+                })
+                .collect()
+        };
 
-        fs::write(
-            config_dir.join("ns2.kdl"),
-            r#"
-            namespace "api" {
-                route "route2" {
-                    path "/v2/*"
-                }
-            }
-            "#,
-        )
-        .unwrap();
-
-        let mut loader = MultiFileLoader::new(config_dir);
-        let result = loader.load();
-
-        // Should fail due to duplicate namespace ID
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Duplicate namespace"));
+        assert_eq!(
+            names(Config::source_files(dir).unwrap()),
+            ["routes/api.kdl", "zentinel.kdl", "upstreams.kdl"]
+        );
+        // A single file with includes lists them too.
+        assert_eq!(
+            names(Config::source_files(dir.join("zentinel.kdl")).unwrap()),
+            ["zentinel.kdl", "upstreams.kdl"]
+        );
     }
 }
