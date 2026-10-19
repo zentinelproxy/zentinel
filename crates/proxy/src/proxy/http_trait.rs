@@ -267,6 +267,12 @@ impl ProxyHttp for ZentinelProxy {
         ctx.path = path.to_string();
         ctx.host = Some(host.to_string());
 
+        // Assign the trace id before route matching, not after it succeeds: a
+        // request that matches no route is still answered (404), and that
+        // answer's `trace_id` and `X-Correlation-Id` were empty, so it could
+        // not be tied to its log lines the way every other error can (#525).
+        ctx.trace_id = self.get_trace_id(session);
+
         // Select the matcher for the listener this request arrived on. A
         // namespace-bound listener matches only its own route set (isolated);
         // every other listener uses the global matcher.
@@ -297,7 +303,6 @@ impl ProxyHttp for ZentinelProxy {
             }
         };
 
-        ctx.trace_id = self.get_trace_id(session);
         ctx.route_id = Some(route_match.route_id.to_string());
         ctx.route_config = Some(route_match.config.clone());
 
@@ -501,7 +506,12 @@ impl ProxyHttp for ZentinelProxy {
             // Set trace_id if not already set by early_request_filter
             if ctx.trace_id.is_empty() {
                 ctx.trace_id = self.get_trace_id(session);
+            }
 
+            // early_request_filter parses the trace context and starts the
+            // span only for requests it matched; this one it did not (a
+            // query-parameter route, say), so neither has happened yet.
+            if ctx.otel_span.is_none() && ctx.trace_context.is_none() {
                 // Parse incoming W3C trace context if present
                 if let Some(traceparent) = req_header.headers.get(crate::otel::TRACEPARENT_HEADER) {
                     if let Ok(s) = traceparent.to_str() {
@@ -3503,19 +3513,7 @@ impl ProxyHttp for ZentinelProxy {
         // Write error response to ensure client receives a proper HTTP response
         // This is necessary because some errors occur before the upstream connection
         // is established, and Pingora may not send a response automatically
-        let error_message = match error_code {
-            400 => "Bad Request",
-            502 => "Bad Gateway",
-            503 => "Service Unavailable",
-            504 => "Gateway Timeout",
-            _ => "Internal Server Error",
-        };
-
-        // Build a minimal error response body
-        let body = format!(
-            r#"{{"error":"{} {}","trace_id":"{}"}}"#,
-            error_code, error_message, ctx.trace_id
-        );
+        let body = proxy_error_body(error_code, &ctx.trace_id);
 
         // Write the response header
         let mut header = pingora::http::ResponseHeader::build(error_code, None).unwrap();
@@ -4029,6 +4027,25 @@ impl ProxyHttp for ZentinelProxy {
 // =============================================================================
 // Helper methods for body streaming (not part of ProxyHttp trait)
 // =============================================================================
+
+/// The JSON body `fail_to_proxy` answers with: `{"error":"<code> <reason>",
+/// "trace_id":"..."}`.
+///
+/// The reason is the status's canonical one. A hand-kept table of five
+/// statuses used to supply it, and everything else fell through to "Internal
+/// Server Error": a no-route 404 said "404 Internal Server Error", and so did
+/// every 401, 403, 413 and 429 that reached this path (#525).
+fn proxy_error_body(status: u16, trace_id: &str) -> String {
+    let reason = http::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or("Error");
+    serde_json::json!({
+        "error": format!("{status} {reason}"),
+        "trace_id": trace_id,
+    })
+    .to_string()
+}
 
 /// The `Mcp-Session-Id` the client presented, if any.
 fn client_session(session: &Session) -> Option<String> {
@@ -5350,5 +5367,33 @@ mod cache_status_tests {
             1,
             "insert_header replaces; this test documents why append is required"
         );
+    }
+}
+
+#[cfg(test)]
+mod proxy_error_body_tests {
+    use super::proxy_error_body;
+
+    fn error_field(status: u16) -> String {
+        let body: serde_json::Value =
+            serde_json::from_str(&proxy_error_body(status, "abc")).unwrap();
+        assert_eq!(body["trace_id"], "abc");
+        body["error"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn the_reason_is_the_status_canonical_one() {
+        assert_eq!(error_field(404), "404 Not Found");
+        assert_eq!(error_field(413), "413 Payload Too Large");
+        assert_eq!(error_field(403), "403 Forbidden");
+        assert_eq!(error_field(429), "429 Too Many Requests");
+        assert_eq!(error_field(500), "500 Internal Server Error");
+        assert_eq!(error_field(502), "502 Bad Gateway");
+        assert_eq!(error_field(503), "503 Service Unavailable");
+    }
+
+    #[test]
+    fn a_status_without_a_canonical_reason_is_not_called_a_server_error() {
+        assert_eq!(error_field(599), "599 Error");
     }
 }
