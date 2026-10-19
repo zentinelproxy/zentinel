@@ -653,14 +653,19 @@ impl ZentinelProxy {
         Ok(())
     }
 
-    /// Handle error responses with custom error pages
+    /// Replace an upstream error response with the route's custom error page,
+    /// when one is configured for its status.
+    ///
+    /// Only a configured page replaces anything. The route's error handler
+    /// always exists, and its default output is meant for errors the proxy
+    /// raises itself; applied here it relabelled every upstream 4xx/5xx with
+    /// its own Content-Type and Content-Length while the upstream body went
+    /// through, so a JSON 404 reached the client as `text/html` (#522).
     pub(super) async fn handle_error_response(
         &self,
         upstream_response: &mut ResponseHeader,
-        ctx: &RequestContext,
+        ctx: &mut RequestContext,
     ) -> Result<(), Box<Error>> {
-        let status = upstream_response.status.as_u16();
-
         let Some(ref route_id) = ctx.route_id else {
             return Ok(());
         };
@@ -669,47 +674,16 @@ impl ZentinelProxy {
             return Ok(());
         };
 
-        // Get the status code
-        let status_code =
-            http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR);
-
-        // Try to generate a custom error page
-        match error_handler.generate_response(
-            status_code,
-            None, // Use default message for status
-            &ctx.trace_id,
-            None,
-        ) {
-            Ok(error_response) => {
-                // Replace the upstream response with our custom error page
-                upstream_response.set_status(status_code.as_u16())?;
-
-                // Convert to owned strings to avoid lifetime issues
-                let headers_owned: Vec<(String, String)> = error_response
-                    .headers()
-                    .iter()
-                    .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-                    .collect();
-
-                for (key, value) in headers_owned {
-                    upstream_response.insert_header(key, &value)?;
-                }
-
-                debug!(
-                    correlation_id = %ctx.trace_id,
-                    route_id = route_id,
-                    status = status,
-                    "Generated custom error page"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    correlation_id = %ctx.trace_id,
-                    route_id = route_id,
-                    error = %e,
-                    "Failed to generate custom error page"
-                );
-            }
+        if let Some(body) =
+            substitute_error_page(&error_handler, upstream_response, &ctx.trace_id).await?
+        {
+            debug!(
+                correlation_id = %ctx.trace_id,
+                route_id = route_id,
+                status = upstream_response.status.as_u16(),
+                "Generated custom error page"
+            );
+            ctx.error_page_body = Some(body);
         }
 
         Ok(())
@@ -749,5 +723,155 @@ impl ZentinelProxy {
         session.write_response_body(Some(body_bytes), true).await?;
 
         Ok(())
+    }
+}
+
+/// Rewrite `response` into `handler`'s custom page for its status, returning
+/// the page's body for `response_body_filter` to send in place of the
+/// upstream's. `None` leaves the upstream response as it is.
+///
+/// Headers and body are replaced together: a page's Content-Type and
+/// Content-Length describe the page, not whatever the upstream sent. The
+/// upstream's framing and encoding headers go for the same reason.
+async fn substitute_error_page(
+    handler: &crate::errors::ErrorHandler,
+    response: &mut ResponseHeader,
+    trace_id: &str,
+) -> Result<Option<bytes::Bytes>, Box<Error>> {
+    let status = response.status;
+    if !handler.has_custom_page(status.as_u16()) {
+        return Ok(None);
+    }
+
+    let page = match handler.generate_response(status, None, trace_id, None) {
+        Ok(page) => page,
+        Err(e) => {
+            warn!(
+                correlation_id = %trace_id,
+                status = status.as_u16(),
+                error = %e,
+                "Failed to generate custom error page, passing the upstream response through"
+            );
+            return Ok(None);
+        }
+    };
+
+    let (parts, body) = page.into_parts();
+    let body: bytes::Bytes = http_body_util::BodyExt::collect(body)
+        .await
+        .map(|collected| collected.to_bytes())
+        .unwrap_or_default();
+
+    for name in [
+        http::header::CONTENT_LENGTH,
+        http::header::TRANSFER_ENCODING,
+        http::header::CONTENT_ENCODING,
+        http::header::ETAG,
+        http::header::LAST_MODIFIED,
+    ] {
+        response.remove_header(&name);
+    }
+    for (key, value) in parts.headers.iter() {
+        response.insert_header(key.clone(), value.clone())?;
+    }
+    response.insert_header(http::header::CONTENT_LENGTH, body.len().to_string())?;
+
+    Ok(Some(body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::errors::ErrorHandler;
+    use zentinel_config::{ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType};
+
+    fn upstream_error(status: u16, content_type: &str, body: &str) -> ResponseHeader {
+        let mut resp = ResponseHeader::build(status, None).unwrap();
+        resp.insert_header("Content-Type", content_type).unwrap();
+        resp.insert_header("Content-Length", body.len().to_string())
+            .unwrap();
+        resp
+    }
+
+    fn header<'a>(resp: &'a ResponseHeader, name: &str) -> Option<&'a str> {
+        resp.headers.get(name).and_then(|v| v.to_str().ok())
+    }
+
+    /// #522: with no custom page configured -- the only state the KDL config
+    /// can produce today -- an upstream error keeps its own headers.
+    #[tokio::test]
+    async fn an_upstream_error_without_a_custom_page_is_left_untouched() {
+        for service_type in [ServiceType::Web, ServiceType::Api] {
+            let handler = ErrorHandler::new(service_type, None);
+
+            for (status, content_type, body) in [
+                (404, "application/json", r#"{"error":"no such user"}"#),
+                (500, "text/plain", "boom"),
+            ] {
+                let mut resp = upstream_error(status, content_type, body);
+                let replaced = substitute_error_page(&handler, &mut resp, "t")
+                    .await
+                    .unwrap();
+
+                assert!(replaced.is_none());
+                assert_eq!(resp.status.as_u16(), status);
+                assert_eq!(header(&resp, "content-type"), Some(content_type));
+                assert_eq!(
+                    header(&resp, "content-length"),
+                    Some(body.len().to_string().as_str())
+                );
+            }
+        }
+    }
+
+    /// A configured page replaces headers and body together, so the headers
+    /// describe the bytes the client actually receives.
+    #[tokio::test]
+    async fn a_custom_page_replaces_headers_and_body_together() {
+        let mut pages = HashMap::new();
+        pages.insert(
+            503,
+            ErrorPage {
+                format: ErrorFormat::Text,
+                template: None,
+                message: None,
+                headers: HashMap::new(),
+            },
+        );
+        let handler = ErrorHandler::new(
+            ServiceType::Web,
+            Some(ErrorPageConfig {
+                pages,
+                default_format: ErrorFormat::Html,
+                include_stack_trace: false,
+                template_dir: None,
+            }),
+        );
+
+        let mut resp = upstream_error(503, "application/json", r#"{"down":true}"#);
+        resp.insert_header("Content-Encoding", "gzip").unwrap();
+        let body = substitute_error_page(&handler, &mut resp, "t")
+            .await
+            .unwrap()
+            .expect("a configured page replaces the response");
+
+        assert_eq!(resp.status.as_u16(), 503);
+        assert_eq!(
+            header(&resp, "content-type"),
+            Some("text/plain; charset=utf-8")
+        );
+        assert_eq!(
+            header(&resp, "content-length"),
+            Some(body.len().to_string().as_str())
+        );
+        assert_eq!(header(&resp, "content-encoding"), None);
+
+        // Statuses without a page of their own still pass through.
+        let mut other = upstream_error(404, "application/json", "{}");
+        assert!(substitute_error_page(&handler, &mut other, "t")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(header(&other, "content-type"), Some("application/json"));
     }
 }

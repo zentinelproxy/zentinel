@@ -215,6 +215,14 @@ pub struct RequestContext {
     /// came, and timed out (504 after 30 s) instead of being served.
     pub(crate) validated_request_body: Option<bytes::Bytes>,
 
+    /// The body of a custom error page that replaces an upstream error
+    /// response, sent by `response_body_filter` in place of the upstream's.
+    ///
+    /// The page's headers are set in `response_filter`; without the body to
+    /// go with them, the client got the upstream's body under the page's
+    /// Content-Type and Content-Length.
+    pub(crate) error_page_body: Option<bytes::Bytes>,
+
     // === Body Decompression ===
     /// Whether decompression is enabled for body inspection
     pub(crate) decompression_enabled: bool,
@@ -422,6 +430,7 @@ impl RequestContext {
             mcp_listing_body: Vec::new(),
             mcp_proxied_call: None,
             validated_request_body: None,
+            error_page_body: None,
             a2a_method: None,
             body_inspection_agents: Vec::new(),
             decompression_enabled: false,

@@ -2355,7 +2355,8 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
-        // Generate custom error pages for error responses
+        // Replace upstream error responses with the route's custom error
+        // page, where one is configured for the status
         if status >= 400 {
             trace!(
                 correlation_id = %ctx.trace_id,
@@ -2738,6 +2739,17 @@ impl ProxyHttp for ZentinelProxy {
             }
             // Skip normal body processing for WebSocket
             return Ok(None);
+        }
+
+        // A custom error page replaced the upstream's error response in
+        // `response_filter`; its body replaces the upstream's here, in one
+        // piece at end of stream, so it matches the headers already sent.
+        if ctx.error_page_body.is_some() {
+            *body = if end_of_stream {
+                ctx.error_page_body.take()
+            } else {
+                None
+            };
         }
 
         // Cut an MCP listing down to what the route permits before anything

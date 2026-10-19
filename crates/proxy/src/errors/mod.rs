@@ -126,6 +126,15 @@ impl ErrorHandler {
         }
     }
 
+    /// Whether a custom page is configured for `status_code`.
+    ///
+    /// Without one, the generated response is only a default for errors the
+    /// proxy raises itself. An upstream's own error response says more than
+    /// that default, so it is passed through untouched (#522).
+    pub fn has_custom_page(&self, status_code: u16) -> bool {
+        self.get_error_page(status_code).is_some()
+    }
+
     /// Get error page configuration for a specific status code
     fn get_error_page(&self, status_code: u16) -> Option<&ErrorPage> {
         self.config.as_ref().and_then(|c| c.pages.get(&status_code))
