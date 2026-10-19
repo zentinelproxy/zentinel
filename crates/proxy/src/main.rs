@@ -1000,7 +1000,7 @@ fn run_server(
         .filter_map(|l| l.keepalive_max_requests)
         .min();
 
-    // Create proxy service with server options (Pingora 0.8.0 builder pattern)
+    // Create proxy service with server options
     let mut server_options = pingora_core::apps::HttpServerOptions::default();
     server_options.keepalive_request_limit = keepalive_request_limit;
     //
@@ -1017,9 +1017,10 @@ fn run_server(
     let connection_app = zentinel_proxy::connection_limit::ConnectionLimitedApp::new(
         http_proxy,
         zentinel_common::limits::ConnectionLimiter::new(),
-        move || {
-            zentinel_proxy::connection_limit::ConnectionLimits::from_limits(
-                &limits_config.current().limits,
+        move |local| {
+            zentinel_proxy::connection_limit::ConnectionLimits::for_connection(
+                &limits_config.current(),
+                local,
             )
         },
     );

@@ -117,20 +117,60 @@ impl ZentinelProxy {
                 .get_or_insert_with(|| self.config_manager.current()),
         );
         let limit = config.limits.max_in_flight_requests;
-        let Some(permit) = self.in_flight.try_acquire_global(limit) else {
-            warn!(
-                correlation_id = %ctx.trace_id,
-                route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
-                limit = limit.unwrap_or_default(),
-                "Request refused: max-in-flight-requests reached"
-            );
-            self.metrics
-                .record_blocked_request("in_flight_limit_exceeded");
-            write_in_flight_refusal(session, &ctx.trace_id).await?;
-            return Ok(true);
+        let Some(global) = self.in_flight.try_acquire_global(limit) else {
+            return self.refuse_in_flight(session, ctx, "global", limit).await;
         };
-        ctx.in_flight.push(permit);
-        Ok(false)
+        let Some(namespace) = ctx.namespace.clone() else {
+            ctx.in_flight.push(global);
+            return Ok(false);
+        };
+        // A namespace's limit has its own counter: the namespace may have
+        // that many requests in flight, within the global limit (#542).
+        let ns_limit = ctx
+            .namespace_limits()
+            .and_then(|l| l.max_in_flight_requests);
+        match self.in_flight.try_acquire_namespace(&namespace, ns_limit) {
+            Some(scoped) => {
+                ctx.in_flight.extend([global, scoped]);
+                Ok(false)
+            }
+            None => {
+                drop(global);
+                self.refuse_in_flight(session, ctx, &namespace, ns_limit)
+                    .await
+            }
+        }
+    }
+
+    async fn refuse_in_flight(
+        &self,
+        session: &mut Session,
+        ctx: &RequestContext,
+        scope: &str,
+        limit: Option<usize>,
+    ) -> Result<bool, Box<Error>> {
+        warn!(
+            correlation_id = %ctx.trace_id,
+            route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+            scope = scope,
+            limit = limit.unwrap_or_default(),
+            "Request refused: max-in-flight-requests reached"
+        );
+        self.metrics
+            .record_blocked_request("in_flight_limit_exceeded");
+        write_in_flight_refusal(session, &ctx.trace_id).await?;
+        Ok(true)
+    }
+
+    /// The namespace the listener this request arrived on is bound to.
+    fn listener_namespace(&self, session: &Session, ctx: &mut RequestContext) -> Option<String> {
+        let local = to_socket_addr(session.downstream_session.server_addr()?)?;
+        let config = ctx
+            .config
+            .get_or_insert_with(|| self.config_manager.current());
+        listener_for_addr(&config.listeners, local)?
+            .namespace
+            .clone()
     }
 
     /// Route matcher for the listener a request arrived on.
@@ -419,6 +459,12 @@ impl ProxyHttp for ZentinelProxy {
 
         ctx.route_id = Some(route_match.route_id.to_string());
         ctx.route_config = Some(route_match.config.clone());
+        // A route from a namespace-bound listener is that namespace's, and its
+        // `limits` apply to the request (#542). It also fills the access
+        // log's `namespace`, which nothing set before.
+        if listener_matcher.is_some() {
+            ctx.namespace = self.listener_namespace(session, ctx);
+        }
 
         // Parse incoming W3C trace context if present
         if let Some(traceparent) = req_header.headers.get(crate::otel::TRACEPARENT_HEADER) {
@@ -1856,19 +1902,24 @@ impl ProxyHttp for ZentinelProxy {
         let config = ctx
             .config
             .get_or_insert_with(|| self.config_manager.current());
+        let (global_header_count, global_header_size) = (
+            config.limits.max_header_count,
+            config.limits.max_header_size_bytes,
+        );
+        // The namespace's limits, where smaller, apply instead (#542).
+        let max_header_count = ctx.max_header_count(global_header_count);
+        let max_header_size = ctx.max_header_size(global_header_size);
 
         // Enforce header limits (fast path: skip if limits are very high)
         const HEADER_LIMIT_THRESHOLD: usize = 1024 * 1024; // 1MB = effectively unlimited
 
         // Header count check - O(1)
         let header_count = req_header.headers.len();
-        if config.limits.max_header_count < HEADER_LIMIT_THRESHOLD
-            && header_count > config.limits.max_header_count
-        {
+        if max_header_count < HEADER_LIMIT_THRESHOLD && header_count > max_header_count {
             warn!(
                 correlation_id = %ctx.trace_id,
                 header_count = header_count,
-                limit = config.limits.max_header_count,
+                limit = max_header_count,
                 "Request blocked: exceeds header count limit"
             );
 
@@ -1877,18 +1928,18 @@ impl ProxyHttp for ZentinelProxy {
         }
 
         // Header size check - O(n), skip if limit is very high
-        if config.limits.max_header_size_bytes < HEADER_LIMIT_THRESHOLD {
+        if max_header_size < HEADER_LIMIT_THRESHOLD {
             let total_header_size: usize = req_header
                 .headers
                 .iter()
                 .map(|(k, v)| k.as_str().len() + v.len())
                 .sum();
 
-            if total_header_size > config.limits.max_header_size_bytes {
+            if total_header_size > max_header_size {
                 warn!(
                     correlation_id = %ctx.trace_id,
                     header_size = total_header_size,
-                    limit = config.limits.max_header_size_bytes,
+                    limit = max_header_size,
                     "Request blocked: exceeds header size limit"
                 );
 

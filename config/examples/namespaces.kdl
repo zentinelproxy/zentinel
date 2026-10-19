@@ -195,10 +195,10 @@ namespace "platform" {
         // Service within the platform namespace
         // User management service
         service "user-management" {
-            // Service-specific limits override namespace limits
-            limits {
-                max-body-size 5242880  // 5MB
-            }
+            // No `limits` block here: a service's limits are not applied,
+            // because no listener serves a service's routes, and
+            // `zentinel lint` reports such a block as ignored. The
+            // namespace's `limits` above apply to the namespace's routes.
 
             routes {
                 route "user-crud" {

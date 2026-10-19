@@ -53,7 +53,7 @@ pub fn parse_namespace(node: &kdl::KdlNode) -> Result<NamespaceConfig> {
 
         match child_name {
             "limits" => {
-                ns.limits = Some(super::parse_limits_config(child)?);
+                ns.limits = Some(super::parse_scope_limits_config(child, "namespace", &id)?);
                 trace!(namespace = %id, "Parsed namespace limits");
             }
             "listeners" => {
@@ -161,7 +161,7 @@ pub fn parse_service(node: &kdl::KdlNode) -> Result<ServiceConfig> {
                 trace!(service = %id, count = svc.filters.len(), "Parsed service filters");
             }
             "limits" => {
-                svc.limits = Some(super::parse_limits_config(child)?);
+                svc.limits = Some(super::parse_scope_limits_config(child, "service", &id)?);
                 trace!(service = %id, "Parsed service limits");
             }
             other => {

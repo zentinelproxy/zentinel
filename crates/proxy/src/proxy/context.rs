@@ -802,11 +802,50 @@ impl RequestContext {
     /// limit, never lift it: the global limit is the operator's bound on what
     /// the proxy accepts at all. Until #517 the route setting was parsed and
     /// then never read, so a route limited to 1 KB accepted the global 10 MB.
+    ///
+    /// The route's namespace `limits { max-body-size }` tightens it the same
+    /// way; the smallest of the three applies.
     pub(crate) fn max_body_size(&self, global_limit: usize) -> usize {
+        let scoped = self
+            .namespace_limits()
+            .map_or(global_limit, |ns| ns.max_body_size_bytes.min(global_limit));
         self.route_config
             .as_ref()
             .and_then(|route| route.policies.max_body_size)
-            .map_or(global_limit, |route_limit| route_limit.0.min(global_limit))
+            .map_or(scoped, |route_limit| route_limit.0.min(scoped))
+    }
+
+    /// `max-header-count` for this request: the global one, or the
+    /// namespace's if that is smaller.
+    pub(crate) fn max_header_count(&self, global_limit: usize) -> usize {
+        self.namespace_limits()
+            .map_or(global_limit, |ns| ns.max_header_count.min(global_limit))
+    }
+
+    /// `max-header-size` for this request: the global one, or the
+    /// namespace's if that is smaller.
+    pub(crate) fn max_header_size(&self, global_limit: usize) -> usize {
+        self.namespace_limits().map_or(global_limit, |ns| {
+            ns.max_header_size_bytes.min(global_limit)
+        })
+    }
+
+    /// The `limits` block of the namespace this request was routed in.
+    ///
+    /// Until #542 these were parsed and never applied. A namespace's block
+    /// holds only the keys it writes (the rest unbounded), so taking the
+    /// smaller of it and the global value never applies a default the
+    /// namespace did not ask for. Looked up in the request's config snapshot,
+    /// so it changes with a reload like everything else.
+    pub(crate) fn namespace_limits(&self) -> Option<&zentinel_common::limits::Limits> {
+        let namespace = self.namespace.as_deref()?;
+        self.config
+            .as_ref()?
+            .namespaces
+            .iter()
+            .find(|ns| ns.id == namespace)?
+            .limits
+            .as_ref()
     }
 }
 
@@ -1013,6 +1052,58 @@ mod tests {
     fn without_a_route_limit_the_global_one_applies() {
         assert_eq!(ctx_with_route_limit(None).max_body_size(10_000), 10_000);
         assert_eq!(RequestContext::new().max_body_size(10_000), 10_000);
+    }
+
+    fn ctx_in_namespace(ns_limits: &str, route_limit: Option<usize>) -> RequestContext {
+        let config = zentinel_config::Config::from_kdl(&format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 1 }}
+            listeners {{ listener "l" {{ address "127.0.0.1:8080"; namespace "ns"; }} }}
+            namespace "ns" {{
+                limits {{ {ns_limits} }}
+            }}
+            "#
+        ))
+        .unwrap();
+        let mut ctx = ctx_with_route_limit(route_limit);
+        ctx.config = Some(Arc::new(config));
+        ctx.namespace = Some("ns".to_string());
+        ctx
+    }
+
+    /// #542: namespace limits tighten the global ones and are tightened by
+    /// the route's; the smallest applies.
+    #[test]
+    fn the_smallest_of_global_namespace_and_route_body_limits_applies() {
+        let ctx = ctx_in_namespace("max-body-size 2000", None);
+        assert_eq!(ctx.max_body_size(10_000), 2000);
+        assert_eq!(ctx.max_body_size(1500), 1500);
+        let ctx = ctx_in_namespace("max-body-size 2000", Some(500));
+        assert_eq!(ctx.max_body_size(10_000), 500);
+        let ctx = ctx_in_namespace("max-body-size 2000", Some(5000));
+        assert_eq!(ctx.max_body_size(10_000), 2000);
+    }
+
+    #[test]
+    fn namespace_header_limits_tighten_but_never_loosen() {
+        let ctx = ctx_in_namespace("max-header-count 10\n max-header-size 512", None);
+        assert_eq!(ctx.max_header_count(100), 10);
+        assert_eq!(ctx.max_header_size(8192), 512);
+        assert_eq!(ctx.max_header_size(256), 256);
+        // A key the namespace does not write leaves the global value alone,
+        // even where the global one is above the default.
+        let ctx = ctx_in_namespace("max-body-size 2000", None);
+        assert_eq!(ctx.max_header_size(65_536), 65_536);
+        assert_eq!(ctx.max_header_count(500), 500);
+    }
+
+    #[test]
+    fn a_request_outside_a_namespace_gets_the_global_limits() {
+        let mut ctx = ctx_in_namespace("max-body-size 2000", None);
+        ctx.namespace = None;
+        assert_eq!(ctx.max_body_size(10_000), 10_000);
+        assert!(ctx.namespace_limits().is_none());
     }
 
     /// #542: the in-flight slot is released when the context is dropped,
