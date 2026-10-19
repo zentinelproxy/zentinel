@@ -17,7 +17,7 @@ use crate::{
     Config, Filter, ListenerProtocol, NamespaceConfig, ServiceConfig, ServiceType, WafMode,
 };
 use zentinel_common::ids::Scope;
-use zentinel_common::types::{Priority, TlsVersion};
+use zentinel_common::types::Priority;
 
 /// Whether checks that look at the local disk can run.
 ///
@@ -1181,10 +1181,14 @@ fn format_available_owned(ids: &HashSet<String>) -> String {
 /// Features that are parsed successfully but silently ignored at runtime are
 /// dangerous — especially security features. This function produces:
 ///
-/// - **Hard errors** for security-critical features (WAF mode, TLS hardening)
-///   that would give a false sense of protection if ignored.
+/// - **Hard errors** for security-critical features (WAF mode) that would give
+///   a false sense of protection if ignored.
 /// - **Warnings** for convenience features (filters, policies, listener settings)
 ///   that won't cause security issues but may surprise operators.
+///
+/// An entry here must not outlive its feature: once a field is wired, its
+/// warning becomes a false alarm. `unwired_fields_are_not_read_by_the_proxy`
+/// checks the entries whose field names are distinctive enough to search for.
 fn validate_implementation_status(
     config: &Config,
     errors: &mut Vec<String>,
@@ -1211,36 +1215,10 @@ fn validate_implementation_status(
         }
     }
 
-    // TLS hardening: settings are validated and ready in build_server_config(),
-    // but Pingora's TlsSettings doesn't yet accept a custom ServerConfig.
-    // Warn (not error) so operators know these settings are staged but not active.
-    for listener in &config.listeners {
-        if let Some(ref tls) = listener.tls {
-            if !tls.cipher_suites.is_empty() {
-                warnings.push(format!(
-                    "Listener '{}' has TLS cipher_suites configured ({:?}) but Pingora's TLS integration \
-                     does not yet support custom cipher suites. The default rustls cipher suite selection is used.",
-                    listener.id, tls.cipher_suites
-                ));
-            }
-
-            if tls.min_version != TlsVersion::Tls12 {
-                warnings.push(format!(
-                    "Listener '{}' has TLS min_version set to '{}' but Pingora's TLS integration \
-                     does not yet apply this setting. Default TLS 1.2+ is used.",
-                    listener.id, tls.min_version
-                ));
-            }
-
-            if let Some(ref max_ver) = tls.max_version {
-                warnings.push(format!(
-                    "Listener '{}' has TLS max_version set to '{}' but Pingora's TLS integration \
-                     does not yet apply this setting.",
-                    listener.id, max_ver
-                ));
-            }
-        }
-    }
+    // Listener TLS `cipher-suite`, `min-version` and `max-version` used to be
+    // warned about here as unwired. They reach the listener since #303
+    // (`build_server_config`, applied through `TlsSettings::with_server_config`),
+    // and the stale warning taught people to distrust lint's output (#526).
 
     // ========================================================================
     // Warnings: Convenience features that are configured but not yet wired
@@ -1312,6 +1290,7 @@ fn build_validation_result(errors: Vec<String>) -> Result<(), validator::Validat
 mod tests {
     use super::*;
     use crate::namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
+    use zentinel_common::types::TlsVersion;
 
     /// `h2` and `h3` used to fall into a catch-all that logged a warning and
     /// bound no socket, while the documentation marked both supported. `h2` is
@@ -1931,8 +1910,9 @@ mod tests {
         assert!(errors.is_empty(), "WAF off mode should not produce errors");
     }
 
+    /// Both were reported as unwired long after #303 wired them (#526).
     #[test]
-    fn tls_cipher_suites_produce_warning() {
+    fn listener_tls_versions_and_ciphers_produce_no_warnings() {
         let mut config = Config::default_for_testing();
         config.listeners[0].tls = Some(crate::TlsConfig {
             cert_folders: Vec::new(),
@@ -1941,8 +1921,8 @@ mod tests {
             key_file: Some("/tmp/key.pem".into()),
             additional_certs: vec![],
             ca_file: None,
-            min_version: TlsVersion::Tls12,
-            max_version: None,
+            min_version: TlsVersion::Tls13,
+            max_version: Some(TlsVersion::Tls13),
             cipher_suites: vec!["TLS_AES_256_GCM_SHA384".to_string()],
             client_auth: false,
             ocsp_stapling: true,
@@ -1954,49 +1934,51 @@ mod tests {
         let mut warnings = Vec::new();
         validate_implementation_status(&config, &mut errors, &mut warnings);
 
-        assert!(
-            errors.is_empty(),
-            "TLS cipher_suites should not produce errors"
-        );
-        assert!(
-            !warnings.is_empty(),
-            "TLS cipher_suites should produce a warning"
-        );
-        assert!(warnings.iter().any(|w| w.contains("cipher_suites")));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
+    /// Each field `validate_implementation_status` calls unwired, searched
+    /// for in the proxy's source. Finding one means the feature has been
+    /// wired and its warning is now a false alarm: remove the warning, and
+    /// the name from this list.
+    ///
+    /// Only names distinctive enough to search for are listed. The logging
+    /// warnings are about `level`, `format` and `file`, which appear all over
+    /// the proxy for unrelated reasons, so they are not.
     #[test]
-    fn tls_max_version_produces_warning() {
-        let mut config = Config::default_for_testing();
-        config.listeners[0].tls = Some(crate::TlsConfig {
-            cert_folders: Vec::new(),
-            allow_sni_overlaps: false,
-            cert_file: Some("/tmp/cert.pem".into()),
-            key_file: Some("/tmp/key.pem".into()),
-            additional_certs: vec![],
-            ca_file: None,
-            min_version: TlsVersion::Tls12,
-            max_version: Some(TlsVersion::Tls12),
-            cipher_suites: vec![],
-            client_auth: false,
-            ocsp_stapling: true,
-            session_resumption: true,
-            acme: None,
-        });
+    fn unwired_fields_are_not_read_by_the_proxy() {
+        const UNWIRED: &[&str] = &["max_concurrent_streams"];
 
-        let mut errors = Vec::new();
-        let mut warnings = Vec::new();
-        validate_implementation_status(&config, &mut errors, &mut warnings);
+        let proxy_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../proxy/src");
+        if !proxy_src.is_dir() {
+            // Built outside the workspace, e.g. from a published crate.
+            return;
+        }
+
+        let mut files = vec![proxy_src];
+        let mut readers = Vec::new();
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                for entry in std::fs::read_dir(&path).unwrap() {
+                    files.push(entry.unwrap().path());
+                }
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                for field in UNWIRED {
+                    if text.contains(field) {
+                        readers.push(format!("{field} in {}", path.display()));
+                    }
+                }
+            }
+        }
 
         assert!(
-            errors.is_empty(),
-            "TLS max_version should not produce errors"
+            readers.is_empty(),
+            "a field reported as unwired is used by the proxy; if it is now wired, \
+             drop its warning from validate_implementation_status:\n{}",
+            readers.join("\n")
         );
-        assert!(
-            !warnings.is_empty(),
-            "TLS max_version should produce a warning"
-        );
-        assert!(warnings.iter().any(|w| w.contains("max_version")));
     }
 
     #[test]
@@ -2424,23 +2406,6 @@ mod tests {
 
         // Enable all features that currently produce warnings:
 
-        // TLS cipher_suites (unwired — Pingora doesn't expose custom cipher config)
-        config.listeners[0].tls = Some(crate::TlsConfig {
-            cert_folders: Vec::new(),
-            allow_sni_overlaps: false,
-            cert_file: Some("/tmp/cert.pem".into()),
-            key_file: Some("/tmp/key.pem".into()),
-            additional_certs: vec![],
-            ca_file: None,
-            min_version: TlsVersion::Tls13, // non-default → produces warning
-            max_version: Some(TlsVersion::Tls13), // set → produces warning
-            cipher_suites: vec!["TLS_AES_256_GCM_SHA384".to_string()], // set → produces warning
-            client_auth: false,
-            ocsp_stapling: true,
-            session_resumption: true,
-            acme: None,
-        });
-
         // max_concurrent_streams (unwired — Pingora H2 per-listener config)
         config.listeners[0].max_concurrent_streams = 200; // non-default → produces warning
 
@@ -2461,14 +2426,8 @@ mod tests {
         // Exact expected warnings — update when features are wired or new warnings added.
         //
         // Each entry is a substring that must appear in exactly one warning.
-        let expected_warning_fragments = vec![
-            "cipher_suites",
-            "min_version",
-            "max_version",
-            "max_concurrent_streams",
-            "logging.file",
-            "Logging level",
-        ];
+        let expected_warning_fragments =
+            vec!["max_concurrent_streams", "logging.file", "Logging level"];
 
         assert_eq!(
             warnings.len(),
