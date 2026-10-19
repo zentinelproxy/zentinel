@@ -6,16 +6,16 @@
 
 use pingora_load_balancing::{
     health_check::{HealthCheck as PingoraHealthCheck, HttpHealthCheck, TcpHealthCheck},
-    Backend, Backends,
+    Backends,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
 use crate::grpc_health::GrpcHealthCheck;
-use crate::upstream::active_health::{ActiveHealthView, ViewDiscovery};
+use crate::upstream::active_health::{ActiveHealthView, HostResolutions, ViewDiscovery};
 use crate::upstream::inference_health::InferenceHealthCheck;
 use crate::upstream::mcp_health::McpHealthCheck;
 
@@ -39,6 +39,10 @@ pub struct ActiveHealthChecker {
     health_callback: Arc<RwLock<Option<HealthChangeCallback>>>,
     /// Where probe results are published for the upstream's pools
     view: Arc<ActiveHealthView>,
+    /// What hostname targets resolved to in the last cycle
+    resolutions: HostResolutions,
+    /// Consecutive failed resolutions after which a hostname is unhealthy
+    unhealthy_threshold: u32,
 }
 
 /// Callback type for health status changes
@@ -63,33 +67,36 @@ impl ActiveHealthChecker {
             "Creating active health checker"
         );
 
-        // Create backends from targets
-        let mut backend_set = BTreeSet::new();
+        // Collect the targets to probe. Socket addresses are probed as they
+        // are; `host:port` targets are resolved by the discovery at every
+        // cycle (see `ViewDiscovery`), so only their shape is checked here.
+        let mut configured = Vec::new();
         for target in &config.targets {
-            match Backend::new_with_weight(&target.address, target.weight as usize) {
-                Ok(backend) => {
-                    debug!(
-                        upstream_id = %config.id,
-                        target = %target.address,
-                        weight = target.weight,
-                        "Added backend for health checking"
-                    );
-                    backend_set.insert(backend);
-                }
-                Err(e) => {
-                    warn!(
-                        upstream_id = %config.id,
-                        target = %target.address,
-                        error = %e,
-                        "Failed to create backend for health checking"
-                    );
-                }
+            let valid = target.address.parse::<std::net::SocketAddr>().is_ok()
+                || target
+                    .address
+                    .rsplit_once(':')
+                    .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok());
+            if valid {
+                debug!(
+                    upstream_id = %config.id,
+                    target = %target.address,
+                    weight = target.weight,
+                    "Added backend for health checking"
+                );
+                configured.push(target.address.clone());
+            } else {
+                warn!(
+                    upstream_id = %config.id,
+                    target = %target.address,
+                    "Failed to create backend for health checking"
+                );
             }
         }
 
         // A discovery-backed upstream may have no configured targets at all:
         // its targets arrive through the view once its pool publishes them.
-        if backend_set.is_empty() && config.discovery.is_none() {
+        if configured.is_empty() && config.discovery.is_none() {
             warn!(
                 upstream_id = %config.id,
                 "No backends created for health checking"
@@ -102,10 +109,13 @@ impl ActiveHealthChecker {
             .iter()
             .map(|t| (t.address.clone(), t.weight as usize))
             .collect();
+        let resolutions = HostResolutions::default();
         let discovery = Box::new(ViewDiscovery {
             view: view.clone(),
-            configured: backend_set,
+            configured,
             weights,
+            resolutions: resolutions.clone(),
+            resolve_timeout: Duration::from_secs(health_config.timeout_secs.max(1)),
         });
         let mut backends = Backends::new(discovery);
 
@@ -122,6 +132,8 @@ impl ActiveHealthChecker {
             parallel: true,
             health_callback: Arc::new(RwLock::new(None)),
             view,
+            resolutions,
+            unhealthy_threshold: health_config.unhealthy_threshold,
         })
     }
 
@@ -308,8 +320,15 @@ impl ActiveHealthChecker {
         self.backends.run_health_check(self.parallel).await;
 
         // Publish the outcome for the pools. `ready()` already applies
-        // healthy-threshold / unhealthy-threshold.
-        self.view.record(self.get_health_statuses());
+        // healthy-threshold / unhealthy-threshold. Probes are per address;
+        // pools key hostname targets by name, so those get one folded status
+        // each, alongside the per-address ones the request path uses to pick
+        // a healthy address for the name.
+        let statuses = self.get_health_statuses();
+        let probed: HashMap<String, bool> = statuses.iter().cloned().collect();
+        let hosts =
+            ViewDiscovery::host_statuses(&self.resolutions, &probed, self.unhealthy_threshold);
+        self.view.record(statuses.into_iter().chain(hosts));
     }
 
     /// The view this checker publishes to
@@ -856,5 +875,123 @@ mod tests {
 
         assert!(fast_probes.load(Ordering::SeqCst) >= 3);
         assert_eq!(slow_probes.load(Ordering::SeqCst), 1);
+    }
+
+    /// An HTTP backend on 127.0.0.1 only, answering every request with the
+    /// status in the returned handle.
+    async fn status_backend() -> (u16, Arc<std::sync::atomic::AtomicU16>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let status = Arc::new(std::sync::atomic::AtomicU16::new(200));
+        let current = status.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let code = current.load(Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 {code} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (port, status)
+    }
+
+    fn hostname_config(target: String) -> UpstreamConfig {
+        let mut config = create_test_config();
+        config.targets[0].address = target;
+        config.health_check = Some(HealthCheckConfig {
+            check_type: HealthCheckType::Http {
+                path: "/health".to_string(),
+                expected_status: 200,
+                host: None,
+            },
+            interval_secs: 1,
+            timeout_secs: 1,
+            healthy_threshold: 1,
+            unhealthy_threshold: 1,
+        });
+        config
+    }
+
+    /// A hostname target could not become a Pingora `Backend`, so it was
+    /// never probed and always counted as healthy -- and an upstream with only
+    /// hostname targets got no checker at all. It is now resolved and probed
+    /// at the addresses it resolves to, and reported under its own name,
+    /// which is what the pools look up.
+    #[tokio::test]
+    async fn a_hostname_target_is_probed_and_reported_by_name() {
+        init_crypto_provider();
+        let (port, status) = status_backend().await;
+        let target = format!("localhost:{port}");
+        let checker = ActiveHealthChecker::new(&hostname_config(target.clone()))
+            .expect("a checker for a hostname-only upstream");
+
+        status.store(500, Ordering::SeqCst);
+        checker.run_health_check().await;
+        assert!(
+            checker.view().is_unhealthy(&target),
+            "a failing hostname target stayed healthy: {:?}",
+            checker.view().snapshot()
+        );
+
+        status.store(200, Ordering::SeqCst);
+        checker.run_health_check().await;
+        assert!(
+            !checker.view().is_unhealthy(&target),
+            "a recovered hostname target stayed unhealthy: {:?}",
+            checker.view().snapshot()
+        );
+        // Every address the name resolved to was probed individually too.
+        assert!(!checker.view().is_unhealthy(&format!("127.0.0.1:{port}")));
+    }
+
+    /// `localhost` resolves to `::1` first on many systems. The backend here
+    /// only listens on IPv4, so the checker holds `[::1]` unhealthy while the
+    /// name stays healthy -- and the request path has to connect to the
+    /// healthy address rather than the first one.
+    #[tokio::test]
+    async fn requests_go_to_a_healthy_address_of_a_hostname_target() {
+        use pingora_core::upstreams::peer::Peer;
+        init_crypto_provider();
+        let (port, _status) = status_backend().await;
+        let config = hostname_config(format!("localhost:{port}"));
+        let checker = ActiveHealthChecker::new(&config).expect("checker");
+        checker.run_health_check().await;
+
+        let pool = crate::upstream::UpstreamPool::new(config)
+            .await
+            .expect("pool")
+            .with_active_health(checker.view().clone());
+        for _ in 0..4 {
+            let peer = pool.select_peer(None).await.expect("a peer");
+            assert_eq!(peer.address().to_string(), format!("127.0.0.1:{port}"));
+        }
+    }
+
+    /// A name that does not resolve has nothing to probe, and requests to it
+    /// fail too: after `unhealthy-threshold` failed resolutions it is out.
+    #[tokio::test]
+    async fn an_unresolvable_hostname_becomes_unhealthy_after_the_threshold() {
+        init_crypto_provider();
+        // `.invalid` never resolves (RFC 2606).
+        let target = "zentinel-test.invalid:80".to_string();
+        let mut config = hostname_config(target.clone());
+        config.health_check.as_mut().unwrap().unhealthy_threshold = 2;
+        let checker = ActiveHealthChecker::new(&config).expect("checker");
+
+        checker.run_health_check().await;
+        assert!(
+            !checker.view().is_unhealthy(&target),
+            "one failure is below the threshold"
+        );
+        checker.run_health_check().await;
+        assert!(checker.view().is_unhealthy(&target));
     }
 }

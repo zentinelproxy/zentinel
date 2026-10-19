@@ -18,11 +18,13 @@
 //! treating every target as healthy until the next probe.
 
 use async_trait::async_trait;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use pingora_load_balancing::{discovery::ServiceDiscovery, Backend};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+use tracing::warn;
 
 /// Probe results and the probed target set for one upstream.
 #[derive(Debug, Default)]
@@ -108,28 +110,174 @@ impl ActiveHealthView {
     }
 }
 
+/// What the last probe cycle resolved a hostname target to.
+#[derive(Debug, Default)]
+pub(crate) struct HostResolution {
+    /// The addresses the name resolved to, all of which were probed. Empty
+    /// while resolution is failing.
+    pub(crate) addrs: Vec<std::net::SocketAddr>,
+    /// Consecutive cycles in which the name did not resolve.
+    pub(crate) failures: u32,
+}
+
+/// Hostname target (`host:port`) -> its current resolution.
+pub(crate) type HostResolutions = Arc<Mutex<HashMap<String, HostResolution>>>;
+
 /// Health check discovery that probes what the pools route to.
 ///
 /// Falls back to the configured targets until a pool has published its set.
+///
+/// Pingora's `Backend` needs a socket address, so a hostname target
+/// (`backend.internal:80`) used to be dropped here -- never probed, never in
+/// the view, and so always treated as healthy. Hostnames are now resolved and
+/// every address they resolve to is probed; [`ViewDiscovery::host_statuses`]
+/// folds those results back into one status per hostname target, which is
+/// the key the pools look up.
+///
+/// Resolution happens in `discover`, which the checker calls at the start of
+/// every probe cycle. Re-resolving per cycle follows DNS changes (a service
+/// moving, a record with several addresses rotating) with the same staleness
+/// as the health results themselves, and the request path resolves per
+/// request anyway, so there is no cached answer for the two to disagree on.
+/// The cost is one lookup per hostname per interval, through the system
+/// resolver and its cache.
 pub(crate) struct ViewDiscovery {
     pub(crate) view: Arc<ActiveHealthView>,
-    pub(crate) configured: BTreeSet<Backend>,
+    /// Configured target addresses (`host:port`), probed until a pool
+    /// publishes its own set.
+    pub(crate) configured: Vec<String>,
     pub(crate) weights: HashMap<String, usize>,
+    /// Shared with the checker, which reads it after each cycle.
+    pub(crate) resolutions: HostResolutions,
+    /// Bounds each lookup, so a hanging resolver delays a cycle by at most
+    /// this much rather than stalling probing altogether.
+    pub(crate) resolve_timeout: Duration,
+}
+
+impl ViewDiscovery {
+    /// Resolve `address` if it is `host:port` rather than a socket address.
+    /// `None` means it is a socket address already.
+    async fn resolve(&self, address: &str) -> Option<std::io::Result<Vec<std::net::SocketAddr>>> {
+        if address.parse::<std::net::SocketAddr>().is_ok() {
+            return None;
+        }
+        let lookup = tokio::time::timeout(self.resolve_timeout, tokio::net::lookup_host(address));
+        Some(match lookup.await {
+            Ok(Ok(addrs)) => {
+                let mut unique: Vec<std::net::SocketAddr> = Vec::new();
+                for addr in addrs {
+                    if !unique.contains(&addr) {
+                        unique.push(addr);
+                    }
+                }
+                if unique.is_empty() {
+                    Err(std::io::Error::other("no addresses"))
+                } else {
+                    Ok(unique)
+                }
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "resolution timed out",
+            )),
+        })
+    }
+
+    /// One status per hostname target, from the probe results of the
+    /// addresses it resolved to.
+    ///
+    /// A hostname is healthy while **any** of its addresses is: taking the
+    /// whole name out because one of several replicas behind it is down would
+    /// throw away the healthy ones, and the request path connects to a
+    /// healthy address when there is one (see `UpstreamPool::create_peer`).
+    ///
+    /// A name that does not resolve has nothing to probe. The request path
+    /// cannot connect to it either, so once it has failed to resolve for
+    /// `unhealthy_threshold` consecutive cycles it is reported unhealthy;
+    /// before that its last status stands, so one lost DNS answer does not
+    /// take a target out.
+    pub(crate) fn host_statuses(
+        resolutions: &Mutex<HashMap<String, HostResolution>>,
+        probed: &HashMap<String, bool>,
+        unhealthy_threshold: u32,
+    ) -> Vec<(String, bool)> {
+        resolutions
+            .lock()
+            .iter()
+            .filter_map(|(host, resolution)| {
+                if resolution.addrs.is_empty() {
+                    (resolution.failures >= unhealthy_threshold.max(1))
+                        .then(|| (host.clone(), false))
+                } else {
+                    let healthy = resolution
+                        .addrs
+                        .iter()
+                        .any(|a| probed.get(&a.to_string()).copied().unwrap_or(true));
+                    Some((host.clone(), healthy))
+                }
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
 impl ServiceDiscovery for ViewDiscovery {
     async fn discover(&self) -> pingora_core::Result<(BTreeSet<Backend>, HashMap<u64, bool>)> {
-        let Some(targets) = self.view.targets() else {
-            return Ok((self.configured.clone(), HashMap::new()));
-        };
-        let backends = targets
-            .iter()
-            .filter_map(|address| {
-                let weight = self.weights.get(address).copied().unwrap_or(1);
-                Backend::new_with_weight(address, weight).ok()
-            })
-            .collect();
+        let targets = self
+            .view
+            .targets()
+            .unwrap_or_else(|| self.configured.clone());
+
+        let mut backends = BTreeSet::new();
+        let mut resolved: HashMap<String, std::io::Result<Vec<std::net::SocketAddr>>> =
+            HashMap::new();
+        for address in &targets {
+            let weight = self.weights.get(address).copied().unwrap_or(1);
+            match self.resolve(address).await {
+                None => {
+                    if let Ok(backend) = Backend::new_with_weight(address, weight) {
+                        backends.insert(backend);
+                    }
+                }
+                Some(Ok(addrs)) => {
+                    for addr in &addrs {
+                        if let Ok(backend) = Backend::new_with_weight(&addr.to_string(), weight) {
+                            backends.insert(backend);
+                        }
+                    }
+                    resolved.insert(address.clone(), Ok(addrs));
+                }
+                Some(Err(e)) => {
+                    resolved.insert(address.clone(), Err(e));
+                }
+            }
+        }
+
+        // Rebuilt from the current targets, so a hostname that is no longer
+        // routed to stops being reported.
+        let mut resolutions = self.resolutions.lock();
+        let mut next = HashMap::with_capacity(resolved.len());
+        for (host, result) in resolved {
+            let previous = resolutions.remove(&host).unwrap_or_default();
+            let entry = match result {
+                Ok(addrs) => HostResolution { addrs, failures: 0 },
+                Err(e) => {
+                    warn!(
+                        target = %host,
+                        error = %e,
+                        "Failed to resolve health check target"
+                    );
+                    HostResolution {
+                        addrs: Vec::new(),
+                        failures: previous.failures.saturating_add(1),
+                    }
+                }
+            };
+            next.insert(host, entry);
+        }
+        *resolutions = next;
+
         Ok((backends, HashMap::new()))
     }
 }

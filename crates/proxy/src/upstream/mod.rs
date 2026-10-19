@@ -1686,7 +1686,25 @@ impl UpstreamPool {
                     source: None,
                 }
             })?
-            .next()
+            .collect::<Vec<_>>();
+        // A hostname can resolve to several addresses, and only the first was
+        // ever used. When the health check holds one of them unhealthy, use
+        // the first address it does not: the checker reports a hostname as
+        // healthy while any of its addresses is, so without this a name whose
+        // first address is down (e.g. `localhost` -> `::1` for a backend that
+        // only listens on IPv4) would stay in rotation and fail every request.
+        // Without a health check, or with all of them failing, this is the
+        // first address as before.
+        let resolved_address = self
+            .active_health
+            .as_ref()
+            .and_then(|view| {
+                resolved_address
+                    .iter()
+                    .find(|addr| !view.is_unhealthy(&addr.to_string()))
+            })
+            .or_else(|| resolved_address.first())
+            .copied()
             .ok_or_else(|| {
                 error!(
                     upstream = %self.id,
