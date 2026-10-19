@@ -1003,10 +1003,30 @@ fn run_server(
     // Create proxy service with server options (Pingora 0.8.0 builder pattern)
     let mut server_options = pingora_core::apps::HttpServerOptions::default();
     server_options.keepalive_request_limit = keepalive_request_limit;
-    let mut proxy_service = pingora_proxy::ProxyServiceBuilder::new(&server.configuration, proxy)
-        .name("Zentinel Proxy")
-        .server_options(server_options)
-        .build();
+    //
+    // Built by hand rather than with `ProxyServiceBuilder`, which does the
+    // same three steps, so the app can be wrapped: `ConnectionLimitedApp`
+    // counts each connection for as long as the proxy is serving it, which is
+    // how `max-total-connections` and `max-connections-per-client` are
+    // enforced (see `connection_limit`). The limits are read from the current
+    // config for every new connection, so a reload applies to the next one.
+    let mut http_proxy = pingora_proxy::HttpProxy::new(proxy, server.configuration.clone());
+    http_proxy.server_options = Some(server_options);
+    http_proxy.handle_init_modules();
+    let limits_config = config_manager.clone();
+    let connection_app = zentinel_proxy::connection_limit::ConnectionLimitedApp::new(
+        http_proxy,
+        zentinel_common::limits::ConnectionLimiter::new(),
+        move || {
+            zentinel_proxy::connection_limit::ConnectionLimits::from_limits(
+                &limits_config.current().limits,
+            )
+        },
+    );
+    let mut proxy_service = pingora_core::services::listening::Service::new(
+        "Zentinel Proxy".to_string(),
+        connection_app,
+    );
 
     // Tracks the certificate resolver of every TLS listener, so SIGHUP can
     // refresh certificates from disk without restarting the process.

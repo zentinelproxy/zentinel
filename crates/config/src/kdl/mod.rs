@@ -1082,9 +1082,49 @@ pub(crate) const RECOGNIZED_LIMITS_KEYS: &[&str] = &[
     "max-in-flight-requests",
 ];
 
+/// The connection and in-flight limits of a `limits` block.
+///
+/// Each is unlimited unless written, and `0` is read as unlimited too: these
+/// keys were parsed and never applied before #542, so a `0` loaded and limited
+/// nothing, and enforcing it now would refuse every connection or request.
+/// [`unapplied_limits_settings`] reports the `0`.
+const CONCURRENCY_LIMIT_KEYS: &[&str] = &[
+    "max-connections-per-client",
+    "max-total-connections",
+    "max-in-flight-requests",
+];
+
+/// A concurrency limit's value: `None` (unlimited) when absent or `0`.
+fn concurrency_limit(node: &kdl::KdlNode, key: &str) -> Option<usize> {
+    get_int_entry(node, key)
+        .filter(|v| *v != 0)
+        .map(|v| v as usize)
+}
+
+/// Settings in a `limits` block that are read but not applied.
+///
+/// Shared by the parser, which logs each one at load, and by `zentinel lint` /
+/// `zentinel test`, which report them; both therefore say the same thing.
+pub(crate) fn unapplied_limits_settings(node: &kdl::KdlNode) -> Vec<String> {
+    let mut problems = Vec::new();
+    for key in CONCURRENCY_LIMIT_KEYS {
+        if get_int_entry(node, key) == Some(0) {
+            problems.push(format!(
+                "'{key} 0' is being ignored: 0 would refuse everything, so it is read as \
+                 no limit. Remove the line for no limit, or set a positive number."
+            ));
+        }
+    }
+    problems
+}
+
 /// Parse limits configuration block
 pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
     let mut limits = Limits::default();
+
+    for problem in unapplied_limits_settings(node) {
+        warn!("{}", problem);
+    }
 
     if let Some(v) = get_int_entry(node, "max-header-size") {
         limits.max_header_size_bytes = v as usize;
@@ -1101,15 +1141,9 @@ pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
         // could not change. Nothing reads the buffer size at request time.
         limits.max_body_buffer_bytes = limits.max_body_buffer_bytes.min(limits.max_body_size_bytes);
     }
-    if let Some(v) = get_int_entry(node, "max-connections-per-client") {
-        limits.max_connections_per_client = v as usize;
-    }
-    if let Some(v) = get_int_entry(node, "max-total-connections") {
-        limits.max_total_connections = v as usize;
-    }
-    if let Some(v) = get_int_entry(node, "max-in-flight-requests") {
-        limits.max_in_flight_requests = v as usize;
-    }
+    limits.max_connections_per_client = concurrency_limit(node, "max-connections-per-client");
+    limits.max_total_connections = concurrency_limit(node, "max-total-connections");
+    limits.max_in_flight_requests = concurrency_limit(node, "max-in-flight-requests");
 
     Ok(limits)
 }
@@ -2000,6 +2034,34 @@ mod tests {
         let config = parse_tracing_config(node).unwrap();
         assert_eq!(config.sampling_rate, 0.01); // default
         assert_eq!(config.service_name, "zentinel"); // default
+    }
+
+    /// #542: the connection and in-flight limits are unlimited unless
+    /// written, and a written `0` stays unlimited, as it was while nothing
+    /// applied them.
+    #[test]
+    fn concurrency_limits_are_unlimited_unless_written_and_zero_is_unlimited() {
+        let parse = |kdl: &str| {
+            let doc: kdl::KdlDocument = kdl.parse().unwrap();
+            parse_limits_config(doc.nodes().first().unwrap()).unwrap()
+        };
+
+        let unset = parse("limits { max-body-size 1024 }");
+        assert_eq!(unset.max_connections_per_client, None);
+        assert_eq!(unset.max_total_connections, None);
+        assert_eq!(unset.max_in_flight_requests, None);
+
+        let set = parse(
+            "limits {\n max-connections-per-client 7\n max-total-connections 70\n \
+             max-in-flight-requests 700\n}",
+        );
+        assert_eq!(set.max_connections_per_client, Some(7));
+        assert_eq!(set.max_total_connections, Some(70));
+        assert_eq!(set.max_in_flight_requests, Some(700));
+
+        let zero = parse("limits {\n max-in-flight-requests 0\n max-total-connections 0\n}");
+        assert_eq!(zero.max_in_flight_requests, None);
+        assert_eq!(zero.max_total_connections, None);
     }
 
     #[test]

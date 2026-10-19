@@ -47,6 +47,7 @@ pub mod agents;
 pub mod app;
 pub mod builtin_handlers;
 pub mod cache;
+pub mod connection_limit;
 pub mod decompression;
 pub mod discovery;
 pub mod disk_cache;

@@ -6,6 +6,8 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
@@ -30,14 +32,18 @@ pub struct Limits {
     pub max_decompression_ratio: f32,
     pub max_decompressed_size_bytes: usize,
 
-    // Connection limits
-    pub max_connections_per_client: usize,
+    // Connection limits. `None` is unlimited, and is the default: these
+    // were parsed and never applied until #542, so a default that limits
+    // would have started refusing connections on configs that never asked
+    // for it. Counted per open client connection, by TCP peer address.
+    pub max_connections_per_client: Option<usize>,
     pub max_connections_per_route: usize,
-    pub max_total_connections: usize,
+    pub max_total_connections: Option<usize>,
     pub max_idle_connections_per_upstream: usize,
 
-    // Request limits
-    pub max_in_flight_requests: usize,
+    // Request limits. `max_in_flight_requests` is unlimited by default for
+    // the same reason as the connection limits above.
+    pub max_in_flight_requests: Option<usize>,
     pub max_in_flight_requests_per_worker: usize,
     pub max_queued_requests: usize,
 
@@ -75,13 +81,13 @@ impl Default for Limits {
             max_decompressed_size_bytes: 100 * 1024 * 1024, // 100MB
 
             // Connection limits
-            max_connections_per_client: 100,
+            max_connections_per_client: None,
             max_connections_per_route: 1000,
-            max_total_connections: 10000,
+            max_total_connections: None,
             max_idle_connections_per_upstream: 100,
 
             // Request concurrency
-            max_in_flight_requests: 10000,
+            max_in_flight_requests: None,
             max_in_flight_requests_per_worker: 1000,
             max_queued_requests: 1000,
 
@@ -109,7 +115,7 @@ impl Limits {
             max_header_size_bytes: 16384,
             max_header_count: 200,
             max_body_size_bytes: 100 * 1024 * 1024, // 100MB
-            max_in_flight_requests: 100000,
+            max_in_flight_requests: Some(100000),
             ..Default::default()
         }
     }
@@ -120,7 +126,7 @@ impl Limits {
             max_header_size_bytes: 4096,
             max_header_count: 50,
             max_body_size_bytes: 1024 * 1024, // 1MB
-            max_in_flight_requests: 5000,
+            max_in_flight_requests: Some(5000),
             max_requests_per_second_global: Some(10000),
             max_requests_per_second_per_client: Some(100),
             max_memory_percent: Some(80.0),
@@ -468,162 +474,223 @@ impl MultiRateLimiter {
     }
 }
 
-/// Connection limiter for managing concurrent connections
+/// Why [`ConnectionLimiter::try_acquire`] refused a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionRefusal {
+    /// `max-total-connections` connections are already open.
+    Total { limit: usize },
+    /// The client already has `max-connections-per-client` connections open.
+    PerClient { limit: usize },
+}
+
+impl std::fmt::Display for ConnectionRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Total { limit } => write!(f, "max-total-connections ({limit}) reached"),
+            Self::PerClient { limit } => {
+                write!(f, "max-connections-per-client ({limit}) reached")
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct ConnectionCounts {
+    total: usize,
+    per_client: HashMap<IpAddr, usize>,
+}
+
+/// Counts open client connections against `max-total-connections` and
+/// `max-connections-per-client`.
+///
+/// A slot is taken when a connection is handed to the HTTP layer and given
+/// back when the returned [`ConnectionPermit`] is dropped, which the proxy
+/// ties to the end of the connection rather than of a request: a keep-alive
+/// connection idling between requests still holds its slot, as it holds its
+/// file descriptor. (The earlier version of this type counted per request and
+/// per route, which is not a connection count at all, and nothing used it.)
+///
+/// The limits are passed on every acquire instead of being stored, so a
+/// config reload changes them without forgetting the connections already
+/// open. A client's entry is removed when its last connection closes, so the
+/// map holds only clients that are connected right now.
+#[derive(Default)]
 pub struct ConnectionLimiter {
-    per_client: Arc<RwLock<HashMap<String, usize>>>,
-    per_route: Arc<RwLock<HashMap<String, usize>>>,
-    total: Arc<RwLock<usize>>,
-    limits: Limits,
+    counts: parking_lot::Mutex<ConnectionCounts>,
 }
 
 impl ConnectionLimiter {
-    pub fn new(limits: Limits) -> Self {
-        debug!(
-            max_total = limits.max_total_connections,
-            max_per_client = limits.max_connections_per_client,
-            max_per_route = limits.max_connections_per_route,
-            "Creating connection limiter"
-        );
-        Self {
-            per_client: Arc::new(RwLock::new(HashMap::new())),
-            per_route: Arc::new(RwLock::new(HashMap::new())),
-            total: Arc::new(RwLock::new(0)),
-            limits,
-        }
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
     }
 
-    /// Try to acquire a connection slot
-    pub fn try_acquire(&self, client_id: &str, route: &str) -> ZentinelResult<ConnectionGuard<'_>> {
-        trace!(
-            client_id = %client_id,
-            route = %route,
-            "Attempting to acquire connection slot"
-        );
-
-        // Check total connections
-        {
-            let mut total = self.total.write();
-            if *total >= self.limits.max_total_connections {
-                warn!(
-                    current = *total,
-                    max = self.limits.max_total_connections,
-                    "Total connection limit exceeded"
-                );
-                return Err(ZentinelError::limit_exceeded(
-                    LimitType::ConnectionCount,
-                    *total,
-                    self.limits.max_total_connections,
-                ));
+    /// Take a connection slot for `client`, or say which limit is full.
+    ///
+    /// `None` for a limit means unlimited. A `client` of `None` (a Unix socket
+    /// peer) counts toward the total only.
+    pub fn try_acquire(
+        self: &Arc<Self>,
+        client: Option<IpAddr>,
+        max_total: Option<usize>,
+        max_per_client: Option<usize>,
+    ) -> Result<ConnectionPermit, ConnectionRefusal> {
+        let mut counts = self.counts.lock();
+        if let Some(limit) = max_total {
+            if counts.total >= limit {
+                return Err(ConnectionRefusal::Total { limit });
             }
-            *total += 1;
         }
-
-        // Check per-client connections
-        {
-            let mut per_client = self.per_client.write();
-            let client_count = per_client.entry(client_id.to_string()).or_insert(0);
-            if *client_count >= self.limits.max_connections_per_client {
-                // Rollback total count
-                *self.total.write() -= 1;
-                warn!(
-                    client_id = %client_id,
-                    current = *client_count,
-                    max = self.limits.max_connections_per_client,
-                    "Per-client connection limit exceeded"
-                );
-                return Err(ZentinelError::limit_exceeded(
-                    LimitType::ConnectionCount,
-                    *client_count,
-                    self.limits.max_connections_per_client,
-                ));
+        if let (Some(ip), Some(limit)) = (client, max_per_client) {
+            if counts.per_client.get(&ip).copied().unwrap_or(0) >= limit {
+                return Err(ConnectionRefusal::PerClient { limit });
             }
-            *client_count += 1;
         }
-
-        // Check per-route connections
-        {
-            let mut per_route = self.per_route.write();
-            let route_count = per_route.entry(route.to_string()).or_insert(0);
-            if *route_count >= self.limits.max_connections_per_route {
-                // Rollback counts
-                *self.total.write() -= 1;
-                *self.per_client.write().get_mut(client_id).unwrap() -= 1;
-                warn!(
-                    route = %route,
-                    current = *route_count,
-                    max = self.limits.max_connections_per_route,
-                    "Per-route connection limit exceeded"
-                );
-                return Err(ZentinelError::limit_exceeded(
-                    LimitType::ConnectionCount,
-                    *route_count,
-                    self.limits.max_connections_per_route,
-                ));
-            }
-            *route_count += 1;
+        counts.total += 1;
+        if let Some(ip) = client {
+            *counts.per_client.entry(ip).or_insert(0) += 1;
         }
-
-        trace!(
-            client_id = %client_id,
-            route = %route,
-            "Connection slot acquired"
-        );
-
-        Ok(ConnectionGuard {
-            limiter: self,
-            client_id: client_id.to_string(),
-            route: route.to_string(),
+        Ok(ConnectionPermit {
+            limiter: Arc::clone(self),
+            client,
         })
     }
 
-    /// Release a connection slot
-    fn release(&self, client_id: &str, route: &str) {
-        trace!(
-            client_id = %client_id,
-            route = %route,
-            "Releasing connection slot"
-        );
-
-        *self.total.write() -= 1;
-
-        if let Some(count) = self.per_client.write().get_mut(client_id) {
-            *count = count.saturating_sub(1);
-        }
-
-        if let Some(count) = self.per_route.write().get_mut(route) {
-            *count = count.saturating_sub(1);
-        }
+    /// Connections currently holding a slot.
+    pub fn total(&self) -> usize {
+        self.counts.lock().total
     }
 
-    /// Get current connection statistics
-    pub fn stats(&self) -> ConnectionStats {
-        ConnectionStats {
-            total: *self.total.read(),
-            per_client_count: self.per_client.read().len(),
-            per_route_count: self.per_route.read().len(),
+    /// Connections `client` currently holds.
+    pub fn for_client(&self, client: IpAddr) -> usize {
+        self.counts
+            .lock()
+            .per_client
+            .get(&client)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Clients with at least one open connection.
+    pub fn tracked_clients(&self) -> usize {
+        self.counts.lock().per_client.len()
+    }
+
+    fn release(&self, client: Option<IpAddr>) {
+        let mut counts = self.counts.lock();
+        counts.total = counts.total.saturating_sub(1);
+        if let Some(ip) = client {
+            if let std::collections::hash_map::Entry::Occupied(mut entry) =
+                counts.per_client.entry(ip)
+            {
+                *entry.get_mut() -= 1;
+                if *entry.get() == 0 {
+                    entry.remove();
+                }
+            }
         }
     }
 }
 
-/// RAII guard for connection slots
-pub struct ConnectionGuard<'a> {
-    limiter: &'a ConnectionLimiter,
-    client_id: String,
-    route: String,
+/// An open connection's slot in a [`ConnectionLimiter`], released on drop.
+pub struct ConnectionPermit {
+    limiter: Arc<ConnectionLimiter>,
+    client: Option<IpAddr>,
 }
 
-impl Drop for ConnectionGuard<'_> {
+impl Drop for ConnectionPermit {
     fn drop(&mut self) {
-        self.limiter.release(&self.client_id, &self.route);
+        self.limiter.release(self.client);
     }
 }
 
-/// Connection statistics
-#[derive(Debug, Clone, Serialize)]
-pub struct ConnectionStats {
-    pub total: usize,
-    pub per_client_count: usize,
-    pub per_route_count: usize,
+/// Counts requests in flight, proxy-wide and per namespace, against
+/// `max-in-flight-requests`.
+///
+/// Every request is counted whether or not a limit is set, so a reload that
+/// adds a limit sees the requests already running. The count is released by
+/// dropping the [`InFlightPermit`], which the proxy keeps in the request
+/// context: Pingora drops that context however the request ends -- response
+/// sent, upstream error, client gone -- so no exit path can leak a slot.
+#[derive(Default)]
+pub struct InFlightLimiter {
+    global: Arc<AtomicUsize>,
+    namespaces: parking_lot::Mutex<HashMap<String, Arc<AtomicUsize>>>,
+}
+
+impl InFlightLimiter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Count a request proxy-wide, refusing it if `limit` requests are
+    /// already in flight. `None` means unlimited.
+    pub fn try_acquire_global(&self, limit: Option<usize>) -> Option<InFlightPermit> {
+        InFlightPermit::try_take(&self.global, limit)
+    }
+
+    /// Count a request against its namespace's own limit.
+    pub fn try_acquire_namespace(
+        &self,
+        namespace: &str,
+        limit: Option<usize>,
+    ) -> Option<InFlightPermit> {
+        let counter = {
+            let mut namespaces = self.namespaces.lock();
+            match namespaces.get(namespace) {
+                Some(counter) => Arc::clone(counter),
+                None => Arc::clone(
+                    namespaces
+                        .entry(namespace.to_string())
+                        .or_insert_with(|| Arc::new(AtomicUsize::new(0))),
+                ),
+            }
+        };
+        InFlightPermit::try_take(&counter, limit)
+    }
+
+    /// Requests in flight proxy-wide.
+    pub fn global(&self) -> usize {
+        self.global.load(Ordering::Acquire)
+    }
+
+    /// Requests in flight in `namespace`.
+    pub fn namespace(&self, namespace: &str) -> usize {
+        self.namespaces
+            .lock()
+            .get(namespace)
+            .map_or(0, |c| c.load(Ordering::Acquire))
+    }
+}
+
+/// One request's slot in an [`InFlightLimiter`] counter, released on drop.
+pub struct InFlightPermit {
+    counter: Arc<AtomicUsize>,
+}
+
+impl InFlightPermit {
+    fn try_take(counter: &Arc<AtomicUsize>, limit: Option<usize>) -> Option<Self> {
+        let max = limit.unwrap_or(usize::MAX);
+        counter
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < max).then_some(n + 1)
+            })
+            .ok()?;
+        Some(Self {
+            counter: Arc::clone(counter),
+        })
+    }
+}
+
+impl Drop for InFlightPermit {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl std::fmt::Debug for InFlightPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InFlightPermit").finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]
@@ -666,24 +733,70 @@ mod tests {
     }
 
     #[test]
-    fn test_connection_limiter() {
-        let limits = Limits {
-            max_total_connections: 100,
-            max_connections_per_client: 10,
-            max_connections_per_route: 50,
-            ..Default::default()
-        };
+    fn connection_limiter_enforces_total_and_per_client_and_releases_on_drop() {
+        let limiter = ConnectionLimiter::new();
+        let a: IpAddr = "192.0.2.1".parse().unwrap();
+        let b: IpAddr = "192.0.2.2".parse().unwrap();
 
-        let limiter = ConnectionLimiter::new(limits);
+        let a1 = limiter.try_acquire(Some(a), Some(3), Some(2)).unwrap();
+        let a2 = limiter.try_acquire(Some(a), Some(3), Some(2)).unwrap();
+        assert_eq!(
+            limiter.try_acquire(Some(a), Some(3), Some(2)).err(),
+            Some(ConnectionRefusal::PerClient { limit: 2 })
+        );
+        let b1 = limiter.try_acquire(Some(b), Some(3), Some(2)).unwrap();
+        assert_eq!(
+            limiter.try_acquire(Some(b), Some(3), Some(2)).err(),
+            Some(ConnectionRefusal::Total { limit: 3 })
+        );
+        // A refused attempt must not have taken anything.
+        assert_eq!(limiter.total(), 3);
+        assert_eq!(limiter.for_client(a), 2);
 
-        // Acquire connections
-        let _guard1 = limiter.try_acquire("client1", "route1").unwrap();
-        let _guard2 = limiter.try_acquire("client1", "route1").unwrap();
+        drop(a1);
+        assert_eq!(limiter.for_client(a), 1);
+        let _a3 = limiter.try_acquire(Some(a), Some(3), Some(2)).unwrap();
+        drop((a2, b1));
+        drop(_a3);
+        assert_eq!(limiter.total(), 0);
+        // Clients with no open connection are forgotten, so the map cannot
+        // grow with every address that ever connected.
+        assert_eq!(limiter.tracked_clients(), 0);
+    }
 
-        let stats = limiter.stats();
-        assert_eq!(stats.total, 2);
+    #[test]
+    fn connection_limiter_without_limits_counts_but_never_refuses() {
+        let limiter = ConnectionLimiter::new();
+        let permits: Vec<_> = (0..1000)
+            .map(|_| limiter.try_acquire(None, None, None).unwrap())
+            .collect();
+        assert_eq!(limiter.total(), 1000);
+        drop(permits);
+        assert_eq!(limiter.total(), 0);
+    }
 
-        // Guards will release on drop
+    #[test]
+    fn in_flight_limiter_refuses_at_the_limit_and_recovers() {
+        let limiter = InFlightLimiter::new();
+        let p1 = limiter.try_acquire_global(Some(2)).unwrap();
+        let p2 = limiter.try_acquire_global(Some(2)).unwrap();
+        assert!(limiter.try_acquire_global(Some(2)).is_none());
+        assert_eq!(limiter.global(), 2);
+        drop(p1);
+        let p3 = limiter.try_acquire_global(Some(2)).unwrap();
+        drop((p2, p3));
+        assert_eq!(limiter.global(), 0);
+    }
+
+    #[test]
+    fn in_flight_namespaces_are_counted_separately() {
+        let limiter = InFlightLimiter::new();
+        let a = limiter.try_acquire_namespace("a", Some(1)).unwrap();
+        assert!(limiter.try_acquire_namespace("a", Some(1)).is_none());
+        let b = limiter.try_acquire_namespace("b", Some(1)).unwrap();
+        assert_eq!((limiter.namespace("a"), limiter.namespace("b")), (1, 1));
+        drop((a, b));
+        assert_eq!((limiter.namespace("a"), limiter.namespace("b")), (0, 0));
     }
 
     #[test]

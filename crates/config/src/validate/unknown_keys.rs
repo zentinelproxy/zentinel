@@ -747,6 +747,13 @@ fn check_values(
                 report(Some(problem));
             }
         }
+        // The same positions the closed-block check lists for `limits`, so a
+        // `limits` node inside free-form agent configuration is left alone.
+        ("limits", _) if matches!(parent, None | Some("namespace") | Some("service")) => {
+            for problem in crate::kdl::unapplied_limits_settings(node) {
+                report(Some(problem));
+            }
+        }
         ("matches", _) if parent == Some("route") => check_run_together_matches(node, result),
         _ => {}
     }
@@ -2324,6 +2331,26 @@ mod tests {
             "#,
         );
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// #542: a `0` connection or in-flight limit loaded and limited nothing
+    /// while these keys were never applied. Now that they are, `0` stays "no
+    /// limit" rather than refusing everything, and says so.
+    #[test]
+    fn a_zero_concurrency_limit_is_reported_as_ignored() {
+        let warnings = warnings_for(
+            r#"
+            limits {
+                max-in-flight-requests 0
+                max-total-connections 0
+                max-connections-per-client 5
+            }
+            "#,
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings
+            .iter()
+            .all(|w| w.contains("is being ignored") && w.contains(" 0'")));
     }
 
     /// The values from #521 that each fell back to a default without a word.

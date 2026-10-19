@@ -14,7 +14,7 @@ pub(crate) mod filters;
 mod forwarded;
 mod handlers;
 mod http_trait;
-mod listener_addr;
+pub(crate) mod listener_addr;
 mod model_routing;
 mod model_routing_metrics;
 
@@ -109,6 +109,10 @@ pub struct ZentinelProxy {
     pub(super) trace_id_format: TraceIdFormat,
     /// Active health check runner
     pub(super) health_check_runner: Arc<HealthCheckRunner>,
+    /// Requests in flight, proxy-wide and per namespace, for
+    /// `limits { max-in-flight-requests }`. Lives as long as the proxy, not a
+    /// config, so a reload keeps counting the requests already running.
+    pub(super) in_flight: Arc<zentinel_common::limits::InFlightLimiter>,
     /// Rate limit manager
     pub(super) rate_limit_manager: Arc<RateLimitManager>,
     /// HTTP cache manager
@@ -384,6 +388,7 @@ impl ZentinelProxy {
             trace_id_format,
             health_check_runner,
             rate_limit_manager,
+            in_flight: Arc::new(zentinel_common::limits::InFlightLimiter::new()),
             cache_manager,
             geo_filter_manager,
             inference_rate_limit_manager,

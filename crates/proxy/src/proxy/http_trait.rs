@@ -93,6 +93,46 @@ impl HeaderAccessor for RequestHeaderAccessor<'_> {
 }
 
 impl ZentinelProxy {
+    /// Count this request against `limits { max-in-flight-requests }`, or
+    /// answer it with 503 when the limit is full. Returns `true` when the
+    /// request was answered here.
+    ///
+    /// 503 rather than 429: the limit protects the proxy and its upstreams
+    /// from load as a whole, not from one client sending too much, and a
+    /// client that has sent one request may still be refused. `Retry-After`
+    /// is one second, since in-flight requests usually finish quicker than
+    /// that.
+    ///
+    /// Called from `request_filter`, so builtin handlers (health, status,
+    /// metrics), which are answered in `early_request_filter`, are never
+    /// refused: a health check failing because the proxy is busy would take
+    /// a working proxy out of its load balancer.
+    async fn refuse_over_in_flight_limit(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestContext,
+    ) -> Result<bool, Box<Error>> {
+        let config = std::sync::Arc::clone(
+            ctx.config
+                .get_or_insert_with(|| self.config_manager.current()),
+        );
+        let limit = config.limits.max_in_flight_requests;
+        let Some(permit) = self.in_flight.try_acquire_global(limit) else {
+            warn!(
+                correlation_id = %ctx.trace_id,
+                route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                limit = limit.unwrap_or_default(),
+                "Request refused: max-in-flight-requests reached"
+            );
+            self.metrics
+                .record_blocked_request("in_flight_limit_exceeded");
+            write_in_flight_refusal(session, &ctx.trace_id).await?;
+            return Ok(true);
+        };
+        ctx.in_flight.push(permit);
+        Ok(false)
+    }
+
     /// Route matcher for the listener a request arrived on.
     ///
     /// Returns `Some` only when the arrival listener is bound to a namespace
@@ -1115,6 +1155,10 @@ impl ProxyHttp for ZentinelProxy {
                 // Store keepalive for response phase
                 ctx.listener_keepalive_timeout_secs = Some(keepalive_timeout_secs);
             }
+        }
+
+        if self.refuse_over_in_flight_limit(session, ctx).await? {
+            return Ok(true);
         }
 
         // Refuse a body declared larger than the limit before reading any of
@@ -4186,6 +4230,30 @@ impl ProxyHttp for ZentinelProxy {
 /// oversized request (#517). Marking it downstream matters as much as the
 /// status: raised while the body streams, it reaches `error_while_proxy`,
 /// which would otherwise count it against the upstream peer.
+/// The 503 for a request over `max-in-flight-requests`.
+///
+/// The same JSON body and headers `fail_to_proxy` sends, so clients see one
+/// error format, plus `Retry-After`, which that path cannot add. Written here
+/// rather than returned as an error so the refusal never reaches the
+/// upstream error accounting: no upstream was involved.
+async fn write_in_flight_refusal(session: &mut Session, trace_id: &str) -> Result<(), Box<Error>> {
+    let body = proxy_error_body(503, trace_id);
+    let mut header = ResponseHeader::build(503, None)?;
+    header.insert_header("Content-Type", "application/json")?;
+    header.insert_header("Content-Length", body.len().to_string())?;
+    header.insert_header("Retry-After", "1")?;
+    header.insert_header("X-Correlation-Id", trace_id)?;
+    // Shed the connection along with the request: the proxy is at capacity.
+    session.set_keepalive(None);
+    session
+        .write_response_header(Box::new(header), false)
+        .await?;
+    session
+        .write_response_body(Some(Bytes::from(body)), true)
+        .await?;
+    Ok(())
+}
+
 fn body_too_large() -> Box<Error> {
     Error::explain(
         ErrorType::HTTPStatus(413),

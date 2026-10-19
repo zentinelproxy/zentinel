@@ -114,6 +114,13 @@ pub struct RequestContext {
     /// Service for this request (if routed to a service scope)
     pub(crate) service: Option<String>,
 
+    // === Concurrency ===
+    /// This request's slots in the `max-in-flight-requests` counters. Held
+    /// here so they are released when Pingora drops the context, which it
+    /// does however the request ends; releasing in `logging()` alone would
+    /// depend on every exit path reaching it.
+    pub(crate) in_flight: Vec<zentinel_common::limits::InFlightPermit>,
+
     // === Request metadata (cached for logging) ===
     /// HTTP method
     pub(crate) method: String,
@@ -492,6 +499,7 @@ impl RequestContext {
             response_agent_processing_enabled: false,
             response_agent_body_buffer: Vec::new(),
             response_agent_body_complete: false,
+            in_flight: Vec::new(),
         }
     }
 
@@ -1005,5 +1013,37 @@ mod tests {
     fn without_a_route_limit_the_global_one_applies() {
         assert_eq!(ctx_with_route_limit(None).max_body_size(10_000), 10_000);
         assert_eq!(RequestContext::new().max_body_size(10_000), 10_000);
+    }
+
+    /// #542: the in-flight slot is released when the context is dropped,
+    /// which Pingora does on every exit path -- response sent, upstream
+    /// error, client gone -- including a request task that is cancelled
+    /// outright and never reaches `logging()`.
+    #[tokio::test]
+    async fn in_flight_slots_are_released_when_the_context_is_dropped() {
+        let limiter = std::sync::Arc::new(zentinel_common::limits::InFlightLimiter::new());
+
+        let mut ctx = RequestContext::new();
+        ctx.in_flight
+            .push(limiter.try_acquire_global(Some(1)).unwrap());
+        assert!(limiter.try_acquire_global(Some(1)).is_none());
+        drop(ctx);
+        assert_eq!(limiter.global(), 0);
+
+        // A request task cancelled while it waits on the upstream.
+        let held = std::sync::Arc::clone(&limiter);
+        let task = tokio::spawn(async move {
+            let mut ctx = RequestContext::new();
+            ctx.in_flight
+                .push(held.try_acquire_global(Some(1)).unwrap());
+            std::future::pending::<()>().await;
+            drop(ctx);
+        });
+        while limiter.global() == 0 {
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        let _ = task.await;
+        assert_eq!(limiter.global(), 0);
     }
 }
