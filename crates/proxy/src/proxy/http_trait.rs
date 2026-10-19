@@ -1244,12 +1244,10 @@ impl ProxyHttp for ZentinelProxy {
                 // request's value. Passing none put every request into one
                 // shared "unknown" bucket, whatever the header said.
                 let headers = RequestHeaderAccessor(session.req_header());
-                let rate_result = self.rate_limit_manager.check(
-                    route_id,
-                    &ctx.client_ip,
-                    &ctx.path,
-                    Some(&headers),
-                );
+                let rate_result = self
+                    .rate_limit_manager
+                    .check(route_id, &ctx.client_ip, &ctx.path, Some(&headers))
+                    .await;
 
                 // Store rate limit info for response headers (even if allowed)
                 if rate_result.limit > 0 {
@@ -2046,7 +2044,8 @@ impl ProxyHttp for ZentinelProxy {
         // MCP / A2A policy. Runs before agent inspection because it decides
         // whether the request may be made at all, from data already in hand;
         // agents decide whether its contents are safe.
-        self.evaluate_agentic_policy(session, body.as_ref(), end_of_stream, ctx)?;
+        self.evaluate_agentic_policy(session, body.as_ref(), end_of_stream, ctx)
+            .await?;
 
         // Handle WebSocket frame inspection (client -> server)
         if ctx.is_websocket_upgrade {
@@ -5052,7 +5051,7 @@ impl ZentinelProxy {
     /// The body is accumulated across chunks and judged once, at end of stream,
     /// so that a decision is never made on a partial envelope. Nothing has been
     /// forwarded upstream at that point.
-    fn evaluate_agentic_policy(
+    async fn evaluate_agentic_policy(
         &self,
         session: &Session,
         chunk: Option<&Bytes>,
@@ -5122,12 +5121,16 @@ impl ZentinelProxy {
                 // a client may set it to a cheap tool while the body calls an
                 // expensive one, and the limit would apply to the wrong thing.
                 if let Some(route_id) = ctx.route_id.as_deref() {
-                    if let Some(result) = self.rate_limit_manager.check_body_keyed(
-                        route_id,
-                        &ctx.client_ip,
-                        &ctx.path,
-                        mcp_target.as_deref(),
-                    ) {
+                    if let Some(result) = self
+                        .rate_limit_manager
+                        .check_body_keyed(
+                            route_id,
+                            &ctx.client_ip,
+                            &ctx.path,
+                            mcp_target.as_deref(),
+                        )
+                        .await
+                    {
                         if !result.allowed
                             && result.action == zentinel_config::RateLimitAction::Reject
                         {

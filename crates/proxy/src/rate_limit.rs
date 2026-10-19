@@ -1,18 +1,19 @@
-//! Rate limiting using pingora-limits
+//! Per-route, per-client rate limiting
 //!
-//! This module provides efficient per-route, per-client rate limiting using
-//! Pingora's optimized rate limiting primitives. Supports both local (single-instance)
-//! and distributed (Redis-backed) rate limiting.
+//! Every limit is a token bucket ([`TokenBucket`]): `burst` tokens, refilled
+//! at `max-rps` per second, one taken per request.
 //!
 //! # Local Rate Limiting
 //!
-//! Uses `pingora-limits::Rate` for efficient in-memory rate limiting.
-//! Suitable for single-instance deployments.
+//! Buckets live in memory, one per key. Suitable for single-instance
+//! deployments.
 //!
 //! # Distributed Rate Limiting
 //!
-//! Uses Redis sorted sets for sliding window rate limiting across multiple instances.
-//! Requires the `distributed-rate-limit` feature.
+//! `backend "redis"` (feature `distributed-rate-limit-redis`) and
+//! `backend "memcached"` (feature `distributed-rate-limit-memcached`) keep the
+//! buckets in a shared store so that instances enforce one limit together.
+//! They run the same bucket arithmetic as the local limiter.
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -24,8 +25,10 @@ use tracing::{debug, trace, warn};
 
 use zentinel_config::{RateLimitAction, RateLimitBackend, RateLimitKey};
 
-#[cfg(feature = "distributed-rate-limit")]
-use crate::distributed_rate_limit::{create_redis_rate_limiter, RedisRateLimiter};
+#[cfg(feature = "distributed-rate-limit-redis")]
+use crate::distributed_rate_limit::RedisRateLimiter;
+#[cfg(feature = "distributed-rate-limit-memcached")]
+use crate::memcached_rate_limit::MemcachedRateLimiter;
 
 /// Rate limiter outcome
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +59,7 @@ pub struct RateLimitCheckInfo {
 }
 
 /// Rate limiter configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitConfig {
     /// Maximum requests per second
     pub max_rps: u32,
@@ -101,19 +104,176 @@ impl Default for RateLimitConfig {
     }
 }
 
-/// Per-key token bucket.
+/// Token bucket arithmetic shared by every backend.
 ///
-/// Holds up to `burst` tokens and refills at `max_rps` tokens per second;
-/// each request takes one. That is what `max-rps` and `burst` are documented
-/// to mean ("token bucket", "burst: token bucket size"). The previous limiter
-/// counted requests in a one-second window and ignored `burst` entirely, so
-/// `burst` changed nothing for route filters, `global` or `default-burst`.
-struct KeyRateLimiter {
-    bucket: parking_lot::Mutex<Bucket>,
+/// A bucket holds up to `burst` tokens and refills at `max_rps` tokens per
+/// second; each request takes one. That is what `max-rps` and `burst` are
+/// documented to mean ("token bucket", "burst: token bucket size").
+///
+/// The local limiter, the Redis script and the memcached CAS loop all apply
+/// this one step, so a config admits and denies the same sequence of requests
+/// and reports the same `X-RateLimit-*` / `Retry-After` values whichever
+/// backend holds the state. The distributed backends used to count requests
+/// per fixed one-second window and ignore `burst`, so switching a limit from
+/// `local` to `redis` changed what it allowed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TokenBucket {
     /// Bucket size
     capacity: f64,
     /// Tokens added per second
     refill_per_sec: f64,
+}
+
+/// A bucket as the distributed backends store it: the tokens left and when
+/// that was computed, in microseconds since the Unix epoch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BucketState {
+    pub tokens: f64,
+    pub at_us: u64,
+}
+
+impl BucketState {
+    /// Encode for a backend that stores strings (memcached).
+    ///
+    /// `f64`'s `Display` is the shortest string that parses back to the same
+    /// value, so a round trip through the store does not drift the bucket.
+    pub fn encode(&self) -> String {
+        format!("{} {}", self.tokens, self.at_us)
+    }
+
+    /// Decode what [`Self::encode`] wrote. `None` for anything else, which
+    /// the caller treats as a missing (full) bucket rather than an error: a
+    /// value left by the old fixed-window format must not wedge the key.
+    pub fn decode(raw: &[u8]) -> Option<Self> {
+        let raw = std::str::from_utf8(raw).ok()?;
+        let (tokens, at_us) = raw.trim().split_once(' ')?;
+        let tokens: f64 = tokens.parse().ok()?;
+        if !tokens.is_finite() || tokens < 0.0 {
+            return None;
+        }
+        Some(Self {
+            tokens,
+            at_us: at_us.parse().ok()?,
+        })
+    }
+}
+
+impl TokenBucket {
+    pub fn new(max_rps: u32, burst: u32) -> Self {
+        Self {
+            // A bucket smaller than one token could never admit anything.
+            capacity: f64::from(burst.max(1)),
+            refill_per_sec: f64::from(max_rps),
+        }
+    }
+
+    pub fn capacity(&self) -> f64 {
+        self.capacity
+    }
+
+    pub fn refill_per_sec(&self) -> f64 {
+        self.refill_per_sec
+    }
+
+    /// Refill a bucket that held `tokens` `elapsed_secs` ago, then take a
+    /// token if one is available. Returns the tokens left and the outcome.
+    ///
+    /// The Redis script in `distributed_rate_limit` repeats these operations
+    /// in the same order; keep the two in step.
+    pub fn take(&self, tokens: f64, elapsed_secs: f64) -> (f64, RateLimitOutcome) {
+        let tokens = (tokens + elapsed_secs.max(0.0) * self.refill_per_sec).min(self.capacity);
+        if tokens >= 1.0 {
+            (tokens - 1.0, RateLimitOutcome::Allowed)
+        } else {
+            (tokens, RateLimitOutcome::Limited)
+        }
+    }
+
+    /// [`Self::take`] on stored state at `now_us`. A missing bucket is full.
+    ///
+    /// The stored time never moves backwards. Instances whose clocks
+    /// disagree then cannot refill the same interval twice: one that is
+    /// behind sees no time pass until it catches up, so skew can only make
+    /// the limit stricter, never looser.
+    pub fn take_at(
+        &self,
+        state: Option<BucketState>,
+        now_us: u64,
+    ) -> (BucketState, RateLimitOutcome) {
+        let (tokens, at_us) = state.map_or((self.capacity, now_us), |s| (s.tokens, s.at_us));
+        let elapsed_secs = now_us.saturating_sub(at_us) as f64 / 1_000_000.0;
+        let (tokens, outcome) = self.take(tokens, elapsed_secs);
+        (
+            BucketState {
+                tokens,
+                at_us: at_us.max(now_us),
+            },
+            outcome,
+        )
+    }
+
+    /// Milliseconds until `tokens` more have been added.
+    pub fn ms_for(&self, tokens: f64) -> u64 {
+        if tokens <= 0.0 {
+            0
+        } else if self.refill_per_sec <= 0.0 {
+            u64::MAX / 2
+        } else {
+            (tokens / self.refill_per_sec * 1000.0).ceil() as u64
+        }
+    }
+
+    /// How long a stored bucket with `tokens` left must be kept. After that
+    /// it is full again, which is exactly what a missing key means, so the
+    /// backend can drop it without changing any outcome.
+    pub fn ttl_ms(&self, tokens: f64) -> u64 {
+        // A bucket that never refills must be remembered; a day bounds the
+        // memory a `max-rps 0` limit can pin.
+        const NEVER_REFILLS_TTL_MS: u64 = 86_400_000;
+        if self.refill_per_sec <= 0.0 {
+            NEVER_REFILLS_TTL_MS
+        } else {
+            self.ms_for(self.capacity - tokens) + 1000
+        }
+    }
+
+    /// Describe a check for logs and response headers: `tokens` is what is
+    /// left after it, `max_rps` is reported as the limit.
+    pub fn describe(
+        &self,
+        tokens: f64,
+        outcome: RateLimitOutcome,
+        max_rps: u32,
+    ) -> RateLimitCheckInfo {
+        let retry_after_ms = self.ms_for(1.0 - tokens);
+        let refill_ms = self.ms_for(self.capacity - tokens);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as u64;
+        // When limited, the window "resets" when the next token arrives (this
+        // drives Retry-After); otherwise when the bucket is full again.
+        let until_ms = if outcome == RateLimitOutcome::Limited {
+            retry_after_ms
+        } else {
+            refill_ms
+        };
+        RateLimitCheckInfo {
+            outcome,
+            // Tokens in use (bucket size minus what is left), for logs
+            current_count: (self.capacity - tokens).ceil() as i64,
+            limit: max_rps,
+            remaining: tokens.floor() as u32,
+            reset_at: (now_ms + until_ms).div_ceil(1000).max(now_ms / 1000 + 1),
+            retry_after_ms: (outcome == RateLimitOutcome::Limited).then_some(retry_after_ms),
+        }
+    }
+}
+
+/// Per-key in-memory token bucket (see [`TokenBucket`]).
+struct KeyRateLimiter {
+    bucket: parking_lot::Mutex<Bucket>,
+    math: TokenBucket,
     /// Unix timestamp (seconds) of the last check, for idle eviction
     last_seen: AtomicU64,
 }
@@ -123,30 +283,15 @@ struct Bucket {
     refilled_at: std::time::Instant,
 }
 
-/// Result of taking a token from a [`KeyRateLimiter`].
-struct BucketCheck {
-    outcome: RateLimitOutcome,
-    /// Whole tokens left after this request
-    remaining: u32,
-    /// Tokens in use (bucket size minus what is left), for logs
-    used: i64,
-    /// Milliseconds until a token is available (0 when one is)
-    retry_after_ms: u64,
-    /// Milliseconds until the bucket is full again
-    refill_ms: u64,
-}
-
 impl KeyRateLimiter {
     fn new(max_rps: u32, burst: u32) -> Self {
-        // A bucket smaller than one token could never admit anything.
-        let capacity = f64::from(burst.max(1));
+        let math = TokenBucket::new(max_rps, burst);
         Self {
             bucket: parking_lot::Mutex::new(Bucket {
-                tokens: capacity,
+                tokens: math.capacity(),
                 refilled_at: std::time::Instant::now(),
             }),
-            capacity,
-            refill_per_sec: f64::from(max_rps),
+            math,
             last_seen: AtomicU64::new(current_unix_timestamp()),
         }
     }
@@ -160,82 +305,120 @@ impl KeyRateLimiter {
         now.saturating_sub(self.last_seen.load(Ordering::Relaxed))
     }
 
-    fn ms_for(&self, tokens: f64) -> u64 {
-        if tokens <= 0.0 {
-            0
-        } else if self.refill_per_sec <= 0.0 {
-            u64::MAX / 2
-        } else {
-            (tokens / self.refill_per_sec * 1000.0).ceil() as u64
-        }
-    }
-
-    /// Take a token if one is available
-    fn check(&self) -> BucketCheck {
+    /// Take a token if one is available; returns the tokens left
+    fn check(&self) -> (f64, RateLimitOutcome) {
         let mut bucket = self.bucket.lock();
         let now = std::time::Instant::now();
         let elapsed = now.duration_since(bucket.refilled_at).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        let (tokens, outcome) = self.math.take(bucket.tokens, elapsed);
+        bucket.tokens = tokens;
         bucket.refilled_at = now;
-
-        let outcome = if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
-            RateLimitOutcome::Allowed
-        } else {
-            RateLimitOutcome::Limited
-        };
-
-        BucketCheck {
-            outcome,
-            remaining: bucket.tokens.floor() as u32,
-            used: (self.capacity - bucket.tokens).ceil() as i64,
-            retry_after_ms: self.ms_for(1.0 - bucket.tokens),
-            refill_ms: self.ms_for(self.capacity - bucket.tokens),
-        }
+        (tokens, outcome)
     }
 
     /// Check a request and describe the result
     fn check_info(&self, max_rps: u32) -> RateLimitCheckInfo {
         self.touch();
-        let check = self.check();
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_millis() as u64;
-        // When limited, the window "resets" when the next token arrives (this
-        // drives Retry-After); otherwise when the bucket is full again.
-        let until_ms = if check.outcome == RateLimitOutcome::Limited {
-            check.retry_after_ms
-        } else {
-            check.refill_ms
-        };
-        RateLimitCheckInfo {
-            outcome: check.outcome,
-            current_count: check.used,
-            limit: max_rps,
-            remaining: check.remaining,
-            reset_at: (now_ms + until_ms).div_ceil(1000).max(now_ms / 1000 + 1),
-            retry_after_ms: (check.outcome == RateLimitOutcome::Limited)
-                .then_some(check.retry_after_ms),
-        }
+        let (tokens, outcome) = self.check();
+        self.math.describe(tokens, outcome, max_rps)
     }
 }
 
-/// Backend type for rate limiting
-pub enum RateLimitBackendType {
+/// Where a pool keeps its buckets
+enum RateLimitBackendType {
     /// Local in-memory backend
     Local {
         /// Rate limiters by key (e.g., client IP -> limiter)
         limiters: DashMap<String, Arc<KeyRateLimiter>>,
     },
     /// Distributed Redis backend
-    #[cfg(feature = "distributed-rate-limit")]
-    Distributed {
-        /// Redis rate limiter
+    #[cfg(feature = "distributed-rate-limit-redis")]
+    Redis {
         redis: Arc<RedisRateLimiter>,
-        /// Local fallback
+        /// Used while Redis cannot be reached, if `redis-fallback-local`
         local_fallback: DashMap<String, Arc<KeyRateLimiter>>,
     },
+    /// Distributed memcached backend
+    #[cfg(feature = "distributed-rate-limit-memcached")]
+    Memcached {
+        memcached: Arc<MemcachedRateLimiter>,
+        /// Used while memcached cannot be reached, if `memcached-fallback-local`
+        local_fallback: DashMap<String, Arc<KeyRateLimiter>>,
+    },
+}
+
+impl RateLimitBackendType {
+    /// The in-memory buckets: the whole state for a local pool, the
+    /// fallback for a distributed one.
+    fn local_limiters(&self) -> &DashMap<String, Arc<KeyRateLimiter>> {
+        match self {
+            Self::Local { limiters } => limiters,
+            #[cfg(feature = "distributed-rate-limit-redis")]
+            Self::Redis { local_fallback, .. } => local_fallback,
+            #[cfg(feature = "distributed-rate-limit-memcached")]
+            Self::Memcached { local_fallback, .. } => local_fallback,
+        }
+    }
+
+    /// Build the backend `config.backend` asks for.
+    ///
+    /// `backend "redis"` and `backend "memcached"` were parsed and then
+    /// never used: every pool was created local, so a limit meant to be
+    /// shared across instances was enforced per instance. The connection
+    /// is opened on first use (see the limiters), so building a pool never
+    /// waits on the network and a backend that is down at startup is picked
+    /// up once it comes back.
+    ///
+    /// `scope` (the route ID, or "global") goes into the stored key: buckets
+    /// are per route locally, and two routes limiting the same client must
+    /// not share one bucket just because they share a Redis.
+    fn for_config(config: &RateLimitConfig, scope: &str) -> Self {
+        let local = || Self::Local {
+            limiters: DashMap::new(),
+        };
+        match &config.backend {
+            RateLimitBackend::Local => local(),
+            #[cfg(feature = "distributed-rate-limit-redis")]
+            RateLimitBackend::Redis(redis) => match RedisRateLimiter::lazy(redis, config, scope) {
+                Ok(limiter) => Self::Redis {
+                    redis: Arc::new(limiter),
+                    local_fallback: DashMap::new(),
+                },
+                Err(e) => {
+                    tracing::error!(
+                        scope = scope,
+                        url = %redis.url,
+                        error = %e,
+                        "Invalid Redis URL for rate limiting, limiting locally instead"
+                    );
+                    local()
+                }
+            },
+            #[cfg(not(feature = "distributed-rate-limit-redis"))]
+            RateLimitBackend::Redis(_) => {
+                warn!(
+                    scope = scope,
+                    "Rate limit backend \"redis\" needs the distributed-rate-limit-redis \
+                     feature, which this build lacks; limiting locally (per instance) instead"
+                );
+                local()
+            }
+            #[cfg(feature = "distributed-rate-limit-memcached")]
+            RateLimitBackend::Memcached(memcached) => Self::Memcached {
+                memcached: Arc::new(MemcachedRateLimiter::lazy(memcached, config, scope)),
+                local_fallback: DashMap::new(),
+            },
+            #[cfg(not(feature = "distributed-rate-limit-memcached"))]
+            RateLimitBackend::Memcached(_) => {
+                warn!(
+                    scope = scope,
+                    "Rate limit backend \"memcached\" needs the distributed-rate-limit-memcached \
+                     feature, which this build lacks; limiting locally (per instance) instead"
+                );
+                local()
+            }
+        }
+    }
 }
 
 /// Thread-safe rate limiter pool managing multiple rate limiters by key
@@ -282,47 +465,34 @@ fn current_unix_timestamp() -> u64 {
         .as_secs()
 }
 
-/// Calculate window reset timestamp (next second boundary for 1-second windows)
-fn calculate_reset_timestamp() -> u64 {
-    current_unix_timestamp() + 1
-}
-
 impl RateLimiterPool {
-    /// Create a new rate limiter pool with the given configuration (local backend)
+    /// Create a new rate limiter pool with the given configuration
     pub fn new(config: RateLimitConfig) -> Self {
         Self::with_scope(config, "default")
     }
 
-    /// Create a new rate limiter pool with a metrics scope (route ID or "global")
+    /// Create a new rate limiter pool with a metrics scope (route ID or
+    /// "global"), on the backend the config names
     pub fn with_scope(config: RateLimitConfig, scope: impl Into<String>) -> Self {
+        let scope = scope.into();
         Self {
-            backend: RateLimitBackendType::Local {
-                limiters: DashMap::new(),
-            },
+            backend: RateLimitBackendType::for_config(&config, &scope),
             config: RwLock::new(config),
-            scope: scope.into(),
+            scope,
             sweeping: AtomicBool::new(false),
         }
     }
 
-    /// Create a new rate limiter pool with a distributed Redis backend
-    #[cfg(feature = "distributed-rate-limit")]
-    pub fn with_redis(config: RateLimitConfig, redis: Arc<RedisRateLimiter>) -> Self {
-        Self {
-            backend: RateLimitBackendType::Distributed {
-                redis,
-                local_fallback: DashMap::new(),
-            },
-            config: RwLock::new(config),
-            scope: "default".to_string(),
-            sweeping: AtomicBool::new(false),
-        }
+    /// The configuration this pool was built from
+    pub fn config(&self) -> RateLimitConfig {
+        self.config.read().clone()
     }
 
-    /// Check if a request should be rate limited (synchronous, local only)
+    /// Check if a request should be rate limited against the in-memory
+    /// buckets only.
     ///
-    /// Returns detailed rate limit information including remaining quota.
-    /// For distributed backends, this falls back to local limiting.
+    /// For distributed backends that is the local fallback; requests go
+    /// through [`Self::check_async`], which asks the backend first.
     pub fn check(&self, key: &str) -> RateLimitCheckInfo {
         let config = self.config.read();
         let max_rps = config.max_rps;
@@ -330,93 +500,86 @@ impl RateLimiterPool {
         let max_keys = config.max_keys;
         drop(config);
 
-        let limiters = match &self.backend {
-            RateLimitBackendType::Local { limiters } => limiters,
-            #[cfg(feature = "distributed-rate-limit")]
-            RateLimitBackendType::Distributed { local_fallback, .. } => local_fallback,
-        };
+        let limiters = self.backend.local_limiters();
 
         // Get or create limiter for this key, enforcing the key-map bound
         let limiter = self.get_or_create_limiter(limiters, key, max_rps, burst, max_keys);
         limiter.check_info(max_rps)
     }
 
-    /// Check if a request should be rate limited (async, supports distributed backends)
+    /// Check if a request should be rate limited, asking the distributed
+    /// backend when there is one.
     ///
-    /// Returns detailed rate limit information including remaining quota.
-    #[cfg(feature = "distributed-rate-limit")]
+    /// When the backend fails, the request is checked against local buckets
+    /// if the backend's `fallback-local` is set, and allowed otherwise.
     pub async fn check_async(&self, key: &str) -> RateLimitCheckInfo {
-        let max_rps = self.config.read().max_rps;
-
         match &self.backend {
             RateLimitBackendType::Local { .. } => self.check(key),
-            RateLimitBackendType::Distributed {
-                redis,
-                local_fallback,
-            } => {
-                // Try Redis first
-                match redis.check(key).await {
-                    Ok((outcome, count)) => {
-                        let remaining = if count >= max_rps as i64 {
-                            0
-                        } else {
-                            (max_rps as i64 - count) as u32
-                        };
-                        RateLimitCheckInfo {
-                            outcome,
-                            current_count: count,
-                            limit: max_rps,
-                            remaining,
-                            reset_at: calculate_reset_timestamp(),
-                            retry_after_ms: None,
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            key = key,
-                            "Redis rate limit check failed, falling back to local"
-                        );
-                        redis.mark_unhealthy();
-
-                        // Fallback to local
-                        if redis.fallback_enabled() {
-                            let (burst, max_keys) = {
-                                let config = self.config.read();
-                                (config.burst, config.max_keys)
-                            };
-                            let limiter = self.get_or_create_limiter(
-                                local_fallback,
-                                key,
-                                max_rps,
-                                burst,
-                                max_keys,
-                            );
-                            limiter.check_info(max_rps)
-                        } else {
-                            // Fail open if no fallback
-                            RateLimitCheckInfo {
-                                outcome: RateLimitOutcome::Allowed,
-                                current_count: 0,
-                                limit: max_rps,
-                                remaining: max_rps,
-                                reset_at: calculate_reset_timestamp(),
-                                retry_after_ms: None,
-                            }
-                        }
-                    }
+            #[cfg(feature = "distributed-rate-limit-redis")]
+            RateLimitBackendType::Redis { redis, .. } => match redis.check(key).await {
+                Ok(info) => info,
+                Err(e) => {
+                    warn!(
+                        scope = %self.scope,
+                        error = %e,
+                        key = key,
+                        "Redis rate limit check failed"
+                    );
+                    redis.mark_unhealthy();
+                    self.backend_failed(key, redis.fallback_enabled(), || {
+                        redis.stats.record_local_fallback()
+                    })
                 }
-            }
+            },
+            #[cfg(feature = "distributed-rate-limit-memcached")]
+            RateLimitBackendType::Memcached { memcached, .. } => match memcached.check(key).await {
+                Ok(info) => info,
+                Err(e) => {
+                    warn!(
+                        scope = %self.scope,
+                        error = %e,
+                        key = key,
+                        "Memcached rate limit check failed"
+                    );
+                    memcached.mark_unhealthy();
+                    self.backend_failed(key, memcached.fallback_enabled(), || {
+                        memcached.stats.record_local_fallback()
+                    })
+                }
+            },
+        }
+    }
+
+    /// The answer when the distributed backend could not give one: local
+    /// buckets if fallback is enabled, otherwise fail open.
+    #[cfg(any(
+        feature = "distributed-rate-limit-redis",
+        feature = "distributed-rate-limit-memcached"
+    ))]
+    fn backend_failed(
+        &self,
+        key: &str,
+        fallback_local: bool,
+        record_fallback: impl FnOnce(),
+    ) -> RateLimitCheckInfo {
+        if fallback_local {
+            record_fallback();
+            return self.check(key);
+        }
+        let max_rps = self.config.read().max_rps;
+        RateLimitCheckInfo {
+            outcome: RateLimitOutcome::Allowed,
+            current_count: 0,
+            limit: max_rps,
+            remaining: max_rps,
+            reset_at: current_unix_timestamp() + 1,
+            retry_after_ms: None,
         }
     }
 
     /// Check if this pool uses a distributed backend
     pub fn is_distributed(&self) -> bool {
-        match &self.backend {
-            RateLimitBackendType::Local { .. } => false,
-            #[cfg(feature = "distributed-rate-limit")]
-            RateLimitBackendType::Distributed { .. } => true,
-        }
+        !matches!(self.backend, RateLimitBackendType::Local { .. })
     }
 
     /// Whether this limiter is keyed on something only the request body can
@@ -480,29 +643,10 @@ impl RateLimiterPool {
         self.config.read().max_delay_ms
     }
 
-    /// Update the configuration
-    pub fn update_config(&self, config: RateLimitConfig) {
-        *self.config.write() = config;
-        // Clear existing limiters so they get recreated with new config
-        self.clear_local_limiters();
-    }
-
-    /// Clear local limiters (for config updates)
-    fn clear_local_limiters(&self) {
-        match &self.backend {
-            RateLimitBackendType::Local { limiters } => limiters.clear(),
-            #[cfg(feature = "distributed-rate-limit")]
-            RateLimitBackendType::Distributed { local_fallback, .. } => local_fallback.clear(),
-        }
-    }
-
     /// Get the number of local limiter entries
+    #[cfg(test)]
     fn local_limiter_count(&self) -> usize {
-        match &self.backend {
-            RateLimitBackendType::Local { limiters } => limiters.len(),
-            #[cfg(feature = "distributed-rate-limit")]
-            RateLimitBackendType::Distributed { local_fallback, .. } => local_fallback.len(),
-        }
+        self.backend.local_limiters().len()
     }
 
     /// Get or create the limiter for a key, enforcing the `max_keys` bound.
@@ -604,11 +748,7 @@ impl RateLimiterPool {
 
     /// Clean up idle entries (call periodically)
     pub fn cleanup(&self) {
-        let limiters = match &self.backend {
-            RateLimitBackendType::Local { limiters } => limiters,
-            #[cfg(feature = "distributed-rate-limit")]
-            RateLimitBackendType::Distributed { local_fallback, .. } => local_fallback,
-        };
+        let limiters = self.backend.local_limiters();
 
         let now = current_unix_timestamp();
         let before = limiters.len();
@@ -655,7 +795,7 @@ pub struct RateLimitManager {
     /// Per-route rate limiter pools
     route_limiters: DashMap<String, Arc<RateLimiterPool>>,
     /// Global rate limiter (optional)
-    global_limiter: Option<Arc<RateLimiterPool>>,
+    global_limiter: RwLock<Option<Arc<RateLimiterPool>>>,
 }
 
 impl RateLimitManager {
@@ -663,7 +803,7 @@ impl RateLimitManager {
     pub fn new() -> Self {
         Self {
             route_limiters: DashMap::new(),
-            global_limiter: None,
+            global_limiter: RwLock::new(None),
         }
     }
 
@@ -688,7 +828,9 @@ impl RateLimitManager {
         };
         Self {
             route_limiters: DashMap::new(),
-            global_limiter: Some(Arc::new(RateLimiterPool::with_scope(config, "global"))),
+            global_limiter: RwLock::new(Some(Arc::new(RateLimiterPool::with_scope(
+                config, "global",
+            )))),
         }
     }
 
@@ -708,10 +850,16 @@ impl RateLimitManager {
         );
     }
 
-    /// Check if a request should be rate limited
-    ///
-    /// Checks both global and route-specific limits.
-    /// Returns detailed rate limit information for response headers.
+    fn global(&self) -> Option<Arc<RateLimiterPool>> {
+        self.global_limiter.read().clone()
+    }
+
+    /// The route's own pool. Cloned out of the map so that no shard lock is
+    /// held while a distributed check awaits the network.
+    fn route(&self, route_id: &str) -> Option<Arc<RateLimiterPool>> {
+        self.route_limiters.get(route_id).map(|p| p.value().clone())
+    }
+
     /// Evaluate the limiters that key on something only the body supplies.
     ///
     /// The counterpart to [`Self::check`], which skips these. Called once the
@@ -721,17 +869,14 @@ impl RateLimitManager {
     ///
     /// Returns `None` when this route has no body-keyed limiter, which is the
     /// common case and stays free.
-    pub fn check_body_keyed(
+    pub async fn check_body_keyed(
         &self,
         route_id: &str,
         client_ip: &str,
         path: &str,
         mcp_tool: Option<&str>,
     ) -> Option<RateLimitResult> {
-        let pool = self
-            .route_limiters
-            .get(route_id)
-            .filter(|p| p.needs_request_body())?;
+        let pool = self.route(route_id).filter(|p| p.needs_request_body())?;
 
         let key = pool.extract_key(
             client_ip,
@@ -740,7 +885,7 @@ impl RateLimitManager {
             Option::<&NoHeaders>::None,
             mcp_tool,
         );
-        let check_info = pool.check(&key);
+        let check_info = pool.check_async(&key).await;
 
         if check_info.outcome == RateLimitOutcome::Limited {
             warn!(
@@ -751,26 +896,7 @@ impl RateLimitManager {
                 count = check_info.current_count,
                 "Request rate limited by MCP tool limiter"
             );
-            let suggested_delay_ms = if let Some(ms) = check_info.retry_after_ms {
-                Some(ms)
-            } else if check_info.current_count > check_info.limit as i64 {
-                let excess = check_info.current_count - check_info.limit as i64;
-                Some((excess as u64 * 1000) / check_info.limit as u64)
-            } else {
-                None
-            };
-            return Some(RateLimitResult {
-                allowed: false,
-                action: pool.action(),
-                status_code: pool.status_code(),
-                message: pool.message(),
-                limiter: route_id.to_string(),
-                limit: check_info.limit,
-                remaining: check_info.remaining,
-                reset_at: check_info.reset_at,
-                suggested_delay_ms,
-                max_delay_ms: pool.max_delay_ms(),
-            });
+            return Some(limited_result(&pool, route_id, &check_info));
         }
 
         trace!(
@@ -783,7 +909,11 @@ impl RateLimitManager {
         None
     }
 
-    pub fn check(
+    /// Check if a request should be rate limited
+    ///
+    /// Checks both global and route-specific limits.
+    /// Returns detailed rate limit information for response headers.
+    pub async fn check(
         &self,
         route_id: &str,
         client_ip: &str,
@@ -796,13 +926,9 @@ impl RateLimitManager {
         // Check global limit first. A limiter keyed on the request body is
         // deferred to `check_body_keyed` -- evaluating it here would key on
         // "unknown" and burn the request's quota against the wrong bucket.
-        if let Some(global) = self
-            .global_limiter
-            .as_ref()
-            .filter(|g| !g.needs_request_body())
-        {
+        if let Some(global) = self.global().filter(|g| !g.needs_request_body()) {
             let key = global.extract_key(client_ip, path, route_id, headers, None);
-            let check_info = global.check(&key);
+            let check_info = global.check_async(&key).await;
 
             if check_info.outcome == RateLimitOutcome::Limited {
                 warn!(
@@ -812,40 +938,16 @@ impl RateLimitManager {
                     count = check_info.current_count,
                     "Request rate limited by global limiter"
                 );
-                // Calculate suggested delay based on how far over limit
-                let suggested_delay_ms = if let Some(ms) = check_info.retry_after_ms {
-                    Some(ms)
-                } else if check_info.current_count > check_info.limit as i64 {
-                    let excess = check_info.current_count - check_info.limit as i64;
-                    Some((excess as u64 * 1000) / check_info.limit as u64)
-                } else {
-                    None
-                };
-                return RateLimitResult {
-                    allowed: false,
-                    action: global.action(),
-                    status_code: global.status_code(),
-                    message: global.message(),
-                    limiter: "global".to_string(),
-                    limit: check_info.limit,
-                    remaining: check_info.remaining,
-                    reset_at: check_info.reset_at,
-                    suggested_delay_ms,
-                    max_delay_ms: global.max_delay_ms(),
-                };
+                return limited_result(&global, "global", &check_info);
             }
 
             best_limit_info = Some(check_info);
         }
 
         // Check route-specific limit, same deferral as above.
-        if let Some(pool) = self
-            .route_limiters
-            .get(route_id)
-            .filter(|p| !p.needs_request_body())
-        {
+        if let Some(pool) = self.route(route_id).filter(|p| !p.needs_request_body()) {
             let key = pool.extract_key(client_ip, path, route_id, headers, None);
-            let check_info = pool.check(&key);
+            let check_info = pool.check_async(&key).await;
 
             if check_info.outcome == RateLimitOutcome::Limited {
                 warn!(
@@ -855,27 +957,7 @@ impl RateLimitManager {
                     count = check_info.current_count,
                     "Request rate limited by route limiter"
                 );
-                // Calculate suggested delay based on how far over limit
-                let suggested_delay_ms = if let Some(ms) = check_info.retry_after_ms {
-                    Some(ms)
-                } else if check_info.current_count > check_info.limit as i64 {
-                    let excess = check_info.current_count - check_info.limit as i64;
-                    Some((excess as u64 * 1000) / check_info.limit as u64)
-                } else {
-                    None
-                };
-                return RateLimitResult {
-                    allowed: false,
-                    action: pool.action(),
-                    status_code: pool.status_code(),
-                    message: pool.message(),
-                    limiter: route_id.to_string(),
-                    limit: check_info.limit,
-                    remaining: check_info.remaining,
-                    reset_at: check_info.reset_at,
-                    suggested_delay_ms,
-                    max_delay_ms: pool.max_delay_ms(),
-                };
+                return limited_result(&pool, route_id, &check_info);
             }
 
             trace!(
@@ -917,7 +999,7 @@ impl RateLimitManager {
 
     /// Perform periodic cleanup
     pub fn cleanup(&self) {
-        if let Some(ref global) = self.global_limiter {
+        if let Some(global) = self.global() {
             global.cleanup();
         }
         for entry in self.route_limiters.iter() {
@@ -936,18 +1018,48 @@ impl RateLimitManager {
     /// Use this to skip rate limit checks entirely when no limiting is configured.
     #[inline]
     pub fn is_enabled(&self) -> bool {
-        self.global_limiter.is_some() || !self.route_limiters.is_empty()
+        self.global_limiter.read().is_some() || !self.route_limiters.is_empty()
     }
 
-    /// Check if a specific route has rate limiting configured (fast path)
-    #[inline]
     /// Whether this route has a limiter of its own (not counting the global one)
+    #[inline]
     pub fn has_route_specific_limiter(&self, route_id: &str) -> bool {
         self.route_limiters.contains_key(route_id)
     }
 
+    /// Check if a specific route has rate limiting configured (fast path)
+    #[inline]
     pub fn has_route_limiter(&self, route_id: &str) -> bool {
-        self.global_limiter.is_some() || self.route_limiters.contains_key(route_id)
+        self.global_limiter.read().is_some() || self.route_limiters.contains_key(route_id)
+    }
+}
+
+/// The result for a request `pool` limited.
+fn limited_result(
+    pool: &RateLimiterPool,
+    limiter: &str,
+    check_info: &RateLimitCheckInfo,
+) -> RateLimitResult {
+    // Calculate suggested delay based on how far over limit
+    let suggested_delay_ms = if let Some(ms) = check_info.retry_after_ms {
+        Some(ms)
+    } else if check_info.current_count > check_info.limit as i64 {
+        let excess = check_info.current_count - check_info.limit as i64;
+        Some((excess as u64 * 1000) / check_info.limit as u64)
+    } else {
+        None
+    };
+    RateLimitResult {
+        allowed: false,
+        action: pool.action(),
+        status_code: pool.status_code(),
+        message: pool.message(),
+        limiter: limiter.to_string(),
+        limit: check_info.limit,
+        remaining: check_info.remaining,
+        reset_at: check_info.reset_at,
+        suggested_delay_ms,
+        max_delay_ms: pool.max_delay_ms(),
     }
 }
 
@@ -1073,8 +1185,8 @@ mod tests {
         assert_eq!(info.outcome, RateLimitOutcome::Allowed);
     }
 
-    #[test]
-    fn test_rate_limit_manager() {
+    #[tokio::test]
+    async fn test_rate_limit_manager() {
         let manager = RateLimitManager::new();
 
         manager.register_route(
@@ -1088,19 +1200,25 @@ mod tests {
         );
 
         // Route without limiter should always pass (no rate limit info)
-        let result = manager.check("web", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        let result = manager
+            .check("web", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
         assert!(result.allowed);
         assert_eq!(result.limit, 0); // No limiter configured
 
         // Route with limiter should enforce limits and return rate limit info
         for i in 0..5 {
-            let result = manager.check("api", "127.0.0.1", "/api/test", Option::<&NoHeaders>::None);
+            let result = manager
+                .check("api", "127.0.0.1", "/api/test", Option::<&NoHeaders>::None)
+                .await;
             assert!(result.allowed);
             assert_eq!(result.limit, 5);
             assert_eq!(result.remaining, 5 - i as u32 - 1);
         }
 
-        let result = manager.check("api", "127.0.0.1", "/api/test", Option::<&NoHeaders>::None);
+        let result = manager
+            .check("api", "127.0.0.1", "/api/test", Option::<&NoHeaders>::None)
+            .await;
         assert!(!result.allowed);
         assert_eq!(result.status_code, 429);
         assert_eq!(result.limit, 5);
@@ -1108,8 +1226,8 @@ mod tests {
         assert!(result.reset_at > 0);
     }
 
-    #[test]
-    fn test_rate_limit_result_with_delay() {
+    #[tokio::test]
+    async fn test_rate_limit_result_with_delay() {
         let manager = RateLimitManager::new();
 
         manager.register_route(
@@ -1123,11 +1241,17 @@ mod tests {
         );
 
         // Use up the limit
-        manager.check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None);
-        manager.check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        manager
+            .check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
+        manager
+            .check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
 
         // Third request should be limited with suggested delay
-        let result = manager.check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        let result = manager
+            .check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
         assert!(!result.allowed);
         assert!(result.suggested_delay_ms.is_some());
     }
@@ -1140,31 +1264,35 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_global_rate_limiter() {
+    #[tokio::test]
+    async fn test_global_rate_limiter() {
         let manager = RateLimitManager::with_global_limit(3, 3);
 
         // Global limiter should apply to all routes
         for i in 0..3 {
-            let result = manager.check("any-route", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+            let result = manager
+                .check("any-route", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+                .await;
             assert!(result.allowed, "Request {} should be allowed", i);
             assert_eq!(result.limit, 3);
             assert_eq!(result.remaining, 3 - i as u32 - 1);
         }
 
         // 4th request should be blocked by global limiter
-        let result = manager.check(
-            "different-route",
-            "127.0.0.1",
-            "/",
-            Option::<&NoHeaders>::None,
-        );
+        let result = manager
+            .check(
+                "different-route",
+                "127.0.0.1",
+                "/",
+                Option::<&NoHeaders>::None,
+            )
+            .await;
         assert!(!result.allowed);
         assert_eq!(result.limiter, "global");
     }
 
-    #[test]
-    fn test_global_and_route_limiters() {
+    #[tokio::test]
+    async fn test_global_and_route_limiters() {
         let manager = RateLimitManager::with_global_limit(10, 10);
 
         // Register a more restrictive route limiter
@@ -1179,23 +1307,31 @@ mod tests {
         );
 
         // Route limiter should trigger first (more restrictive)
-        let result1 = manager.check("strict-api", "127.0.0.1", "/", Option::<&NoHeaders>::None);
-        let result2 = manager.check("strict-api", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        let result1 = manager
+            .check("strict-api", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
+        let result2 = manager
+            .check("strict-api", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
         assert!(result1.allowed);
         assert!(result2.allowed);
 
         // 3rd request should be blocked by route limiter
-        let result3 = manager.check("strict-api", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        let result3 = manager
+            .check("strict-api", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
         assert!(!result3.allowed);
         assert_eq!(result3.limiter, "strict-api");
 
         // Different route should still work (global not exhausted)
-        let result4 = manager.check("other-route", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        let result4 = manager
+            .check("other-route", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
         assert!(result4.allowed);
     }
 
-    #[test]
-    fn test_suggested_delay_calculation() {
+    #[tokio::test]
+    async fn test_suggested_delay_calculation() {
         let manager = RateLimitManager::new();
 
         manager.register_route(
@@ -1210,11 +1346,15 @@ mod tests {
 
         // Exhaust the limit
         for _ in 0..10 {
-            manager.check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+            manager
+                .check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+                .await;
         }
 
         // Requests over limit should have suggested delay
-        let result = manager.check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        let result = manager
+            .check("api", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
         assert!(!result.allowed);
         assert!(result.suggested_delay_ms.is_some());
 
@@ -1270,8 +1410,8 @@ mod tests {
         assert_eq!(info.outcome, RateLimitOutcome::Limited);
     }
 
-    #[test]
-    fn test_rate_limit_result_fields() {
+    #[tokio::test]
+    async fn test_rate_limit_result_fields() {
         // Create a result by checking a rate limited request
         let manager = RateLimitManager::new();
         manager.register_route(
@@ -1285,13 +1425,17 @@ mod tests {
         );
 
         // First request allowed
-        let allowed_result = manager.check("test", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        let allowed_result = manager
+            .check("test", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
         assert!(allowed_result.allowed);
         assert_eq!(allowed_result.limit, 1);
         assert!(allowed_result.reset_at > 0);
 
         // Second request should be blocked
-        let blocked_result = manager.check("test", "127.0.0.1", "/", Option::<&NoHeaders>::None);
+        let blocked_result = manager
+            .check("test", "127.0.0.1", "/", Option::<&NoHeaders>::None)
+            .await;
         assert!(!blocked_result.allowed);
         assert_eq!(blocked_result.status_code, 429);
         assert_eq!(blocked_result.remaining, 0);
@@ -1562,16 +1706,138 @@ mod burst_tests {
         assert!(limited.reset_at > current_unix_timestamp());
     }
 
-    #[test]
-    fn the_global_limit_honours_its_burst() {
+    #[tokio::test]
+    async fn the_global_limit_honours_its_burst() {
         let manager = RateLimitManager::with_global_limit(10, 2);
-        let allowed: Vec<bool> = (0..4)
-            .map(|_| {
-                manager
-                    .check("any", "203.0.113.7", "/", Option::<&NoHeaders>::None)
-                    .allowed
-            })
-            .collect();
+        let mut allowed = Vec::new();
+        for _ in 0..4 {
+            let result = manager
+                .check("any", "203.0.113.7", "/", Option::<&NoHeaders>::None)
+                .await;
+            allowed.push(result.allowed);
+        }
         assert_eq!(allowed, vec![true, true, false, false]);
+    }
+}
+
+/// The bucket arithmetic the distributed backends run on stored state.
+#[cfg(test)]
+mod shared_bucket_tests {
+    use super::*;
+    use RateLimitOutcome::{Allowed as A, Limited as L};
+
+    /// Run `take_at` on stored state at the given times (µs), as Redis and
+    /// memcached do, returning each outcome and the tokens left.
+    fn stored_run(bucket: &TokenBucket, times_us: &[u64]) -> Vec<(RateLimitOutcome, f64)> {
+        let mut state = None;
+        times_us
+            .iter()
+            .map(|&now| {
+                let (next, outcome) = bucket.take_at(state, now);
+                // Through the string form memcached stores, so the encoding
+                // is part of what is checked.
+                state = BucketState::decode(next.encode().as_bytes());
+                assert_eq!(state, Some(next), "encoding must round-trip");
+                (outcome, next.tokens)
+            })
+            .collect()
+    }
+
+    /// The same as the in-memory bucket's `take` on elapsed seconds.
+    fn local_run(bucket: &TokenBucket, times_us: &[u64]) -> Vec<(RateLimitOutcome, f64)> {
+        let mut tokens = bucket.capacity();
+        let mut last = times_us[0];
+        times_us
+            .iter()
+            .map(|&now| {
+                let (left, outcome) = bucket.take(tokens, (now - last) as f64 / 1_000_000.0);
+                tokens = left;
+                last = now;
+                (outcome, left)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stored_state_gives_the_local_sequence() {
+        // Bursts, gaps shorter and longer than a refill, a long idle.
+        let times: Vec<u64> = [
+            0, 0, 0, 0, 0, 100_000, 250_000, 260_000, 900_000, 5_000_000, 5_000_001, 5_000_002,
+        ]
+        .iter()
+        .map(|t| 1_760_000_000_000_000 + t)
+        .collect();
+        for (max_rps, burst) in [(1, 3), (2, 1), (10, 10), (7, 20), (100, 2)] {
+            let bucket = TokenBucket::new(max_rps, burst);
+            assert_eq!(
+                stored_run(&bucket, &times),
+                local_run(&bucket, &times),
+                "max-rps {max_rps} burst {burst}"
+            );
+        }
+    }
+
+    #[test]
+    fn stored_bucket_admits_burst_then_max_rps() {
+        let bucket = TokenBucket::new(2, 3);
+        let t0 = 1_760_000_000_000_000;
+        let outcomes: Vec<_> = stored_run(&bucket, &[t0, t0, t0, t0, t0 + 500_000, t0 + 500_000])
+            .into_iter()
+            .map(|(o, _)| o)
+            .collect();
+        assert_eq!(outcomes, [A, A, A, L, A, L]);
+    }
+
+    /// An instance whose clock is behind the stored time sees no refill
+    /// rather than a negative one, and does not move the stored time back:
+    /// the instance that is ahead then cannot count the same interval again.
+    #[test]
+    fn clock_skew_never_loosens_the_limit() {
+        let bucket = TokenBucket::new(1, 1);
+        let ahead = 1_760_000_010_000_000;
+        let (state, outcome) = bucket.take_at(None, ahead);
+        assert_eq!((outcome, state.tokens), (A, 0.0));
+
+        // 2 s behind: no time has passed for it.
+        let (state, outcome) = bucket.take_at(Some(state), ahead - 2_000_000);
+        assert_eq!((outcome, state.tokens, state.at_us), (L, 0.0, ahead));
+
+        // The instance ahead, 1 s later, gets exactly one second's refill.
+        let (state, outcome) = bucket.take_at(Some(state), ahead + 1_000_000);
+        assert_eq!((outcome, state.tokens), (A, 0.0));
+    }
+
+    #[test]
+    fn unreadable_stored_values_are_rejected() {
+        for raw in ["", "12", "x 1", "1 x", "NaN 1", "-1 1", "inf 1"] {
+            assert_eq!(BucketState::decode(raw.as_bytes()), None, "{raw:?}");
+        }
+    }
+
+    /// A stored bucket is kept until it is full again, and no longer.
+    #[test]
+    fn stored_buckets_expire_once_full() {
+        let bucket = TokenBucket::new(2, 4);
+        assert_eq!(bucket.ttl_ms(4.0), 1000);
+        // 4 tokens at 2/s: 2 s to refill, plus the margin
+        assert_eq!(bucket.ttl_ms(0.0), 3000);
+    }
+
+    /// Headers are derived from the tokens left, so a backend that returns
+    /// the same tokens reports the same headers as the local limiter.
+    #[test]
+    fn headers_follow_from_tokens_left() {
+        let bucket = TokenBucket::new(4, 3);
+        let allowed = bucket.describe(1.5, A, 4);
+        assert_eq!(
+            (allowed.remaining, allowed.limit, allowed.current_count),
+            (1, 4, 2)
+        );
+        assert_eq!(allowed.retry_after_ms, None);
+
+        let limited = bucket.describe(0.25, L, 4);
+        assert_eq!(limited.remaining, 0);
+        // 0.75 tokens at 4/s
+        assert_eq!(limited.retry_after_ms, Some(188));
     }
 }

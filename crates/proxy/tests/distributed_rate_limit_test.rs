@@ -1,6 +1,7 @@
 //! Integration tests for distributed rate limiting (Redis and Memcached)
 //!
-//! These tests require running Redis and/or Memcached instances.
+//! These tests require running Redis and/or Memcached instances; each one
+//! skips (and passes) when its server is unreachable.
 //!
 //! To run with Docker:
 //! ```bash
@@ -14,15 +15,53 @@
 //! - `SKIP_REDIS_TESTS`: Set to skip Redis tests if Redis is unavailable
 //! - `SKIP_MEMCACHED_TESTS`: Set to skip Memcached tests if Memcached is unavailable
 
+/// What a sequence of checks returned, in the terms that reach the client:
+/// the outcome and the `X-RateLimit-Remaining` / `X-RateLimit-Limit` values.
+#[cfg(any(
+    feature = "distributed-rate-limit-redis",
+    feature = "distributed-rate-limit-memcached"
+))]
+fn summary(
+    infos: &[zentinel_proxy::rate_limit::RateLimitCheckInfo],
+) -> Vec<(zentinel_proxy::rate_limit::RateLimitOutcome, u32, u32)> {
+    infos
+        .iter()
+        .map(|i| (i.outcome, i.remaining, i.limit))
+        .collect()
+}
+
+/// The same checks against an in-memory pool with the same limit.
+#[cfg(any(
+    feature = "distributed-rate-limit-redis",
+    feature = "distributed-rate-limit-memcached"
+))]
+fn local_summary(
+    max_rps: u32,
+    burst: u32,
+    n: usize,
+) -> Vec<(zentinel_proxy::rate_limit::RateLimitOutcome, u32, u32)> {
+    let pool = zentinel_proxy::rate_limit::RateLimiterPool::new(
+        zentinel_proxy::rate_limit::RateLimitConfig {
+            max_rps,
+            burst,
+            ..Default::default()
+        },
+    );
+    let infos: Vec<_> = (0..n).map(|_| pool.check("k")).collect();
+    summary(&infos)
+}
+
 // Only compile when feature is enabled
-#[cfg(feature = "distributed-rate-limit")]
+#[cfg(feature = "distributed-rate-limit-redis")]
 mod redis_tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    use zentinel_config::RedisBackendConfig;
+    use zentinel_config::{RateLimitBackend, RedisBackendConfig};
     use zentinel_proxy::distributed_rate_limit::RedisRateLimiter;
-    use zentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome};
+    use zentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome, RateLimiterPool};
+
+    use super::{local_summary, summary};
 
     fn redis_url() -> String {
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
@@ -32,7 +71,7 @@ mod redis_tests {
         std::env::var("SKIP_REDIS_TESTS").is_ok()
     }
 
-    fn test_redis_config(max_rps: u32) -> (RedisBackendConfig, RateLimitConfig) {
+    fn test_redis_config(max_rps: u32, burst: u32) -> (RedisBackendConfig, RateLimitConfig) {
         let backend = RedisBackendConfig {
             url: redis_url(),
             key_prefix: format!("zentinel:test:{}:", uuid::Uuid::new_v4()),
@@ -42,7 +81,7 @@ mod redis_tests {
         };
         let rate = RateLimitConfig {
             max_rps,
-            burst: max_rps * 2,
+            burst,
             ..Default::default()
         };
         (backend, rate)
@@ -72,52 +111,78 @@ mod redis_tests {
             return;
         }
 
-        let (backend, rate) = test_redis_config(10);
+        let (backend, rate) = test_redis_config(10, 10);
         let limiter = RedisRateLimiter::new(&backend, &rate).await.unwrap();
 
-        // Should allow requests under the limit
+        // A fresh key has a full bucket: the first request leaves burst - 1.
         for i in 0..5 {
-            let (outcome, count) = limiter.check(&format!("test-key-{}", i)).await.unwrap();
-            assert_eq!(
-                outcome,
-                RateLimitOutcome::Allowed,
-                "Request {} should be allowed",
-                i
-            );
-            assert_eq!(count, 1, "First request for each key should have count 1");
+            let info = limiter.check(&format!("test-key-{}", i)).await.unwrap();
+            assert_eq!(info.outcome, RateLimitOutcome::Allowed, "request {i}");
+            assert_eq!(info.remaining, 9);
+            assert_eq!(info.limit, 10);
         }
     }
 
+    /// `burst` is the bucket size: the fixed-window counter this replaced
+    /// allowed `max-rps` per second whatever `burst` said.
     #[tokio::test]
-    async fn test_redis_rate_limiter_blocks_over_limit() {
+    async fn test_redis_rate_limiter_honours_burst() {
         if !is_redis_available().await {
             eprintln!("Skipping test: Redis not available");
             return;
         }
 
-        let (backend, rate) = test_redis_config(5);
+        let (backend, rate) = test_redis_config(1, 3);
         let limiter = RedisRateLimiter::new(&backend, &rate).await.unwrap();
-        let key = "test-block-key";
-
-        // First 5 requests should be allowed
-        for i in 0..5 {
-            let (outcome, _) = limiter.check(key).await.unwrap();
-            assert_eq!(
-                outcome,
+        let mut infos = Vec::new();
+        for _ in 0..5 {
+            infos.push(limiter.check("burst-key").await.unwrap());
+        }
+        assert_eq!(summary(&infos), local_summary(1, 3, 5));
+        assert_eq!(
+            infos.iter().map(|i| i.outcome).collect::<Vec<_>>(),
+            [
                 RateLimitOutcome::Allowed,
-                "Request {} should be allowed",
-                i
-            );
+                RateLimitOutcome::Allowed,
+                RateLimitOutcome::Allowed,
+                RateLimitOutcome::Limited,
+                RateLimitOutcome::Limited,
+            ]
+        );
+        // One token at 1/s is at most a second away; Retry-After is built
+        // from this exactly as for the local limiter.
+        let wait = infos[4]
+            .retry_after_ms
+            .expect("limited checks know the wait");
+        assert!(wait > 0 && wait <= 1000, "retry after {wait} ms");
+    }
+
+    /// And a burst larger than max-rps is allowed at once.
+    #[tokio::test]
+    async fn test_redis_rate_limiter_matches_local_limiter() {
+        if !is_redis_available().await {
+            eprintln!("Skipping test: Redis not available");
+            return;
         }
 
-        // 6th request should be limited
-        let (outcome, count) = limiter.check(key).await.unwrap();
-        assert_eq!(
-            outcome,
-            RateLimitOutcome::Limited,
-            "Request 6 should be limited"
-        );
-        assert!(count > 5, "Count should be greater than limit");
+        for (max_rps, burst) in [(5, 5), (5, 12), (100, 3), (2, 1)] {
+            let (backend, rate) = test_redis_config(max_rps, burst);
+            let limiter = RedisRateLimiter::new(&backend, &rate).await.unwrap();
+            let n = burst as usize + 3;
+            let mut infos = Vec::new();
+            for _ in 0..n {
+                infos.push(limiter.check("same-key").await.unwrap());
+            }
+            // A fast refill can top up a token between checks here and not
+            // in the in-memory run; compare where that cannot happen.
+            if max_rps <= 5 {
+                assert_eq!(
+                    summary(&infos),
+                    local_summary(max_rps, burst, n),
+                    "max-rps {max_rps} burst {burst}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -127,48 +192,50 @@ mod redis_tests {
             return;
         }
 
-        let (backend, rate) = test_redis_config(3);
+        let (backend, rate) = test_redis_config(3, 3);
         let limiter = RedisRateLimiter::new(&backend, &rate).await.unwrap();
 
-        // Exhaust limit for key A
         for _ in 0..3 {
             limiter.check("key-a").await.unwrap();
         }
-        let (outcome_a, _) = limiter.check("key-a").await.unwrap();
-        assert_eq!(outcome_a, RateLimitOutcome::Limited);
-
-        // Key B should still be allowed
-        let (outcome_b, _) = limiter.check("key-b").await.unwrap();
-        assert_eq!(outcome_b, RateLimitOutcome::Allowed);
+        assert_eq!(
+            limiter.check("key-a").await.unwrap().outcome,
+            RateLimitOutcome::Limited
+        );
+        assert_eq!(
+            limiter.check("key-b").await.unwrap().outcome,
+            RateLimitOutcome::Allowed
+        );
     }
 
     #[tokio::test]
-    async fn test_redis_rate_limiter_sliding_window() {
+    async fn test_redis_rate_limiter_refills() {
         if !is_redis_available().await {
             eprintln!("Skipping test: Redis not available");
             return;
         }
 
-        let (backend, rate) = test_redis_config(5);
+        let (backend, rate) = test_redis_config(5, 5);
         let limiter = RedisRateLimiter::new(&backend, &rate).await.unwrap();
-        let key = "test-sliding-key";
+        let key = "test-refill-key";
 
-        // Exhaust limit
         for _ in 0..5 {
             limiter.check(key).await.unwrap();
         }
-        let (outcome, _) = limiter.check(key).await.unwrap();
-        assert_eq!(outcome, RateLimitOutcome::Limited);
-
-        // Wait for window to slide (1 second + buffer)
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-
-        // Should be allowed again
-        let (outcome, _) = limiter.check(key).await.unwrap();
         assert_eq!(
-            outcome,
-            RateLimitOutcome::Allowed,
-            "Should allow after window reset"
+            limiter.check(key).await.unwrap().outcome,
+            RateLimitOutcome::Limited
+        );
+
+        // 5/s refills a token every 200 ms
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            limiter.check(key).await.unwrap().outcome,
+            RateLimitOutcome::Allowed
+        );
+        assert_eq!(
+            limiter.check(key).await.unwrap().outcome,
+            RateLimitOutcome::Limited
         );
     }
 
@@ -179,11 +246,10 @@ mod redis_tests {
             return;
         }
 
-        let (backend, rate) = test_redis_config(3);
+        let (backend, rate) = test_redis_config(3, 3);
         let limiter = RedisRateLimiter::new(&backend, &rate).await.unwrap();
         let key = "test-stats-key";
 
-        // Make 5 requests (3 allowed, 2 limited)
         for _ in 0..5 {
             let _ = limiter.check(key).await;
         }
@@ -201,17 +267,12 @@ mod redis_tests {
             return;
         }
 
-        let (backend, rate) = test_redis_config(10);
+        let (backend, rate) = test_redis_config(10, 10);
         let limiter = RedisRateLimiter::new(&backend, &rate).await.unwrap();
 
-        // Should start healthy
         assert!(limiter.is_healthy());
-
-        // After successful check, should remain healthy
         let _ = limiter.check("health-test").await;
         assert!(limiter.is_healthy());
-
-        // Manually mark unhealthy
         limiter.mark_unhealthy();
         assert!(!limiter.is_healthy());
     }
@@ -223,29 +284,30 @@ mod redis_tests {
             return;
         }
 
-        // Create two limiters with different prefixes
-        let (mut backend1, rate1) = test_redis_config(5);
-        backend1.key_prefix = "prefix-a:".to_string();
+        let (mut backend1, rate1) = test_redis_config(5, 5);
+        backend1.key_prefix = format!("prefix-a:{}:", uuid::Uuid::new_v4());
         let limiter1 = RedisRateLimiter::new(&backend1, &rate1).await.unwrap();
 
-        let (mut backend2, rate2) = test_redis_config(5);
-        backend2.key_prefix = "prefix-b:".to_string();
+        let (mut backend2, rate2) = test_redis_config(5, 5);
+        backend2.key_prefix = format!("prefix-b:{}:", uuid::Uuid::new_v4());
         let limiter2 = RedisRateLimiter::new(&backend2, &rate2).await.unwrap();
 
         let key = "shared-key";
-
-        // Exhaust limit on limiter1
         for _ in 0..5 {
             limiter1.check(key).await.unwrap();
         }
-        let (outcome1, _) = limiter1.check(key).await.unwrap();
-        assert_eq!(outcome1, RateLimitOutcome::Limited);
-
-        // limiter2 should still allow (different prefix = different key)
-        let (outcome2, _) = limiter2.check(key).await.unwrap();
-        assert_eq!(outcome2, RateLimitOutcome::Allowed);
+        assert_eq!(
+            limiter1.check(key).await.unwrap().outcome,
+            RateLimitOutcome::Limited
+        );
+        assert_eq!(
+            limiter2.check(key).await.unwrap().outcome,
+            RateLimitOutcome::Allowed
+        );
     }
 
+    /// The script runs atomically: concurrent checks take exactly `burst`
+    /// tokens between them, never more.
     #[tokio::test]
     async fn test_redis_rate_limiter_concurrent_requests() {
         if !is_redis_available().await {
@@ -253,11 +315,11 @@ mod redis_tests {
             return;
         }
 
-        let (backend, rate) = test_redis_config(100);
+        // 1/s refill: nothing measurable refills while the test runs.
+        let (backend, rate) = test_redis_config(1, 20);
         let limiter = std::sync::Arc::new(RedisRateLimiter::new(&backend, &rate).await.unwrap());
         let key = "concurrent-key";
 
-        // Spawn 50 concurrent requests
         let mut handles = Vec::new();
         for _ in 0..50 {
             let limiter = limiter.clone();
@@ -265,54 +327,54 @@ mod redis_tests {
             handles.push(tokio::spawn(async move { limiter.check(&key).await }));
         }
 
-        // All should complete without error
         let mut allowed = 0;
         for handle in handles {
             let result = handle.await.unwrap();
             assert!(result.is_ok(), "Concurrent request should not error");
-            if result.unwrap().0 == RateLimitOutcome::Allowed {
+            if result.unwrap().outcome == RateLimitOutcome::Allowed {
                 allowed += 1;
             }
         }
-
-        // All 50 should be allowed (limit is 100)
-        assert_eq!(allowed, 50, "All 50 concurrent requests should be allowed");
+        assert_eq!(allowed, 20, "exactly the burst is admitted");
     }
 
+    /// Two pools on the same backend and route, as two proxy instances would
+    /// have, draw from one bucket.
     #[tokio::test]
-    async fn test_redis_rate_limiter_config_update() {
+    async fn test_redis_pools_share_one_bucket_across_instances() {
         if !is_redis_available().await {
             eprintln!("Skipping test: Redis not available");
             return;
         }
 
-        let (backend, rate) = test_redis_config(5);
-        let limiter = RedisRateLimiter::new(&backend, &rate).await.unwrap();
-        let key = "config-update-key";
+        let (backend, mut rate) = test_redis_config(1, 4);
+        rate.backend = RateLimitBackend::Redis(backend);
+        let instance_a = RateLimiterPool::with_scope(rate.clone(), "api");
+        let instance_b = RateLimiterPool::with_scope(rate.clone(), "api");
+        let other_route = RateLimiterPool::with_scope(rate, "web");
+        assert!(instance_a.is_distributed());
 
-        // Exhaust initial limit
-        for _ in 0..5 {
-            limiter.check(key).await.unwrap();
+        let mut outcomes = Vec::new();
+        for i in 0..6 {
+            let pool = if i % 2 == 0 { &instance_a } else { &instance_b };
+            outcomes.push(pool.check_async("203.0.113.7").await.outcome);
         }
-        let (outcome, _) = limiter.check(key).await.unwrap();
-        assert_eq!(outcome, RateLimitOutcome::Limited);
-
-        // Update config to higher limit
-        let new_rate = RateLimitConfig {
-            max_rps: 20,
-            burst: 40,
-            ..Default::default()
-        };
-        limiter.update_config(&backend, &new_rate);
-
-        // New key should use new limit (6 should still fail due to existing count)
-        // But after window reset, 20 should be allowed
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-
-        for _ in 0..10 {
-            let (outcome, _) = limiter.check(key).await.unwrap();
-            assert_eq!(outcome, RateLimitOutcome::Allowed);
-        }
+        assert_eq!(
+            outcomes,
+            [
+                RateLimitOutcome::Allowed,
+                RateLimitOutcome::Allowed,
+                RateLimitOutcome::Allowed,
+                RateLimitOutcome::Allowed,
+                RateLimitOutcome::Limited,
+                RateLimitOutcome::Limited,
+            ]
+        );
+        // Another route has its own bucket, as it does locally.
+        assert_eq!(
+            other_route.check_async("203.0.113.7").await.outcome,
+            RateLimitOutcome::Allowed
+        );
     }
 }
 
@@ -321,9 +383,11 @@ mod memcached_tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    use zentinel_config::MemcachedBackendConfig;
+    use zentinel_config::{MemcachedBackendConfig, RateLimitBackend};
     use zentinel_proxy::memcached_rate_limit::MemcachedRateLimiter;
-    use zentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome};
+    use zentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome, RateLimiterPool};
+
+    use super::{local_summary, summary};
 
     fn memcached_url() -> String {
         std::env::var("MEMCACHED_URL").unwrap_or_else(|_| "memcache://127.0.0.1:11211".to_string())
@@ -333,7 +397,10 @@ mod memcached_tests {
         std::env::var("SKIP_MEMCACHED_TESTS").is_ok()
     }
 
-    fn test_memcached_config(max_rps: u32) -> (MemcachedBackendConfig, RateLimitConfig) {
+    fn test_memcached_config(
+        max_rps: u32,
+        burst: u32,
+    ) -> (MemcachedBackendConfig, RateLimitConfig) {
         let backend = MemcachedBackendConfig {
             url: memcached_url(),
             key_prefix: format!("zentinel:test:{}:", uuid::Uuid::new_v4()),
@@ -344,7 +411,7 @@ mod memcached_tests {
         };
         let rate = RateLimitConfig {
             max_rps,
-            burst: max_rps * 2,
+            burst,
             ..Default::default()
         };
         (backend, rate)
@@ -354,13 +421,12 @@ mod memcached_tests {
         if should_skip_memcached() {
             return false;
         }
-        // Try to connect to memcached
+        let addr = memcached_url()
+            .trim_start_matches("memcache://")
+            .trim_start_matches("memcached://")
+            .to_string();
         matches!(
-            tokio::time::timeout(
-                Duration::from_secs(2),
-                async_memcached::Client::new(memcached_url()),
-            )
-            .await,
+            tokio::time::timeout(Duration::from_secs(2), async_memcached::Client::new(addr)).await,
             Ok(Ok(_))
         )
     }
@@ -372,52 +438,38 @@ mod memcached_tests {
             return;
         }
 
-        let (backend, rate) = test_memcached_config(10);
+        let (backend, rate) = test_memcached_config(10, 10);
         let limiter = MemcachedRateLimiter::new(&backend, &rate).await.unwrap();
 
-        // Should allow requests under the limit
         for i in 0..5 {
-            let (outcome, count) = limiter.check(&format!("mc-test-key-{}", i)).await.unwrap();
-            assert_eq!(
-                outcome,
-                RateLimitOutcome::Allowed,
-                "Request {} should be allowed",
-                i
-            );
-            assert_eq!(count, 1, "First request for each key should have count 1");
+            let info = limiter.check(&format!("mc-test-key-{}", i)).await.unwrap();
+            assert_eq!(info.outcome, RateLimitOutcome::Allowed, "request {i}");
+            assert_eq!(info.remaining, 9);
         }
     }
 
+    /// `burst` is the bucket size, and the sequence is the local limiter's.
     #[tokio::test]
-    async fn test_memcached_rate_limiter_blocks_over_limit() {
+    async fn test_memcached_rate_limiter_matches_local_limiter() {
         if !is_memcached_available().await {
             eprintln!("Skipping test: Memcached not available");
             return;
         }
 
-        let (backend, rate) = test_memcached_config(5);
-        let limiter = MemcachedRateLimiter::new(&backend, &rate).await.unwrap();
-        let key = "mc-test-block-key";
-
-        // First 5 requests should be allowed
-        for i in 0..5 {
-            let (outcome, _) = limiter.check(key).await.unwrap();
+        for (max_rps, burst) in [(1, 3), (5, 5), (5, 12), (2, 1)] {
+            let (backend, rate) = test_memcached_config(max_rps, burst);
+            let limiter = MemcachedRateLimiter::new(&backend, &rate).await.unwrap();
+            let n = burst as usize + 3;
+            let mut infos = Vec::new();
+            for _ in 0..n {
+                infos.push(limiter.check("same-key").await.unwrap());
+            }
             assert_eq!(
-                outcome,
-                RateLimitOutcome::Allowed,
-                "Request {} should be allowed",
-                i
+                summary(&infos),
+                local_summary(max_rps, burst, n),
+                "max-rps {max_rps} burst {burst}"
             );
         }
-
-        // 6th request should be limited
-        let (outcome, count) = limiter.check(key).await.unwrap();
-        assert_eq!(
-            outcome,
-            RateLimitOutcome::Limited,
-            "Request 6 should be limited"
-        );
-        assert!(count > 5, "Count should be greater than limit");
     }
 
     #[tokio::test]
@@ -427,48 +479,59 @@ mod memcached_tests {
             return;
         }
 
-        let (backend, rate) = test_memcached_config(3);
+        let (backend, rate) = test_memcached_config(3, 3);
         let limiter = MemcachedRateLimiter::new(&backend, &rate).await.unwrap();
 
-        // Exhaust limit for key A
         for _ in 0..3 {
             limiter.check("mc-key-a").await.unwrap();
         }
-        let (outcome_a, _) = limiter.check("mc-key-a").await.unwrap();
-        assert_eq!(outcome_a, RateLimitOutcome::Limited);
-
-        // Key B should still be allowed
-        let (outcome_b, _) = limiter.check("mc-key-b").await.unwrap();
-        assert_eq!(outcome_b, RateLimitOutcome::Allowed);
+        assert_eq!(
+            limiter.check("mc-key-a").await.unwrap().outcome,
+            RateLimitOutcome::Limited
+        );
+        assert_eq!(
+            limiter.check("mc-key-b").await.unwrap().outcome,
+            RateLimitOutcome::Allowed
+        );
+        // Keys memcached cannot store verbatim are hashed, not rejected.
+        assert_eq!(
+            limiter
+                .check("a header value with spaces")
+                .await
+                .unwrap()
+                .outcome,
+            RateLimitOutcome::Allowed
+        );
     }
 
     #[tokio::test]
-    async fn test_memcached_rate_limiter_window_expiry() {
+    async fn test_memcached_rate_limiter_refills() {
         if !is_memcached_available().await {
             eprintln!("Skipping test: Memcached not available");
             return;
         }
 
-        let (backend, rate) = test_memcached_config(5);
+        let (backend, rate) = test_memcached_config(5, 5);
         let limiter = MemcachedRateLimiter::new(&backend, &rate).await.unwrap();
-        let key = "mc-test-expiry-key";
+        let key = "mc-test-refill-key";
 
-        // Exhaust limit
         for _ in 0..5 {
             limiter.check(key).await.unwrap();
         }
-        let (outcome, _) = limiter.check(key).await.unwrap();
-        assert_eq!(outcome, RateLimitOutcome::Limited);
-
-        // Wait for TTL to expire (2 seconds + buffer)
-        tokio::time::sleep(Duration::from_millis(2200)).await;
-
-        // Should be allowed again
-        let (outcome, _) = limiter.check(key).await.unwrap();
         assert_eq!(
-            outcome,
-            RateLimitOutcome::Allowed,
-            "Should allow after TTL expiry"
+            limiter.check(key).await.unwrap().outcome,
+            RateLimitOutcome::Limited
+        );
+
+        // 5/s refills a token every 200 ms
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            limiter.check(key).await.unwrap().outcome,
+            RateLimitOutcome::Allowed
+        );
+        assert_eq!(
+            limiter.check(key).await.unwrap().outcome,
+            RateLimitOutcome::Limited
         );
     }
 
@@ -479,11 +542,10 @@ mod memcached_tests {
             return;
         }
 
-        let (backend, rate) = test_memcached_config(3);
+        let (backend, rate) = test_memcached_config(3, 3);
         let limiter = MemcachedRateLimiter::new(&backend, &rate).await.unwrap();
         let key = "mc-test-stats-key";
 
-        // Make 5 requests (3 allowed, 2 limited)
         for _ in 0..5 {
             let _ = limiter.check(key).await;
         }
@@ -494,33 +556,43 @@ mod memcached_tests {
         assert_eq!(stats.limited.load(Ordering::Relaxed), 2);
     }
 
+    /// Two instances (separate connections, so their CAS writes really do
+    /// race) checking concurrently take exactly `burst` tokens in total.
     #[tokio::test]
-    async fn test_memcached_rate_limiter_sequential_requests() {
+    async fn test_memcached_instances_share_one_bucket() {
         if !is_memcached_available().await {
             eprintln!("Skipping test: Memcached not available");
             return;
         }
 
-        let (backend, rate) = test_memcached_config(100);
-        let limiter = MemcachedRateLimiter::new(&backend, &rate).await.unwrap();
-        let key = "mc-sequential-key";
+        let (backend, mut rate) = test_memcached_config(1, 20);
+        rate.backend = RateLimitBackend::Memcached(backend);
+        let instance_a = std::sync::Arc::new(RateLimiterPool::with_scope(rate.clone(), "api"));
+        let instance_b = std::sync::Arc::new(RateLimiterPool::with_scope(rate, "api"));
+        assert!(instance_a.is_distributed());
 
-        // Run 50 sequential requests (MemcachedRateLimiter is not Send due to RwLock guard)
+        let mut handles = Vec::new();
+        for i in 0..50 {
+            let pool = if i % 2 == 0 {
+                instance_a.clone()
+            } else {
+                instance_b.clone()
+            };
+            handles.push(tokio::spawn(async move {
+                pool.check_async("203.0.113.7").await.outcome
+            }));
+        }
         let mut allowed = 0;
-        for _ in 0..50 {
-            let result = limiter.check(key).await;
-            assert!(result.is_ok(), "Request should not error");
-            if result.unwrap().0 == RateLimitOutcome::Allowed {
+        for handle in handles {
+            if handle.await.unwrap() == RateLimitOutcome::Allowed {
                 allowed += 1;
             }
         }
-
-        // All 50 should be allowed (limit is 100)
-        assert_eq!(allowed, 50, "All 50 requests should be allowed");
+        assert_eq!(allowed, 20, "exactly the burst is admitted");
     }
 }
 
-#[cfg(feature = "distributed-rate-limit")]
+#[cfg(feature = "distributed-rate-limit-redis")]
 mod fallback_tests {
     use std::time::Duration;
 
@@ -602,27 +674,110 @@ mod fallback_tests {
     }
 }
 
+/// A backend that cannot be reached: these run without any server.
+#[cfg(any(
+    feature = "distributed-rate-limit-redis",
+    feature = "distributed-rate-limit-memcached"
+))]
+mod unreachable_backend_tests {
+    use zentinel_config::RateLimitBackend;
+    use zentinel_proxy::rate_limit::{RateLimitConfig, RateLimitOutcome, RateLimiterPool};
+
+    // Nothing listens here (a closed port refuses at once, so the checks
+    // do not wait out a timeout).
+    const NOWHERE: &str = "127.0.0.1:1";
+
+    #[cfg(feature = "distributed-rate-limit-redis")]
+    fn redis(fallback_local: bool) -> RateLimitBackend {
+        RateLimitBackend::Redis(zentinel_config::RedisBackendConfig {
+            url: format!("redis://{NOWHERE}"),
+            key_prefix: "test:".to_string(),
+            pool_size: 1,
+            timeout_ms: 500,
+            fallback_local,
+        })
+    }
+
+    #[cfg(feature = "distributed-rate-limit-memcached")]
+    fn memcached(fallback_local: bool) -> RateLimitBackend {
+        RateLimitBackend::Memcached(zentinel_config::MemcachedBackendConfig {
+            url: format!("memcache://{NOWHERE}"),
+            key_prefix: "test:".to_string(),
+            pool_size: 1,
+            timeout_ms: 500,
+            fallback_local,
+            ttl_secs: 2,
+        })
+    }
+
+    async fn outcomes(backend: RateLimitBackend, n: usize) -> Vec<RateLimitOutcome> {
+        let pool = RateLimiterPool::with_scope(
+            RateLimitConfig {
+                max_rps: 1,
+                burst: 2,
+                backend,
+                ..Default::default()
+            },
+            "route",
+        );
+        let mut outcomes = Vec::new();
+        for _ in 0..n {
+            outcomes.push(pool.check_async("203.0.113.7").await.outcome);
+        }
+        outcomes
+    }
+
+    const A: RateLimitOutcome = RateLimitOutcome::Allowed;
+    const L: RateLimitOutcome = RateLimitOutcome::Limited;
+
+    /// With `fallback-local`, a backend outage limits per instance with the
+    /// same bucket rather than letting everything through.
+    #[cfg(feature = "distributed-rate-limit-redis")]
+    #[tokio::test]
+    async fn redis_outage_falls_back_to_local_buckets() {
+        assert_eq!(outcomes(redis(true), 4).await, [A, A, L, L]);
+    }
+
+    #[cfg(feature = "distributed-rate-limit-redis")]
+    #[tokio::test]
+    async fn redis_outage_without_fallback_fails_open() {
+        assert_eq!(outcomes(redis(false), 4).await, [A, A, A, A]);
+    }
+
+    #[cfg(feature = "distributed-rate-limit-memcached")]
+    #[tokio::test]
+    async fn memcached_outage_falls_back_to_local_buckets() {
+        assert_eq!(outcomes(memcached(true), 4).await, [A, A, L, L]);
+    }
+
+    #[cfg(feature = "distributed-rate-limit-memcached")]
+    #[tokio::test]
+    async fn memcached_outage_without_fallback_fails_open() {
+        assert_eq!(outcomes(memcached(false), 4).await, [A, A, A, A]);
+    }
+}
+
 // Tests that run without external dependencies
 mod unit_tests {
     #[cfg(any(
-        feature = "distributed-rate-limit",
+        feature = "distributed-rate-limit-redis",
         feature = "distributed-rate-limit-memcached"
     ))]
     use std::sync::atomic::Ordering;
 
-    #[cfg(feature = "distributed-rate-limit")]
+    #[cfg(feature = "distributed-rate-limit-redis")]
     use zentinel_proxy::distributed_rate_limit::DistributedRateLimitStats;
 
     #[cfg(feature = "distributed-rate-limit-memcached")]
     use zentinel_proxy::memcached_rate_limit::MemcachedRateLimitStats;
 
     #[cfg(any(
-        feature = "distributed-rate-limit",
+        feature = "distributed-rate-limit-redis",
         feature = "distributed-rate-limit-memcached"
     ))]
     use zentinel_proxy::rate_limit::RateLimitOutcome;
 
-    #[cfg(feature = "distributed-rate-limit")]
+    #[cfg(feature = "distributed-rate-limit-redis")]
     #[test]
     fn test_distributed_stats_default() {
         let stats = DistributedRateLimitStats::default();
@@ -633,7 +788,7 @@ mod unit_tests {
         assert_eq!(stats.local_fallbacks.load(Ordering::Relaxed), 0);
     }
 
-    #[cfg(feature = "distributed-rate-limit")]
+    #[cfg(feature = "distributed-rate-limit-redis")]
     #[test]
     fn test_distributed_stats_record_allowed() {
         let stats = DistributedRateLimitStats::default();
@@ -644,7 +799,7 @@ mod unit_tests {
         assert_eq!(stats.limited.load(Ordering::Relaxed), 0);
     }
 
-    #[cfg(feature = "distributed-rate-limit")]
+    #[cfg(feature = "distributed-rate-limit-redis")]
     #[test]
     fn test_distributed_stats_record_limited() {
         let stats = DistributedRateLimitStats::default();
@@ -655,7 +810,7 @@ mod unit_tests {
         assert_eq!(stats.limited.load(Ordering::Relaxed), 1);
     }
 
-    #[cfg(feature = "distributed-rate-limit")]
+    #[cfg(feature = "distributed-rate-limit-redis")]
     #[test]
     fn test_distributed_stats_errors_and_fallbacks() {
         let stats = DistributedRateLimitStats::default();

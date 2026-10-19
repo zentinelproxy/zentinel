@@ -190,7 +190,7 @@ pub use decompression::{
 };
 
 // Distributed rate limiting - Redis
-#[cfg(feature = "distributed-rate-limit")]
+#[cfg(feature = "distributed-rate-limit-redis")]
 pub use distributed_rate_limit::{
     create_redis_rate_limiter, DistributedRateLimitStats, RedisRateLimiter,
 };

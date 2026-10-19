@@ -173,8 +173,12 @@ hickory-resolver = "0.26"
 [features]
 default = []
 
-# Distributed rate limiting backends
-distributed-rate-limit = ["redis", "async-memcached"]
+# Distributed rate limiting backends. Each backend is gated on its own
+# feature, which the umbrella turns on. The Redis code used to be gated on the
+# umbrella and the umbrella enabled only the dependencies, so
+# `distributed-rate-limit` compiled memcached out and
+# `distributed-rate-limit-redis` compiled Redis out.
+distributed-rate-limit = ["distributed-rate-limit-redis", "distributed-rate-limit-memcached"]
 distributed-rate-limit-redis = ["redis"]
 distributed-rate-limit-memcached = ["async-memcached"]
 

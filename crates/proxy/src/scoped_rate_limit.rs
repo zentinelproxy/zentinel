@@ -112,7 +112,7 @@ impl ScopedRateLimitManager {
     ///
     /// Checks the scope-specific rate limit, falling back through the scope chain
     /// if no limit is configured for the exact scope.
-    pub fn check(
+    pub async fn check(
         &self,
         scope: &Scope,
         route_id: &str,
@@ -122,8 +122,10 @@ impl ScopedRateLimitManager {
     ) -> ScopedRateLimitResult {
         // Try each scope in the chain
         for s in scope.chain() {
-            if let Some(manager) = self.scope_managers.get(&s) {
-                let result = manager.check(route_id, client_ip, path, headers);
+            // Cloned out so no map shard lock is held across the await
+            let manager = self.scope_managers.get(&s).map(|m| m.value().clone());
+            if let Some(manager) = manager {
+                let result = manager.check(route_id, client_ip, path, headers).await;
 
                 if !result.allowed {
                     return ScopedRateLimitResult {
@@ -147,7 +149,8 @@ impl ScopedRateLimitManager {
         // No scope-specific limit found, use fallback
         let result = self
             .fallback_manager
-            .check(route_id, client_ip, path, headers);
+            .check(route_id, client_ip, path, headers)
+            .await;
 
         ScopedRateLimitResult {
             inner: result,
@@ -279,8 +282,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_scope_isolation() {
+    #[tokio::test]
+    async fn test_scope_isolation() {
         let manager = ScopedRateLimitManager::new();
 
         // Set different limits for different scopes
@@ -293,41 +296,47 @@ mod tests {
         // Check from namespace scope - should use namespace limit (5 rps)
         let ns_scope = Scope::Namespace("api".to_string());
         for _ in 0..5 {
-            let result = manager.check(
+            let result = manager
+                .check(
+                    &ns_scope,
+                    "route",
+                    "127.0.0.1",
+                    "/",
+                    Option::<&NoHeaders>::None,
+                )
+                .await;
+            assert!(result.allowed());
+        }
+
+        // 6th request should be limited
+        let result = manager
+            .check(
                 &ns_scope,
                 "route",
                 "127.0.0.1",
                 "/",
                 Option::<&NoHeaders>::None,
-            );
-            assert!(result.allowed());
-        }
-
-        // 6th request should be limited
-        let result = manager.check(
-            &ns_scope,
-            "route",
-            "127.0.0.1",
-            "/",
-            Option::<&NoHeaders>::None,
-        );
+            )
+            .await;
         assert!(!result.allowed());
         assert!(matches!(result.scope, Scope::Namespace(_)));
 
         // Different namespace should still have quota (uses global)
         let other_ns = Scope::Namespace("other".to_string());
-        let result = manager.check(
-            &other_ns,
-            "route",
-            "127.0.0.2",
-            "/",
-            Option::<&NoHeaders>::None,
-        );
+        let result = manager
+            .check(
+                &other_ns,
+                "route",
+                "127.0.0.2",
+                "/",
+                Option::<&NoHeaders>::None,
+            )
+            .await;
         assert!(result.allowed());
     }
 
-    #[test]
-    fn test_scope_chain_fallback() {
+    #[tokio::test]
+    async fn test_scope_chain_fallback() {
         let manager = ScopedRateLimitManager::new();
 
         // Only set global limits
@@ -340,30 +349,34 @@ mod tests {
         };
 
         for _ in 0..3 {
-            let result = manager.check(
+            let result = manager
+                .check(
+                    &svc_scope,
+                    "route",
+                    "127.0.0.1",
+                    "/",
+                    Option::<&NoHeaders>::None,
+                )
+                .await;
+            assert!(result.allowed());
+        }
+
+        // 4th request should be limited by global
+        let result = manager
+            .check(
                 &svc_scope,
                 "route",
                 "127.0.0.1",
                 "/",
                 Option::<&NoHeaders>::None,
-            );
-            assert!(result.allowed());
-        }
-
-        // 4th request should be limited by global
-        let result = manager.check(
-            &svc_scope,
-            "route",
-            "127.0.0.1",
-            "/",
-            Option::<&NoHeaders>::None,
-        );
+            )
+            .await;
         assert!(!result.allowed());
         assert_eq!(result.scope, Scope::Global);
     }
 
-    #[test]
-    fn test_service_scope_limits() {
+    #[tokio::test]
+    async fn test_service_scope_limits() {
         let manager = ScopedRateLimitManager::new();
 
         // Set service-specific limits
@@ -374,31 +387,37 @@ mod tests {
         manager.set_scope_limits(svc_scope.clone(), test_limits_with_rate_limit(2, 1));
 
         // Service should use its own limits
-        let result1 = manager.check(
-            &svc_scope,
-            "route",
-            "127.0.0.1",
-            "/",
-            Option::<&NoHeaders>::None,
-        );
-        let result2 = manager.check(
-            &svc_scope,
-            "route",
-            "127.0.0.1",
-            "/",
-            Option::<&NoHeaders>::None,
-        );
+        let result1 = manager
+            .check(
+                &svc_scope,
+                "route",
+                "127.0.0.1",
+                "/",
+                Option::<&NoHeaders>::None,
+            )
+            .await;
+        let result2 = manager
+            .check(
+                &svc_scope,
+                "route",
+                "127.0.0.1",
+                "/",
+                Option::<&NoHeaders>::None,
+            )
+            .await;
         assert!(result1.allowed());
         assert!(result2.allowed());
 
         // 3rd should be limited
-        let result3 = manager.check(
-            &svc_scope,
-            "route",
-            "127.0.0.1",
-            "/",
-            Option::<&NoHeaders>::None,
-        );
+        let result3 = manager
+            .check(
+                &svc_scope,
+                "route",
+                "127.0.0.1",
+                "/",
+                Option::<&NoHeaders>::None,
+            )
+            .await;
         assert!(!result3.allowed());
         assert!(matches!(result3.scope, Scope::Service { .. }));
     }
