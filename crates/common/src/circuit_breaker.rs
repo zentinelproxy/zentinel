@@ -333,10 +333,30 @@ impl CircuitBreaker {
                 Ordering::Release,
             );
 
-            if let Some(ref name) = self.name {
-                warn!(name = %name, "Circuit breaker opened");
+            // Count and threshold are logged so an opening can be checked
+            // against the configuration without reconstructing the failures
+            // from other log lines (some of which are timeouts at WARN).
+            let consecutive_failures = self.consecutive_failures.load(Ordering::Relaxed);
+            let from = if current == STATE_HALF_OPEN {
+                "half-open"
             } else {
-                warn!("Circuit breaker opened");
+                "closed"
+            };
+            if let Some(ref name) = self.name {
+                warn!(
+                    name = %name,
+                    from,
+                    consecutive_failures,
+                    failure_threshold = self.config.failure_threshold,
+                    "Circuit breaker opened"
+                );
+            } else {
+                warn!(
+                    from,
+                    consecutive_failures,
+                    failure_threshold = self.config.failure_threshold,
+                    "Circuit breaker opened"
+                );
             }
         }
     }

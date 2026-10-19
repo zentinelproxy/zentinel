@@ -40,6 +40,17 @@ pub struct AgentManager {
     agent_semaphores: Arc<RwLock<HashMap<String, Arc<Semaphore>>>>,
 }
 
+/// The proxy-side circuit breaker for one agent.
+///
+/// Named `agent:<id>` so "Circuit breaker opened" says which agent; it was
+/// unnamed and indistinguishable from upstream breakers in the log.
+fn agent_circuit_breaker(config: &AgentConfig) -> CircuitBreaker {
+    CircuitBreaker::with_name(
+        config.circuit_breaker.unwrap_or_default(),
+        format!("agent:{}", config.id),
+    )
+}
+
 impl AgentManager {
     /// Create new agent manager.
     ///
@@ -66,9 +77,7 @@ impl AgentManager {
             // Create per-agent semaphore for queue isolation
             let semaphore = Arc::new(Semaphore::new(config.max_concurrent_calls));
 
-            let circuit_breaker = Arc::new(CircuitBreaker::new(
-                config.circuit_breaker.unwrap_or_default(),
-            ));
+            let circuit_breaker = Arc::new(agent_circuit_breaker(&config));
 
             trace!(
                 agent_id = %config.id,
@@ -1411,6 +1420,74 @@ fn evaluate_body_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn agent_from_kdl(circuit_breaker: &str) -> AgentConfig {
+        let kdl = format!(
+            r#"
+            system {{ worker-threads 1 }}
+            listeners {{ listener "l" {{ address "127.0.0.1:8080" }} }}
+            upstreams {{ upstream "u" {{ target "127.0.0.1:9000" }} }}
+            routes {{ route "r" {{ matches {{ path-prefix "/" }}
+                                 upstream "u" }} }}
+            agents {{
+                agent "echo" type="custom" {{
+                    unix-socket "/tmp/echo.sock"
+                    events "request_headers"
+                    {circuit_breaker}
+                }}
+            }}
+            "#
+        );
+        let config = zentinel_config::Config::from_kdl(&kdl).expect("parses");
+        config.agents.into_iter().next().expect("one agent")
+    }
+
+    /// Reported in #530: the agent breaker "opened after the first failed
+    /// call". It does not. Over UDS on 26.10_3 the first failures against a
+    /// dead agent were *timeouts* (logged at WARN, "timed out"), and only the
+    /// fifth was an ERROR "call failed", immediately followed by "Circuit
+    /// breaker opened". This replays that sequence through the same
+    /// AgentV2 recording methods the manager calls.
+    #[tokio::test]
+    async fn default_agent_breaker_opens_on_the_fifth_consecutive_failure() {
+        let config = agent_from_kdl("");
+        let agent = AgentV2::new(config.clone(), Arc::new(agent_circuit_breaker(&config)));
+        for _ in 0..4 {
+            agent.record_timeout();
+        }
+        assert!(
+            agent.circuit_breaker().is_closed(),
+            "4 failures < threshold 5"
+        );
+        agent.record_failure();
+        assert!(!agent.circuit_breaker().is_closed(), "5th failure opens");
+    }
+
+    #[tokio::test]
+    async fn configured_agent_breaker_threshold_is_respected() {
+        let config = agent_from_kdl("circuit-breaker { failure-threshold 3 }");
+        let agent = AgentV2::new(config.clone(), Arc::new(agent_circuit_breaker(&config)));
+        agent.record_failure();
+        agent.record_failure();
+        assert!(agent.circuit_breaker().is_closed());
+        agent.record_failure();
+        assert!(!agent.circuit_breaker().is_closed());
+    }
+
+    /// A success in between resets the count: failures must be consecutive.
+    #[tokio::test]
+    async fn a_success_resets_the_agent_breaker_count() {
+        let config = agent_from_kdl("");
+        let agent = AgentV2::new(config.clone(), Arc::new(agent_circuit_breaker(&config)));
+        for _ in 0..4 {
+            agent.record_failure();
+        }
+        agent.record_success(Duration::from_millis(1));
+        for _ in 0..4 {
+            agent.record_failure();
+        }
+        assert!(agent.circuit_breaker().is_closed());
+    }
 
     fn limits() -> Vec<(String, FailureMode, usize)> {
         vec![
