@@ -572,6 +572,24 @@ pub struct ErrorPageConfig {
     pub template_dir: Option<PathBuf>,
 }
 
+impl ErrorPageConfig {
+    /// The file `page`'s template is read from, if it has one.
+    ///
+    /// A relative template is taken from `template_dir` when one is set, and
+    /// otherwise stands as written. The proxy used to read templates only
+    /// when `template_dir` was set, so an absolute `template` on its own --
+    /// the form the docs showed -- was never read. The config parser checks
+    /// the same path, so what it reports missing is what the proxy would fail
+    /// to read.
+    pub fn template_path(&self, page: &ErrorPage) -> Option<PathBuf> {
+        let template = page.template.as_ref()?;
+        Some(match &self.template_dir {
+            Some(dir) if template.is_relative() => dir.join(template),
+            _ => template.clone(),
+        })
+    }
+}
+
 /// Individual error page configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorPage {

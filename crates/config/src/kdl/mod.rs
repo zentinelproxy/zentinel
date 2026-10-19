@@ -12,6 +12,7 @@
 //! - `namespace`: Namespace and service parsing
 
 mod circuitbreaker_helper;
+pub(crate) mod error_pages;
 pub(crate) mod filters;
 mod helpers;
 mod namespace;

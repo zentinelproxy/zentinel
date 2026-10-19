@@ -508,6 +508,11 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
         keys: crate::kdl::RECOGNIZED_TRACING_BACKEND_KEYS,
     },
     ClosedBlock {
+        name: "error-pages",
+        nesting: Nesting::In("route"),
+        keys: crate::kdl::error_pages::RECOGNIZED_ERROR_PAGES_KEYS,
+    },
+    ClosedBlock {
         name: "policies",
         nesting: Nesting::Anywhere,
         keys: &[
@@ -676,7 +681,14 @@ fn check_values(
             report(crate::kdl::routes::resolve_service_type(node, route_id).1);
             report(crate::kdl::routes::resolve_priority(node, route_id).1);
             report(crate::kdl::routes::resolve_builtin_handler(node, route_id).1);
+            let service_type = crate::kdl::routes::resolve_service_type(node, route_id).0;
+            let (_, problems) =
+                crate::kdl::error_pages::resolve_error_pages(node, route_id, &service_type);
+            for problem in problems {
+                report(Some(problem));
+            }
         }
+        ("pages", _) if parent == Some("error-pages") => check_error_page_keys(node, result),
         ("upstream", Some(upstream_id)) => {
             report(crate::kdl::upstreams::resolve_load_balancing(node, upstream_id).1);
             if let Some(check) = node.children().and_then(|c| c.get("health-check")) {
@@ -700,6 +712,31 @@ fn check_values(
         }
         ("matches", _) if parent == Some("route") => check_run_together_matches(node, result),
         _ => {}
+    }
+}
+
+/// The keys of each page in an `error-pages` block's `pages`.
+///
+/// Pages are named by their status (`"503" { ... }`), so no fixed block name
+/// describes them and they cannot sit in `CLOSED_BLOCKS`; this applies the
+/// same check to every child of `pages` instead.
+fn check_error_page_keys(pages: &kdl::KdlNode, result: &mut ValidationResult) {
+    const ERROR_PAGE: ClosedBlock = ClosedBlock {
+        name: "error page",
+        nesting: Nesting::In("pages"),
+        keys: crate::kdl::error_pages::RECOGNIZED_ERROR_PAGE_KEYS,
+    };
+    for page in pages.children().map(|c| c.nodes()).unwrap_or_default() {
+        for key in page.children().map(|c| c.nodes()).unwrap_or_default() {
+            let name = key.name().value();
+            if !ERROR_PAGE.keys.contains(&name) {
+                result.add_warning(ValidationWarning::new(unknown_key_message(
+                    &ERROR_PAGE,
+                    name,
+                )));
+            }
+            check_run_together(&ERROR_PAGE, key, result);
+        }
     }
 }
 
@@ -2476,5 +2513,53 @@ mod tests {
              config is wrong or CLOSED_BLOCKS is under-listed:\n{}",
             complaints.join("\n")
         );
+    }
+
+    /// #542: `error-pages` is read now, so a correct block is quiet, and the
+    /// parts of it the parser cannot use are reported.
+    #[test]
+    fn error_pages_are_checked_not_reported_wholesale() {
+        let clean = warnings_for(
+            r#"routes {
+                route "r" {
+                    error-pages {
+                        default-format "json"
+                        pages {
+                            "404" {
+                                format "json"
+                                message "nope"
+                                headers { Cache-Control "no-store" }
+                            }
+                        }
+                    }
+                }
+            }"#,
+        );
+        assert!(clean.is_empty(), "{clean:?}");
+
+        let warnings = warnings_for(
+            r#"routes {
+                route "r" {
+                    error-pages {
+                        include-stack-trace #true
+                        pages {
+                            "503" {
+                                format "yaml"
+                                mesage "typo"
+                            }
+                            "oops" { message "x" }
+                        }
+                    }
+                }
+            }"#,
+        );
+        assert_eq!(warnings.len(), 4, "{warnings:#?}");
+        assert!(warnings.iter().all(|w| w.contains("is being ignored")));
+        assert!(warnings.iter().any(|w| w.contains("'include-stack-trace'")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("'mesage'") && w.contains("Did you mean 'message'?")));
+        assert!(warnings.iter().any(|w| w.contains("'format \"yaml\"'")));
+        assert!(warnings.iter().any(|w| w.contains("'oops'")));
     }
 }

@@ -40,6 +40,7 @@ pub(crate) const RECOGNIZED_ROUTE_CHILDREN: &[&str] = &[
     "retry-policy",
     "mcp",
     "a2a",
+    "error-pages",
 ];
 
 /// Parse routes configuration block
@@ -117,6 +118,12 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     "Parsed route"
                 );
 
+                let (error_pages, problems) =
+                    super::error_pages::resolve_error_pages(child, &id, &service_type);
+                for problem in problems {
+                    warn!("{}", problem);
+                }
+
                 // Parse policies block (request-headers, response-headers, etc.)
                 let (request_headers, response_headers) = parse_route_header_policies(child)?;
 
@@ -169,7 +176,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     inference,
                     mcp: parse_optional_block(child, "mcp", parse_mcp_config)?,
                     a2a: parse_optional_block(child, "a2a", parse_a2a_config)?,
-                    error_pages: None,
+                    error_pages,
                     websocket: get_bool_entry(child, "websocket").unwrap_or(false),
                     websocket_inspection: get_bool_entry(child, "websocket-inspection")
                         .unwrap_or(false),

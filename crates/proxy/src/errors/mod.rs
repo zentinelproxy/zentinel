@@ -70,10 +70,18 @@ impl ErrorHandler {
         details: Option<serde_json::Value>,
     ) -> Result<Response<Full<Bytes>>> {
         let status_code = status.as_u16();
+        // A page's own message wins over the caller's: the caller's is the
+        // proxy's generic wording for the situation, while the page's is
+        // what the operator chose to tell clients for this status.
+        let message = self
+            .get_error_page(status_code)
+            .and_then(|page| page.message.clone())
+            .or(message)
+            .unwrap_or_else(|| Self::default_message(status));
         let error_data = ErrorResponse {
             status: status_code,
             title: Self::status_title(status),
-            message: message.unwrap_or_else(|| Self::default_message(status)),
+            message,
             request_id: request_id.to_string(),
             timestamp: chrono::Utc::now().timestamp(),
             details,
@@ -83,12 +91,21 @@ impl ErrorHandler {
         // Determine the format to use
         let format = self.determine_format(status_code);
 
-        // Generate the response body
-        let (body, content_type) = match format {
-            ErrorFormat::Json => self.generate_json_response(&error_data)?,
-            ErrorFormat::Html => self.generate_html_response(&error_data, status_code)?,
-            ErrorFormat::Text => self.generate_text_response(&error_data)?,
-            ErrorFormat::Xml => self.generate_xml_response(&error_data)?,
+        // Generate the response body. A page's template is its body in
+        // whatever format the page declares, not only HTML: a JSON page
+        // with a template naming a JSON file is just as clear an intent.
+        let (body, content_type) = match self.templates.get(&status_code) {
+            Some(template) => (
+                self.render_template(template, &error_data, format)?
+                    .into_bytes(),
+                Self::content_type(format),
+            ),
+            None => match format {
+                ErrorFormat::Json => self.generate_json_response(&error_data)?,
+                ErrorFormat::Html => self.generate_html_response(&error_data)?,
+                ErrorFormat::Text => self.generate_text_response(&error_data)?,
+                ErrorFormat::Xml => self.generate_xml_response(&error_data)?,
+            },
         };
 
         // Build the response
@@ -146,21 +163,20 @@ impl ErrorHandler {
         Ok((json, "application/json; charset=utf-8"))
     }
 
-    /// Generate HTML error response
-    fn generate_html_response(
-        &self,
-        error: &ErrorResponse,
-        status_code: u16,
-    ) -> Result<(Vec<u8>, &'static str)> {
-        // Check for custom template
-        if let Some(template) = self.templates.get(&status_code) {
-            let html = self.render_template(template, error)?;
-            return Ok((html.into_bytes(), "text/html; charset=utf-8"));
+    /// The Content-Type of a body in `format`.
+    fn content_type(format: ErrorFormat) -> &'static str {
+        match format {
+            ErrorFormat::Json => "application/json; charset=utf-8",
+            ErrorFormat::Html => "text/html; charset=utf-8",
+            ErrorFormat::Text => "text/plain; charset=utf-8",
+            ErrorFormat::Xml => "application/xml; charset=utf-8",
         }
+    }
 
-        // Generate default HTML
+    /// Generate HTML error response
+    fn generate_html_response(&self, error: &ErrorResponse) -> Result<(Vec<u8>, &'static str)> {
         let html = self.generate_default_html(error);
-        Ok((html.into_bytes(), "text/html; charset=utf-8"))
+        Ok((html.into_bytes(), Self::content_type(ErrorFormat::Html)))
     }
 
     /// Generate text error response
@@ -272,35 +288,37 @@ impl ErrorHandler {
     </div>
 </body>
 </html>"#,
-            error.status, error.title, error.status, error.title, error.message, error.request_id
+            error.status,
+            Self::escape_xml(&error.title),
+            error.status,
+            Self::escape_xml(&error.title),
+            Self::escape_xml(&error.message),
+            Self::escape_xml(&error.request_id)
         )
     }
 
     /// Load custom templates from disk
+    ///
+    /// Templates were read only when `template-dir` was set, so a page with
+    /// an absolute `template` and no directory silently got the generated
+    /// page. `template_path` resolves both forms.
     fn load_templates(config: &ErrorPageConfig) -> Arc<HashMap<u16, String>> {
         let mut templates = HashMap::new();
 
-        if let Some(ref template_dir) = config.template_dir {
-            for (status_code, page) in &config.pages {
-                if let Some(ref template_path) = page.template {
-                    let full_path = if template_path.is_absolute() {
-                        template_path.clone()
-                    } else {
-                        template_dir.join(template_path)
-                    };
-
-                    match std::fs::read_to_string(&full_path) {
-                        Ok(content) => {
-                            templates.insert(*status_code, content);
-                            debug!(
-                                "Loaded error template for status {}: {:?}",
-                                status_code, full_path
-                            );
-                        }
-                        Err(e) => {
-                            warn!("Failed to load error template {:?}: {}", full_path, e);
-                        }
-                    }
+        for (status_code, page) in &config.pages {
+            let Some(full_path) = config.template_path(page) else {
+                continue;
+            };
+            match std::fs::read_to_string(&full_path) {
+                Ok(content) => {
+                    templates.insert(*status_code, content);
+                    debug!(
+                        "Loaded error template for status {}: {:?}",
+                        status_code, full_path
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to load error template {:?}: {}", full_path, e);
                 }
             }
         }
@@ -309,13 +327,31 @@ impl ErrorHandler {
     }
 
     /// Render a template with error data
-    fn render_template(&self, template: &str, error: &ErrorResponse) -> Result<String> {
-        // Simple template rendering - replace placeholders
+    ///
+    /// Values are escaped for the page's format. The message can carry
+    /// request data (a static route's error names the requested path), so
+    /// inserting it raw into an HTML or XML page would let a request inject
+    /// markup into the response.
+    fn render_template(
+        &self,
+        template: &str,
+        error: &ErrorResponse,
+        format: ErrorFormat,
+    ) -> Result<String> {
+        let escape = |value: &str| match format {
+            ErrorFormat::Html | ErrorFormat::Xml => Self::escape_xml(value),
+            // Inside a JSON string: the encoded string without its quotes.
+            ErrorFormat::Json => {
+                let quoted = serde_json::to_string(value).unwrap_or_default();
+                quoted[1..quoted.len() - 1].to_string()
+            }
+            ErrorFormat::Text => value.to_string(),
+        };
         let rendered = template
             .replace("{{status}}", &error.status.to_string())
-            .replace("{{title}}", &error.title)
-            .replace("{{message}}", &error.message)
-            .replace("{{request_id}}", &error.request_id)
+            .replace("{{title}}", &escape(&error.title))
+            .replace("{{message}}", &escape(&error.message))
+            .replace("{{request_id}}", &escape(&error.request_id))
             .replace("{{timestamp}}", &error.timestamp.to_string());
 
         Ok(rendered)
@@ -461,5 +497,111 @@ mod tests {
             response.headers().get("Content-Type").unwrap(),
             "text/plain; charset=utf-8"
         );
+    }
+
+    fn handler_with_page(service_type: ServiceType, status: u16, page: ErrorPage) -> ErrorHandler {
+        let mut pages = HashMap::new();
+        pages.insert(status, page);
+        ErrorHandler::new(
+            service_type,
+            Some(ErrorPageConfig {
+                pages,
+                default_format: ErrorFormat::Html,
+                include_stack_trace: false,
+                template_dir: None,
+            }),
+        )
+    }
+
+    async fn body_of(response: Response<Full<Bytes>>) -> String {
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// #542: a page's `message` used to be dropped; the generic default
+    /// message was always used instead.
+    #[tokio::test]
+    async fn a_pages_message_is_used() {
+        let handler = handler_with_page(
+            ServiceType::Api,
+            503,
+            ErrorPage {
+                format: ErrorFormat::Json,
+                template: None,
+                message: Some("Down for maintenance".to_string()),
+                headers: HashMap::new(),
+            },
+        );
+        let response = handler
+            .generate_response(StatusCode::SERVICE_UNAVAILABLE, None, "t", None)
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&body_of(response).await).unwrap();
+        assert_eq!(json["message"], "Down for maintenance");
+
+        // It also wins over the proxy's own generic wording.
+        let response = handler
+            .generate_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("Failed to serve file: /x".to_string()),
+                "t",
+                None,
+            )
+            .unwrap();
+        assert!(body_of(response).await.contains("Down for maintenance"));
+    }
+
+    /// A template without `template-dir` used to be ignored, and one on a
+    /// non-HTML page too. Both are read now, and values are escaped for the
+    /// page's format.
+    #[tokio::test]
+    async fn templates_are_read_without_a_dir_and_in_any_format() {
+        let path = std::env::temp_dir().join(format!(
+            "zentinel-error-template-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"down":"{{message}}","status":{{status}}}"#).unwrap();
+        let handler = handler_with_page(
+            ServiceType::Web,
+            502,
+            ErrorPage {
+                format: ErrorFormat::Json,
+                template: Some(path.clone()),
+                message: Some(r#"say "hi""#.to_string()),
+                headers: HashMap::new(),
+            },
+        );
+        std::fs::remove_file(&path).ok();
+
+        let response = handler
+            .generate_response(StatusCode::BAD_GATEWAY, None, "t", None)
+            .unwrap();
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            "application/json; charset=utf-8"
+        );
+        let json: serde_json::Value = serde_json::from_str(&body_of(response).await).unwrap();
+        assert_eq!(json["down"], r#"say "hi""#);
+        assert_eq!(json["status"], 502);
+    }
+
+    /// The generated HTML page carries the message, which can include the
+    /// request path; it must not be inserted as markup.
+    #[tokio::test]
+    async fn the_html_page_escapes_the_message() {
+        let handler = ErrorHandler::new(ServiceType::Web, None);
+        let response = handler
+            .generate_response(
+                StatusCode::NOT_FOUND,
+                Some("Failed to serve file: /<script>x</script>".to_string()),
+                "t",
+                None,
+            )
+            .unwrap();
+        let body = body_of(response).await;
+        assert!(!body.contains("<script>"));
+        assert!(body.contains("&lt;script&gt;"));
     }
 }

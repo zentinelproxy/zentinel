@@ -3652,14 +3652,22 @@ impl ProxyHttp for ZentinelProxy {
 
         // Write error response to ensure client receives a proper HTTP response
         // This is necessary because some errors occur before the upstream connection
-        // is established, and Pingora may not send a response automatically
-        let body = proxy_error_body(error_code, &ctx.trace_id);
-
-        // Write the response header
-        let mut header = pingora::http::ResponseHeader::build(error_code, None).unwrap();
-        header
-            .insert_header("Content-Type", "application/json")
-            .ok();
+        // is established, and Pingora may not send a response automatically.
+        //
+        // A route with a custom page for this status gets that page; the
+        // JSON body is the default for errors the operator has not chosen
+        // a page for.
+        let (mut header, body) = match self.custom_error_page(error_code, ctx).await {
+            Some(page) => page,
+            None => {
+                let body = bytes::Bytes::from(proxy_error_body(error_code, &ctx.trace_id));
+                let mut header = pingora::http::ResponseHeader::build(error_code, None).unwrap();
+                header
+                    .insert_header("Content-Type", "application/json")
+                    .ok();
+                (header, body)
+            }
+        };
         header
             .insert_header("Content-Length", body.len().to_string())
             .ok();
@@ -3677,10 +3685,7 @@ impl ProxyHttp for ZentinelProxy {
             );
         } else {
             // Write the body
-            if let Err(write_err) = session
-                .write_response_body(Some(bytes::Bytes::from(body)), true)
-                .await
-            {
+            if let Err(write_err) = session.write_response_body(Some(body), true).await {
                 warn!(
                     correlation_id = %ctx.trace_id,
                     error = %write_err,
