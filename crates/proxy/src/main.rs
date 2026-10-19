@@ -938,6 +938,16 @@ fn run_server(
         info!(path = %work_dir.display(), "Changed working directory");
     }
 
+    // Pingora's `add_tcp`/`add_tls*` take a string and panic at bind time if it
+    // is not a socket address (#520). Config validation already rejects such
+    // listeners; this check keeps any config that reaches here by another path
+    // from turning into a panic instead of an error.
+    for listener in &config.listeners {
+        if let Err(message) = zentinel_config::validation::check_listen_address(&listener.address) {
+            anyhow::bail!("Listener '{}': {}", listener.id, message);
+        }
+    }
+
     // Create Pingora server with our configuration
     let pingora_opt = pingora_options(daemon, upgrade, &config.server);
     if pingora_opt.daemon {

@@ -33,17 +33,36 @@ pub(crate) const HAS_FILESYSTEM: bool = !cfg!(all(target_arch = "wasm32", target
 
 /// Validate socket address format
 pub fn validate_socket_addr(addr: &str) -> Result<(), validator::ValidationError> {
-    addr.parse::<SocketAddr>()
-        .map(|_| ())
-        .map_err(|_| {
-            let mut err = validator::ValidationError::new("invalid_socket_address");
-            err.message = Some(std::borrow::Cow::Owned(format!(
-                "Invalid socket address '{}'. Expected format: IP:PORT (e.g., '127.0.0.1:8080' or '0.0.0.0:443')",
-                addr
-            )));
-            err
-        })
+    check_listen_address(addr).map_err(|message| {
+        let mut err = validator::ValidationError::new("invalid_socket_address");
+        err.message = Some(std::borrow::Cow::Owned(message));
+        err
+    })
 }
+
+/// Check that `addr` is a literal socket address a listener can bind to.
+///
+/// Returns a human-readable message on failure. Values containing `${` get an
+/// extra hint, because the docs once advertised environment-variable
+/// substitution that the config loader does not perform (#520).
+pub fn check_listen_address(addr: &str) -> Result<(), String> {
+    if addr.parse::<SocketAddr>().is_ok() {
+        return Ok(());
+    }
+    let mut message = format!(
+        "invalid socket address '{}'. Expected format: IP:PORT (e.g., '127.0.0.1:8080' or '0.0.0.0:443')",
+        addr
+    );
+    if addr.contains("${") {
+        message.push_str("; ");
+        message.push_str(NO_ENV_SUBSTITUTION);
+    }
+    Err(message)
+}
+
+/// Hint for a value containing `${`: there is no substitution step.
+pub const NO_ENV_SUBSTITUTION: &str =
+    "contains '${...}', but environment variables are not substituted in configuration values";
 
 // ============================================================================
 // Validation Context
@@ -1291,6 +1310,88 @@ mod tests {
     use super::*;
     use crate::namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
     use zentinel_common::types::TlsVersion;
+
+    /// A listener address that is not `IP:PORT` used to pass `validate()`
+    /// (the field's `validate_socket_addr` attribute never ran, `listeners`
+    /// not being nested) and then panic inside Pingora at bind time (#520).
+    mod listener_address_validation {
+        use super::*;
+
+        fn config_with_address(address: &str) -> Config {
+            let kdl = format!(
+                "system {{\n  worker-threads 1\n}}\n\
+                 listeners {{\n  listener \"http\" {{\n    address \"{address}\"\n\
+                 \x20   protocol \"http\"\n  }}\n}}\n\
+                 upstreams {{\n  upstream \"b\" {{\n    target \"127.0.0.1:9000\"\n  }}\n}}\n\
+                 routes {{\n  route \"r\" {{\n    matches {{\n      path-prefix \"/\"\n    }}\n\
+                 \x20   upstream \"b\"\n  }}\n}}\n"
+            );
+            Config::from_kdl(&kdl).expect("should parse")
+        }
+
+        #[test]
+        fn an_env_var_placeholder_is_rejected_and_explained() {
+            let message = config_with_address("${ZT_ADDR}")
+                .validate()
+                .expect_err("an unsubstituted placeholder is not an address")
+                .to_string();
+            assert!(message.contains("Listener 'http'"), "{message}");
+            assert!(message.contains("'${ZT_ADDR}'"), "{message}");
+            assert!(
+                message.contains("environment variables are not substituted"),
+                "{message}"
+            );
+        }
+
+        #[test]
+        fn a_hostname_or_missing_port_is_rejected() {
+            for bad in ["localhost:8080", "127.0.0.1", "0.0.0.0:http", ""] {
+                let message = config_with_address(bad)
+                    .validate()
+                    .expect_err(bad)
+                    .to_string();
+                assert!(message.contains("invalid socket address"), "{message}");
+                assert!(
+                    !message.contains("environment variables"),
+                    "no env hint without ${{: {message}"
+                );
+            }
+        }
+
+        /// Neither of these panicked, but both passed `zentinel test` and then
+        /// failed at runtime: DNS errors on every request, or a metrics server
+        /// that logged one error and never started.
+        #[test]
+        fn placeholders_in_upstream_targets_and_metrics_address_are_rejected() {
+            let mut config = config_with_address("127.0.0.1:8080");
+            config.upstreams.get_mut("b").unwrap().targets[0].address = "${BACKEND}:80".to_string();
+            let message = config
+                .validate()
+                .expect_err("placeholder target")
+                .to_string();
+            assert!(message.contains("Upstream 'b'"), "{message}");
+            assert!(message.contains("not substituted"), "{message}");
+
+            let mut config = config_with_address("127.0.0.1:8080");
+            config.observability.metrics.enabled = true;
+            config.observability.metrics.address = "${METRICS_ADDR}".to_string();
+            let message = config
+                .validate()
+                .expect_err("placeholder metrics")
+                .to_string();
+            assert!(message.contains("observability.metrics"), "{message}");
+            assert!(message.contains("not substituted"), "{message}");
+        }
+
+        #[test]
+        fn literal_v4_and_v6_addresses_are_accepted() {
+            for good in ["127.0.0.1:8080", "0.0.0.0:443", "[::1]:8080", "[::]:80"] {
+                config_with_address(good)
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{good}: {e}"));
+            }
+        }
+    }
 
     /// `h2` and `h3` used to fall into a catch-all that logged a warning and
     /// bound no socket, while the documentation marked both supported. `h2` is

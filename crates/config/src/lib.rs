@@ -682,6 +682,9 @@ impl Config {
 
         trace!("Schema validation passed");
 
+        self.validate_listeners()?;
+        trace!("Listener validation passed");
+
         self.validate_routes()?;
         trace!("Route validation passed");
 
@@ -701,6 +704,44 @@ impl Config {
             "Configuration validation successful"
         );
 
+        Ok(())
+    }
+
+    /// Every listener address must be a literal `IP:PORT`.
+    ///
+    /// `ListenerConfig::address` carries a `validate_socket_addr` attribute, but
+    /// `listeners` is not `#[validate(nested)]`, so that check never ran: an
+    /// address like `${ZT_ADDR}` passed `zentinel test` and then panicked inside
+    /// Pingora at bind time (#520). Checking here, with the listener's id in the
+    /// message, makes the failure a configuration error instead.
+    ///
+    /// Configuration values are not run through environment-variable
+    /// substitution, so a `${...}` value is called out explicitly.
+    fn validate_listeners(&self) -> ZentinelResult<()> {
+        for listener in &self.listeners {
+            if let Err(message) = validation::check_listen_address(&listener.address) {
+                return Err(ZentinelError::Config {
+                    message: format!("Listener '{}': {}", listener.id, message),
+                    source: None,
+                });
+            }
+        }
+
+        // The metrics address may be a hostname, so it is not parsed here, but
+        // an unsubstituted placeholder cannot be one. Left alone it only logs
+        // "Failed to bind metrics server" at startup and silently runs without
+        // metrics.
+        let metrics = &self.observability.metrics;
+        if metrics.enabled && metrics.address.contains("${") {
+            return Err(ZentinelError::Config {
+                message: format!(
+                    "observability.metrics address '{}' {}",
+                    metrics.address,
+                    validation::NO_ENV_SUBSTITUTION
+                ),
+                source: None,
+            });
+        }
         Ok(())
     }
 
@@ -755,6 +796,19 @@ impl Config {
             if upstream.targets.is_empty() && upstream.discovery.is_none() {
                 return Err(ZentinelError::Config {
                     message: format!("Upstream '{}' has no targets", id),
+                    source: None,
+                });
+            }
+            // Targets may be hostnames, so only the placeholder is rejected:
+            // otherwise it passes validation and fails DNS on every request.
+            if let Some(target) = upstream.targets.iter().find(|t| t.address.contains("${")) {
+                return Err(ZentinelError::Config {
+                    message: format!(
+                        "Upstream '{}': target address '{}' {}",
+                        id,
+                        target.address,
+                        validation::NO_ENV_SUBSTITUTION
+                    ),
                     source: None,
                 });
             }
