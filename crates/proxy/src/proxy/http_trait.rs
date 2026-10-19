@@ -4091,8 +4091,10 @@ impl ZentinelProxy {
         // retry buffer exists or the request had no body, so a proxied call
         // would send headers promising a Content-Length and never send it.
         // With buffering on, the loop runs and `request_body_filter` gets the
-        // chance to substitute the rewritten body.
-        session.enable_retry_buffering();
+        // chance to substitute the rewritten body. The buffer has to hold the
+        // largest envelope accepted below: with pingora's default of 64 KiB a
+        // larger call was dropped from the buffer and never sent (#531).
+        session.enable_retry_buffering_with_limit(jsonrpc::MAX_ENVELOPE_BYTES);
 
         // Read the whole envelope before deciding anything. Nothing has been
         // forwarded at this point, so a refusal here costs the client one

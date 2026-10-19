@@ -26,11 +26,6 @@ use super::ZentinelProxy;
 
 use zentinel_common::CorrelationId;
 
-/// Largest request body an API-schema-validated route can forward: the size of
-/// pingora's retry buffer, which is what carries a body read during
-/// `request_filter` on to the upstream.
-const VALIDATED_BODY_MAX_BYTES: usize = 64 * 1024;
-
 impl ZentinelProxy {
     /// Handle static file route
     pub(super) async fn handle_static_route(
@@ -255,18 +250,16 @@ impl ZentinelProxy {
         //
         // Retry buffering keeps pingora's body loop running after the body
         // has been consumed here, which is what lets `request_body_filter`
-        // hand it back for forwarding (see `validated_request_body`). That
-        // only works while the body fits pingora's retry buffer: past it the
-        // buffer is dropped, the loop never runs and the upstream waits for a
-        // body that never comes. So a larger body is refused with 413 rather
-        // than left to hang.
-        session.enable_retry_buffering();
+        // hand it back for forwarding (see `validated_request_body`). The
+        // buffer is sized to the body limit: pingora's default of 64 KiB
+        // dropped anything larger, the loop never ran, and the upstream waited
+        // for a body that never came (#531).
         let limit = ctx
             .config
             .get_or_insert_with(|| self.config_manager.current())
             .limits
-            .max_body_size_bytes
-            .min(VALIDATED_BODY_MAX_BYTES);
+            .max_body_size_bytes;
+        session.enable_retry_buffering_with_limit(limit);
         let mut body = Vec::new();
         while let Some(chunk) = session.read_request_body().await.map_err(|e| {
             Error::explain(
