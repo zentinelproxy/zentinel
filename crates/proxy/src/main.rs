@@ -792,6 +792,20 @@ fn run_server(
     // being lost.
     let mut startup_log = StartupLog::default();
 
+    // Take over SIGHUP before anything slow. Its default disposition
+    // terminates the process, and the handler proper is only installed once
+    // the configuration is loaded, the proxy built and its listeners set up --
+    // so a reload sent by a deploy script or config-management run right
+    // after start used to kill the proxy instead.
+    //
+    // Registering it here queues the signal instead: the iterator holds it
+    // until the signal thread starts, and the reload channel holds that until
+    // the reload task runs, so an early SIGHUP is applied once the proxy is
+    // ready. SIGTERM and SIGINT keep their default disposition until then:
+    // stopping a proxy that has not started yet should stay immediate.
+    let signals = signal_hook::iterator::Signals::new([signal_hook::consts::signal::SIGHUP])
+        .context("Failed to register the SIGHUP handler")?;
+
     // Get config path with priority: CLI arg > env var > None (embedded default)
     let effective_config_path = config_path.or_else(|| std::env::var("ZENTINEL_CONFIG").ok());
 
@@ -867,6 +881,7 @@ fn run_server(
 
     // Setup signal handlers (runs in separate thread, needs config for shutdown timeout)
     setup_signal_handlers(
+        signals,
         signal_manager.sender(),
         config.server.graceful_shutdown_timeout_secs,
     );
@@ -1244,18 +1259,22 @@ fn run_server(
 
 /// Setup OS signal handlers
 ///
-/// Registers handlers for SIGTERM, SIGINT, and SIGHUP and forwards them
-/// to the async runtime via the signal manager.
+/// Adds SIGTERM and SIGINT to `signals` (registered for SIGHUP at the start of
+/// `run_server`) and forwards all three to the async runtime via the signal
+/// manager. A SIGHUP that arrived during startup is delivered now.
 fn setup_signal_handlers(
+    mut signals: signal_hook::iterator::Signals,
     signal_tx: std::sync::mpsc::Sender<SignalType>,
     graceful_shutdown_timeout_secs: u64,
 ) {
     use signal_hook::consts::signal::*;
-    use signal_hook::iterator::Signals;
     use std::thread;
 
-    let mut signals =
-        Signals::new([SIGTERM, SIGINT, SIGHUP]).expect("Failed to register signal handlers");
+    for sig in [SIGTERM, SIGINT] {
+        signals
+            .add_signal(sig)
+            .expect("Failed to register signal handlers");
+    }
 
     thread::spawn(move || {
         for sig in signals.forever() {
