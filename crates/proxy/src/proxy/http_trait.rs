@@ -47,6 +47,39 @@ fn to_socket_addr(
     addr.as_inet().copied()
 }
 
+/// The load-balancer view of a request: the client IP (as set in
+/// `early_request_filter`, so behind `trusted-proxies` it is the real client)
+/// and the request headers keyed by lowercase name, repeated fields joined
+/// (`cookie` with "; ", others with ", ").
+fn selection_context(
+    req: &pingora::http::RequestHeader,
+    ctx: &RequestContext,
+) -> crate::upstream::RequestContext {
+    let mut headers: std::collections::HashMap<String, String> =
+        std::collections::HashMap::with_capacity(req.headers.keys_len());
+    for (name, value) in req.headers.iter() {
+        let Ok(value) = value.to_str() else { continue };
+        let separator = if name == http::header::COOKIE {
+            "; "
+        } else {
+            ", "
+        };
+        headers
+            .entry(name.as_str().to_string())
+            .and_modify(|existing| {
+                existing.push_str(separator);
+                existing.push_str(value);
+            })
+            .or_insert_with(|| value.to_string());
+    }
+    crate::upstream::RequestContext {
+        client_ip: ctx.client_socket_addr(),
+        headers,
+        path: ctx.path.clone(),
+        method: ctx.method.clone(),
+    }
+}
+
 /// Helper type for rate limiting when we don't need header access
 struct NoHeaderAccessor;
 impl HeaderAccessor for NoHeaderAccessor {
@@ -894,6 +927,12 @@ impl ProxyHttp for ZentinelProxy {
             "Starting upstream peer selection"
         );
 
+        // What client-aware balancers key on. This used to be `None`, so on
+        // the main proxy path `ip-hash` hashed nothing and sent every client
+        // to the same target, consistent/maglev hashing by client IP did the
+        // same, and a sticky-session cookie was never read back.
+        let selection_ctx = selection_context(session.req_header(), ctx);
+
         let mut last_error = None;
         let selection_start = std::time::Instant::now();
 
@@ -908,7 +947,7 @@ impl ProxyHttp for ZentinelProxy {
                 "Attempting to select upstream peer"
             );
 
-            match pool.select_peer_with_metadata(None).await {
+            match pool.select_peer_with_metadata(Some(&selection_ctx)).await {
                 Ok((mut peer, metadata)) => {
                     let selection_duration = selection_start.elapsed();
                     // Track active request for drain lifecycle
@@ -5494,5 +5533,34 @@ mod proxy_error_body_tests {
     #[test]
     fn a_status_without_a_canonical_reason_is_not_called_a_server_error() {
         assert_eq!(error_field(599), "599 Error");
+    }
+}
+
+#[cfg(test)]
+mod selection_context_tests {
+    use super::*;
+
+    /// The main proxy path passed no context to peer selection, so
+    /// client-keyed balancers had nothing to key on.
+    #[test]
+    fn carries_client_ip_and_joined_headers() {
+        let mut req = pingora::http::RequestHeader::build("GET", b"/x", None).unwrap();
+        req.append_header("Cookie", "a=1").unwrap();
+        req.append_header("Cookie", "zentinel_sticky=0.sig")
+            .unwrap();
+        req.append_header("X-Tenant", "t1").unwrap();
+        let mut ctx = RequestContext::new();
+        ctx.client_ip = "198.51.100.7".to_string();
+        ctx.path = "/x".to_string();
+        ctx.method = "GET".to_string();
+
+        let sel = selection_context(&req, &ctx);
+        assert_eq!(sel.client_ip, Some("198.51.100.7:0".parse().unwrap()));
+        assert_eq!(
+            sel.headers.get("cookie").map(String::as_str),
+            Some("a=1; zentinel_sticky=0.sig")
+        );
+        assert_eq!(sel.headers.get("x-tenant").map(String::as_str), Some("t1"));
+        assert_eq!(sel.path, "/x");
     }
 }
