@@ -19,10 +19,18 @@
 //!   when the connection is TLS, else `http`);
 //! * `X-Forwarded-Host` is replaced by the request's own host.
 //!
+//! * `Forwarded` (RFC 7239) and `X-Real-IP` are **removed**. Zentinel does
+//!   not produce either, but backends that read them could be told any
+//!   address. Removing them, rather than writing our own client IP, keeps
+//!   Zentinel from inventing headers a backend never asked for; the backend
+//!   falls back to `X-Forwarded-For` or the connection, both of which are
+//!   ours. A `request-headers` policy can still `set` either one.
+//!
 //! Only when the TCP peer is inside the listener's `trusted-proxies` (a load
 //! balancer or CDN in front of Zentinel) is the incoming chain believed: the
-//! peer is appended to `X-Forwarded-For`, and an incoming `X-Forwarded-Proto`
-//! or `-Host` is kept (and set as above when absent).
+//! peer is appended to `X-Forwarded-For`, an incoming `X-Forwarded-Proto`
+//! or `-Host` is kept (and set as above when absent), and an incoming
+//! `Forwarded` or `X-Real-IP` is passed on unchanged.
 //!
 //! The client IP Zentinel itself uses (rate-limit key `client-ip`, geo
 //! filters, agents' `client_ip`, access logs, `ip-hash`) follows the same
@@ -41,6 +49,9 @@ use super::listener_addr::canonical_ip;
 pub(crate) const X_FORWARDED_FOR: &str = "X-Forwarded-For";
 pub(crate) const X_FORWARDED_PROTO: &str = "X-Forwarded-Proto";
 pub(crate) const X_FORWARDED_HOST: &str = "X-Forwarded-Host";
+/// Removed from untrusted peers; see the module docs.
+const FORWARDED: &str = "Forwarded";
+const X_REAL_IP: &str = "X-Real-IP";
 
 fn is_trusted(ip: IpAddr, trusted: &[IpCidr]) -> bool {
     trusted.iter().any(|cidr| cidr.contains(ip))
@@ -122,6 +133,8 @@ pub(crate) fn apply_forwarded_headers(
                 req.remove_header(X_FORWARDED_HOST);
             }
         }
+        req.remove_header(FORWARDED);
+        req.remove_header(X_REAL_IP);
         return peer;
     }
 
@@ -236,6 +249,33 @@ mod tests {
         assert_eq!(get(&r, "x-forwarded-for").as_deref(), Some("203.0.113.9"));
         assert_eq!(get(&r, "x-forwarded-proto").as_deref(), Some("http"));
         assert_eq!(get(&r, "x-forwarded-host").as_deref(), Some("example.com"));
+    }
+
+    /// The other two client-address headers in common use. Zentinel writes
+    /// neither, so from an untrusted peer they are dropped, not passed on.
+    #[test]
+    fn untrusted_peer_cannot_pass_forwarded_or_x_real_ip() {
+        let mut r = req(&[
+            ("Forwarded", "for=6.6.6.6;proto=https"),
+            ("X-Real-IP", "6.6.6.6"),
+        ]);
+        apply_forwarded_headers(&mut r, ip("203.0.113.9"), false, &[]);
+        assert_eq!(get(&r, "forwarded"), None);
+        assert_eq!(get(&r, "x-real-ip"), None);
+    }
+
+    #[test]
+    fn trusted_peer_keeps_forwarded_and_x_real_ip() {
+        let mut r = req(&[
+            ("Forwarded", "for=198.51.100.7;proto=https"),
+            ("X-Real-IP", "198.51.100.7"),
+        ]);
+        apply_forwarded_headers(&mut r, ip("10.0.0.2"), false, &cidrs(&["10.0.0.0/8"]));
+        assert_eq!(
+            get(&r, "forwarded").as_deref(),
+            Some("for=198.51.100.7;proto=https")
+        );
+        assert_eq!(get(&r, "x-real-ip").as_deref(), Some("198.51.100.7"));
     }
 
     /// Trusting someone else is not trusting this peer.
