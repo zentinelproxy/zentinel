@@ -782,10 +782,19 @@ impl AgentPool {
     /// removals indicate requests that ended without explicit cleanup.
     pub fn cleanup_expired_affinities(&self) -> usize {
         let ttl = self.config.correlation_affinity_ttl;
-        let before = self.correlation_affinity.len();
-        self.correlation_affinity
-            .retain(|_, entry| !entry.is_expired(ttl));
-        let removed = before - self.correlation_affinity.len();
+        // Count removals as they happen. Comparing lengths before and after
+        // raced with requests adding affinities in between: the map could grow
+        // during the sweep, the subtraction underflowed, and in a debug build
+        // the panic took down the maintenance task and with it all agent
+        // reconnection (release builds wrapped, reporting ~2^64 evictions).
+        let mut removed = 0usize;
+        self.correlation_affinity.retain(|_, entry| {
+            let keep = !entry.is_expired(ttl);
+            if !keep {
+                removed += 1;
+            }
+            keep
+        });
 
         if removed > 0 {
             debug!(
@@ -2056,6 +2065,11 @@ impl AgentPool {
                 }
 
                 let mut connections = entry.connections.write().await;
+                // Replace connections that maintenance found unhealthy rather
+                // than keep them next to the new one: a connection whose agent
+                // went away stays dead, and keeping it would grow the list on
+                // every restart of the agent.
+                connections.retain(|c| c.is_healthy_cached());
                 connections.push(Arc::new(conn));
                 entry.reconnect_attempts.store(0, Ordering::Relaxed);
                 entry.healthy.store(true, Ordering::Release);
