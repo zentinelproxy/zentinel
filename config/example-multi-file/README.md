@@ -49,8 +49,9 @@ which then watches the whole directory) all accept one.
 - Included files contain ordinary top-level blocks (`routes { … }`,
   `upstreams { … }`), not fragments. They are merged into one configuration,
   so several files may each contribute a `routes` block.
-- Includes are expanded recursively, and circular includes are detected and
-  rejected.
+- Includes are expanded recursively. A file reached twice through includes
+  (two files both including a shared one) is read once; a file that includes
+  itself, directly or through others, is rejected as a circular include.
 - A glob matching no files warns rather than failing, so an empty
   `routes/` directory does not break startup.
 - `include` only works when loading from a file or a directory. Parsing a

@@ -472,9 +472,15 @@ impl Config {
     /// Recursively expand include directives in a KDL file.
     ///
     /// Parses the KDL content, replaces `include` nodes with the contents of
-    /// the referenced files, and returns the merged KDL string. Uses a visited
-    /// set of canonical paths to detect and prevent circular includes.
+    /// the referenced files, and returns the merged KDL string.
     ///
+    /// Each file is read once. A file reached a second time by another path
+    /// (a "diamond": two included files both including a third) is skipped,
+    /// its content already being in place; reading it again would define its
+    /// routes twice. A file that includes itself, directly or through other
+    /// files, is a circular include and an error.
+    ///
+    /// `visited` holds the canonical path of every file read so far, and
     /// `files` receives each file read, in order, as the path it was reached by.
     #[cfg(feature = "runtime")]
     pub(crate) fn expand_includes_recursive(
@@ -483,18 +489,64 @@ impl Config {
         visited: &mut HashSet<PathBuf>,
         files: &mut Vec<PathBuf>,
     ) -> Result<String> {
+        let mut including = Vec::new();
+        Self::expand_includes_inner(content, source_path, visited, &mut including, files)
+    }
+
+    /// [`Self::expand_includes_recursive`], with `including` holding the
+    /// chain of files whose includes led to `source_path`.
+    #[cfg(feature = "runtime")]
+    fn expand_includes_inner(
+        content: &str,
+        source_path: &Path,
+        visited: &mut HashSet<PathBuf>,
+        including: &mut Vec<(PathBuf, PathBuf)>,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<String> {
         let canonical = source_path
             .canonicalize()
             .with_context(|| format!("Failed to resolve config path: {}", source_path.display()))?;
 
-        if !visited.insert(canonical.clone()) {
+        if including.iter().any(|(c, _)| c == &canonical) {
+            let chain = including
+                .iter()
+                .map(|(_, p)| format!("'{}'", p.display()))
+                .chain(std::iter::once(format!("'{}'", source_path.display())))
+                .collect::<Vec<_>>()
+                .join(" -> ");
             return Err(anyhow::anyhow!(
-                "Circular include detected: '{}' has already been included",
-                source_path.display()
+                "Circular include detected: '{}' includes itself ({})",
+                source_path.display(),
+                chain
             ));
         }
+        if !visited.insert(canonical.clone()) {
+            // Reached again through another include: already read.
+            debug!(
+                include = %source_path.display(),
+                "Config file already included, not reading it again"
+            );
+            return Ok(String::new());
+        }
         files.push(source_path.to_path_buf());
+        including.push((canonical.clone(), source_path.to_path_buf()));
+        let expanded =
+            Self::expand_includes_body(content, source_path, &canonical, visited, including, files);
+        including.pop();
+        expanded
+    }
 
+    /// Expand the include directives of one file whose path is already
+    /// checked and recorded; see [`Self::expand_includes_inner`].
+    #[cfg(feature = "runtime")]
+    fn expand_includes_body(
+        content: &str,
+        source_path: &Path,
+        canonical: &Path,
+        visited: &mut HashSet<PathBuf>,
+        including: &mut Vec<(PathBuf, PathBuf)>,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<String> {
         let base_dir = canonical.parent().ok_or_else(|| {
             anyhow::anyhow!(
                 "Config file has no parent directory: {}",
@@ -573,8 +625,13 @@ impl Config {
                         )
                     })?;
 
-                    let expanded =
-                        Self::expand_includes_recursive(&included_content, &path, visited, files)?;
+                    let expanded = Self::expand_includes_inner(
+                        &included_content,
+                        &path,
+                        visited,
+                        including,
+                        files,
+                    )?;
                     output.push_str(&expanded);
                     output.push('\n');
                 }
@@ -1254,6 +1311,70 @@ listeners {
             "Expected circular include error, got: {}",
             err
         );
+    }
+
+    /// #553: two included files that both include a third (a "diamond")
+    /// load, and the shared file is read once -- reading it twice would
+    /// define its upstream twice.
+    #[test]
+    fn an_include_diamond_reads_the_shared_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, content: &str| {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, content).unwrap();
+            path
+        };
+        let main = write(
+            "zentinel.kdl",
+            "system { worker-threads 1 }\n\
+             listeners { listener \"http\" { address \"127.0.0.1:8080\"; protocol \"http\" } }\n\
+             include \"routes/*.kdl\"\n",
+        );
+        let route = |id: &str| {
+            format!(
+                "include \"../shared/upstreams.kdl\"\n\
+                 routes {{ route \"{id}\" {{ matches {{ path-prefix \"/{id}\" }}; upstream \"backend\" }} }}\n"
+            )
+        };
+        write("routes/a.kdl", &route("a"));
+        write("routes/b.kdl", &route("b"));
+        write(
+            "shared/upstreams.kdl",
+            "upstreams { upstream \"backend\" { target \"127.0.0.1:9000\" } }\n",
+        );
+
+        let config = Config::from_file(&main).expect("a diamond loads");
+        assert_eq!(config.routes.len(), 2);
+        assert_eq!(config.upstreams.len(), 1);
+
+        let files = Config::source_files(&main).unwrap();
+        let shared = files
+            .iter()
+            .filter(|f| f.ends_with("shared/upstreams.kdl"))
+            .count();
+        assert_eq!(shared, 1, "{files:?}");
+        assert_eq!(files.len(), 4, "{files:?}");
+    }
+
+    /// A file including itself through another is still a cycle, and the
+    /// error names the chain.
+    #[test]
+    fn an_include_cycle_through_a_diamond_is_still_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name);
+        std::fs::write(path("main.kdl"), "include \"a.kdl\"\ninclude \"b.kdl\"\n").unwrap();
+        std::fs::write(path("a.kdl"), "include \"shared.kdl\"\n").unwrap();
+        std::fs::write(path("b.kdl"), "include \"shared.kdl\"\n").unwrap();
+        std::fs::write(path("shared.kdl"), "include \"a.kdl\"\n").unwrap();
+
+        let err = format!("{:#}", Config::from_file(path("main.kdl")).unwrap_err());
+        assert!(err.contains("Circular include detected"), "{err}");
+        assert!(err.contains("shared.kdl"), "{err}");
+
+        std::fs::write(path("self.kdl"), "include \"self.kdl\"\n").unwrap();
+        let err = format!("{:#}", Config::from_file(path("self.kdl")).unwrap_err());
+        assert!(err.contains("Circular include detected"), "{err}");
     }
 
     #[test]
