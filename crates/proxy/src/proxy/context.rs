@@ -99,6 +99,9 @@ pub struct RequestContext {
     pub(crate) upstream: Option<String>,
     /// Selected upstream peer address (IP:port) for feedback reporting
     pub(crate) selected_upstream_address: Option<String>,
+    /// The pool the peer was selected from, for `fail_to_connect`, which is
+    /// synchronous and so cannot look it up in the registry.
+    pub(crate) selected_pool: Option<Arc<crate::upstream::UpstreamPool>>,
     /// Number of upstream attempts
     pub(crate) upstream_attempts: u32,
     /// Times the request itself has been sent upstream.
@@ -405,6 +408,7 @@ impl RequestContext {
             route_config: None,
             upstream: None,
             selected_upstream_address: None,
+            selected_pool: None,
             upstream_attempts: 0,
             request_attempts: 0,
             namespace: None,

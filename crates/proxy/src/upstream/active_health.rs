@@ -137,8 +137,9 @@ pub(crate) type HostResolutions = Arc<Mutex<HashMap<String, HostResolution>>>;
 /// Resolution happens in `discover`, which the checker calls at the start of
 /// every probe cycle. Re-resolving per cycle follows DNS changes (a service
 /// moving, a record with several addresses rotating) with the same staleness
-/// as the health results themselves, and the request path resolves per
-/// request anyway, so there is no cached answer for the two to disagree on.
+/// as the health results themselves; the request path keeps its own answer
+/// for at most a few seconds before refreshing it (see
+/// `upstream::resolve`), so the two disagree only briefly after a change.
 /// The cost is one lookup per hostname per interval, through the system
 /// resolver and its cache.
 pub(crate) struct ViewDiscovery {
@@ -161,27 +162,7 @@ impl ViewDiscovery {
         if address.parse::<std::net::SocketAddr>().is_ok() {
             return None;
         }
-        let lookup = tokio::time::timeout(self.resolve_timeout, tokio::net::lookup_host(address));
-        Some(match lookup.await {
-            Ok(Ok(addrs)) => {
-                let mut unique: Vec<std::net::SocketAddr> = Vec::new();
-                for addr in addrs {
-                    if !unique.contains(&addr) {
-                        unique.push(addr);
-                    }
-                }
-                if unique.is_empty() {
-                    Err(std::io::Error::other("no addresses"))
-                } else {
-                    Ok(unique)
-                }
-            }
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "resolution timed out",
-            )),
-        })
+        Some(crate::upstream::resolve::lookup(address, self.resolve_timeout).await)
     }
 
     /// One status per hostname target, from the probe results of the
