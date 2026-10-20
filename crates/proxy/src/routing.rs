@@ -826,6 +826,48 @@ pub struct CacheStats {
     pub hit_rate: f64,
 }
 
+/// The routes of `config` (the lowered configuration) served on a listener
+/// of `scope`, without the namespace and service routes that do not compile.
+///
+/// Namespace and service routes were never compiled before #548 -- they were
+/// served nowhere, or on a namespace-bound listener whose matcher was skipped
+/// with an error when it did not build -- so one with an invalid pattern did
+/// not stop the proxy from starting. Compiling them now must not either:
+/// such a route is left out (see [`unservable_scoped_routes`]), while a
+/// global route that does not compile still fails startup as it always did.
+pub fn routes_served_on(
+    config: &zentinel_config::Config,
+    scope: &zentinel_common::ids::Scope,
+) -> Vec<RouteConfig> {
+    config
+        .routes_served_on(scope)
+        .into_iter()
+        .filter(|route| config.route_scope(&route.id).is_global() || route_compiles(route).is_ok())
+        .collect()
+}
+
+/// A message for every namespace or service route [`routes_served_on`]
+/// leaves out, for the log and for `zentinel test` / `zentinel lint`.
+pub fn unservable_scoped_routes(config: &zentinel_config::Config) -> Vec<String> {
+    config
+        .routes
+        .iter()
+        .filter(|route| !config.route_scope(&route.id).is_global())
+        .filter_map(|route| {
+            route_compiles(route).err().map(|e| {
+                format!(
+                    "Route '{}' is being ignored: {e}. Fix the route to serve it.",
+                    route.id
+                )
+            })
+        })
+        .collect()
+}
+
+fn route_compiles(route: &RouteConfig) -> Result<(), RouteError> {
+    RouteMatcher::with_cache_size(vec![route.clone()], None, 1).map(|_| ())
+}
+
 /// Route matching errors
 #[derive(Debug, thiserror::Error)]
 pub enum RouteError {

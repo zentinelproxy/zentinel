@@ -560,6 +560,7 @@ mod tests {
         );
 
         let config = Config {
+            scope_index: Default::default(),
             schema_version: "1.0".to_string(),
             server: ServerConfig {
                 worker_threads: 0,
@@ -575,6 +576,7 @@ mod tests {
                 route_cache_size: 1000,
             },
             listeners: vec![ListenerConfig {
+                service: None,
                 id: "http".to_string(),
                 address: "0.0.0.0:8080".to_string(),
                 protocol: ListenerProtocol::Http,

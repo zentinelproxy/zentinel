@@ -219,7 +219,10 @@ fn test_config(config_path: Option<&str>, strict: bool) -> Result<()> {
         }
     }
 
-    let ignored = ignored_settings(config_path);
+    let mut ignored = ignored_settings(config_path);
+    // Namespace and service settings the proxy cannot apply, such as a
+    // service listener on an address another listener binds (#548).
+    ignored.extend(scope_problems(&config));
     for message in &ignored {
         println!("  ⚠  {}", message);
     }
@@ -250,6 +253,15 @@ fn test_config(config_path: Option<&str>, strict: bool) -> Result<()> {
 /// directory, and whatever `include` pulls in. Only the named file used to be,
 /// so `test --strict` passed a typo in any included file. When there is more
 /// than one file, each warning starts with the file it is in.
+/// Namespace and service settings the proxy does not apply (#548): a scoped
+/// listener it cannot bind, a scoped route that does not compile, a qualified
+/// id another resource already has.
+fn scope_problems(config: &Config) -> Vec<String> {
+    let (lowered, mut problems) = config.lower_scopes_reporting();
+    problems.extend(zentinel_proxy::routing::unservable_scoped_routes(&lowered));
+    problems
+}
+
 fn ignored_settings(config_path: Option<&str>) -> Vec<String> {
     let Some(path) = config_path else {
         return Vec::new();
@@ -408,7 +420,10 @@ fn lint_config(config_path: Option<&str>) -> Result<()> {
     // Lint for best practices
     let mut result = zentinel_config::validate::lint::lint_config(&config);
 
-    for message in ignored_settings(config_path) {
+    for message in ignored_settings(config_path)
+        .into_iter()
+        .chain(scope_problems(&config))
+    {
         result.add_warning(zentinel_config::validate::ValidationWarning::new(message));
     }
 

@@ -182,6 +182,22 @@ pub fn parse_service(node: &kdl::KdlNode) -> Result<ServiceConfig> {
 // Single Listener Parsing (for services)
 // ============================================================================
 
+/// Every key [`parse_single_listener`] reads: a top-level listener's, plus
+/// `id`, since a service's `listener` block has no argument to name it by.
+pub(crate) const RECOGNIZED_SERVICE_LISTENER_KEYS: &[&str] = &[
+    "id",
+    "address",
+    "protocol",
+    "tls",
+    "default-route",
+    "namespace",
+    "request-timeout-secs",
+    "keepalive-timeout-secs",
+    "max-concurrent-streams",
+    "keepalive-max-requests",
+    "trusted-proxies",
+];
+
 /// Parse a single listener block (used for services).
 ///
 /// Unlike the `listeners` block which contains multiple `listener` children,
@@ -240,6 +256,7 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
     let trusted_proxies = crate::kdl::server::parse_trusted_proxies(node, &id)?;
 
     Ok(ListenerConfig {
+        service: None,
         id,
         address,
         protocol,

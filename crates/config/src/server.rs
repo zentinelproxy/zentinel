@@ -95,10 +95,23 @@ pub struct ListenerConfig {
     /// When set, requests arriving on this listener are matched **only** against
     /// the named namespace's routes (no fallback to the global route set), so a
     /// listener can expose a distinct set of routes — e.g. an internal admin port
-    /// serving only `/metrics`. When unset, the listener serves the global
-    /// top-level `routes` (the default).
+    /// serving only `/metrics`. The routes of the namespace's services that have
+    /// no listener of their own are served here too. A namespace with a listener
+    /// of its own is not served on the other listeners.
+    ///
+    /// When unset, the listener serves the global top-level `routes`, and the
+    /// routes of every namespace and service that has no listener of its own.
     #[serde(default)]
     pub namespace: Option<String>,
+
+    /// Service of [`Self::namespace`] this listener serves, for a listener
+    /// declared in a service's `listener` block.
+    ///
+    /// Not a KDL key: it is set when the service's listener is moved to the
+    /// top level (see [`crate::Config::lower_scopes`]), so that the listener
+    /// serves that service's routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 
     /// Request timeout
     #[serde(default = "default_request_timeout")]

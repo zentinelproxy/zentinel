@@ -37,8 +37,8 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use zentinel_common::ids::{QualifiedId, Scope};
-use zentinel_common::{Registry, ScopedMetrics, ScopedRegistry};
+use zentinel_common::ids::Scope;
+use zentinel_common::{Registry, ScopedMetrics};
 
 use crate::agents::AgentManager;
 use crate::app::AppState;
@@ -56,33 +56,32 @@ use crate::reload::{
 };
 use crate::routing::RouteMatcher;
 
-use crate::scoped_routing::ScopedRouteMatcher;
 use crate::static_files::StaticFileServer;
 use crate::upstream::{HealthCheckRunner, UpstreamPool};
 use crate::validation::SchemaValidator;
 use listener_addr::ListenerMatchers;
 
 use zentinel_common::TraceIdFormat;
-use zentinel_config::{Config, FlattenedConfig};
+use zentinel_config::Config;
 
 /// Main proxy service implementing Pingora's ProxyHttp trait
 pub struct ZentinelProxy {
     /// Configuration manager with hot reload
     pub config_manager: Arc<ConfigManager>,
-    /// Route matcher (global routes only, for backward compatibility)
+    /// Route matcher of the global (unbound) listeners: the global routes,
+    /// and those of every namespace and service without a listener of its own
+    /// (#548).
     pub(super) route_matcher: Arc<RwLock<RouteMatcher>>,
-    /// Per-listener route matchers for listeners bound to a namespace route set,
-    /// resolved from the accepted connection's local address. A request arriving
-    /// on one of these listeners is matched only against its namespace's routes
-    /// (isolated from the global set). Listeners absent from this map use
-    /// [`Self::route_matcher`].
+    /// Per-listener route matchers for listeners bound to a namespace or a
+    /// service, resolved from the accepted connection's local address. A
+    /// request arriving on one of these listeners is matched only against the
+    /// routes that scope serves (isolated from the global set). Listeners
+    /// absent from this map use [`Self::route_matcher`].
     pub(super) listener_matchers: Arc<RwLock<ListenerMatchers>>,
-    /// Scoped route matcher (namespace/service aware)
-    pub(super) scoped_route_matcher: Arc<tokio::sync::RwLock<ScopedRouteMatcher>>,
-    /// Upstream pools (keyed by upstream ID, global only)
+    /// Upstream pools, keyed by upstream id: a global upstream by its own id,
+    /// a namespace's or service's by its qualified id (`ns:name`,
+    /// `ns:svc:name`), which is what a lowered route names (#548).
     pub(super) upstream_pools: Registry<UpstreamPool>,
-    /// Scoped upstream pools (namespace/service aware)
-    pub(super) scoped_upstream_pools: ScopedRegistry<UpstreamPool>,
     /// Agent manager for external processing
     pub(super) agent_manager: Arc<AgentManager>,
     /// Passive health checker
@@ -159,6 +158,19 @@ impl ZentinelProxy {
             .validate()
             .context("Initial configuration validation failed")?;
 
+        // Everything below runs on the configuration with namespace and
+        // service resources moved to the top level under their qualified ids,
+        // so scoped routes, upstreams, filters and agents are built like
+        // global ones (#548). The config manager keeps this lowered form, so
+        // request-time lookups see the same ids.
+        let (config, scope_problems) = config.lower_scopes_reporting();
+        for problem in scope_problems
+            .iter()
+            .chain(&crate::routing::unservable_scoped_routes(&config))
+        {
+            warn!("{problem}");
+        }
+
         // Configure global cache storage (must be done before cache is accessed)
         if let Some(ref cache_config) = config.cache {
             info!(
@@ -180,35 +192,26 @@ impl ZentinelProxy {
             .add_validator(Box::new(UpstreamValidator))
             .await;
 
-        // Create route matcher (global routes only)
+        // Route matcher of the global listeners
         let route_matcher = Arc::new(RwLock::new(RouteMatcher::with_cache_size(
-            config.routes.clone(),
+            crate::routing::routes_served_on(&config, &Scope::Global),
             None,
             config.server.route_cache_size,
         )?));
 
         // Build per-listener route matchers for listeners bound to a namespace
-        // route set (empty unless any listener references a namespace).
+        // or service (empty unless any listener is).
         let listener_matchers = Arc::new(RwLock::new(Self::build_listener_matchers(&config)));
 
-        // Flatten config for namespace/service resources
-        let flattened = config.flatten();
-
-        // Create scoped route matcher
-        let scoped_route_matcher = Arc::new(tokio::sync::RwLock::new(
-            ScopedRouteMatcher::from_flattened(&flattened)
-                .await
-                .context("Failed to create scoped route matcher")?,
-        ));
-
-        // Active health checks are started further down, once, from the
-        // flattened config: it already contains the global upstreams, so
-        // registering from `config.upstreams` as well probed every global
-        // target twice per interval. The runner exists before the pools so
-        // each pool can attach to its upstream's health results.
+        // Active health checks are started further down, once. The runner
+        // exists before the pools so each pool can attach to its upstream's
+        // health results.
         let health_check_runner = Arc::new(HealthCheckRunner::new());
 
-        // Create upstream pools (global only)
+        // Create upstream pools: global ones and, lowered, scoped ones. Each
+        // pool is built once; the separate registry of scoped pools that
+        // used to be built from the flattened config held a second copy of
+        // every pool (global ones included) that no request ever reached.
         let mut pools = HashMap::new();
         for (upstream_id, upstream_config) in &config.upstreams {
             let mut config_with_id = upstream_config.clone();
@@ -220,17 +223,10 @@ impl ZentinelProxy {
         }
         let upstream_pools = Registry::from_map(pools);
 
-        // Create scoped upstream pools from flattened config
-        let scoped_upstream_pools =
-            Self::create_scoped_upstream_pools(&flattened, &health_check_runner).await?;
-
-        // Keep discovery-backed pools up to date. The supervisor reads both
-        // registries on each tick, so it also covers pools installed by a later
+        // Keep discovery-backed pools up to date. The supervisor reads the
+        // registry on each tick, so it also covers pools installed by a later
         // config reload; it is a no-op when no upstream uses discovery.
-        crate::upstream::discovery_refresh::spawn(
-            upstream_pools.clone(),
-            scoped_upstream_pools.clone(),
-        );
+        crate::upstream::discovery_refresh::spawn(upstream_pools.clone());
 
         // Create passive health checker
         let passive_health = Arc::new(PassiveHealthChecker::new(
@@ -267,8 +263,6 @@ impl ZentinelProxy {
             route_matcher.clone(),
             listener_matchers.clone(),
             upstream_pools.clone(),
-            scoped_route_matcher.clone(),
-            scoped_upstream_pools.clone(),
             health_check_runner.clone(),
             rate_limit_manager.clone(),
         )
@@ -316,7 +310,7 @@ impl ZentinelProxy {
         }
 
         // Start active health checking (one probe loop per upstream)
-        health_check_runner.apply(Self::health_check_upstreams(&flattened));
+        health_check_runner.apply(Self::health_check_upstreams(&config));
         if health_check_runner.checker_count() > 0 {
             info!(
                 upstreams = ?health_check_runner.upstream_ids(),
@@ -374,9 +368,7 @@ impl ZentinelProxy {
             config_manager,
             route_matcher,
             listener_matchers,
-            scoped_route_matcher,
             upstream_pools,
-            scoped_upstream_pools,
             agent_manager,
             passive_health,
             metrics,
@@ -411,56 +403,75 @@ impl ZentinelProxy {
         self.cache_manager.stats()
     }
 
-    /// Build per-listener route matchers for listeners that reference a
-    /// namespace route set.
+    /// Build per-listener route matchers for listeners bound to a namespace
+    /// or a service.
     ///
-    /// Listeners without a `namespace` reference are omitted (they fall back to
-    /// the global matcher at request time). Unknown namespace references are
-    /// skipped with a warning — config validation rejects them before startup,
-    /// so this only guards against a reload racing a bad config.
-    fn build_listener_matchers(config: &zentinel_config::Config) -> ListenerMatchers {
+    /// `config` is the lowered configuration (see
+    /// [`Config::lower_scopes`]). A listener bound to a scope -- a top-level
+    /// listener with `namespace`, or one declared in a namespace or service --
+    /// serves the routes [`Config::routes_served_on`] gives for that scope, in
+    /// isolation from the global ones. Global listeners are omitted: they use
+    /// the global matcher. Listeners of one scope share one matcher.
+    fn build_listener_matchers(config: &Config) -> ListenerMatchers {
+        let mut by_scope: HashMap<Scope, Arc<RouteMatcher>> = HashMap::new();
         let mut matchers = ListenerMatchers::default();
         for listener in &config.listeners {
-            let Some(ns_id) = listener.namespace.as_ref() else {
+            let scope = listener.scope();
+            if scope.is_global() {
                 continue;
+            }
+            let matcher = match by_scope.get(&scope) {
+                Some(matcher) => Arc::clone(matcher),
+                None => {
+                    let routes = crate::routing::routes_served_on(config, &scope);
+                    let route_count = routes.len();
+                    let matcher = match RouteMatcher::with_cache_size(
+                        routes,
+                        None,
+                        config.server.route_cache_size,
+                    ) {
+                        Ok(matcher) => {
+                            info!(
+                                scope = %scope,
+                                routes = route_count,
+                                "Compiled route set of a namespace or service listener"
+                            );
+                            matcher
+                        }
+                        // Serve nothing rather than leave the listener out of
+                        // the map, which would give it the global routes.
+                        Err(e) => {
+                            error!(
+                                listener_id = %listener.id,
+                                scope = %scope,
+                                error = %e,
+                                "Failed to compile route matcher for listener scope; \
+                                 it serves no routes"
+                            );
+                            match RouteMatcher::new(Vec::new(), None) {
+                                Ok(empty) => empty,
+                                Err(_) => continue,
+                            }
+                        }
+                    };
+                    let matcher = Arc::new(matcher);
+                    by_scope.insert(scope.clone(), Arc::clone(&matcher));
+                    matcher
+                }
             };
-            let Some(ns) = config.namespaces.iter().find(|n| &n.id == ns_id) else {
-                warn!(
+            info!(
+                listener_id = %listener.id,
+                address = %listener.address,
+                scope = %scope,
+                "Listener bound to the route set of its scope"
+            );
+            if !matchers.insert(&listener.address, matcher) {
+                error!(
                     listener_id = %listener.id,
-                    namespace = %ns_id,
-                    "Listener references unknown namespace; no routes will match on this listener"
+                    address = %listener.address,
+                    "Listener address is not a socket address; the routes of its scope \
+                     will not be served on it"
                 );
-                continue;
-            };
-            match RouteMatcher::with_cache_size(
-                ns.routes.clone(),
-                None,
-                config.server.route_cache_size,
-            ) {
-                Ok(matcher) => {
-                    info!(
-                        listener_id = %listener.id,
-                        address = %listener.address,
-                        namespace = %ns_id,
-                        routes = ns.routes.len(),
-                        "Listener bound to namespace route set"
-                    );
-                    if !matchers.insert(&listener.address, Arc::new(matcher)) {
-                        error!(
-                            listener_id = %listener.id,
-                            address = %listener.address,
-                            "Listener address is not a socket address; namespace routes                              will not be served on it"
-                        );
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        listener_id = %listener.id,
-                        namespace = %ns_id,
-                        error = %e,
-                        "Failed to compile route matcher for listener namespace"
-                    );
-                }
             }
         }
         matchers
@@ -472,8 +483,6 @@ impl ZentinelProxy {
         route_matcher: Arc<RwLock<RouteMatcher>>,
         listener_matchers: Arc<RwLock<ListenerMatchers>>,
         upstream_pools: Registry<UpstreamPool>,
-        scoped_route_matcher: Arc<tokio::sync::RwLock<ScopedRouteMatcher>>,
-        scoped_upstream_pools: ScopedRegistry<UpstreamPool>,
         health_check_runner: Arc<HealthCheckRunner>,
         rate_limit_manager: Arc<RateLimitManager>,
     ) {
@@ -492,17 +501,25 @@ impl ZentinelProxy {
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
                 {
-                    // Reload routes and upstreams
+                    // Reload routes and upstreams. The config manager holds
+                    // the lowered configuration, so namespace and service
+                    // routes, upstreams and filters are rebuilt here too.
                     let new_config = config_manager_clone.current();
-                    let flattened = new_config.flatten();
 
                     // Update route matcher FIRST (most critical for traffic)
-                    match RouteMatcher::new(new_config.routes.clone(), None) {
+                    let global_routes =
+                        crate::routing::routes_served_on(&new_config, &Scope::Global);
+                    let global_route_count = global_routes.len();
+                    match RouteMatcher::with_cache_size(
+                        global_routes,
+                        None,
+                        new_config.server.route_cache_size,
+                    ) {
                         Ok(new_matcher) => {
                             *route_matcher.write() = new_matcher;
                             info!(
-                                routes = new_config.routes.len(),
-                                "Global routes reloaded successfully"
+                                routes = global_route_count,
+                                "Routes of the global listeners reloaded successfully"
                             );
                         }
                         Err(e) => {
@@ -510,7 +527,8 @@ impl ZentinelProxy {
                         }
                     }
 
-                    // Rebuild per-listener (namespace-bound) route matchers
+                    // Rebuild per-listener (namespace- and service-bound)
+                    // route matchers
                     *listener_matchers.write() = Self::build_listener_matchers(&new_config);
 
                     // Rebuild rate limiters. They were built once at startup, so a
@@ -527,22 +545,12 @@ impl ZentinelProxy {
                         "Rate limiters reloaded"
                     );
 
-                    // Update scoped route matcher
-                    if let Err(e) = scoped_route_matcher
-                        .write()
-                        .await
-                        .load_from_flattened(&flattened)
-                        .await
-                    {
-                        error!("Failed to reload scoped routes: {}", e);
-                    }
-
                     // Reconcile active health checks with the new config:
                     // start added checks, restart changed ones, stop removed
                     // ones. Done before the pool update so a pool-build
                     // timeout cannot leave the old probes in place.
                     let changes =
-                        health_check_runner.apply(Self::health_check_upstreams(&flattened));
+                        health_check_runner.apply(Self::health_check_upstreams(&new_config));
                     info!(
                         started = changes.started,
                         restarted = changes.restarted,
@@ -576,18 +584,10 @@ impl ZentinelProxy {
                         Ok(new_pools) => {
                             let old_pools = upstream_pools.replace(new_pools).await;
 
-                            // Update scoped upstream pools
-                            let new_scoped_pools =
-                                Self::build_scoped_pools_list(&flattened, &health_check_runner)
-                                    .await;
-                            let old_scoped_pools =
-                                scoped_upstream_pools.replace_all(new_scoped_pools).await;
-
                             // Track drain lifecycle for old pools
                             tokio::spawn(async move {
                                 let tracker = crate::upstream::drain::DrainTracker::default();
                                 tracker.track_pools(old_pools).await;
-                                tracker.track_pools(old_scoped_pools).await;
                             });
                         }
                         Err(_) => {
@@ -599,94 +599,18 @@ impl ZentinelProxy {
         });
     }
 
-    /// Create scoped upstream pools from flattened config
-    async fn create_scoped_upstream_pools(
-        flattened: &FlattenedConfig,
-        health_check_runner: &HealthCheckRunner,
-    ) -> Result<ScopedRegistry<UpstreamPool>> {
-        let registry = ScopedRegistry::new();
-
-        for (qid, upstream_config) in &flattened.upstreams {
-            let mut config_with_id = upstream_config.clone();
-            config_with_id.id = qid.canonical();
-
-            let pool = Arc::new(
-                UpstreamPool::new(config_with_id.clone())
-                    .await
-                    .with_context(|| {
-                        format!("Failed to create upstream pool '{}'", qid.canonical())
-                    })?
-                    .with_active_health(health_check_runner.view(&qid.canonical())),
-            );
-
-            // Track exports
-            let is_exported = flattened
-                .exported_upstreams
-                .contains_key(&upstream_config.id);
-
-            if is_exported {
-                registry.insert_exported(qid.clone(), pool).await;
-            } else {
-                registry.insert(qid.clone(), pool).await;
-            }
-
-            debug!(
-                upstream_id = %qid.canonical(),
-                scope = ?qid.scope,
-                exported = is_exported,
-                "Created scoped upstream pool"
-            );
-        }
-
-        info!("Created {} scoped upstream pools", registry.len().await);
-
-        Ok(registry)
-    }
-
-    /// Every upstream (global and namespaced) with its canonical id set, which
-    /// is what the health check runner keys its probe loops by. Global
-    /// upstreams appear in the flattened config under `Scope::Global`, whose
-    /// canonical id is the plain upstream id.
+    /// Every upstream with its id set, which is what the health check
+    /// runner keys its probe loops by. In the lowered configuration a
+    /// namespace's or service's upstream is keyed by its qualified id
+    /// (`ns:name`), which is also its pool's id.
     fn health_check_upstreams(
-        flattened: &FlattenedConfig,
+        config: &Config,
     ) -> impl Iterator<Item = zentinel_config::UpstreamConfig> + '_ {
-        flattened.upstreams.iter().map(|(qid, upstream)| {
-            let mut config = upstream.clone();
-            config.id = qid.canonical();
-            config
+        config.upstreams.iter().map(|(id, upstream)| {
+            let mut upstream = upstream.clone();
+            upstream.id = id.clone();
+            upstream
         })
-    }
-
-    /// Build list of scoped pools for atomic replacement
-    async fn build_scoped_pools_list(
-        flattened: &FlattenedConfig,
-        health_check_runner: &HealthCheckRunner,
-    ) -> Vec<(QualifiedId, Arc<UpstreamPool>, bool)> {
-        let mut result = Vec::new();
-
-        for (qid, upstream_config) in &flattened.upstreams {
-            let mut config_with_id = upstream_config.clone();
-            config_with_id.id = qid.canonical();
-
-            match UpstreamPool::new(config_with_id).await {
-                Ok(pool) => {
-                    let pool = pool.with_active_health(health_check_runner.view(&qid.canonical()));
-                    let is_exported = flattened
-                        .exported_upstreams
-                        .contains_key(&upstream_config.id);
-                    result.push((qid.clone(), Arc::new(pool), is_exported));
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to create scoped upstream pool {}: {}",
-                        qid.canonical(),
-                        e
-                    );
-                }
-            }
-        }
-
-        result
     }
 
     /// Initialize route-specific components (error handlers, validators, static servers)
@@ -1160,7 +1084,9 @@ mod listener_matcher_tests {
 
     #[test]
     fn namespace_listener_matches_only_its_own_routes() {
-        let config = zentinel_config::Config::from_kdl(KDL).expect("config parses");
+        let config = zentinel_config::Config::from_kdl(KDL)
+            .expect("config parses")
+            .lower_scopes();
         let matchers = ZentinelProxy::build_listener_matchers(&config);
 
         // Only the namespace-bound listener gets a dedicated matcher.
@@ -1202,7 +1128,9 @@ mod listener_matcher_tests {
                 }
             }
         "#;
-        let config = zentinel_config::Config::from_kdl(kdl).expect("config parses");
+        let config = zentinel_config::Config::from_kdl(kdl)
+            .expect("config parses")
+            .lower_scopes();
         let matchers = ZentinelProxy::build_listener_matchers(&config);
         assert!(matchers.is_empty());
     }
@@ -1241,7 +1169,9 @@ mod listener_matcher_tests {
 
     #[test]
     fn wildcard_bound_namespace_listener_resolves_from_concrete_local_addr() {
-        let config = zentinel_config::Config::from_kdl(WILDCARD_KDL).expect("config parses");
+        let config = zentinel_config::Config::from_kdl(WILDCARD_KDL)
+            .expect("config parses")
+            .lower_scopes();
         let matchers = ZentinelProxy::build_listener_matchers(&config);
 
         // Every interface a `0.0.0.0` bind can accept on must resolve.
@@ -1270,9 +1200,139 @@ mod listener_matcher_tests {
 
     #[test]
     fn wildcard_listener_does_not_capture_other_ports() {
-        let config = zentinel_config::Config::from_kdl(WILDCARD_KDL).expect("config parses");
+        let config = zentinel_config::Config::from_kdl(WILDCARD_KDL)
+            .expect("config parses")
+            .lower_scopes();
         let matchers = ZentinelProxy::build_listener_matchers(&config);
         assert!(matchers.get(local("203.0.113.5:9090")).is_none());
+    }
+
+    /// #548: a namespace without a listener of its own is served on the
+    /// global listeners, a service with one only there, and a listener
+    /// declared inside a namespace serves that namespace.
+    #[test]
+    fn scoped_routes_are_matched_on_the_listeners_of_their_scope() {
+        let kdl = r#"
+            schema-version "1.0"
+            system { worker-threads 0 }
+            listeners {
+                listener "public" { address "0.0.0.0:8080" }
+            }
+            routes {
+                route "health" {
+                    matches { path "/health" }
+                    builtin-handler "health"
+                }
+            }
+            namespace "api" {
+                upstreams {
+                    upstream "backend" { target "127.0.0.1:3000" }
+                }
+                routes {
+                    route "main" {
+                        matches { path-prefix "/api" }
+                        upstream "backend"
+                    }
+                }
+                service "pay" {
+                    listener {
+                        id "pay"
+                        address "127.0.0.1:9100"
+                    }
+                    routes {
+                        route "main" {
+                            matches { path-prefix "/" }
+                            upstream "backend"
+                        }
+                    }
+                }
+            }
+            namespace "web" {
+                listeners {
+                    listener "web" { address "127.0.0.1:9200" }
+                }
+                routes {
+                    route "main" {
+                        matches { path-prefix "/" }
+                        service-type "builtin"
+                        builtin-handler "status"
+                    }
+                }
+            }
+        "#;
+        let config = zentinel_config::Config::from_kdl(kdl)
+            .expect("config parses")
+            .lower_scopes();
+        let req = |path| RequestInfo::new("GET", path, "x");
+
+        let global = RouteMatcher::new(config.routes_served_on(&Scope::Global), None).unwrap();
+        let matched = global.match_request(&req("/api/x")).expect("api:main");
+        assert_eq!(matched.route_id.as_str(), "api:main");
+        assert_eq!(matched.config.upstream.as_deref(), Some("api:backend"));
+        assert!(global.match_request(&req("/other")).is_none());
+
+        let matchers = ZentinelProxy::build_listener_matchers(&config);
+        assert_eq!(matchers.len(), 2);
+        let pay = matchers.get(local("127.0.0.1:9100")).expect("pay listener");
+        let matched = pay.match_request(&req("/api/x")).expect("pay route");
+        assert_eq!(matched.route_id.as_str(), "api:pay:main");
+        assert_eq!(matched.config.upstream.as_deref(), Some("api:backend"));
+        assert!(pay
+            .match_request(&req("/health"))
+            .is_some_and(|m| m.route_id.as_str() == "api:pay:main"));
+        let web = matchers.get(local("127.0.0.1:9200")).expect("web listener");
+        assert_eq!(
+            web.match_request(&req("/health"))
+                .unwrap()
+                .route_id
+                .as_str(),
+            "web:main"
+        );
+        assert!(matchers.get(local("127.0.0.1:8080")).is_none());
+    }
+
+    /// A namespace route that does not compile was never compiled before
+    /// #548 and did not stop the proxy from starting; it is left out of the
+    /// route set (and reported) rather than failing the whole set.
+    #[test]
+    fn a_scoped_route_that_does_not_compile_is_left_out() {
+        let kdl = r#"
+            schema-version "1.0"
+            system { worker-threads 0 }
+            listeners { listener "public" { address "0.0.0.0:8080" } }
+            routes {
+                route "health" {
+                    matches { path "/health" }
+                    builtin-handler "health"
+                }
+            }
+            namespace "api" {
+                routes {
+                    route "broken" {
+                        matches { path-regex "^/(unclosed" }
+                        builtin-handler "status"
+                    }
+                    route "fine" {
+                        matches { path "/fine" }
+                        builtin-handler "status"
+                    }
+                }
+            }
+        "#;
+        let config = zentinel_config::Config::from_kdl(kdl)
+            .expect("config parses")
+            .lower_scopes();
+        let served: Vec<String> = crate::routing::routes_served_on(&config, &Scope::Global)
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(served, ["health", "api:fine"]);
+        let problems = crate::routing::unservable_scoped_routes(&config);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("'api:broken' is being ignored"),
+            "{problems:?}"
+        );
     }
 
     /// Per-listener timeouts resolve through the same path, and used to be
@@ -1299,7 +1359,9 @@ mod listener_matcher_tests {
                 upstream "backend" { target "127.0.0.1:3000" }
             }
         "#;
-        let config = zentinel_config::Config::from_kdl(kdl).expect("config parses");
+        let config = zentinel_config::Config::from_kdl(kdl)
+            .expect("config parses")
+            .lower_scopes();
         let listener =
             super::listener_addr::listener_for_addr(&config.listeners, local("203.0.113.5:8080"))
                 .expect("wildcard listener resolves from a concrete local address");

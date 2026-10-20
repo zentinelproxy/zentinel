@@ -226,6 +226,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                 let trusted_proxies = parse_trusted_proxies(child, &id)?;
 
                 listeners.push(ListenerConfig {
+                    service: None,
                     id,
                     address,
                     protocol,

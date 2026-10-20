@@ -342,6 +342,7 @@ mod tests {
 
     fn test_listener_config(address: &str) -> ListenerConfig {
         ListenerConfig {
+            service: None,
             id: "test".to_string(),
             address: address.to_string(),
             protocol: crate::ListenerProtocol::Http,
@@ -358,6 +359,7 @@ mod tests {
 
     fn test_tls_listener_config(address: &str) -> ListenerConfig {
         ListenerConfig {
+            service: None,
             id: "tls-test".to_string(),
             address: address.to_string(),
             protocol: crate::ListenerProtocol::Http,

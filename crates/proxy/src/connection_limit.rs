@@ -30,6 +30,7 @@ use pingora_core::protocols::Stream;
 use pingora_core::server::ShutdownWatch;
 use tracing::warn;
 
+use zentinel_common::ids::Scope;
 use zentinel_common::limits::{ConnectionLimiter, ConnectionPermit};
 use zentinel_config::Config;
 
@@ -42,14 +43,19 @@ use crate::proxy::listener_addr::{canonical_ip, listener_for_addr};
 pub struct ConnectionLimits {
     pub max_total: Option<usize>,
     pub max_per_client: Option<usize>,
-    /// Set when the connection arrived on a listener bound to a namespace.
+    /// Set when the connection arrived on a listener bound to a namespace,
+    /// or to one of its services.
     pub namespace: Option<NamespaceConnectionLimits>,
+    /// Set when the connection arrived on a service's own listener. Its `id`
+    /// is `ns:svc`.
+    pub service: Option<NamespaceConnectionLimits>,
 }
 
-/// A namespace's own connection limits. The namespace's connections are the
-/// ones on listeners bound to it, since those serve only its routes; they
-/// count against these and against the global limits both, so the smaller
-/// of each pair is what binds.
+/// A namespace's (or service's) own connection limits. The namespace's
+/// connections are the ones on listeners bound to it or to its services, since
+/// those serve only its routes; they count against these and against the
+/// global limits both, so the smallest of each is what binds. A connection on
+/// a service's listener also counts against the service's limits.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NamespaceConnectionLimits {
     pub id: String,
@@ -64,6 +70,7 @@ impl ConnectionLimits {
             max_total: limits.max_total_connections,
             max_per_client: limits.max_connections_per_client,
             namespace: None,
+            service: None,
         }
     }
 
@@ -76,27 +83,33 @@ impl ConnectionLimits {
     ) -> Self {
         let mut limits = Self::from_limits(&config.limits);
         let listener = local.and_then(|local| listener_for_addr(&config.listeners, local));
-        limits.namespace = listener
-            .and_then(|listener| listener.namespace.as_ref())
-            .map(|id| {
-                let scoped = config
-                    .namespaces
-                    .iter()
-                    .find(|ns| &ns.id == id)
-                    .and_then(|ns| ns.limits.as_ref());
-                NamespaceConnectionLimits {
-                    id: id.clone(),
-                    max_total: scoped.and_then(|l| l.max_total_connections),
-                    max_per_client: scoped.and_then(|l| l.max_connections_per_client),
-                }
-            });
+        let scope = listener.map(|l| l.scope()).unwrap_or_default();
+        let blocks = config.scope_limits(&scope);
+        let scoped = |s: &Scope, id: String| {
+            let block = blocks.iter().find(|(b, _)| b == s).map(|(_, l)| *l);
+            NamespaceConnectionLimits {
+                id,
+                max_total: block.and_then(|l| l.max_total_connections),
+                max_per_client: block.and_then(|l| l.max_connections_per_client),
+            }
+        };
+        if let Some(ns) = scope.namespace() {
+            limits.namespace = Some(scoped(&Scope::Namespace(ns.to_string()), ns.to_string()));
+        }
+        if let Some(svc) = scope.service() {
+            let id = format!("{}:{svc}", scope.namespace().unwrap_or_default());
+            limits.service = Some(scoped(&scope, id));
+        }
         let trusted_peer = peer.is_some_and(|ip| {
             listener.is_some_and(|l| l.trusted_proxies.iter().any(|cidr| cidr.contains(ip)))
         });
         if trusted_peer {
             limits.max_per_client = None;
-            if let Some(ns) = limits.namespace.as_mut() {
-                ns.max_per_client = None;
+            for scoped in [limits.namespace.as_mut(), limits.service.as_mut()]
+                .into_iter()
+                .flatten()
+            {
+                scoped.max_per_client = None;
             }
         }
         limits
@@ -115,19 +128,12 @@ pub fn per_client_limit_notes(config: &Config) -> Vec<String> {
         .iter()
         .filter(|listener| listener.trusted_proxies.is_empty())
         .filter_map(|listener| {
-            let namespace_limit = listener.namespace.as_ref().and_then(|id| {
-                config
-                    .namespaces
-                    .iter()
-                    .find(|ns| &ns.id == id)?
-                    .limits
-                    .as_ref()?
-                    .max_connections_per_client
-            });
-            let limit = match (config.limits.max_connections_per_client, namespace_limit) {
-                (Some(a), Some(b)) => a.min(b),
-                (a, b) => a.or(b)?,
-            };
+            let limit = config
+                .scope_limits(&listener.scope())
+                .into_iter()
+                .filter_map(|(_, l)| l.max_connections_per_client)
+                .chain(config.limits.max_connections_per_client)
+                .min()?;
             Some(format!(
                 "Listener '{}' limits each client to {limit} connections, counted by TCP \
                  peer address. Behind a load balancer or NAT the balancer counts as one \
@@ -147,15 +153,17 @@ type LimitsSource =
 pub struct ConnectionLimitedApp<A> {
     inner: Arc<A>,
     limiter: Arc<ConnectionLimiter>,
-    /// One counter per namespace that has had a connection. Like the global
-    /// one it counts whether or not a limit is set, so a reload that adds a
-    /// limit sees the connections already open.
+    /// One counter per namespace (keyed by its id) and per service (keyed by
+    /// `ns:svc`) that has had a connection. Like the global one it counts
+    /// whether or not a limit is set, so a reload that adds a limit sees the
+    /// connections already open.
     namespaces: parking_lot::Mutex<HashMap<String, Arc<ConnectionLimiter>>>,
     limits: LimitsSource,
 }
 
-/// The slots one connection holds: the global one, and its namespace's.
-type Permits = (ConnectionPermit, Option<ConnectionPermit>);
+/// The slots one connection holds: the global one, and its namespace's and
+/// service's.
+type Permits = (ConnectionPermit, Vec<ConnectionPermit>);
 
 impl<A> ConnectionLimitedApp<A> {
     /// `limits` is given the connection's peer IP and local address and
@@ -173,7 +181,8 @@ impl<A> ConnectionLimitedApp<A> {
         }
     }
 
-    /// Connections open in `namespace` (on listeners bound to it).
+    /// Connections open in `namespace` (on listeners bound to it), or in a
+    /// service when given `ns:svc`.
     pub fn namespace_connections(&self, namespace: &str) -> usize {
         self.namespaces
             .lock()
@@ -202,17 +211,19 @@ impl<A> ConnectionLimitedApp<A> {
                 return None;
             }
         };
-        let Some(ns) = limits.namespace else {
-            return Some((global, None));
-        };
-        let limiter = Arc::clone(self.namespaces.lock().entry(ns.id.clone()).or_default());
-        match limiter.try_acquire(peer, ns.max_total, ns.max_per_client) {
-            Ok(scoped) => Some((global, Some(scoped))),
-            Err(refusal) => {
-                refused(&ns.id, refusal);
-                None
+        let mut scoped_permits = Vec::new();
+        for scope in [limits.namespace, limits.service].into_iter().flatten() {
+            let limiter = Arc::clone(self.namespaces.lock().entry(scope.id.clone()).or_default());
+            match limiter.try_acquire(peer, scope.max_total, scope.max_per_client) {
+                Ok(permit) => scoped_permits.push(permit),
+                Err(refusal) => {
+                    // The slots already taken are given back on drop.
+                    refused(&scope.id, refusal);
+                    return None;
+                }
             }
         }
+        Some((global, scoped_permits))
     }
 }
 
@@ -415,6 +426,51 @@ mod tests {
         let public = ConnectionLimits::for_connection(&config, None, "10.1.2.3:19790".parse().ok());
         assert_eq!(public.max_total, Some(100));
         assert_eq!(public.namespace, None);
+    }
+
+    /// #548: a connection on a service's own listener counts against the
+    /// service's limits and its namespace's.
+    #[test]
+    fn a_connection_on_a_service_listener_gets_the_service_and_namespace_limits() {
+        let config = Config::from_kdl(
+            r#"
+            schema-version "1.0"
+            system { worker-threads 1 }
+            listeners { listener "public" { address "0.0.0.0:19790"; } }
+            namespace "tenant" {
+                limits { max-total-connections 20 }
+                service "pay" {
+                    limits { max-connections-per-client 2 }
+                    listener {
+                        id "pay"
+                        address "127.0.0.1:19794"
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap()
+        .lower_scopes();
+
+        let pay = ConnectionLimits::for_connection(&config, None, "127.0.0.1:19794".parse().ok());
+        assert_eq!(
+            pay.namespace,
+            Some(NamespaceConnectionLimits {
+                id: "tenant".to_string(),
+                max_total: Some(20),
+                max_per_client: None,
+            })
+        );
+        assert_eq!(
+            pay.service,
+            Some(NamespaceConnectionLimits {
+                id: "tenant:pay".to_string(),
+                max_total: None,
+                max_per_client: Some(2),
+            })
+        );
+        let public = ConnectionLimits::for_connection(&config, None, "10.0.0.1:19790".parse().ok());
+        assert_eq!((public.namespace, public.service), (None, None));
     }
 
     #[tokio::test]

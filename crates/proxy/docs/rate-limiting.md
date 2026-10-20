@@ -260,65 +260,32 @@ Fixed window counter:
 └────────────────────────────────────────────────────────┘
 ```
 
-## Scoped Rate Limiting
+## Rate Limits in Namespaces and Services
 
-Hierarchical rate limits with inheritance.
-
-### Scope Hierarchy
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Scope Hierarchy                       │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│   Global (default: 10000 rps)                           │
-│       │                                                  │
-│       ├── Namespace: production (5000 rps)              │
-│       │       │                                          │
-│       │       ├── Service: api (1000 rps)               │
-│       │       │       └── Route: /users (100 rps)       │
-│       │       │                                          │
-│       │       └── Service: web (2000 rps)               │
-│       │                                                  │
-│       └── Namespace: staging (1000 rps)                 │
-│               │                                          │
-│               └── Service: api (500 rps)                │
-│                                                          │
-│   Inheritance: Most specific limit applies              │
-│   Fallback: Service → Namespace → Global                │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Configuration
+There is no separate scoped rate limiter and no `scopes` block. A `rate-limit`
+filter or route `policies { rate-limit }` written inside a namespace or service
+is an ordinary limiter: when the configuration is lowered (`Config::lower_scopes`,
+#548), the route and filter are keyed by their qualified ids (`ns:route`,
+`ns:svc:filter`), so two namespaces that both define a filter `rl` count
+separately, and a limit hit in one does not affect the other.
 
 ```kdl
-scopes {
-    scope "production" {
-        rate-limit {
-            requests-per-second 5000
-        }
-
-        scope "api" {
-            rate-limit {
-                requests-per-second 1000
-            }
-        }
-
-        scope "web" {
-            rate-limit {
-                requests-per-second 2000
-            }
-        }
+namespace "api" {
+    filters {
+        filter "rl" { type "rate-limit"; max-rps 100; burst 200; key "client-ip"; }
     }
-
-    scope "staging" {
-        rate-limit {
-            requests-per-second 1000
+    routes {
+        route "main" {
+            matches { path-prefix "/api/"; }
+            upstream "backend"
+            filters "rl"          // the namespace's own `rl`: limiter key "api:rl"
         }
     }
 }
 ```
+
+`limits { max-requests-per-second-* }` is not a setting (at any level);
+`zentinel lint` reports it as ignored.
 
 ## Circuit Breakers
 
@@ -474,12 +441,10 @@ limits {
     max-requests-per-second 10000
 }
 
-// Per-namespace
-scopes {
-    scope "production" {
-        rate-limit {
-            requests-per-second 5000
-        }
+// Per-namespace: a rate-limit filter defined in the namespace
+namespace "production" {
+    filters {
+        filter "ns-limit" { type "rate-limit"; max-rps 5000; }
     }
 }
 

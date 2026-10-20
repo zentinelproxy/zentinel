@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use prometheus::{register_int_counter_vec, register_int_gauge_vec, IntCounterVec, IntGaugeVec};
 use tracing::{debug, info, warn};
 
-use zentinel_common::{Registry, ScopedRegistry};
+use zentinel_common::Registry;
 
 use super::UpstreamPool;
 
@@ -74,37 +74,25 @@ static DISCOVERY_TARGETS: LazyLock<Option<IntGaugeVec>> = LazyLock::new(|| {
 /// Returns immediately; the supervisor runs until the process exits. It is a
 /// no-op for pools without a discovery source, so it is safe to start
 /// unconditionally.
-pub(crate) fn spawn(global: Registry<UpstreamPool>, scoped: ScopedRegistry<UpstreamPool>) {
+pub(crate) fn spawn(pools: Registry<UpstreamPool>) {
     tokio::spawn(async move {
-        run(global, scoped).await;
+        run(pools).await;
     });
 }
 
-/// Which registry a pool came from, so a refreshed pool goes back where it
-/// belongs. Both are keyed by a string id; only the write method differs.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum Source {
-    Global,
-    Scoped,
-}
-
-async fn run(global: Registry<UpstreamPool>, scoped: ScopedRegistry<UpstreamPool>) {
-    // When each pool is next due. Keyed by source and id so a namespaced
-    // upstream and a global one of the same name keep separate schedules.
-    let mut due: HashMap<(Source, String), Instant> = HashMap::new();
+async fn run(pools: Registry<UpstreamPool>) {
+    // When each pool is next due, by pool id. A namespace's upstream is keyed
+    // by its qualified id (`ns:name`), so it never shares a schedule with a
+    // global upstream of the same name.
+    let mut due: HashMap<String, Instant> = HashMap::new();
 
     loop {
         let now = Instant::now();
 
-        let mut live: Vec<(Source, String, Arc<UpstreamPool>, Duration)> = Vec::new();
-        for (id, pool) in global.snapshot().await {
+        let mut live: Vec<(String, Arc<UpstreamPool>, Duration)> = Vec::new();
+        for (id, pool) in pools.snapshot().await {
             if let Some(interval) = pool.discovery_refresh_interval() {
-                live.push((Source::Global, id, pool, interval));
-            }
-        }
-        for (id, pool) in scoped.snapshot().await {
-            if let Some(interval) = pool.discovery_refresh_interval() {
-                live.push((Source::Scoped, id, pool, interval));
+                live.push((id, pool, interval));
             }
         }
 
@@ -116,12 +104,12 @@ async fn run(global: Registry<UpstreamPool>, scoped: ScopedRegistry<UpstreamPool
 
         // Drop schedules for pools that are no longer registered, so the map
         // cannot grow across reloads that rename or remove upstreams.
-        let present: std::collections::HashSet<(Source, String)> =
-            live.iter().map(|(s, id, _, _)| (*s, id.clone())).collect();
+        let present: std::collections::HashSet<String> =
+            live.iter().map(|(id, _, _)| id.clone()).collect();
         due.retain(|key, _| present.contains(key));
 
-        for (source, id, pool, interval) in live {
-            let key = (source, id.clone());
+        for (id, pool, interval) in live {
+            let key = id.clone();
 
             // First sighting: the pool was resolved when it was built, so the
             // first refresh is one full interval away rather than immediate.
@@ -134,10 +122,9 @@ async fn run(global: Registry<UpstreamPool>, scoped: ScopedRegistry<UpstreamPool
             // cannot have a second one started underneath it.
             due.insert(key, now + interval);
 
-            let global = global.clone();
-            let scoped = scoped.clone();
+            let pools = pools.clone();
             tokio::spawn(async move {
-                refresh_one(source, id, pool, global, scoped).await;
+                refresh_one(id, pool, pools).await;
             });
         }
 
@@ -146,13 +133,7 @@ async fn run(global: Registry<UpstreamPool>, scoped: ScopedRegistry<UpstreamPool
 }
 
 /// Re-resolve one pool and install the replacement, if the targets changed.
-async fn refresh_one(
-    source: Source,
-    id: String,
-    pool: Arc<UpstreamPool>,
-    global: Registry<UpstreamPool>,
-    scoped: ScopedRegistry<UpstreamPool>,
-) {
+async fn refresh_one(id: String, pool: Arc<UpstreamPool>, pools: Registry<UpstreamPool>) {
     let refreshed = match tokio::time::timeout(REFRESH_TIMEOUT, pool.refreshed()).await {
         Ok(result) => result,
         Err(_) => {
@@ -175,10 +156,7 @@ async fn refresh_one(
     let target_count = new_pool.target_count();
     let new_pool = Arc::new(new_pool);
 
-    let installed = match source {
-        Source::Global => global.insert(id.clone(), new_pool).await.is_some(),
-        Source::Scoped => scoped.replace_item(&id, new_pool).await.is_some(),
-    };
+    let installed = pools.insert(id.clone(), new_pool).await.is_some();
 
     if !installed {
         // The upstream was removed (or renamed) by a reload while this refresh

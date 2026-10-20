@@ -75,8 +75,6 @@ pub mod rate_limit;
 pub mod reload;
 pub mod routing;
 pub mod scoped_circuit_breaker;
-pub mod scoped_rate_limit;
-pub mod scoped_routing;
 pub mod shadow;
 pub mod static_files;
 pub mod tls;
@@ -104,7 +102,6 @@ pub use validation::SchemaValidator;
 
 // Routing
 pub use routing::{RequestInfo, RouteMatch, RouteMatcher};
-pub use scoped_routing::{ScopedRouteMatch, ScopedRouteMatcher};
 
 // Upstream management
 pub use upstream::{
@@ -168,9 +165,6 @@ pub use logging::{
 pub use rate_limit::{
     RateLimitConfig, RateLimitManager, RateLimitOutcome, RateLimitResult, RateLimiterPool,
 };
-
-// Scoped rate limiting
-pub use scoped_rate_limit::{ScopedRateLimitManager, ScopedRateLimitResult};
 
 // Scoped circuit breakers
 pub use scoped_circuit_breaker::{ScopedBreakerStatus, ScopedCircuitBreakerManager};

@@ -177,7 +177,9 @@ impl ConfigManager {
         );
 
         Ok(Self {
-            current_config: Arc::new(ArcSwap::from_pointee(initial_config)),
+            // The proxy runs the lowered configuration (#548); lowering is
+            // idempotent, so a caller that already lowered it loses nothing.
+            current_config: Arc::new(ArcSwap::from_pointee(initial_config.lower_scopes())),
             previous_config: Arc::new(RwLock::new(None)),
             config_path,
             watcher: Arc::new(RwLock::new(None)),
@@ -482,6 +484,17 @@ impl ConfigManager {
             return Err(e);
         }
 
+        // Run the lowered configuration: namespace and service resources at
+        // the top level under their qualified ids (#548). Lowered before the
+        // comparisons below, so it is compared with the lowered old one.
+        let (new_config, scope_problems) = new_config.lower_scopes_reporting();
+        for problem in scope_problems
+            .iter()
+            .chain(&crate::routing::unservable_scoped_routes(&new_config))
+        {
+            warn!("{problem}");
+        }
+
         info!(
             route_count = new_config.routes.len(),
             upstream_count = new_config.upstreams.len(),
@@ -688,6 +701,10 @@ impl ConfigManager {
         let _ = self.reload_tx.send(ReloadEvent::Validated {
             timestamp: Instant::now(),
         });
+
+        // Lowered like a configuration loaded from a file (#548); a no-op on
+        // one that already is, such as `apply_change`'s.
+        let new_config = new_config.lower_scopes();
 
         // Get current config for rollback and hooks
         let old_config = self.current_config.load_full();

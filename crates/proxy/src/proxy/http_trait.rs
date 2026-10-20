@@ -121,26 +121,35 @@ impl ZentinelProxy {
         let Some(global) = self.in_flight.try_acquire_global(limit) else {
             return self.refuse_in_flight(session, ctx, "global", limit).await;
         };
-        let Some(namespace) = ctx.namespace.clone() else {
-            ctx.in_flight.push(global);
-            return Ok(false);
-        };
-        // A namespace's limit has its own counter: the namespace may have
-        // that many requests in flight, within the global limit (#542).
-        let ns_limit = ctx
-            .namespace_limits()
-            .and_then(|l| l.max_in_flight_requests);
-        match self.in_flight.try_acquire_namespace(&namespace, ns_limit) {
-            Some(scoped) => {
-                ctx.in_flight.extend([global, scoped]);
-                Ok(false)
-            }
-            None => {
-                drop(global);
-                self.refuse_in_flight(session, ctx, &namespace, ns_limit)
-                    .await
+        // The request's namespace, and its service, each have a counter of
+        // their own: the scope may have that many requests in flight, within
+        // the enclosing limits (#542, #548). A service's counter is keyed by
+        // `ns:svc`, which no namespace id can be (ids cannot contain ':').
+        let scope = ctx.scope();
+        let mut permits = vec![global];
+        for counted in scope.chain().into_iter().rev().filter(|s| !s.is_global()) {
+            let limit = ctx
+                .scope_limits()
+                .into_iter()
+                .find(|(s, _)| s == &counted)
+                .and_then(|(_, l)| l.max_in_flight_requests);
+            let key = match &counted {
+                zentinel_common::ids::Scope::Service { namespace, service } => {
+                    format!("{namespace}:{service}")
+                }
+                other => other.namespace().unwrap_or_default().to_string(),
+            };
+            match self.in_flight.try_acquire_namespace(&key, limit) {
+                Some(permit) => permits.push(permit),
+                None => {
+                    // The slots already taken are given back on drop.
+                    drop(permits);
+                    return self.refuse_in_flight(session, ctx, &key, limit).await;
+                }
             }
         }
+        ctx.in_flight.extend(permits);
+        Ok(false)
     }
 
     async fn refuse_in_flight(
@@ -178,22 +187,30 @@ impl ZentinelProxy {
         Ok(true)
     }
 
-    /// The namespace the listener this request arrived on is bound to.
-    fn listener_namespace(&self, session: &Session, ctx: &mut RequestContext) -> Option<String> {
-        let local = to_socket_addr(session.downstream_session.server_addr()?)?;
+    /// Record the namespace and service of the route a request matched, from
+    /// the (lowered) configuration: their `limits` apply to the request, and
+    /// the access log reports them. A global route leaves both unset.
+    ///
+    /// Taken from the route rather than from the listener: since #548 the
+    /// routes of a namespace without a listener of its own are served on the
+    /// global listeners, and a namespace listener serves its services' routes.
+    fn set_route_scope(&self, ctx: &mut RequestContext) {
+        let Some(route_id) = ctx.route_id.as_deref() else {
+            return;
+        };
         let config = ctx
             .config
             .get_or_insert_with(|| self.config_manager.current());
-        listener_for_addr(&config.listeners, local)?
-            .namespace
-            .clone()
+        let scope = config.route_scope(route_id);
+        ctx.namespace = scope.namespace().map(str::to_string);
+        ctx.service = scope.service().map(str::to_string);
     }
 
     /// Route matcher for the listener a request arrived on.
     ///
     /// Returns `Some` only when the arrival listener is bound to a namespace
-    /// route set; that matcher serves the namespace's routes in isolation.
-    /// Returns `None` for ordinary listeners, which use the global matcher.
+    /// or a service; that matcher serves the scope's routes in isolation.
+    /// Returns `None` for global listeners, which use the global matcher.
     fn listener_matcher_for(
         &self,
         session: &Session,
@@ -444,8 +461,8 @@ impl ProxyHttp for ZentinelProxy {
         ctx.trace_id = self.get_trace_id(session);
 
         // Select the matcher for the listener this request arrived on. A
-        // namespace-bound listener matches only its own route set (isolated);
-        // every other listener uses the global matcher.
+        // namespace- or service-bound listener matches only its own route set
+        // (isolated); every other listener uses the global matcher.
         let listener_matcher = self.listener_matcher_for(session);
 
         // Match route to determine service type
@@ -475,12 +492,9 @@ impl ProxyHttp for ZentinelProxy {
 
         ctx.route_id = Some(route_match.route_id.to_string());
         ctx.route_config = Some(route_match.config.clone());
-        // A route from a namespace-bound listener is that namespace's, and its
-        // `limits` apply to the request (#542). It also fills the access
-        // log's `namespace`, which nothing set before.
-        if listener_matcher.is_some() {
-            ctx.namespace = self.listener_namespace(session, ctx);
-        }
+        // The route's namespace and service: their `limits` apply to the
+        // request (#542, #548), and the access log reports them.
+        self.set_route_scope(ctx);
 
         // Parse incoming W3C trace context if present
         if let Some(traceparent) = req_header.headers.get(crate::otel::TRACEPARENT_HEADER) {
@@ -615,8 +629,8 @@ impl ProxyHttp for ZentinelProxy {
             }
         } else {
             // Match route using sync RwLock (scoped to ensure lock is released before async ops).
-            // Namespace-bound listeners match only their own route set (isolated);
-            // all others use the global matcher.
+            // Namespace- and service-bound listeners match only their own route
+            // set (isolated); all others use the global matcher.
             let listener_matcher = self.listener_matcher_for(session);
             let (match_result, route_duration) = {
                 let host = ctx.host.as_deref().unwrap_or("");
@@ -678,6 +692,7 @@ impl ProxyHttp for ZentinelProxy {
 
             ctx.route_id = Some(match_result.route_id.to_string());
             ctx.route_config = Some(match_result.config.clone());
+            self.set_route_scope(ctx);
 
             // Set trace_id if not already set by early_request_filter
             if ctx.trace_id.is_empty() {

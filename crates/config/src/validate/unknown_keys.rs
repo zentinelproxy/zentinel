@@ -229,6 +229,13 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
         nesting: Nesting::Anywhere,
         keys: crate::kdl::server::RECOGNIZED_LISTENER_KEYS,
     },
+    // A service's single `listener` block is read by its own parser, which
+    // also takes its id from an `id` key (#548: it reported `id` as ignored).
+    ClosedBlock {
+        name: "listener",
+        nesting: Nesting::In("service"),
+        keys: crate::kdl::namespace::RECOGNIZED_SERVICE_LISTENER_KEYS,
+    },
     ClosedBlock {
         // Storage backend. Distinct from the per-route `cache` policy below:
         // they share a name and not one key.
@@ -752,19 +759,18 @@ fn check_values(
         // scoped block is checked from its namespace or service, which is
         // where its id is.
         ("limits", _) if parent.is_none() => {
-            for problem in crate::kdl::unapplied_limits_settings(node, None) {
+            for problem in crate::kdl::unapplied_limits_settings(node) {
                 report(Some(problem));
             }
         }
-        (kind @ ("namespace" | "service"), Some(scope_id)) => {
+        ("namespace" | "service", Some(_)) => {
             for limits in node
                 .children()
                 .into_iter()
                 .flat_map(|c| c.nodes())
                 .filter(|n| n.name().value() == "limits")
             {
-                for problem in crate::kdl::unapplied_limits_settings(limits, Some((kind, scope_id)))
-                {
+                for problem in crate::kdl::unapplied_limits_settings(limits) {
                     report(Some(problem));
                 }
             }
@@ -2328,7 +2334,6 @@ mod tests {
             }
             "#,
         );
-        // Plus the service block's own report that it is not applied.
         let unknown = warnings
             .iter()
             .filter(|w| w.contains("'max-body-size-bytes'"))
@@ -2373,10 +2378,11 @@ mod tests {
             .all(|w| w.contains("is being ignored") && w.contains(" 0'")));
     }
 
-    /// #542: namespace limits are applied to the namespace's routes; a
-    /// service's are not, since no listener serves a service's routes.
+    /// #542 applied namespace limits; a service's were reported as ignored,
+    /// since no listener served a service's routes. #548 serves them, and
+    /// applies their limits, so neither block is reported.
     #[test]
-    fn service_limits_are_reported_and_namespace_limits_are_not() {
+    fn namespace_and_service_limits_are_not_reported() {
         let warnings = warnings_for(
             r#"
             namespace "ns" {
@@ -2391,8 +2397,42 @@ mod tests {
             }
             "#,
         );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// #548: a service's `listener` block takes its id from an `id` key,
+    /// which its parser reads; it was reported as ignored.
+    #[test]
+    fn a_service_listener_id_is_not_reported() {
+        let warnings = warnings_for(
+            r#"
+            namespace "ns" {
+                service "svc" {
+                    listener {
+                        id "svc-http"
+                        address "127.0.0.1:19480"
+                        protocol "http"
+                    }
+                }
+            }
+            "#,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// A `0` concurrency limit is reported wherever the block sits.
+    #[test]
+    fn a_zero_limit_in_a_service_is_reported() {
+        let warnings = warnings_for(
+            r#"
+            namespace "ns" {
+                service "svc" {
+                    limits { max-in-flight-requests 0 }
+                }
+            }
+            "#,
+        );
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("service 'svc'"), "{warnings:?}");
         assert!(warnings[0].contains("is being ignored"), "{warnings:?}");
     }
 

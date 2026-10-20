@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use zentinel_common::ids::Scope;
 use zentinel_config::{BodyStreamingMode, Config, RouteConfig, ServiceType};
 
 use crate::inference::StreamingTokenCounter;
@@ -809,12 +810,10 @@ impl RequestContext {
     /// the proxy accepts at all. Until #517 the route setting was parsed and
     /// then never read, so a route limited to 1 KB accepted the global 10 MB.
     ///
-    /// The route's namespace `limits { max-body-size }` tightens it the same
-    /// way; the smallest of the three applies.
+    /// The `limits { max-body-size }` of the route's namespace and service
+    /// tighten it the same way; the smallest of them all applies.
     pub(crate) fn max_body_size(&self, global_limit: usize) -> usize {
-        let scoped = self
-            .namespace_limits()
-            .map_or(global_limit, |ns| ns.max_body_size_bytes.min(global_limit));
+        let scoped = self.scoped_min(global_limit, |l| l.max_body_size_bytes);
         self.route_config
             .as_ref()
             .and_then(|route| route.policies.max_body_size)
@@ -822,36 +821,56 @@ impl RequestContext {
     }
 
     /// `max-header-count` for this request: the global one, or the
-    /// namespace's if that is smaller.
+    /// namespace's or service's if smaller.
     pub(crate) fn max_header_count(&self, global_limit: usize) -> usize {
-        self.namespace_limits()
-            .map_or(global_limit, |ns| ns.max_header_count.min(global_limit))
+        self.scoped_min(global_limit, |l| l.max_header_count)
     }
 
     /// `max-header-size` for this request: the global one, or the
-    /// namespace's if that is smaller.
+    /// namespace's or service's if smaller.
     pub(crate) fn max_header_size(&self, global_limit: usize) -> usize {
-        self.namespace_limits().map_or(global_limit, |ns| {
-            ns.max_header_size_bytes.min(global_limit)
-        })
+        self.scoped_min(global_limit, |l| l.max_header_size_bytes)
     }
 
-    /// The `limits` block of the namespace this request was routed in.
+    /// The smallest of `global` and the value `key` reads from each scoped
+    /// `limits` block that applies.
+    fn scoped_min(
+        &self,
+        global: usize,
+        key: impl Fn(&zentinel_common::limits::Limits) -> usize,
+    ) -> usize {
+        self.scope_limits()
+            .into_iter()
+            .map(|(_, limits)| key(limits))
+            .fold(global, usize::min)
+    }
+
+    /// The scope this request was routed in, from `namespace` and `service`.
+    pub(crate) fn scope(&self) -> Scope {
+        match (&self.namespace, &self.service) {
+            (Some(namespace), Some(service)) => Scope::Service {
+                namespace: namespace.clone(),
+                service: service.clone(),
+            },
+            (Some(namespace), None) => Scope::Namespace(namespace.clone()),
+            (None, _) => Scope::Global,
+        }
+    }
+
+    /// The `limits` blocks of the namespace and the service this request was
+    /// routed in, each with the scope it belongs to, namespace first.
     ///
-    /// Until #542 these were parsed and never applied. A namespace's block
-    /// holds only the keys it writes (the rest unbounded), so taking the
-    /// smaller of it and the global value never applies a default the
-    /// namespace did not ask for. Looked up in the request's config snapshot,
-    /// so it changes with a reload like everything else.
-    pub(crate) fn namespace_limits(&self) -> Option<&zentinel_common::limits::Limits> {
-        let namespace = self.namespace.as_deref()?;
+    /// Until #542 a namespace's were parsed and never applied, and a
+    /// service's until #548. A scoped block holds only the keys it writes
+    /// (the rest unbounded), so taking the smaller of it and the global value
+    /// never applies a default the scope did not ask for. Looked up in the
+    /// request's config snapshot, so it changes with a reload like everything
+    /// else.
+    pub(crate) fn scope_limits(&self) -> Vec<(Scope, &zentinel_common::limits::Limits)> {
         self.config
-            .as_ref()?
-            .namespaces
-            .iter()
-            .find(|ns| ns.id == namespace)?
-            .limits
             .as_ref()
+            .map(|config| config.scope_limits(&self.scope()))
+            .unwrap_or_default()
     }
 }
 
@@ -1109,7 +1128,62 @@ mod tests {
         let mut ctx = ctx_in_namespace("max-body-size 2000", None);
         ctx.namespace = None;
         assert_eq!(ctx.max_body_size(10_000), 10_000);
-        assert!(ctx.namespace_limits().is_none());
+        assert!(ctx.scope_limits().is_empty());
+    }
+
+    /// #548: a service's limits apply to its routes too, within its
+    /// namespace's; the smallest of global, namespace, service and route
+    /// applies.
+    #[test]
+    fn service_limits_tighten_the_namespace_ones() {
+        let config = zentinel_config::Config::from_kdl(
+            r#"
+            schema-version "1.0"
+            system { worker-threads 1 }
+            listeners { listener "l" { address "127.0.0.1:8080"; } }
+            namespace "ns" {
+                limits { max-body-size 2000; max-header-count 50; }
+                service "svc" {
+                    limits { max-body-size 700; }
+                }
+                service "open" {}
+            }
+            namespace "bare" {
+                service "svc" {
+                    limits { max-header-size 300; }
+                }
+            }
+            "#,
+        )
+        .unwrap()
+        .lower_scopes();
+        let config = Arc::new(config);
+        let ctx = |ns: &str, svc: Option<&str>, route_limit| {
+            let mut ctx = ctx_with_route_limit(route_limit);
+            ctx.config = Some(Arc::clone(&config));
+            ctx.namespace = Some(ns.to_string());
+            ctx.service = svc.map(str::to_string);
+            ctx
+        };
+
+        let svc = ctx("ns", Some("svc"), None);
+        assert_eq!(svc.max_body_size(10_000), 700);
+        assert_eq!(svc.max_header_count(100), 50);
+        assert_eq!(ctx("ns", Some("svc"), Some(300)).max_body_size(10_000), 300);
+        // A service without limits gets its namespace's.
+        assert_eq!(ctx("ns", Some("open"), None).max_body_size(10_000), 2000);
+        // A namespace without limits, and a service with them: the service's
+        // block is attributed to the service, not the namespace.
+        let bare = ctx("bare", Some("svc"), None);
+        assert_eq!(bare.max_header_size(8192), 300);
+        let scopes: Vec<_> = bare.scope_limits().into_iter().map(|(s, _)| s).collect();
+        assert_eq!(
+            scopes,
+            vec![Scope::Service {
+                namespace: "bare".into(),
+                service: "svc".into()
+            }]
+        );
     }
 
     /// #542: the in-flight slot is released when the context is dropped,

@@ -283,6 +283,7 @@ impl ConfigTranslator {
         }
 
         let new_config = Config {
+            scope_index: Default::default(),
             schema_version: zentinel_config::CURRENT_SCHEMA_VERSION.to_string(),
             server: ServerConfig {
                 worker_threads: 0, // auto-detect
@@ -371,6 +372,7 @@ impl ConfigTranslator {
             };
 
             listeners.push(ListenerConfig {
+                service: None,
                 id,
                 address: format!("0.0.0.0:{bind_port}"),
                 protocol,

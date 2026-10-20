@@ -5,14 +5,21 @@
 // - Namespace-scoped resources (routes, upstreams, agents, filters)
 // - Service definitions within namespaces
 // - Resource exports for sharing across namespaces
-// - Hierarchical scope resolution (service → namespace → global)
+// - Hierarchical scope resolution (service → namespace → exports → global)
+//
+// None of these namespaces or services has a listener of its own, so all of
+// their routes are served on the global listeners below, matched together
+// with the global routes by priority. A namespace or service that declares a
+// listener (or a top-level listener with `namespace "..."`) is served only
+// there. Scoped routes and upstreams appear in logs and metrics under their
+// qualified ids, e.g. `platform:users-api`, `platform:user-service`.
 
 system {
     worker-threads 4
 }
 
 // =============================================================================
-// Global listeners (shared across all namespaces)
+// Global listeners (serve the global routes and every namespace's routes)
 // =============================================================================
 listeners {
     listener "http" {
@@ -195,10 +202,11 @@ namespace "platform" {
         // Service within the platform namespace
         // User management service
         service "user-management" {
-            // No `limits` block here: a service's limits are not applied,
-            // because no listener serves a service's routes, and
-            // `zentinel lint` reports such a block as ignored. The
-            // namespace's `limits` above apply to the namespace's routes.
+            // A service's limits apply to its routes, within the
+            // namespace's (the smallest value wins).
+            limits {
+                max-in-flight-requests 500
+            }
 
             routes {
                 route "user-crud" {
@@ -435,7 +443,7 @@ namespace "analytics" {
 }
 
 // =============================================================================
-// Global routes (match after namespace routes)
+// Global routes (matched with the namespace routes above, by priority)
 // =============================================================================
 routes {
     route "health" {

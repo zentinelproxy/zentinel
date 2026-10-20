@@ -169,6 +169,7 @@ use zentinel_common::{limits::Limits, types::Priority};
 /// This serves as a fallback if KDL parsing fails for any reason.
 pub fn create_default_config() -> Config {
     Config {
+        scope_index: Default::default(),
         schema_version: crate::CURRENT_SCHEMA_VERSION.to_string(),
         server: ServerConfig {
             worker_threads: 0, // Auto-detect
@@ -185,6 +186,7 @@ pub fn create_default_config() -> Config {
         },
         listeners: vec![
             ListenerConfig {
+                service: None,
                 id: "default-http".to_string(),
                 address: "0.0.0.0:8080".to_string(),
                 protocol: ListenerProtocol::Http,
@@ -198,6 +200,7 @@ pub fn create_default_config() -> Config {
                 trusted_proxies: Vec::new(),
             },
             ListenerConfig {
+                service: None,
                 id: "admin".to_string(),
                 address: "0.0.0.0:9090".to_string(),
                 protocol: ListenerProtocol::Http,

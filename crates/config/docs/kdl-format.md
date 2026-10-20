@@ -210,10 +210,13 @@ listeners {
 
 #### Per-listener route sets
 
-By default every listener serves the global top-level `routes`. Set `namespace`
-on a listener to make it serve **only** that namespace's routes in isolation
-(no fallback to the global set) — useful for exposing an admin/metrics surface
-on a separate, internal port:
+A listener without `namespace` serves the global top-level `routes`, together
+with the routes of every namespace and service that has no listener of its own.
+Set `namespace` on a listener to make it serve **only** that namespace's routes
+(and those of its services without a listener) in isolation, with no fallback
+to the global set — useful for exposing an admin/metrics surface on a separate,
+internal port. A namespace with a listener of its own is not served on the
+other listeners.
 
 ```kdl
 listeners {
@@ -240,8 +243,24 @@ namespace "ops" {
 ```
 
 A request on `127.0.0.1:9000` matches only `ops` routes; a request on `:8080`
-matches only the global `routes`. The referenced namespace must exist or
-configuration validation fails.
+matches the global `routes` (and those of namespaces without a listener), never
+the `ops` ones. The referenced namespace must exist or configuration validation
+fails.
+
+A listener declared inside a namespace (`namespace "x" { listeners { ... } }`)
+or a service (`service "y" { listener { ... } }`) works the same way: it is
+bound like a top-level listener, under the id `x:listener` / `x:y:listener`,
+and serves only its scope's routes. One that cannot be bound -- an address
+another listener already binds -- is reported by `zentinel test` and
+`zentinel lint` as ignored, and its scope's routes are then served nowhere
+rather than on the global listeners.
+
+The routes served on one listener are matched together, by priority and then
+specificity, as if they were one `routes` block. Inside a namespace or service,
+a route's `upstream`, `filters` and agent references resolve in the scope
+first, then the namespace, then other namespaces' exports, then the top level;
+`ns:name` and `ns:svc:name` name a resource directly. Scoped routes appear in
+logs and metrics under their qualified id (`api:main`, `api:users:list`).
 
 ### Routes Block
 

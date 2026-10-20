@@ -50,6 +50,7 @@ pub mod namespace;
 pub mod observability;
 pub mod resolution;
 pub mod routes;
+pub mod scopes;
 pub mod server;
 pub mod upstreams;
 pub mod validate;
@@ -86,6 +87,9 @@ pub use flatten::FlattenedConfig;
 
 // Resolution
 pub use resolution::ResourceResolver;
+
+// Lowering namespaces and services into the configuration the proxy runs
+pub use scopes::ScopeIndex;
 
 // Observability
 pub use observability::{
@@ -208,6 +212,11 @@ pub struct Config {
     /// Default upstream for Phase 0 testing
     #[serde(skip)]
     pub default_upstream: Option<UpstreamPeer>,
+
+    /// Where the resources [`Config::lower_scopes`] moved out of namespaces
+    /// and services came from. Empty for a configuration as written.
+    #[serde(skip)]
+    pub scope_index: ScopeIndex,
 }
 
 /// Default schema version (current version)
@@ -928,6 +937,7 @@ impl Config {
         );
 
         Self {
+            scope_index: Default::default(),
             schema_version: CURRENT_SCHEMA_VERSION.to_string(),
             server: ServerConfig {
                 worker_threads: 4,
@@ -943,6 +953,7 @@ impl Config {
                 route_cache_size: 1000,
             },
             listeners: vec![ListenerConfig {
+                service: None,
                 id: "http".to_string(),
                 address: "0.0.0.0:8080".to_string(),
                 protocol: ListenerProtocol::Http,

@@ -15,7 +15,7 @@ mod circuitbreaker_helper;
 pub(crate) mod error_pages;
 pub(crate) mod filters;
 mod helpers;
-mod namespace;
+pub(crate) mod namespace;
 mod retrypolicy_helper;
 pub(crate) mod routes;
 pub(crate) mod server;
@@ -273,6 +273,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
     );
 
     Ok(Config {
+        scope_index: Default::default(),
         schema_version: schema_version.unwrap_or_else(|| CURRENT_SCHEMA_VERSION.to_string()),
         server,
         listeners,
@@ -1106,26 +1107,11 @@ fn concurrency_limit(node: &kdl::KdlNode, key: &str) -> Option<usize> {
 /// Shared by the parser, which logs each one at load, and by `zentinel lint` /
 /// `zentinel test`, which report them; both therefore say the same thing.
 ///
-/// `scope` is where the block sits: `None` at the top level, or the kind and
-/// id of the enclosing block (`("service", "payments")`).
-pub(crate) fn unapplied_limits_settings(
-    node: &kdl::KdlNode,
-    scope: Option<(&str, &str)>,
-) -> Vec<String> {
+/// The same for a top-level, namespace or service block: a service's limits
+/// apply to its routes like a namespace's since #548, when service routes
+/// started being served.
+pub(crate) fn unapplied_limits_settings(node: &kdl::KdlNode) -> Vec<String> {
     let mut problems = Vec::new();
-    // A service's routes are matched by no listener: only a namespace's own
-    // routes are served, on a listener bound to it with `namespace`. Its
-    // limits therefore have no request to apply to.
-    if let Some(("service", service)) = scope {
-        if node.children().is_some_and(|c| !c.nodes().is_empty()) {
-            problems.push(format!(
-                "The 'limits' block of service '{service}' is not applied and is being \
-                 ignored: a service's routes are not served by any listener, so there is \
-                 no request for its limits to apply to. Set the limits on the namespace."
-            ));
-            return problems;
-        }
-    }
     for key in CONCURRENCY_LIMIT_KEYS {
         if get_int_entry(node, key) == Some(0) {
             problems.push(format!(
@@ -1139,7 +1125,7 @@ pub(crate) fn unapplied_limits_settings(
 
 /// Parse the top-level `limits` block.
 pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
-    for problem in unapplied_limits_settings(node, None) {
+    for problem in unapplied_limits_settings(node) {
         warn!("{}", problem);
     }
     Ok(parse_limits_onto(node, Limits::default()))
@@ -1155,8 +1141,8 @@ pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
 /// `max-body-size` would also have put its routes back on the default 8 KiB
 /// `max-header-size` under a global block that raised it.
 pub fn parse_scope_limits_config(node: &kdl::KdlNode, kind: &str, id: &str) -> Result<Limits> {
-    for problem in unapplied_limits_settings(node, Some((kind, id))) {
-        warn!("{}", problem);
+    for problem in unapplied_limits_settings(node) {
+        warn!("{kind} '{id}': {problem}");
     }
     let unbounded = Limits {
         max_header_size_bytes: usize::MAX,

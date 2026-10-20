@@ -67,23 +67,16 @@ impl RouteMatcher {
 }
 ```
 
-### `scoped_routing`
+### Namespaces and services
 
-Scope-aware route matching for multi-tenant deployments.
-
-**Visibility Rules:**
-- Global routes: Visible from all scopes
-- Namespace routes: Visible from that namespace and its services
-- Service routes: Only visible from that service
-
-**Key Struct:** `ScopedRouteMatcher`
-
-```rust
-impl ScopedRouteMatcher {
-    pub fn match_request(&self, req: &Request, scope: &Scope) -> Option<&Route>;
-    pub fn load_from_flattened(&mut self, config: &FlattenedConfig);
-}
-```
+There is no separate scoped matcher. `Config::lower_scopes` (config crate,
+`scopes.rs`) moves every namespace and service resource to the top level under
+its qualified id (`ns:name`, `ns:svc:name`) and resolves the references in it,
+so scoped routes, upstreams, filters and agents are built like global ones.
+`ZentinelProxy` keeps one `RouteMatcher` for the global listeners
+(`Config::routes_served_on(&Scope::Global)`) and one per namespace- or
+service-bound listener scope (`ListenerMatchers`). A route is served on the
+listeners of the nearest scope, from its own outwards, that has a listener.
 
 ---
 
@@ -215,19 +208,9 @@ Memcached-backed fixed window rate limiting.
 
 **Requires Feature:** `distributed-rate-limit-memcached`
 
-### `scoped_rate_limit`
-
-Scope-aware rate limiting with inheritance.
-
-**Key Struct:** `ScopedRateLimitManager`
-
-```rust
-impl ScopedRateLimitManager {
-    pub fn set_scope_limits(&self, scope: &Scope, limits: &RateLimitConfig);
-    pub fn register_route(&self, route_id: &str, scope: &Scope, config: &RateLimitConfig);
-    pub fn check(&self, route_id: &str, scope: &Scope, key: &str) -> RateLimitOutcome;
-}
-```
+Rate limits of namespace and service routes and filters are ordinary
+limiters keyed by the route's or filter's qualified id, so each scope's are
+counted separately.
 
 ---
 

@@ -222,6 +222,7 @@ mod tests {
 
     fn test_listener_config() -> ListenerConfig {
         ListenerConfig {
+            service: None,
             id: "test".to_string(),
             address: "0.0.0.0:443".to_string(),
             protocol: ListenerProtocol::Https,

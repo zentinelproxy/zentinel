@@ -640,7 +640,7 @@ fn validate_routes(
 /// `127.0.0.1:9090` are different strings that cannot both be bound, because a
 /// wildcard bind covers every interface on that port. Unparseable addresses are
 /// treated as non-colliding — they are rejected elsewhere with a better message.
-fn addresses_collide(a: &str, b: &str) -> bool {
+pub(crate) fn addresses_collide(a: &str, b: &str) -> bool {
     use std::net::SocketAddr;
 
     let (Ok(a), Ok(b)) = (a.parse::<SocketAddr>(), b.parse::<SocketAddr>()) else {
@@ -2278,6 +2278,7 @@ mod tests {
 
         // --- ListenerConfig ---
         let _listener = ListenerConfig {
+            service: None,
             id: "http".to_string(),
             address: "0.0.0.0:8080".to_string(),
             protocol: ListenerProtocol::Http,
