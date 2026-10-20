@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_7](#26107---2026-10-20) | 0.6.50 | 2026-10-20 | **Namespaces and services served end to end** (namespace routes without a listener of their own are now live on the global listeners; **read the upgrade notes**); error pages replace the proxy's own refusals; agent filter body settings apply; host-name targets fall back across addresses without blocking DNS |
 | [26.10_6](#26106---2026-10-20) | 0.6.49 | 2026-10-20 | Concurrency and connection limits enforced (**`max-connections-per-client` from old starter configs now applies; read the upgrade notes**); custom error pages work; directory configs load from the CLI; Redis/memcached rate limiting actually used; hostname targets health-checked |
 | [26.10_5](#26105---2026-10-19) | 0.6.48 | 2026-10-19 | **Failing health checks take targets out of rotation**; rate limits count each client separately and `default-rps`/`burst` apply; Zentinel sends `X-Forwarded-*` and trusts incoming ones only from `trusted-proxies`; upstream error responses pass through unchanged; body limits answer 413; **read the upgrade notes** |
 | [26.10_4](#26104---2026-10-19) | 0.6.47 | 2026-10-19 | **An agent that restarts while the proxy runs is reconnected** (with `failure-mode "closed"` its routes returned 503 until the proxy restarted); **API schema validation works**: a schema that does not compile is a configuration error instead of silently disabling validation, and requests that pass validation reach the upstream instead of timing out; `service-type` is applied |
@@ -90,6 +91,94 @@ for details.
 ## [Unreleased]
 
 _Nothing yet._
+
+---
+
+## [26.10_7] - 2026-10-20
+
+**Crate version:** 0.6.50
+
+Namespaces and services are served end to end. Custom error pages also replace
+the proxy's own refusals. Agent filter body settings apply, and host-name
+targets fall back across their addresses. **Read the upgrade notes:**
+namespace routes that were never served are now live.
+
+### Upgrade notes
+- **Namespaces without a listener of their own are now served on the global
+  listeners.** Before, their routes were never matched.
+  - **What to do:** if a namespace must not be public, give it a listener of
+    its own (in its `listeners` block, or a top-level listener with
+    `namespace "..."`). A scope with its own listener is served only there.
+
+  (#548, #561)
+- **Listeners declared inside namespaces and services are bound.** They are
+  bound under the ids `ns:id` and `ns:svc:id`.
+  - **Can stop startup:** a privileged port, or a failing first ACME issuance
+    on such a listener, now stops startup.
+  - **Still loads:** a listener with an invalid or duplicate address, or a
+    colliding id, is reported as "is being ignored", and `test --strict`
+    fails. Its scope's routes are then not served.
+
+  (#548, #561)
+- **Scoped route and upstream ids are qualified** in logs and metrics
+  (`ns:route`, `ns:svc:route`). Update dashboards and alerts that match them.
+  (#548, #561)
+- **Service `limits` apply,** within the namespace's limits; the smallest
+  value wins. (#548, #561)
+- **Route `error-pages` also replace the proxy's own refusals** on that
+  route:
+  - rate limits (`429`, including inference token limits and budgets)
+  - `max-in-flight-requests` (`503`)
+  - geo and prompt-injection blocks
+  - a WebSocket upgrade on a route without `websocket` (`403`)
+  - a route without a usable upstream (`500`)
+  - agent blocks that carry no body
+
+  `Retry-After` and `X-RateLimit-*` are kept. Clients that parsed the old
+  refusal bodies get the page instead. (#557, #559)
+- **An agent block that carries its own body** is sent as `text/plain` in the
+  request-body phase too, instead of the generic JSON. (#557, #559)
+- **Agent filter `inspect-body #false` and `max-body-bytes` apply.** A body over
+  `max-body-bytes` gets `413` from a fail-closed agent. (#553, #560)
+- **The top-level `cache` block reads `max-size-bytes` and `lock-timeout-secs`.**
+  Before, these spellings were dropped and the defaults applied. (#553, #560)
+
+### Fixed
+- **Namespaces and services are served end to end.**
+  - Service routes are served.
+  - Routes that use a namespace's or service's own upstream work; they got
+    `500 "Upstream pool not found"`.
+  - Scoped filters and agents are registered.
+  - Rate-limit filters in different scopes count separately.
+  - `ScopedRouteMatcher`, `ScopedRateLimitManager` and the duplicate scoped
+    pool registry, which no request used, are removed.
+
+  (#548, #561)
+- **Host-name targets fall back across their addresses.**
+  - **Fallback:** without a health check, an address that refuses a connection
+    is skipped for 30 s and the request is retried on the name's other
+    addresses. `target "localhost:8080"` now reaches a backend that listens
+    only on `127.0.0.1`.
+  - **No blocking DNS:** names are resolved without blocking a worker thread
+    and cached, refreshed in the background every 5 s.
+
+  (#554, #558)
+- **Response-body and WebSocket agent calls can no longer panic** on a
+  current-thread runtime. (#554, #558)
+- **A pool's active-request count no longer drifts upwards** on retries.
+  (#554, #558)
+- **An include "diamond" loads.** Two files that both include a third used to
+  be rejected as circular; each file is now read once. A real cycle is still an
+  error, and the message names the chain. (#553, #560)
+- **Auto-reload reloads once per edit.** It also notices included files outside
+  the watched directory, and no longer reloads on a save without changes.
+  (#553, #560)
+
+### Changed
+- **Lint reports agent filter body settings that can't apply.** (#553, #560)
+
+Still open: release binaries are built without the Redis/memcached
+rate-limit backends; the `zentinel_scoped_*` metrics are not emitted.
 
 ---
 
