@@ -392,8 +392,28 @@ impl ZentinelProxy {
             return Ok(());
         }
 
-        // Extract just the agent IDs for logging and body inspection
+        // Extract just the agent IDs for logging and response processing
         let agent_ids: Vec<String> = agent_filters.iter().map(|a| a.id.clone()).collect();
+
+        // The agents the request body may go to: a filter's `inspect-body
+        // #false` keeps it from its agent on this route, and its
+        // `max-body-bytes` lowers the agent's own limit (#553). Whether an
+        // agent receives bodies at all stays with its `events`.
+        let body_agents: Vec<crate::agents::BodyAgent> = route_config
+            .filters
+            .iter()
+            .filter_map(|filter_id| match &config.filters.get(filter_id)?.filter {
+                zentinel_config::Filter::Agent(agent_filter)
+                    if agent_filter.sends_request_body() =>
+                {
+                    Some(crate::agents::BodyAgent {
+                        id: agent_filter.agent.clone(),
+                        max_body_bytes: agent_filter.max_body_bytes,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
 
         // Save agent IDs in context for response-phase processing
         ctx.route_agent_ids = agent_ids.clone();
@@ -412,7 +432,7 @@ impl ZentinelProxy {
             .map(|w| w.body_inspection.inspect_request_body)
             .unwrap_or(false);
 
-        if body_inspection_enabled {
+        if body_inspection_enabled && !body_agents.is_empty() {
             // Check content-type allowlist
             let content_type = session
                 .req_header()
@@ -434,7 +454,7 @@ impl ZentinelProxy {
 
             if is_allowed_type || allowed_types.is_empty() {
                 ctx.body_inspection_enabled = true;
-                ctx.body_inspection_agents = agent_ids.clone();
+                ctx.body_inspection_agents = body_agents;
 
                 // Set up decompression if enabled in WAF config
                 let decompress_enabled = config
@@ -482,7 +502,7 @@ impl ZentinelProxy {
                 debug!(
                     correlation_id = %ctx.trace_id,
                     content_type = %content_type,
-                    agent_count = agent_ids.len(),
+                    agent_count = ctx.body_inspection_agents.len(),
                     decompression = ctx.decompression_enabled,
                     "Body inspection enabled for request"
                 );

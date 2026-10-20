@@ -372,8 +372,36 @@ impl ProxyHttp for ZentinelProxy {
         _session: &mut Session,
         peer: &HttpPeer,
         ctx: &mut Self::CTX,
-        e: Box<Error>,
+        mut e: Box<Error>,
     ) -> Box<Error> {
+        // A hostname target can resolve to several addresses (`localhost` to
+        // `::1` and `127.0.0.1`). The pool passes over an address that failed
+        // to connect for a while; when the name has another address, retry
+        // the request. The retry selects a target again (the balancer may
+        // pick another one), and this name now connects to its next address.
+        // Nothing has been sent yet, so this is
+        // safe for any method, and it is bounded by the name's addresses:
+        // once all of them have failed there is nothing new to retry on.
+        // Targets given as socket addresses are never retried here.
+        let retry_elsewhere = match (peer.address(), ctx.selected_pool.as_ref()) {
+            (pingora::protocols::l4::socket::SocketAddr::Inet(addr), Some(pool)) => {
+                pool.connect_failed(*addr)
+            }
+            _ => false,
+        };
+        if retry_elsewhere {
+            e.set_retry(true);
+            warn!(
+                correlation_id = %ctx.trace_id,
+                route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                upstream = ctx.upstream.as_deref().unwrap_or("unknown"),
+                peer_address = %peer.address(),
+                error = %e,
+                "Failed to connect to upstream address; retrying on another address of the target"
+            );
+            return e;
+        }
+
         error!(
             correlation_id = %ctx.trace_id,
             route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
@@ -1070,11 +1098,16 @@ impl ProxyHttp for ZentinelProxy {
             match pool.select_peer_with_metadata(Some(&selection_ctx)).await {
                 Ok((mut peer, metadata)) => {
                     let selection_duration = selection_start.elapsed();
-                    // Track active request for drain lifecycle
-                    pool.increment_active();
+                    // Track active request for drain lifecycle. Once per
+                    // request: Pingora re-enters upstream_peer on a retry, and
+                    // logging() decrements once.
+                    if ctx.selected_pool.is_none() {
+                        pool.increment_active();
+                    }
                     // Store selected peer address for feedback reporting in logging()
                     let peer_addr = peer.address().to_string();
                     ctx.selected_upstream_address = Some(peer_addr.clone());
+                    ctx.selected_pool = Some(pool.clone());
 
                     // Copy sticky session metadata to context for response_filter
                     if metadata.contains_key("sticky_session_new") {
@@ -2999,18 +3032,27 @@ impl ProxyHttp for ZentinelProxy {
         ctx: &mut Self::CTX,
     ) -> Result<Option<Duration>, Box<Error>> {
         // Handle WebSocket frame inspection (server -> client)
-        // Note: This filter is synchronous, so we use block_in_place for async agent calls
+        // Note: This filter is synchronous; see `sync_filter` for how the
+        // async agent call is waited for.
         if ctx.is_websocket_upgrade {
             if let Some(ref handler) = ctx.websocket_handler {
                 let handler = handler.clone();
                 let data = body.take();
 
-                // Use block_in_place to run async handler from sync context
-                // This is safe because Pingora uses a multi-threaded tokio runtime
-                let result = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current()
-                        .block_on(async { handler.process_server_data(data).await })
-                });
+                let result =
+                    match super::sync_filter::wait_for(handler.process_server_data(data.clone())) {
+                        Ok(result) => result,
+                        Err(skipped) => {
+                            // Pass the frames through, as the inspector does
+                            // when an agent errors or times out.
+                            warn!(
+                                correlation_id = %ctx.trace_id,
+                                error = %skipped,
+                                "WebSocket frame inspection skipped (server->client)"
+                            );
+                            crate::websocket::ProcessResult::Forward(data)
+                        }
+                    };
 
                 match result {
                     crate::websocket::ProcessResult::Forward(data) => {
@@ -3075,48 +3117,46 @@ impl ProxyHttp for ZentinelProxy {
                 let traceparent = ctx.traceparent();
                 let agent_mgr = self.agent_manager.clone();
 
-                // Use block_in_place to run async agent call from sync context
-                // This is safe because Pingora uses a multi-threaded tokio runtime
-                let result = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let agent_ctx = crate::agents::AgentCallContext {
-                            correlation_id: zentinel_common::CorrelationId::from_string(&trace_id),
-                            metadata: zentinel_agent_protocol::RequestMetadata {
-                                correlation_id: trace_id.clone(),
-                                request_id: uuid::Uuid::new_v4().to_string(),
-                                client_ip,
-                                client_port: 0,
-                                server_name: host,
-                                protocol: "HTTP/1.1".to_string(),
-                                tls_version: None,
-                                tls_cipher: None,
-                                route_id: route_id.clone(),
-                                upstream_id: upstream_id.clone(),
-                                timestamp: chrono::Utc::now().to_rfc3339(),
-                                traceparent,
-                            },
-                            route_id,
-                            upstream_id,
-                            request_body: None,
-                            response_body: None,
-                        };
+                // This filter is synchronous; see `sync_filter` for how the
+                // async agent call is waited for.
+                let result = super::sync_filter::wait_for(async {
+                    let agent_ctx = crate::agents::AgentCallContext {
+                        correlation_id: zentinel_common::CorrelationId::from_string(&trace_id),
+                        metadata: zentinel_agent_protocol::RequestMetadata {
+                            correlation_id: trace_id.clone(),
+                            request_id: uuid::Uuid::new_v4().to_string(),
+                            client_ip,
+                            client_port: 0,
+                            server_name: host,
+                            protocol: "HTTP/1.1".to_string(),
+                            tls_version: None,
+                            tls_cipher: None,
+                            route_id: route_id.clone(),
+                            upstream_id: upstream_id.clone(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            traceparent,
+                        },
+                        route_id,
+                        upstream_id,
+                        request_body: None,
+                        response_body: None,
+                    };
 
-                        agent_mgr
-                            .process_response_body_streaming(
-                                &agent_ctx,
-                                &buffer,
-                                true, // is_last
-                                chunk_index,
-                                buffer.len(),
-                                total_size,
-                                &agent_ids,
-                            )
-                            .await
-                    })
+                    agent_mgr
+                        .process_response_body_streaming(
+                            &agent_ctx,
+                            &buffer,
+                            true, // is_last
+                            chunk_index,
+                            buffer.len(),
+                            total_size,
+                            &agent_ids,
+                        )
+                        .await
                 });
 
                 match result {
-                    Ok(decision) => {
+                    Ok(Ok(decision)) => {
                         // Apply response body mutation if present
                         if let Some(mutation) = decision.response_body_mutation {
                             if let Some(ref data) = mutation.data {
@@ -3150,11 +3190,18 @@ impl ProxyHttp for ZentinelProxy {
                         // Note: Cannot modify response headers here (sync context, headers already sent)
                         // Header mods should be done in response_filter via ResponseHeaders event
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         warn!(
                             correlation_id = %ctx.trace_id,
                             error = %e,
                             "Agent response body processing failed, passing through original"
+                        );
+                    }
+                    Err(skipped) => {
+                        warn!(
+                            correlation_id = %ctx.trace_id,
+                            error = %skipped,
+                            "Agent response body processing skipped, passing through original"
                         );
                     }
                 }

@@ -130,6 +130,51 @@ pub struct ReloadStats {
 // Configuration Manager
 // ============================================================================
 
+/// What the files of a configuration contained when it was last read.
+///
+/// Covers every file loading the configuration reads -- the entry file, its
+/// includes, or every file of a configuration directory -- by content, so
+/// that auto-reload reloads once per change however many times it is told
+/// about it, and notices a change to any of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceSignature {
+    /// Each file read, with a hash of its content (`None` if unreadable).
+    files: Vec<(PathBuf, Option<u64>)>,
+}
+
+impl SourceSignature {
+    /// Read the files of the configuration at `config_path`.
+    ///
+    /// The list of files comes from expanding the configuration's includes.
+    /// When that fails (a file mid-edit does not parse), the files of the
+    /// last signature are read instead, with the entry file, so a fix to an
+    /// included file is still seen.
+    fn read(config_path: &Path, previous: Option<&SourceSignature>) -> Self {
+        let paths = Config::source_files(config_path).unwrap_or_else(|_| {
+            let mut paths = vec![config_path.to_path_buf()];
+            for (path, _) in previous.map(|p| p.files.as_slice()).unwrap_or_default() {
+                if !paths.contains(path) {
+                    paths.push(path.clone());
+                }
+            }
+            paths
+        });
+        let files = paths
+            .into_iter()
+            .map(|path| {
+                let digest = std::fs::read(&path).ok().map(|content| {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    content.hash(&mut hasher);
+                    hasher.finish()
+                });
+                (path, digest)
+            })
+            .collect();
+        Self { files }
+    }
+}
+
 /// Configuration manager with hot reload support
 pub struct ConfigManager {
     /// Current active configuration
@@ -152,6 +197,9 @@ pub struct ConfigManager {
     cert_reloader: Arc<CertificateReloader>,
     /// Serializes reload operations so only one runs at a time
     reload_mutex: Arc<Mutex<()>>,
+    /// The configuration's files as the last reload read them; auto-reload
+    /// reloads only when they differ.
+    source_signature: Arc<std::sync::Mutex<Option<SourceSignature>>>,
 }
 
 impl ConfigManager {
@@ -189,6 +237,7 @@ impl ConfigManager {
             reload_hooks: Arc::new(RwLock::new(Vec::new())),
             cert_reloader: Arc::new(CertificateReloader::new()),
             reload_mutex: Arc::new(Mutex::new(())),
+            source_signature: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -215,6 +264,18 @@ impl ConfigManager {
         }
 
         let config_path = self.config_path.clone();
+
+        // What the running configuration was read from, for auto-reload to
+        // compare against.
+        {
+            let mut signature = self
+                .source_signature
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if signature.is_none() {
+                *signature = Some(SourceSignature::read(&config_path, None));
+            }
+        }
 
         // Use a notify channel to signal that a relevant file changed.
         // We use a tokio::sync::Notify instead of an mpsc channel — multiple
@@ -307,81 +368,31 @@ impl ConfigManager {
                     trace!("Debounce: additional file change, resetting timer");
                 }
 
-                info!("Configuration file changed, triggering reload");
-
-                if let Err(e) = manager.reload(ReloadTrigger::FileChange).await {
+                // The poll below may already have reloaded this change, and
+                // an event for a file the configuration does not read changes
+                // nothing; either way there is nothing to do.
+                if let Err(e) = manager.reload_if_changed(ReloadTrigger::FileChange).await {
                     error!(error = %e, "Auto-reload failed, continuing with current configuration");
                 }
             }
         });
 
-        // Spawn a fallback polling loop that checks the file's content hash
-        // every 1 second. inotify can miss rename-based atomic writes on some
-        // filesystems (emptyDir, overlayfs). The poll acts as a safety net.
-        // We compare content length + first/last bytes as a cheap hash to avoid
-        // re-reading the entire file on every poll.
+        // Spawn a fallback polling loop. inotify can miss rename-based atomic
+        // writes on some filesystems (emptyDir, overlayfs), and the watcher
+        // above does not see included files outside the entry file's
+        // directory. Every second the poll compares the content of every file
+        // the configuration reads -- includes too -- with what the last
+        // reload read, so a change the watcher already reloaded is not
+        // reloaded a second time.
         let poll_manager = Arc::new(self.clone_for_task());
-        let poll_path = self.config_path.clone();
         tokio::spawn(async move {
-            use std::io::Read;
-            let content_sig = |p: &std::path::Path| -> Option<(u64, Vec<u8>)> {
-                let mut f = std::fs::File::open(p).ok()?;
-                let meta = f.metadata().ok()?;
-                let len = meta.len();
-                // Read first 256 bytes as a fingerprint (covers schema + listeners)
-                let mut buf = vec![0u8; 256.min(len as usize)];
-                f.read_exact(&mut buf).ok()?;
-                Some((len, buf))
-            };
-            // For a directory: every KDL file's path, size and modification
-            // time. Opening the directory as a file never yields a signature,
-            // so without this the poll could never see a change.
-            let directory_sig = |p: &std::path::Path| -> Option<(u64, Vec<u8>)> {
-                let mut entries = Vec::new();
-                let mut pending = vec![p.to_path_buf()];
-                while let Some(dir) = pending.pop() {
-                    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
-                        let path = entry.path();
-                        let meta = std::fs::metadata(&path).ok()?;
-                        if meta.is_dir() {
-                            pending.push(path);
-                        } else if path.extension().is_some_and(|ext| ext == "kdl") {
-                            let modified = meta
-                                .modified()
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .unwrap_or_default();
-                            entries.push(format!(
-                                "{}\0{}\0{}",
-                                path.display(),
-                                meta.len(),
-                                modified.as_nanos()
-                            ));
-                        }
-                    }
-                }
-                entries.sort();
-                Some((entries.len() as u64, entries.join("\n").into_bytes()))
-            };
-            let signature = |p: &std::path::Path| {
-                if p.is_dir() {
-                    directory_sig(p)
-                } else {
-                    content_sig(p)
-                }
-            };
-            let mut last_sig = signature(&poll_path);
-
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-
-                let current_sig = signature(&poll_path);
-                if current_sig != last_sig {
-                    last_sig = current_sig;
-                    debug!("Config file content changed (poll fallback), triggering reload");
-                    if let Err(e) = poll_manager.reload(ReloadTrigger::FileChange).await {
-                        error!(error = %e, "Poll-triggered reload failed");
-                    }
+                if let Err(e) = poll_manager
+                    .reload_if_changed(ReloadTrigger::FileChange)
+                    .await
+                {
+                    error!(error = %e, "Poll-triggered reload failed");
                 }
             }
         });
@@ -401,6 +412,53 @@ impl ConfigManager {
     pub async fn reload(&self, trigger: ReloadTrigger) -> ZentinelResult<()> {
         // Serialize reloads — only one at a time
         let _reload_guard = self.reload_mutex.lock().await;
+        let signature = SourceSignature::read(&self.config_path, self.signature().as_ref());
+        self.reload_locked(trigger, signature).await
+    }
+
+    /// Reload if a file the configuration reads has changed since the last
+    /// reload read it; otherwise do nothing.
+    ///
+    /// Auto-reload hears about one edit from the file watcher, often more
+    /// than once, and from the poll fallback. Comparing content rather than
+    /// counting events makes that one reload. Returns whether it reloaded.
+    pub async fn reload_if_changed(&self, trigger: ReloadTrigger) -> ZentinelResult<bool> {
+        let _reload_guard = self.reload_mutex.lock().await;
+        let previous = self.signature();
+        let signature = SourceSignature::read(&self.config_path, previous.as_ref());
+        if previous.as_ref() == Some(&signature) {
+            trace!("Configuration files unchanged, not reloading");
+            return Ok(false);
+        }
+        info!(
+            files = signature.files.len(),
+            "Configuration file changed, triggering reload"
+        );
+        self.reload_locked(trigger, signature).await.map(|()| true)
+    }
+
+    /// The last reload's view of the configuration's files.
+    fn signature(&self) -> Option<SourceSignature> {
+        self.source_signature
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The body of [`Self::reload`], run with the reload lock held.
+    ///
+    /// `signature` is the files as read just before the configuration is: a
+    /// failed reload records it too, so a broken file is reported once, and
+    /// the next edit reloads again.
+    async fn reload_locked(
+        &self,
+        trigger: ReloadTrigger,
+        signature: SourceSignature,
+    ) -> ZentinelResult<()> {
+        *self
+            .source_signature
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(signature);
 
         let start = Instant::now();
         let reload_num = self
@@ -918,6 +976,7 @@ impl ConfigManager {
             reload_hooks: Arc::clone(&self.reload_hooks),
             cert_reloader: Arc::clone(&self.cert_reloader),
             reload_mutex: Arc::clone(&self.reload_mutex),
+            source_signature: Arc::clone(&self.source_signature),
         }
     }
 }
@@ -1192,6 +1251,87 @@ include "routes/*.kdl"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    fn reloads(manager: &ConfigManager) -> u64 {
+        manager
+            .stats()
+            .total_reloads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    async fn wait_for_prefix(manager: &ConfigManager, prefix: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !api_prefix(manager).contains(prefix) {
+            assert!(
+                Instant::now() < deadline,
+                "the change was not picked up: {}",
+                api_prefix(manager)
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// #553: one edit is one reload. The file watcher and the poll fallback
+    /// both notice it; the second to look finds the files as the first
+    /// reload read them, and does nothing.
+    #[tokio::test]
+    async fn auto_reload_reloads_once_per_edit() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().join("conf");
+        write_config_directory(&dir, "/v1/");
+        let entry = dir.join("zentinel.kdl");
+        let initial = Config::from_file(&entry).unwrap();
+        let manager = ConfigManager::new(&entry, initial).await.unwrap();
+        manager.start_watching().await.unwrap();
+        // Let the watcher settle so the writes above are not reported late.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let before = reloads(&manager);
+
+        write_config_directory(&dir, "/v2/");
+        wait_for_prefix(&manager, "/v2/").await;
+        // Past the watcher's debounce and at least two poll rounds.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert_eq!(reloads(&manager) - before, 1, "one edit, one reload");
+
+        // Unchanged files are not reloaded, whatever asks.
+        assert!(!manager
+            .reload_if_changed(ReloadTrigger::FileChange)
+            .await
+            .unwrap());
+        assert_eq!(reloads(&manager) - before, 1);
+    }
+
+    /// #553: the poll fallback reads every file the configuration reads.
+    /// Before, it fingerprinted only the entry file, so a change to an
+    /// included file the watcher missed was never picked up. A file outside
+    /// the entry file's directory is never seen by the watcher, which makes
+    /// the poll the only way to see it.
+    #[tokio::test]
+    async fn auto_reload_sees_an_included_file_the_watcher_does_not() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().join("conf");
+        let shared = temp_dir.path().join("shared");
+        write_config_directory(&dir, "/v1/");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::rename(dir.join("routes/api.kdl"), shared.join("api.kdl")).unwrap();
+        let entry = dir.join("zentinel.kdl");
+        let text = std::fs::read_to_string(&entry)
+            .unwrap()
+            .replace("include \"routes/*.kdl\"", "include \"../shared/api.kdl\"");
+        std::fs::write(&entry, text).unwrap();
+
+        let initial = Config::from_file(&entry).unwrap();
+        let manager = ConfigManager::new(&entry, initial).await.unwrap();
+        assert!(api_prefix(&manager).contains("/v1/"));
+        manager.start_watching().await.unwrap();
+
+        // Same length, so neither length nor the entry file changes.
+        let routes = std::fs::read_to_string(shared.join("api.kdl"))
+            .unwrap()
+            .replace("/v1/", "/v2/");
+        std::fs::write(shared.join("api.kdl"), routes).unwrap();
+        wait_for_prefix(&manager, "/v2/").await;
     }
 
     // ========================================================================

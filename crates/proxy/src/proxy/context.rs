@@ -100,6 +100,9 @@ pub struct RequestContext {
     pub(crate) upstream: Option<String>,
     /// Selected upstream peer address (IP:port) for feedback reporting
     pub(crate) selected_upstream_address: Option<String>,
+    /// The pool the peer was selected from, for `fail_to_connect`, which is
+    /// synchronous and so cannot look it up in the registry.
+    pub(crate) selected_pool: Option<Arc<crate::upstream::UpstreamPool>>,
     /// Number of upstream attempts
     pub(crate) upstream_attempts: u32,
     /// Times the request itself has been sent upstream.
@@ -175,8 +178,11 @@ pub struct RequestContext {
     pub(crate) body_bytes_inspected: u64,
     /// Accumulated body buffer for agent inspection
     pub(crate) body_buffer: Vec<u8>,
-    /// Agent IDs to use for body inspection
-    pub(crate) body_inspection_agents: Vec<String>,
+    /// Agents to use for body inspection.
+    ///
+    /// Agents whose filter sets `inspect-body #false` are left out, and each
+    /// carries its filter's `max-body-bytes`.
+    pub(crate) body_inspection_agents: Vec<crate::agents::BodyAgent>,
 
     // === Agentic protocol policy (MCP / A2A) ===
     /// Request body accumulated for MCP/A2A policy evaluation.
@@ -411,6 +417,7 @@ impl RequestContext {
             route_config: None,
             upstream: None,
             selected_upstream_address: None,
+            selected_pool: None,
             upstream_attempts: 0,
             request_attempts: 0,
             namespace: None,

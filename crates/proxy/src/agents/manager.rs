@@ -76,6 +76,33 @@ impl FilterAgent {
     }
 }
 
+/// An agent that may receive a request body on this route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyAgent {
+    /// The agent's id.
+    pub id: String,
+    /// The agent filter's `max-body-bytes`, if it set one.
+    pub max_body_bytes: Option<usize>,
+}
+
+impl BodyAgent {
+    /// An agent without a filter limit of its own.
+    pub fn unlimited(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            max_body_bytes: None,
+        }
+    }
+
+    /// The largest body this filter sends its agent, given the agent's own
+    /// limit: the smaller of the two. A filter narrows its agent's limit for
+    /// its routes; it cannot raise it.
+    pub fn effective_limit(&self, agent_limit: usize) -> usize {
+        self.max_body_bytes
+            .map_or(agent_limit, |l| l.min(agent_limit))
+    }
+}
+
 impl AgentManager {
     /// Create new agent manager.
     ///
@@ -199,7 +226,7 @@ impl AgentManager {
         ctx: &AgentCallContext,
         data: &[u8],
         is_last: bool,
-        route_agents: &[String],
+        route_agents: &[BodyAgent],
     ) -> ZentinelResult<AgentDecision> {
         // Enforce per-agent body inspection limits before dispatch
         let inspecting_agents = match self
@@ -235,7 +262,7 @@ impl AgentManager {
         chunk_index: u32,
         bytes_received: usize,
         total_size: Option<usize>,
-        route_agents: &[String],
+        route_agents: &[BodyAgent],
     ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
@@ -293,9 +320,11 @@ impl AgentManager {
             "Processing streaming response body chunk"
         );
 
-        // Enforce per-agent body inspection limits on the cumulative size
+        // Enforce per-agent body inspection limits on the cumulative size.
+        // Agent filters' body settings concern request bodies only.
+        let route_agents: Vec<BodyAgent> = route_agents.iter().map(BodyAgent::unlimited).collect();
         let inspecting_agents = match self
-            .apply_body_limits(ctx, route_agents, bytes_sent, EventType::ResponseBodyChunk)
+            .apply_body_limits(ctx, &route_agents, bytes_sent, EventType::ResponseBodyChunk)
             .await
         {
             BodyLimitsResult::Block(decision) => return Ok(*decision),
@@ -1345,6 +1374,8 @@ impl AgentManager {
 
     /// Enforce per-agent body inspection limits for a body of `body_size` bytes.
     ///
+    /// An agent's limit is its own `max-request-body-bytes` (or
+    /// `max-response-body-bytes`), lowered by its filter's `max-body-bytes`.
     /// Agents whose limit is exceeded are handled according to their failure
     /// mode: fail-closed produces a 413 Block decision, fail-open skips that
     /// agent loudly (warn + metric) while agents within their limit still
@@ -1352,22 +1383,26 @@ impl AgentManager {
     async fn apply_body_limits(
         &self,
         ctx: &AgentCallContext,
-        route_agents: &[String],
+        route_agents: &[BodyAgent],
         body_size: usize,
         event_type: EventType,
     ) -> BodyLimitsResult {
         let agents = self.agents.read().await;
         let limits: Vec<(String, FailureMode, usize)> = route_agents
             .iter()
-            .filter_map(|id| agents.get(id))
-            .filter(|agent| agent.handles_event(event_type))
-            .map(|agent| {
+            .filter_map(|body_agent| agents.get(&body_agent.id).map(|a| (body_agent, a)))
+            .filter(|(_, agent)| agent.handles_event(event_type))
+            .map(|(body_agent, agent)| {
                 let limit = if event_type == EventType::ResponseBodyChunk {
                     agent.max_response_body_bytes()
                 } else {
                     agent.max_request_body_bytes()
                 };
-                (agent.id().to_string(), agent.failure_mode(), limit)
+                (
+                    agent.id().to_string(),
+                    agent.failure_mode(),
+                    body_agent.effective_limit(limit),
+                )
             })
             .collect();
 
@@ -1576,5 +1611,95 @@ mod tests {
         assert_eq!(filter(None).effective_timeout_ms(1000), 1000);
         assert_eq!(filter(Some(100)).effective_timeout_ms(1000), 100);
         assert_eq!(filter(Some(5000)).effective_timeout_ms(1000), 1000);
+    }
+
+    /// #553: a filter's `max-body-bytes` lowers its agent's body limit and
+    /// never raises it.
+    #[test]
+    fn a_filter_body_limit_can_only_lower_the_agents() {
+        let agent = |max_body_bytes| BodyAgent {
+            id: "a".to_string(),
+            max_body_bytes,
+        };
+        assert_eq!(agent(None).effective_limit(1024), 1024);
+        assert_eq!(agent(Some(16)).effective_limit(1024), 16);
+        assert_eq!(agent(Some(1 << 20)).effective_limit(1024), 1024);
+    }
+
+    fn call_context() -> AgentCallContext {
+        AgentCallContext {
+            correlation_id: zentinel_common::CorrelationId::from_string("t"),
+            metadata: zentinel_agent_protocol::RequestMetadata {
+                correlation_id: "t".to_string(),
+                request_id: "t".to_string(),
+                client_ip: "127.0.0.1".to_string(),
+                client_port: 0,
+                server_name: None,
+                protocol: "HTTP/1.1".to_string(),
+                tls_version: None,
+                tls_cipher: None,
+                route_id: None,
+                upstream_id: None,
+                timestamp: String::new(),
+                traceparent: None,
+            },
+            route_id: None,
+            upstream_id: None,
+            request_body: None,
+            response_body: None,
+        }
+    }
+
+    /// #553: the filter's limit is enforced like the agent's own. A body over
+    /// it is refused for a fail-closed agent, before the agent is called --
+    /// the agent here is never connected, so a call would fail differently.
+    #[tokio::test]
+    async fn a_body_over_the_filter_limit_is_handled_like_one_over_the_agents() {
+        let kdl = r#"
+            system { worker-threads 1 }
+            listeners { listener "l" { address "127.0.0.1:8080" } }
+            upstreams { upstream "u" { target "127.0.0.1:9000" } }
+            routes { route "r" { matches { path-prefix "/" }
+                                 upstream "u" } }
+            agents {
+                agent "waf" type="custom" {
+                    unix-socket "/nonexistent/zentinel-553.sock"
+                    events "request_headers" "request_body"
+                    failure-mode "closed"
+                    max-request-body-bytes 1024
+                }
+            }
+        "#;
+        let config = zentinel_config::Config::from_kdl(kdl).expect("parses");
+        let manager = AgentManager::new(config.agents).await.expect("manager");
+
+        let limited = [BodyAgent {
+            id: "waf".to_string(),
+            max_body_bytes: Some(10),
+        }];
+        let decision = manager
+            .process_request_body(&call_context(), &[b'x'; 100], true, &limited)
+            .await
+            .expect("decided without calling the agent");
+        match decision.action {
+            crate::agents::AgentAction::Block { status, .. } => assert_eq!(status, 413),
+            other => panic!("expected a 413 block, got {other:?}"),
+        }
+
+        // Without the filter limit the same body is within the agent's 1024
+        // bytes, so the agent is called (and, unreachable, fails instead).
+        let unlimited = [BodyAgent::unlimited("waf")];
+        let outcome = manager
+            .process_request_body(&call_context(), &[b'x'; 100], true, &unlimited)
+            .await;
+        if let Ok(decision) = outcome {
+            assert!(
+                !matches!(
+                    decision.action,
+                    crate::agents::AgentAction::Block { status: 413, .. }
+                ),
+                "the agent's own limit was not exceeded"
+            );
+        }
     }
 }
