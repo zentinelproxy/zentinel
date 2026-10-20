@@ -455,9 +455,10 @@ Reusable filter definitions.
 |----------|------|---------|-------------|
 | `agent` | `string` | **required** | Agent ID reference |
 | `phase` | `string` | `"request"` | Execution phase |
-| `timeout-ms` | `u64` | - | Timeout override |
+| `timeout-ms` | `u64` | - | Timeout override; can only shorten the agent's `timeout-ms` |
 | `failure-mode` | `string` | - | Failure mode override |
-| `inspect-body` | `bool` | `false` | Inspect request body |
+| `inspect-body` | `bool` | - | `#false` sends this agent no request body on routes using the filter; unset or `#true` leaves it to the agent's `events` |
+| `max-body-bytes` | `u64` | - | Lowers the agent's `max-request-body-bytes` for routes using the filter; cannot raise it |
 
 ---
 
@@ -642,9 +643,9 @@ HTTP response caching configuration.
 |----------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable caching |
 | `backend` | `string` | `"memory"` | Backend: `memory`, `disk`, `hybrid` |
-| `max-size-bytes` | `u64` | `104857600` | Max cache size (100MB) |
-| `eviction-limit-bytes` | `u64` | - | Eviction trigger threshold |
-| `lock-timeout-secs` | `u64` | `10` | Cache lock timeout |
+| `max-size` | `u64` | `104857600` | Max cache size in bytes (100MB); `max-size-bytes` is accepted as well |
+| `eviction-limit` | `u64` | - | Eviction trigger threshold in bytes |
+| `lock-timeout` | `u64` | `10` | Cache lock timeout in seconds; `lock-timeout-secs` is accepted as well |
 | `disk-path` | `string` | - | Disk cache path |
 | `disk-shards` | `u32` | `16` | Number of disk shards |
 | `disk-max-size` | `u64` | - | Disk tier max size (hybrid only) |

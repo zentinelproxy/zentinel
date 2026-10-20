@@ -174,8 +174,11 @@ pub struct RequestContext {
     pub(crate) body_bytes_inspected: u64,
     /// Accumulated body buffer for agent inspection
     pub(crate) body_buffer: Vec<u8>,
-    /// Agent IDs to use for body inspection
-    pub(crate) body_inspection_agents: Vec<String>,
+    /// Agents to use for body inspection.
+    ///
+    /// Agents whose filter sets `inspect-body #false` are left out, and each
+    /// carries its filter's `max-body-bytes`.
+    pub(crate) body_inspection_agents: Vec<crate::agents::BodyAgent>,
 
     // === Agentic protocol policy (MCP / A2A) ===
     /// Request body accumulated for MCP/A2A policy evaluation.

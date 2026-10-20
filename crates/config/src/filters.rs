@@ -845,12 +845,20 @@ pub struct AgentFilter {
     #[serde(rename = "failure-mode")]
     pub failure_mode: Option<FailureMode>,
 
-    /// Whether to inspect request body
+    /// Whether this route sends the request body to the agent.
+    ///
+    /// `Some(false)` keeps request-body events from the agent on routes using
+    /// this filter. `None` and `Some(true)` leave it to the agent's `events`:
+    /// a filter cannot make an agent receive events it did not ask for.
     #[serde(default, rename = "inspect-body")]
-    pub inspect_body: bool,
+    pub inspect_body: Option<bool>,
 
-    /// Maximum request body bytes to send to agent
-    #[serde(rename = "max-body-bytes")]
+    /// Largest request body this filter sends to its agent, in bytes.
+    ///
+    /// Narrows the agent's own `max-request-body-bytes` and cannot widen it;
+    /// a larger body is handled as for the agent's own limit (skipped when
+    /// the agent fails open, 413 when it fails closed).
+    #[serde(default, rename = "max-body-bytes")]
     pub max_body_bytes: Option<usize>,
 }
 
@@ -862,7 +870,7 @@ impl AgentFilter {
             phase: None,
             timeout_ms: None,
             failure_mode: None,
-            inspect_body: false,
+            inspect_body: None,
             max_body_bytes: None,
         }
     }
@@ -870,6 +878,14 @@ impl AgentFilter {
     /// Get the referenced agent ID
     pub fn agent_id(&self) -> &str {
         &self.agent
+    }
+
+    /// Whether routes using this filter send the request body to its agent.
+    ///
+    /// Only an explicit `inspect-body #false` withholds it; whether the agent
+    /// receives request bodies at all is decided by its own `events`.
+    pub fn sends_request_body(&self) -> bool {
+        self.inspect_body != Some(false)
     }
 }
 

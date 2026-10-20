@@ -240,6 +240,9 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
             "max-size",
             "eviction-limit",
             "lock-timeout",
+            // Accepted aliases; see CACHE_KEY_ALIASES.
+            "max-size-bytes",
+            "lock-timeout-secs",
             "disk-path",
             "disk-shards",
             "disk-max-size",
@@ -583,6 +586,9 @@ struct Context {
     filters_without_failure_mode: std::collections::HashMap<String, Vec<String>>,
     /// Each agent block's `timeout-ms`, or the default when it sets none.
     agent_timeouts: std::collections::HashMap<String, u64>,
+    /// For each agent block, whether its `events` include request bodies,
+    /// and its `max-request-body-bytes` (or the default).
+    agent_request_bodies: std::collections::HashMap<String, (bool, usize)>,
 }
 
 impl Context {
@@ -590,6 +596,7 @@ impl Context {
         let mut context = Context {
             filters_without_failure_mode: Default::default(),
             agent_timeouts: Default::default(),
+            agent_request_bodies: Default::default(),
         };
         for document in documents {
             for node in document.nodes() {
@@ -612,6 +619,26 @@ impl Context {
                     .map(|v| v as u64)
                     .unwrap_or(crate::kdl::DEFAULT_AGENT_TIMEOUT_MS);
                 self.agent_timeouts.insert(agent_id.to_string(), timeout);
+                let receives_bodies =
+                    node.children()
+                        .and_then(|c| c.get("events"))
+                        .is_some_and(|events| {
+                            events.entries().iter().any(|e| {
+                                matches!(
+                                    e.value().as_string(),
+                                    Some("request-body" | "request_body")
+                                )
+                            })
+                        });
+                let limit = node
+                    .children()
+                    .and_then(|c| c.get("max-request-body-bytes"))
+                    .and_then(|n| n.entries().first())
+                    .and_then(|e| e.value().as_integer())
+                    .map(|v| v as usize)
+                    .unwrap_or(crate::agents::DEFAULT_AGENT_MAX_BODY_BYTES);
+                self.agent_request_bodies
+                    .insert(agent_id.to_string(), (receives_bodies, limit));
             }
         }
         if node.name().value() == "filter" && child_value(node, "type") == Some("agent") {
@@ -737,6 +764,9 @@ fn check_values(
                 node, filter_id,
             ));
             report(agent_filter_timeout_problem(node, filter_id, context));
+            for problem in agent_filter_body_problems(node, filter_id, context) {
+                report(Some(problem));
+            }
         }
         ("agent", Some(agent_id)) if parent == Some("agents") => {
             report(agent_failure_mode_problem(node, agent_id, context));
@@ -767,6 +797,11 @@ fn check_values(
                 {
                     report(Some(problem));
                 }
+            }
+        }
+        ("cache", _) if parent.is_none() => {
+            for problem in crate::kdl::cache_alias_problems(node) {
+                report(Some(problem));
             }
         }
         ("matches", _) if parent == Some("route") => check_run_together_matches(node, result),
@@ -825,6 +860,65 @@ fn agent_filter_timeout_problem(
              instead."
         )
     })
+}
+
+/// Whether an agent filter's `inspect-body` or `max-body-bytes` does nothing.
+///
+/// Both only narrow what the agent's own settings send it (see
+/// `resolve_agent_filter_inspect_body` and
+/// `resolve_agent_filter_max_body_bytes`): neither can make an agent receive
+/// request bodies its `events` do not include, and `max-body-bytes` cannot
+/// exceed the agent's `max-request-body-bytes`.
+fn agent_filter_body_problems(
+    filter: &kdl::KdlNode,
+    filter_id: &str,
+    context: &Context,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let (inspect_body, problem) =
+        crate::kdl::filters::resolve_agent_filter_inspect_body(filter, filter_id);
+    problems.extend(problem);
+    let (max_body_bytes, problem) =
+        crate::kdl::filters::resolve_agent_filter_max_body_bytes(filter, filter_id);
+    problems.extend(problem);
+
+    let Some(agent_id) = child_value(filter, "agent") else {
+        return problems;
+    };
+    let Some(&(receives_bodies, agent_limit)) = context.agent_request_bodies.get(agent_id) else {
+        return problems;
+    };
+
+    if !receives_bodies {
+        if inspect_body == Some(true) {
+            problems.push(format!(
+                "'inspect-body #true' on filter '{filter_id}' is being ignored: agent \
+                 '{agent_id}' does not receive request bodies. Add \"request-body\" to the \
+                 agent's events."
+            ));
+        }
+        if let Some(limit) = max_body_bytes {
+            problems.push(format!(
+                "'max-body-bytes {limit}' on filter '{filter_id}' is being ignored: agent \
+                 '{agent_id}' does not receive request bodies."
+            ));
+        }
+    } else if let Some(limit) = max_body_bytes {
+        if inspect_body == Some(false) {
+            problems.push(format!(
+                "'max-body-bytes {limit}' on filter '{filter_id}' is being ignored: the \
+                 filter's 'inspect-body #false' sends agent '{agent_id}' no request body."
+            ));
+        } else if limit > agent_limit {
+            problems.push(format!(
+                "'max-body-bytes {limit}' on filter '{filter_id}' is larger than agent \
+                 '{agent_id}''s max-request-body-bytes {agent_limit} and is being ignored \
+                 beyond it: a filter can lower its agent's body limit, not raise it. Raise \
+                 max-request-body-bytes on the agent instead."
+            ));
+        }
+    }
+    problems
 }
 
 /// Whether an agent block's `failure-mode` is being relied on where it does
@@ -2801,5 +2895,112 @@ mod tests {
         .expect("loads");
         let sticky = config.upstreams["u"].sticky_session.as_ref().unwrap();
         assert_eq!(sticky.fallback, crate::LoadBalancingAlgorithm::RoundRobin);
+    }
+
+    /// #553: an agent filter's `inspect-body` and `max-body-bytes` narrow
+    /// what the agent's own settings send it. Values that cannot narrow
+    /// anything are reported.
+    #[test]
+    fn agent_filter_body_settings_that_do_nothing_are_reported() {
+        let config = |events: &str, filter: &str| {
+            format!(
+                r#"agents {{
+                    agent "waf" type="waf" {{
+                        unix-socket "/tmp/waf.sock"
+                        {events}
+                        max-request-body-bytes 4096
+                    }}
+                }}
+                filters {{
+                    filter "f" {{
+                        type "agent"
+                        agent "waf"
+                        failure-mode "closed"
+                        {filter}
+                    }}
+                }}"#
+            )
+        };
+        let bodies = r#"events "request-headers" "request-body""#;
+
+        // Narrowing: nothing to report.
+        assert!(warnings_for(&config(bodies, "inspect-body #false")).is_empty());
+        assert!(
+            warnings_for(&config(bodies, "inspect-body #true\nmax-body-bytes 1024")).is_empty()
+        );
+
+        // Wider than the agent's own limit.
+        let warnings = warnings_for(&config(bodies, "max-body-bytes 8192"));
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("'max-body-bytes 8192'"));
+        assert!(warnings[0].contains("max-request-body-bytes 4096"));
+        assert!(warnings[0].contains("is being ignored"));
+
+        // A limit on a body the filter does not send.
+        let warnings = warnings_for(&config(bodies, "inspect-body #false\nmax-body-bytes 10"));
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("'inspect-body #false'"));
+
+        // An agent that receives no bodies at all (request headers only, the
+        // default).
+        let warnings = warnings_for(&config("", "inspect-body #true\nmax-body-bytes 10"));
+        assert_eq!(warnings.len(), 2, "{warnings:#?}");
+        assert!(warnings
+            .iter()
+            .all(|w| w.contains("does not receive request bodies")));
+
+        // Unusable values.
+        let warnings = warnings_for(&config(bodies, "inspect-body \"no\"\nmax-body-bytes 0"));
+        assert_eq!(warnings.len(), 2, "{warnings:#?}");
+        assert!(warnings.iter().all(|w| w.contains("is being ignored")));
+    }
+
+    /// The agent's default body limit is what an overlong filter value is
+    /// compared with when the agent sets none.
+    #[test]
+    fn agent_filter_body_limit_is_compared_with_the_default_agent_limit() {
+        let warnings = warnings_for(
+            r#"agents {
+                agent "waf" type="waf" {
+                    unix-socket "/tmp/waf.sock"
+                    events "request-body"
+                }
+            }
+            filters {
+                filter "f" {
+                    type "agent"
+                    agent "waf"
+                    failure-mode "open"
+                    max-body-bytes 2097152
+                }
+            }"#,
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("max-request-body-bytes 1048576"));
+    }
+
+    /// #553: the documented `max-size-bytes` and `lock-timeout-secs` are
+    /// accepted in the top-level `cache` block; written together with the
+    /// original names, the alias is reported as ignored.
+    #[test]
+    fn top_level_cache_aliases_are_known_and_conflicts_reported() {
+        assert!(warnings_for("cache {\n max-size-bytes 1024\n lock-timeout-secs 3\n}").is_empty());
+        assert!(warnings_for("cache {\n max-size 1024\n lock-timeout 3\n}").is_empty());
+
+        let warnings = warnings_for(
+            "cache {\n max-size 1024\n max-size-bytes 2048\n lock-timeout 3\n lock-timeout-secs 4\n}",
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:#?}");
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("'max-size-bytes 2048'") && w.contains("'max-size 1024'")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("'lock-timeout-secs 4'") && w.contains("is being ignored")));
+
+        // A route's cache block keeps its own key list.
+        let warnings = warnings_for(r#"routes { route "r" { cache { lock-timeout-secs 3 } } }"#);
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("top-level 'cache'"), "{warnings:#?}");
     }
 }

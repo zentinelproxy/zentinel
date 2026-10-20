@@ -289,6 +289,72 @@ pub(crate) fn resolve_agent_filter_timeout(
     }
 }
 
+/// Read an agent filter's `inspect-body`, and whether its value was ignored.
+///
+/// `inspect-body #false` keeps request bodies from the filter's agent on the
+/// routes using the filter. `#true` cannot make an agent receive bodies its
+/// `events` do not ask for; that case is reported by `zentinel lint`, which
+/// knows the agent. A value that is not a boolean used to be read as `false`
+/// and nothing read it either way, so it is ignored and reported.
+pub(crate) fn resolve_agent_filter_inspect_body(
+    node: &kdl::KdlNode,
+    filter_id: &str,
+) -> (Option<bool>, Option<String>) {
+    let Some(entry) = node
+        .children()
+        .and_then(|c| c.get("inspect-body"))
+        .and_then(|n| n.entries().first())
+    else {
+        return (None, None);
+    };
+    match entry.value().as_bool() {
+        Some(v) => (Some(v), None),
+        None => (
+            None,
+            Some(format!(
+                "'inspect-body {}' on filter '{}' is not #true or #false and is being ignored; \
+                 the agent's own events decide whether it receives request bodies.",
+                entry.value(),
+                filter_id
+            )),
+        ),
+    }
+}
+
+/// Read an agent filter's `max-body-bytes`, and whether its value was ignored.
+///
+/// The value narrows the agent's own `max-request-body-bytes` for the routes
+/// using the filter: a larger request body is handled as for the agent's own
+/// limit (skipped when the agent fails open, refused with 413 when it fails
+/// closed). It cannot widen the agent's limit; `zentinel lint` reports a
+/// larger value. A value that is not a positive number of bytes is ignored
+/// and reported: `inspect-body #false` is the way to send no body at all.
+pub(crate) fn resolve_agent_filter_max_body_bytes(
+    node: &kdl::KdlNode,
+    filter_id: &str,
+) -> (Option<usize>, Option<String>) {
+    let Some(entry) = node
+        .children()
+        .and_then(|c| c.get("max-body-bytes"))
+        .and_then(|n| n.entries().first())
+    else {
+        return (None, None);
+    };
+    match entry.value().as_integer() {
+        Some(v) if v > 0 => (Some(v.min(usize::MAX as i128) as usize), None),
+        _ => (
+            None,
+            Some(format!(
+                "'max-body-bytes {}' on filter '{}' is not a positive number of bytes and is \
+                 being ignored; the agent's own max-request-body-bytes applies. Use \
+                 'inspect-body #false' to send the agent no request body.",
+                entry.value(),
+                filter_id
+            )),
+        ),
+    }
+}
+
 /// Whether an agent filter's `phase` is set, which nothing reads.
 ///
 /// Which events an agent receives is decided by its own `events` list, and
@@ -328,6 +394,14 @@ fn parse_agent_filter(node: &kdl::KdlNode) -> Result<Filter> {
     if let Some(problem) = problem {
         warn!("{}", problem);
     }
+    let (inspect_body, problem) = resolve_agent_filter_inspect_body(node, &filter_id);
+    if let Some(problem) = problem {
+        warn!("{}", problem);
+    }
+    let (max_body_bytes, problem) = resolve_agent_filter_max_body_bytes(node, &filter_id);
+    if let Some(problem) = problem {
+        warn!("{}", problem);
+    }
 
     let phase = get_string_entry(node, "phase").and_then(|s| match s.as_str() {
         "request" => Some(FilterPhase::Request),
@@ -341,8 +415,8 @@ fn parse_agent_filter(node: &kdl::KdlNode) -> Result<Filter> {
         phase,
         timeout_ms,
         failure_mode,
-        inspect_body: get_bool_entry(node, "inspect-body").unwrap_or(false),
-        max_body_bytes: get_int_entry(node, "max-body-bytes").map(|v| v as usize),
+        inspect_body,
+        max_body_bytes,
     }))
 }
 

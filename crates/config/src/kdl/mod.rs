@@ -1204,15 +1204,19 @@ use crate::routes::{CacheBackend, CacheStorageConfig};
 /// cache {
 ///     enabled true
 ///     backend "memory"          // "memory", "disk", or "hybrid"
-///     max-size 104857600        // 100MB in bytes
+///     max-size 104857600        // 100MB in bytes (alias: max-size-bytes)
 ///     eviction-limit 104857600  // When to start evicting
-///     lock-timeout 10           // Seconds
+///     lock-timeout 10           // Seconds (alias: lock-timeout-secs)
 ///     disk-path "/var/cache/zentinel"  // For disk backend
 ///     disk-shards 16            // Parallelism for disk cache
 /// }
 /// ```
 pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
     let mut config = CacheStorageConfig::default();
+
+    for problem in cache_alias_problems(node) {
+        warn!("{}", problem);
+    }
 
     // Parse enabled flag
     if let Some(v) = get_bool_entry(node, "enabled") {
@@ -1234,16 +1238,17 @@ pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
         };
     }
 
-    // Parse size limits
-    if let Some(v) = get_int_entry(node, "max-size") {
+    // Parse size limits. `max-size-bytes` is the spelling the field and much
+    // of the documentation use; it was ignored until #553.
+    if let Some(v) = cache_entry_with_alias(node, CACHE_KEY_ALIASES[0]) {
         config.max_size_bytes = v as usize;
     }
     if let Some(v) = get_int_entry(node, "eviction-limit") {
         config.eviction_limit_bytes = Some(v as usize);
     }
 
-    // Parse lock timeout
-    if let Some(v) = get_int_entry(node, "lock-timeout") {
+    // Parse lock timeout, in seconds under either spelling.
+    if let Some(v) = cache_entry_with_alias(node, CACHE_KEY_ALIASES[1]) {
         config.lock_timeout_secs = v as u64;
     }
 
@@ -1278,6 +1283,39 @@ pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
     }
 
     Ok(config)
+}
+
+/// The top-level `cache` block's settings that have a second spelling, as
+/// `(name, alias)`. The aliases are the names of the `CacheStorageConfig`
+/// fields, which documentation and examples wrote and the parser ignored
+/// until #553. Units are the same under both names: bytes and seconds.
+pub(crate) const CACHE_KEY_ALIASES: [(&str, &str); 2] = [
+    ("max-size", "max-size-bytes"),
+    ("lock-timeout", "lock-timeout-secs"),
+];
+
+/// A top-level `cache` setting read under its name, else under its alias.
+///
+/// The original name wins when both are written, which is what configs
+/// carrying both have been running on.
+fn cache_entry_with_alias(node: &kdl::KdlNode, (name, alias): (&str, &str)) -> Option<i128> {
+    get_int_entry(node, name).or_else(|| get_int_entry(node, alias))
+}
+
+/// Settings of a top-level `cache` block written under both spellings, of
+/// which the alias is ignored.
+pub(crate) fn cache_alias_problems(node: &kdl::KdlNode) -> Vec<String> {
+    CACHE_KEY_ALIASES
+        .iter()
+        .filter_map(|&(name, alias)| {
+            let used = get_int_entry(node, name)?;
+            let ignored = node.children()?.get(alias)?.entries().first()?.value();
+            Some(format!(
+                "'{alias} {ignored}' in the top-level 'cache' block is being ignored: \
+                 '{name} {used}' sets the same value and takes precedence. Keep one of the two."
+            ))
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -2687,6 +2725,59 @@ mod tests {
         let config = parse_cache_config(node).unwrap();
         assert!(config.status_header);
         assert_eq!(config.status_header_name, "zentinel");
+    }
+
+    /// #553: the documented spellings set the same values, in the same
+    /// units, as the original names; with both written, the original wins.
+    #[test]
+    fn cache_storage_aliases_are_read() {
+        let parse = |body: &str| {
+            let doc: kdl::KdlDocument = format!("cache {{\n{body}\n}}").parse().unwrap();
+            parse_cache_config(doc.nodes().first().unwrap()).unwrap()
+        };
+        let defaults = CacheStorageConfig::default();
+
+        let config = parse("max-size-bytes 2048\nlock-timeout-secs 3");
+        assert_eq!(config.max_size_bytes, 2048);
+        assert_eq!(config.lock_timeout_secs, 3);
+        assert_ne!(defaults.max_size_bytes, 2048);
+        assert_ne!(defaults.lock_timeout_secs, 3);
+
+        let config =
+            parse("max-size 1024\nmax-size-bytes 2048\nlock-timeout 5\nlock-timeout-secs 3");
+        assert_eq!(config.max_size_bytes, 1024);
+        assert_eq!(config.lock_timeout_secs, 5);
+    }
+
+    /// #553: an agent filter's body settings reach the model; `inspect-body`
+    /// left out stays unset, which leaves the agent's events to decide.
+    #[test]
+    fn agent_filter_body_settings_are_read() {
+        let parse = |body: &str| {
+            let doc: kdl::KdlDocument =
+                format!("filter \"f\" {{\n type \"agent\"\n agent \"waf\"\n{body}\n}}")
+                    .parse()
+                    .unwrap();
+            match crate::kdl::filters::parse_single_filter_definition(doc.nodes().first().unwrap())
+                .unwrap()
+            {
+                crate::Filter::Agent(agent) => agent,
+                other => panic!("not an agent filter: {other:?}"),
+            }
+        };
+        let filter = parse("");
+        assert_eq!(filter.inspect_body, None);
+        assert!(filter.sends_request_body());
+        assert_eq!(filter.max_body_bytes, None);
+
+        let filter = parse("inspect-body #false\nmax-body-bytes 512");
+        assert_eq!(filter.inspect_body, Some(false));
+        assert!(!filter.sends_request_body());
+        assert_eq!(filter.max_body_bytes, Some(512));
+
+        // Not a usable limit: ignored (reported by lint).
+        assert_eq!(parse("max-body-bytes 0").max_body_bytes, None);
+        assert_eq!(parse("max-body-bytes -5").max_body_bytes, None);
     }
 
     #[test]
