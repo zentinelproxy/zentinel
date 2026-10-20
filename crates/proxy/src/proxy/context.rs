@@ -99,6 +99,9 @@ pub struct RequestContext {
     pub(crate) upstream: Option<String>,
     /// Selected upstream peer address (IP:port) for feedback reporting
     pub(crate) selected_upstream_address: Option<String>,
+    /// The pool the peer was selected from, for `fail_to_connect`, which is
+    /// synchronous and so cannot look it up in the registry.
+    pub(crate) selected_pool: Option<Arc<crate::upstream::UpstreamPool>>,
     /// Number of upstream attempts
     pub(crate) upstream_attempts: u32,
     /// Times the request itself has been sent upstream.
@@ -232,6 +235,11 @@ pub struct RequestContext {
     /// go with them, the client got the upstream's body under the page's
     /// Content-Type and Content-Length.
     pub(crate) error_page_body: Option<bytes::Bytes>,
+
+    /// The status and body of an agent's `Block` decision, when the agent
+    /// supplied a body. That body is sent as it is, in place of the route's
+    /// error page: the agent chose what to tell the client (#557).
+    pub(crate) agent_block: Option<(u16, String)>,
 
     // === Body Decompression ===
     /// Whether decompression is enabled for body inspection
@@ -408,6 +416,7 @@ impl RequestContext {
             route_config: None,
             upstream: None,
             selected_upstream_address: None,
+            selected_pool: None,
             upstream_attempts: 0,
             request_attempts: 0,
             namespace: None,
@@ -441,6 +450,7 @@ impl RequestContext {
             mcp_proxied_call: None,
             validated_request_body: None,
             error_page_body: None,
+            agent_block: None,
             a2a_method: None,
             body_inspection_agents: Vec::new(),
             decompression_enabled: false,

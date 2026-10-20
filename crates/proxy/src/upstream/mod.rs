@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use pingora::upstreams::peer::HttpPeer;
 use rand::seq::IndexedRandom;
 use std::collections::HashMap;
-use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,6 +103,7 @@ pub mod maglev;
 pub mod mcp_health;
 pub mod p2c;
 pub mod peak_ewma;
+pub mod resolve;
 pub mod sticky_session;
 pub mod subset;
 pub mod weighted_least_conn;
@@ -248,6 +248,9 @@ pub struct UpstreamPool {
     active_health: Option<Arc<active_health::ActiveHealthView>>,
     /// The view generation last applied to `load_balancer`.
     active_health_applied: AtomicU64,
+    /// Resolutions of hostname targets and addresses that recently failed to
+    /// connect. Shared with the pools a discovery refresh replaces this with.
+    resolver: Arc<resolve::TargetResolver>,
 }
 
 /// Connection pool configuration for Pingora's built-in pooling
@@ -1007,6 +1010,7 @@ impl UpstreamPool {
             sticky_runtime,
             active_health: None,
             active_health_applied: AtomicU64::new(0),
+            resolver: Arc::new(resolve::TargetResolver::default()),
         };
 
         info!(
@@ -1277,6 +1281,7 @@ impl UpstreamPool {
                 sticky_runtime: self.sticky_runtime.clone(),
                 active_health: None,
                 active_health_applied: AtomicU64::new(0),
+                resolver: Arc::clone(&self.resolver),
             }
             .with_optional_active_health(self.active_health.clone()),
         )
@@ -1610,7 +1615,7 @@ impl UpstreamPool {
                 target = %selection.address,
                 "Creating peer for upstream (Pingora handles connection reuse)"
             );
-            let peer = self.create_peer(&selection)?;
+            let peer = self.create_peer(&selection).await?;
 
             debug!(
                 upstream_id = %self.id,
@@ -1650,12 +1655,70 @@ impl UpstreamPool {
             .map(|(peer, _)| peer)
     }
 
+    /// The socket address to connect to for `address`.
+    ///
+    /// A socket address is used as it is, with no lookup and no locking. A
+    /// `host:port` target is resolved through the pool's [`resolve::TargetResolver`]
+    /// -- asynchronously and cached, never a blocking lookup on the request
+    /// path -- and of the addresses it resolves to, the first that the active
+    /// health check does not hold unhealthy and that has not recently failed
+    /// to connect is used. A name can resolve to several addresses, and only
+    /// the first used to be dialled: `localhost` (`::1` first) then failed
+    /// every request to a backend that only listens on IPv4.
+    async fn resolve_target(&self, address: &str) -> ZentinelResult<std::net::SocketAddr> {
+        if let Ok(addr) = address.parse::<std::net::SocketAddr>() {
+            return Ok(addr);
+        }
+
+        let addrs = self.resolver.resolve(address).await.map_err(|e| {
+            error!(
+                upstream = %self.id,
+                address = %address,
+                error = %e,
+                "Failed to resolve upstream address"
+            );
+            ZentinelError::Upstream {
+                upstream: self.id.to_string(),
+                message: format!("DNS resolution failed for {}: {}", address, e),
+                retryable: true,
+                source: None,
+            }
+        })?;
+
+        let unhealthy = |addr: &std::net::SocketAddr| {
+            self.active_health
+                .as_ref()
+                .is_some_and(|view| view.is_unhealthy(&addr.to_string()))
+        };
+        self.resolver.choose(&addrs, unhealthy).ok_or_else(|| {
+            error!(
+                upstream = %self.id,
+                address = %address,
+                "No addresses returned from DNS resolution"
+            );
+            ZentinelError::Upstream {
+                upstream: self.id.to_string(),
+                message: format!("No addresses for {}", address),
+                retryable: true,
+                source: None,
+            }
+        })
+    }
+
+    /// Record that connecting to `addr` failed. Returns whether the request
+    /// can be retried on another address of the same hostname target, which
+    /// the next selection will then use (see [`resolve::TargetResolver`]).
+    /// Always `false` for targets configured as socket addresses.
+    pub fn connect_failed(&self, addr: std::net::SocketAddr) -> bool {
+        self.resolver.connect_failed(addr)
+    }
+
     /// Create new peer connection with connection pooling options
     ///
     /// Pingora handles actual connection pooling internally. When idle_timeout
     /// is set on the peer options, Pingora will keep the connection alive and
     /// reuse it for subsequent requests to the same upstream.
-    fn create_peer(&self, selection: &TargetSelection) -> ZentinelResult<HttpPeer> {
+    async fn create_peer(&self, selection: &TargetSelection) -> ZentinelResult<HttpPeer> {
         // Determine SNI hostname for TLS connections
         let sni_hostname = self.tls_sni.clone().unwrap_or_else(|| {
             // Extract hostname from address (strip port)
@@ -1667,57 +1730,7 @@ impl UpstreamPool {
                 .to_string()
         });
 
-        // Pre-resolve the address to avoid panics in Pingora's HttpPeer::new
-        // when DNS resolution fails (e.g., when a container is killed)
-        let resolved_address = selection
-            .address
-            .to_socket_addrs()
-            .map_err(|e| {
-                error!(
-                    upstream = %self.id,
-                    address = %selection.address,
-                    error = %e,
-                    "Failed to resolve upstream address"
-                );
-                ZentinelError::Upstream {
-                    upstream: self.id.to_string(),
-                    message: format!("DNS resolution failed for {}: {}", selection.address, e),
-                    retryable: true,
-                    source: None,
-                }
-            })?
-            .collect::<Vec<_>>();
-        // A hostname can resolve to several addresses, and only the first was
-        // ever used. When the health check holds one of them unhealthy, use
-        // the first address it does not: the checker reports a hostname as
-        // healthy while any of its addresses is, so without this a name whose
-        // first address is down (e.g. `localhost` -> `::1` for a backend that
-        // only listens on IPv4) would stay in rotation and fail every request.
-        // Without a health check, or with all of them failing, this is the
-        // first address as before.
-        let resolved_address = self
-            .active_health
-            .as_ref()
-            .and_then(|view| {
-                resolved_address
-                    .iter()
-                    .find(|addr| !view.is_unhealthy(&addr.to_string()))
-            })
-            .or_else(|| resolved_address.first())
-            .copied()
-            .ok_or_else(|| {
-                error!(
-                    upstream = %self.id,
-                    address = %selection.address,
-                    "No addresses returned from DNS resolution"
-                );
-                ZentinelError::Upstream {
-                    upstream: self.id.to_string(),
-                    message: format!("No addresses for {}", selection.address),
-                    retryable: true,
-                    source: None,
-                }
-            })?;
+        let resolved_address = self.resolve_target(&selection.address).await?;
 
         // Use the resolved IP address to create the peer
         let mut peer = HttpPeer::new(resolved_address, self.tls_enabled, sni_hostname.clone());
@@ -2121,5 +2134,105 @@ impl UpstreamPool {
         );
         // Pingora handles connection cleanup internally
         debug!(upstream_id = %self.id, "Upstream pool shutdown complete");
+    }
+}
+
+#[cfg(test)]
+mod target_resolution_tests {
+    use super::*;
+    use pingora_core::upstreams::peer::Peer;
+    use std::net::SocketAddr;
+    use zentinel_common::types::LoadBalancingAlgorithm;
+    use zentinel_config::{ConnectionPoolConfig, HttpVersionConfig, UpstreamTimeouts};
+
+    fn config(target: &str) -> UpstreamConfig {
+        UpstreamConfig {
+            id: "resolution-test".to_string(),
+            targets: vec![zentinel_config::UpstreamTarget {
+                address: target.to_string(),
+                weight: 1,
+                max_requests: None,
+                metadata: HashMap::new(),
+            }],
+            load_balancing: LoadBalancingAlgorithm::RoundRobin,
+            sticky_session: None,
+            health_check: None,
+            connection_pool: ConnectionPoolConfig::default(),
+            circuit_breaker: None,
+            timeouts: UpstreamTimeouts::default(),
+            tls: None,
+            http_version: HttpVersionConfig::default(),
+            discovery: None,
+        }
+    }
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    async fn selected(pool: &UpstreamPool) -> String {
+        pool.select_peer(None)
+            .await
+            .expect("a peer")
+            .address()
+            .to_string()
+    }
+
+    /// Without a health check, a hostname target dialled the first address it
+    /// resolved to on every request, so `localhost` (`::1` first) failed every
+    /// request to a backend listening on IPv4 only. An address that fails to
+    /// connect is now passed over, and `connect_failed` tells the proxy that
+    /// a retry would reach another address.
+    #[tokio::test]
+    async fn a_dead_first_address_is_passed_over_without_a_health_check() {
+        // `.invalid` never resolves, so the answer below is the only one.
+        let target = "zentinel-test.invalid:19536";
+        let pool = UpstreamPool::new(config(target)).await.expect("pool");
+        let dead = addr("[::1]:19536");
+        let live = addr("127.0.0.1:19536");
+        pool.resolver.store(target, vec![dead, live].into());
+
+        assert_eq!(selected(&pool).await, dead.to_string());
+        assert!(pool.connect_failed(dead), "the name has another address");
+        for _ in 0..3 {
+            assert_eq!(selected(&pool).await, live.to_string());
+        }
+        assert!(
+            !pool.connect_failed(live),
+            "no address left that has not failed: nothing to retry on"
+        );
+    }
+
+    /// Socket-address targets take no part: never looked up, never held back,
+    /// never retried on another address.
+    #[tokio::test]
+    async fn ip_literal_targets_are_unchanged() {
+        let pool = UpstreamPool::new(config("127.0.0.1:19537"))
+            .await
+            .expect("pool");
+        assert_eq!(selected(&pool).await, "127.0.0.1:19537");
+        assert!(!pool.connect_failed(addr("127.0.0.1:19537")));
+        assert_eq!(selected(&pool).await, "127.0.0.1:19537");
+    }
+
+    /// The lookup no longer blocks the calling thread, so selection works on
+    /// a current-thread runtime, the one where a blocked worker stalls every
+    /// other request.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_hostname_target_resolves_on_a_current_thread_runtime() {
+        let pool = UpstreamPool::new(config("localhost:19538"))
+            .await
+            .expect("pool");
+        let peer: SocketAddr = selected(&pool).await.parse().expect("socket address");
+        assert!(peer.ip().is_loopback() && peer.port() == 19538);
+    }
+
+    /// An unresolvable name is an upstream error, as before.
+    #[tokio::test]
+    async fn an_unresolvable_target_is_an_error() {
+        let pool = UpstreamPool::new(config("zentinel-test.invalid:19539"))
+            .await
+            .expect("pool");
+        assert!(pool.select_peer(None).await.is_err());
     }
 }

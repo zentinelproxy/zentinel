@@ -17,6 +17,7 @@ mod http_trait;
 pub(crate) mod listener_addr;
 mod model_routing;
 mod model_routing_metrics;
+mod sync_filter;
 
 pub use context::{FallbackReason, RequestContext};
 pub use fallback::{FallbackDecision, FallbackEvaluator};
