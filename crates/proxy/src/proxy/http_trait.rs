@@ -31,6 +31,7 @@ use crate::routing::RequestInfo;
 use super::context::{FallbackReason, RequestContext};
 use super::fallback::FallbackEvaluator;
 use super::fallback_metrics::get_fallback_metrics;
+use super::handlers;
 use super::listener_addr::listener_for_addr;
 use super::model_routing;
 use super::model_routing_metrics::get_model_routing_metrics;
@@ -158,7 +159,22 @@ impl ZentinelProxy {
         );
         self.metrics
             .record_blocked_request("in_flight_limit_exceeded");
-        write_in_flight_refusal(session, &ctx.trace_id).await?;
+        // The same JSON body `fail_to_proxy` sends, so clients see one error
+        // format, unless the route has a page for 503 (#557); `Retry-After`
+        // either way, which that path cannot add. Written here rather than
+        // returned as an error so the refusal never reaches the upstream
+        // error accounting: no upstream was involved.
+        let refusal = handlers::ProxyError {
+            status: 503,
+            message: None,
+            default_body: Bytes::from(proxy_error_body(503, &ctx.trace_id)),
+            default_content_type: "application/json",
+            headers: Vec::new(),
+        }
+        .with_header("Retry-After", 1);
+        // Shed the connection along with the request: the proxy is at
+        // capacity (`write_proxy_error` does not keep it alive).
+        self.write_proxy_error(session, ctx, refusal).await?;
         Ok(true)
     }
 
@@ -858,11 +874,10 @@ impl ProxyHttp for ZentinelProxy {
                     route_id = %route_match.route_id,
                     "Route has no upstream configured, returning 500"
                 );
-                crate::http_helpers::write_error(
+                self.write_proxy_error(
                     session,
-                    500,
-                    "Internal Server Error",
-                    "text/plain",
+                    ctx,
+                    handlers::ProxyError::text(500, "Internal Server Error"),
                 )
                 .await?;
                 return Err(Error::explain(
@@ -1336,16 +1351,19 @@ impl ProxyHttp for ZentinelProxy {
                                         .as_secs(),
                                 ),
                             };
-                            crate::http_helpers::write_rate_limit_error(
-                                session,
+                            // The route's page for the status, if it has
+                            // one, with the rate-limit headers kept (#557).
+                            let refusal = rate_limit_refusal(
                                 rate_result.status_code,
                                 &body,
-                                rate_result.limit,
-                                rate_result.remaining,
-                                rate_result.reset_at,
-                                retry_after,
-                            )
-                            .await?;
+                                handlers::rate_limit_headers(
+                                    rate_result.limit,
+                                    rate_result.remaining,
+                                    rate_result.reset_at,
+                                    retry_after,
+                                ),
+                            );
+                            self.write_proxy_error(session, ctx, refusal).await?;
                             return Ok(true); // Request complete, don't continue
                         }
                         RateLimitAction::LogOnly => {
@@ -1455,16 +1473,17 @@ impl ProxyHttp for ZentinelProxy {
                                 + retry_after_secs;
 
                             // Use simplified error write for inference rate limit
-                            crate::http_helpers::write_rate_limit_error(
-                                session,
+                            let refusal = rate_limit_refusal(
                                 429,
                                 body,
-                                0, // No request limit
-                                0, // No remaining
-                                reset_at,
-                                retry_after_secs,
-                            )
-                            .await?;
+                                handlers::rate_limit_headers(
+                                    0, // No request limit
+                                    0, // No remaining
+                                    reset_at,
+                                    retry_after_secs,
+                                ),
+                            );
+                            self.write_proxy_error(session, ctx, refusal).await?;
                             return Ok(true); // Request complete, don't continue
                         }
 
@@ -1523,16 +1542,17 @@ impl ProxyHttp for ZentinelProxy {
                                         .as_secs()
                                         + retry_after_secs;
 
-                                    crate::http_helpers::write_rate_limit_error(
-                                        session,
+                                    let refusal = rate_limit_refusal(
                                         429,
                                         body,
-                                        0,
-                                        0,
-                                        reset_at,
-                                        retry_after_secs,
-                                    )
-                                    .await?;
+                                        handlers::rate_limit_headers(
+                                            0,
+                                            0,
+                                            reset_at,
+                                            retry_after_secs,
+                                        ),
+                                    );
+                                    self.write_proxy_error(session, ctx, refusal).await?;
                                     return Ok(true);
                                 }
 
@@ -1632,13 +1652,19 @@ impl ProxyHttp for ZentinelProxy {
                                         self.log_manager.log_audit(&audit_entry);
 
                                         // Send error response
-                                        crate::http_helpers::write_json_error(
-                                            session,
+                                        // Same JSON as `write_json_error`
+                                        // without a page for the status.
+                                        let refusal = handlers::ProxyError {
                                             status,
-                                            "prompt_injection_blocked",
-                                            Some(&message),
-                                        )
-                                        .await?;
+                                            message: Some(&message),
+                                            default_body: bytes::Bytes::from(format!(
+                                                r#"{{"error":"prompt_injection_blocked","message":"{}"}}"#,
+                                                message
+                                            )),
+                                            default_content_type: "application/json",
+                                            headers: Vec::new(),
+                                        };
+                                        self.write_proxy_error(session, ctx, refusal).await?;
                                         return Ok(true);
                                     }
                                     PromptInjectionResult::Detected { detections } => {
@@ -1726,11 +1752,10 @@ impl ProxyHttp for ZentinelProxy {
                                 .block_message
                                 .unwrap_or_else(|| "Access denied".to_string());
 
-                            crate::http_helpers::write_error(
+                            self.write_proxy_error(
                                 session,
-                                result.status_code,
-                                &body,
-                                "text/plain",
+                                ctx,
+                                handlers::ProxyError::text(result.status_code, &body),
                             )
                             .await?;
                             return Ok(true); // Request complete, don't continue
@@ -1798,11 +1823,10 @@ impl ProxyHttp for ZentinelProxy {
                     self.log_manager.log_audit(&audit_entry);
 
                     // Send 403 Forbidden response
-                    crate::http_helpers::write_error(
+                    self.write_proxy_error(
                         session,
-                        403,
-                        "WebSocket not enabled for this route",
-                        "text/plain",
+                        ctx,
+                        handlers::ProxyError::text(403, "WebSocket not enabled for this route"),
                     )
                     .await?;
                     return Ok(true); // Request complete, don't continue
@@ -1994,6 +2018,19 @@ impl ProxyHttp for ZentinelProxy {
             // Check if this is an HTTPStatus error (e.g., agent block or fail-closed)
             // In that case, we need to send a proper HTTP response instead of just closing the connection
             if let ErrorType::HTTPStatus(status) = e.etype() {
+                // An agent's own body is sent as it is: the agent chose what
+                // to tell the client. A block without one gets the route's
+                // error page for the status, when it has one (#557).
+                if let Some((_, body)) = ctx.agent_block.take() {
+                    debug!(
+                        correlation_id = %ctx.trace_id,
+                        status = status,
+                        body = %body,
+                        "Sending the agent's block response"
+                    );
+                    crate::http_helpers::write_error(session, *status, &body, "text/plain").await?;
+                    return Ok(true); // Request complete, don't continue to upstream
+                }
                 // Extract the message from the error (the context part after "HTTPStatus context:")
                 let error_msg = e.to_string();
                 let body = error_msg
@@ -2007,7 +2044,8 @@ impl ProxyHttp for ZentinelProxy {
                     body = %body,
                     "Sending HTTP error response for agent block"
                 );
-                crate::http_helpers::write_error(session, *status, body, "text/plain").await?;
+                self.write_proxy_error(session, ctx, handlers::ProxyError::text(*status, body))
+                    .await?;
                 return Ok(true); // Request complete, don't continue to upstream
             }
             // For other errors, propagate them
@@ -3797,25 +3835,41 @@ impl ProxyHttp for ZentinelProxy {
         //
         // A route with a custom page for this status gets that page; the
         // JSON body is the default for errors the operator has not chosen
-        // a page for.
-        let (mut header, body) = match self.custom_error_page(error_code, ctx).await {
-            Some(page) => page,
-            None => {
-                let body = bytes::Bytes::from(proxy_error_body(error_code, &ctx.trace_id));
-                let mut header = pingora::http::ResponseHeader::build(error_code, None).unwrap();
-                header
-                    .insert_header("Content-Type", "application/json")
-                    .ok();
-                (header, body)
+        // a page for. An agent's block with a body of its own (raised while
+        // the request body is inspected) sends that body instead (#557).
+        let agent_block = ctx
+            .agent_block
+            .take()
+            .filter(|(status, _)| *status == error_code);
+        let refusal = match &agent_block {
+            Some((_, body)) => handlers::ProxyError::text(error_code, body),
+            None => handlers::ProxyError {
+                status: error_code,
+                message: None,
+                default_body: Bytes::from(proxy_error_body(error_code, &ctx.trace_id)),
+                default_content_type: "application/json",
+                headers: Vec::new(),
+            },
+        };
+        let refusal = refusal.with_header("Connection", "close");
+        let built = match &agent_block {
+            Some(_) => handlers::build_proxy_error(None, refusal, &ctx.trace_id).await,
+            None => self.proxy_error_response(ctx, refusal).await,
+        };
+        let (header, body) = match built {
+            Ok(response) => response,
+            Err(build_err) => {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    error = %build_err,
+                    "Failed to build error response"
+                );
+                return pingora_proxy::FailToProxy {
+                    error_code,
+                    can_reuse_downstream: false,
+                };
             }
         };
-        header
-            .insert_header("Content-Length", body.len().to_string())
-            .ok();
-        header
-            .insert_header("X-Correlation-Id", ctx.trace_id.as_str())
-            .ok();
-        header.insert_header("Connection", "close").ok();
 
         // Write headers and body
         if let Err(write_err) = session.write_response_header(Box::new(header), false).await {
@@ -4321,36 +4375,26 @@ impl ProxyHttp for ZentinelProxy {
 // Helper methods for body streaming (not part of ProxyHttp trait)
 // =============================================================================
 
+/// A rate-limit refusal: the route's page for `status` if it has one,
+/// `body` as plain text otherwise, with the rate-limit `headers` either way.
+fn rate_limit_refusal<'a>(
+    status: u16,
+    body: &'a str,
+    headers: Vec<(&'static str, String)>,
+) -> handlers::ProxyError<'a> {
+    handlers::ProxyError {
+        default_content_type: "text/plain; charset=utf-8",
+        headers,
+        ..handlers::ProxyError::text(status, body)
+    }
+}
+
 /// The error for a request body over its limit: 413, attributed to the client.
 ///
 /// It used to be an `InternalError`, so the client got a 500 for its own
 /// oversized request (#517). Marking it downstream matters as much as the
 /// status: raised while the body streams, it reaches `error_while_proxy`,
 /// which would otherwise count it against the upstream peer.
-/// The 503 for a request over `max-in-flight-requests`.
-///
-/// The same JSON body and headers `fail_to_proxy` sends, so clients see one
-/// error format, plus `Retry-After`, which that path cannot add. Written here
-/// rather than returned as an error so the refusal never reaches the
-/// upstream error accounting: no upstream was involved.
-async fn write_in_flight_refusal(session: &mut Session, trace_id: &str) -> Result<(), Box<Error>> {
-    let body = proxy_error_body(503, trace_id);
-    let mut header = ResponseHeader::build(503, None)?;
-    header.insert_header("Content-Type", "application/json")?;
-    header.insert_header("Content-Length", body.len().to_string())?;
-    header.insert_header("Retry-After", "1")?;
-    header.insert_header("X-Correlation-Id", trace_id)?;
-    // Shed the connection along with the request: the proxy is at capacity.
-    session.set_keepalive(None);
-    session
-        .write_response_header(Box::new(header), false)
-        .await?;
-    session
-        .write_response_body(Some(Bytes::from(body)), true)
-        .await?;
-    Ok(())
-}
-
 fn body_too_large() -> Box<Error> {
     Error::explain(
         ErrorType::HTTPStatus(413),
@@ -5366,10 +5410,15 @@ impl ZentinelProxy {
                     self.metrics.record_blocked_request("agent_body_inspection");
 
                     let (status, message) = match &decision.action {
-                        crate::agents::AgentAction::Block { status, body, .. } => (
-                            *status,
-                            body.clone().unwrap_or_else(|| "Blocked".to_string()),
-                        ),
+                        crate::agents::AgentAction::Block { status, body, .. } => {
+                            // Sent by `fail_to_proxy` in place of the
+                            // route's error page (#557).
+                            ctx.agent_block = body.clone().map(|body| (*status, body));
+                            (
+                                *status,
+                                body.clone().unwrap_or_else(|| "Blocked".to_string()),
+                            )
+                        }
                         _ => (403, "Forbidden".to_string()),
                     };
 
@@ -5563,10 +5612,15 @@ impl ZentinelProxy {
                     self.metrics.record_blocked_request("agent_body_inspection");
 
                     let (status, message) = match &decision.action {
-                        crate::agents::AgentAction::Block { status, body, .. } => (
-                            *status,
-                            body.clone().unwrap_or_else(|| "Blocked".to_string()),
-                        ),
+                        crate::agents::AgentAction::Block { status, body, .. } => {
+                            // Sent by `fail_to_proxy` in place of the
+                            // route's error page (#557).
+                            ctx.agent_block = body.clone().map(|body| (*status, body));
+                            (
+                                *status,
+                                body.clone().unwrap_or_else(|| "Blocked".to_string()),
+                            )
+                        }
                         _ => (403, "Forbidden".to_string()),
                     };
 
