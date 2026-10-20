@@ -12,12 +12,12 @@
 //!
 //! - **Resolution** goes through `tokio::net::lookup_host` (the system
 //!   resolver on the blocking pool, never a worker thread) and is cached per
-//!   target. An answer younger than [`REFRESH_AFTER`] is used as is; an older
+//!   target. An answer younger than `REFRESH_AFTER` is used as is; an older
 //!   one is still used while a background task refreshes it, so a request
 //!   only ever waits for DNS when a name has no usable answer at all (first
-//!   use, or no successful lookup for [`EXPIRE_AFTER`]).
+//!   use, or no successful lookup for `EXPIRE_AFTER`).
 //! - **Address choice**: an address that refused or timed out a connection is
-//!   held back for [`CONNECT_FAILURE_HOLD`], and the next address of the name
+//!   held back for `CONNECT_FAILURE_HOLD`, and the next address of the name
 //!   is used instead. [`TargetResolver::connect_failed`] tells the caller
 //!   whether such an address exists, which `fail_to_connect` uses to retry
 //!   the request on it, so the request that found the dead address does not
