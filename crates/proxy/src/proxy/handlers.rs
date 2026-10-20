@@ -598,6 +598,11 @@ impl ZentinelProxy {
                             .with_rule_ids(all_rule_ids);
                             self.log_manager.log_audit(&audit_entry);
 
+                            // An agent's own body is sent as it is; without
+                            // one, the route's error page for the status
+                            // applies (#557).
+                            ctx.agent_block = body.clone().map(|body| (status, body));
+
                             // Use HTTPStatus error type to send proper HTTP response
                             return Err(Error::explain(
                                 ErrorType::HTTPStatus(status),
@@ -696,43 +701,43 @@ impl ZentinelProxy {
         Ok(())
     }
 
-    /// The route's custom page for an error the proxy raises itself, as a
-    /// response header and body, or `None` when the route has no page for
-    /// `status` and the default error body applies.
-    pub(super) async fn custom_error_page(
+    /// The response for an error the proxy raises itself: the route's custom
+    /// page for the status when it has one, `error`'s default otherwise, and
+    /// `error`'s headers either way (#557).
+    pub(super) async fn proxy_error_response(
         &self,
-        status: u16,
         ctx: &RequestContext,
-    ) -> Option<(ResponseHeader, bytes::Bytes)> {
-        let route_id = ctx.route_id.as_deref()?;
-        let handler = self.error_handlers.get(route_id).await?;
-        if !handler.has_custom_page(status) {
-            return None;
-        }
-        let status_code = http::StatusCode::from_u16(status).ok()?;
-        let page = match handler.generate_response(status_code, None, &ctx.trace_id, None) {
-            Ok(page) => page,
-            Err(e) => {
-                warn!(
-                    correlation_id = %ctx.trace_id,
-                    route_id = route_id,
-                    status = status,
-                    error = %e,
-                    "Failed to generate custom error page, sending the default error body"
-                );
-                return None;
-            }
+        error: ProxyError<'_>,
+    ) -> Result<(ResponseHeader, bytes::Bytes), Box<Error>> {
+        let handler = match ctx.route_id.as_deref() {
+            Some(route_id) => self.error_handlers.get(route_id).await,
+            None => None,
         };
-        let (parts, body) = page.into_parts();
-        let body = http_body_util::BodyExt::collect(body)
-            .await
-            .map(|collected| collected.to_bytes())
-            .unwrap_or_default();
-        let mut header = ResponseHeader::build(status, None).ok()?;
-        for (key, value) in parts.headers.iter() {
-            header.insert_header(key.clone(), value.clone()).ok()?;
-        }
-        Some((header, body))
+        build_proxy_error(handler.as_deref(), error, &ctx.trace_id).await
+    }
+
+    /// Answer the request with an error the proxy raises itself, through the
+    /// route's error pages (see [`Self::proxy_error_response`]). The
+    /// connection is not kept alive afterwards.
+    ///
+    /// Every refusal written from a request filter (rate limits, in-flight
+    /// limit, geo, guardrail, WebSocket, agent blocks without a body of their
+    /// own) goes through here, so a route's page applies to it just as it
+    /// does to errors that reach `fail_to_proxy`. Before #557 only the
+    /// latter used the pages.
+    pub(super) async fn write_proxy_error(
+        &self,
+        session: &mut Session,
+        ctx: &RequestContext,
+        error: ProxyError<'_>,
+    ) -> Result<(), Box<Error>> {
+        let (header, body) = self.proxy_error_response(ctx, error).await?;
+        session.set_keepalive(None);
+        session
+            .write_response_header(Box::new(header), false)
+            .await?;
+        session.write_response_body(Some(body), true).await?;
+        Ok(())
     }
 
     /// Write HTTP response to session
@@ -823,6 +828,129 @@ async fn substitute_error_page(
     response.insert_header(http::header::CONTENT_LENGTH, body.len().to_string())?;
 
     Ok(Some(body))
+}
+
+/// An error the proxy answers itself, and what it answers with when the
+/// route has no custom page for the status.
+pub(super) struct ProxyError<'a> {
+    pub status: u16,
+    /// The proxy's wording for this error, used in the page when the page
+    /// sets no `message` of its own (the page's wins). `None` uses the
+    /// status's generic wording.
+    pub message: Option<&'a str>,
+    /// The body sent when the route has no page for `status`.
+    pub default_body: bytes::Bytes,
+    /// The Content-Type of `default_body`.
+    pub default_content_type: &'a str,
+    /// Headers the response carries whichever body it gets (`Retry-After`,
+    /// the `X-RateLimit-*` headers). Set after the page's own headers, so a
+    /// page cannot replace a value the proxy computed for this request.
+    pub headers: Vec<(&'static str, String)>,
+}
+
+impl<'a> ProxyError<'a> {
+    /// A plain-text error whose default body is `message`.
+    pub fn text(status: u16, message: &'a str) -> Self {
+        Self {
+            status,
+            message: Some(message),
+            default_body: bytes::Bytes::copy_from_slice(message.as_bytes()),
+            default_content_type: "text/plain",
+            headers: Vec::new(),
+        }
+    }
+
+    /// Add a header the response carries whichever body it gets.
+    pub fn with_header(mut self, name: &'static str, value: impl ToString) -> Self {
+        self.headers.push((name, value.to_string()));
+        self
+    }
+}
+
+/// The headers of a rate-limit refusal: `X-RateLimit-Limit`,
+/// `X-RateLimit-Remaining`, `X-RateLimit-Reset` and, when positive,
+/// `Retry-After`.
+pub(super) fn rate_limit_headers(
+    limit: u32,
+    remaining: u32,
+    reset_at: u64,
+    retry_after: u64,
+) -> Vec<(&'static str, String)> {
+    let mut headers = vec![
+        ("X-RateLimit-Limit", limit.to_string()),
+        ("X-RateLimit-Remaining", remaining.to_string()),
+        ("X-RateLimit-Reset", reset_at.to_string()),
+    ];
+    if retry_after > 0 {
+        headers.push(("Retry-After", retry_after.to_string()));
+    }
+    headers
+}
+
+/// `handler`'s custom page for `status`, as a response header and body, or
+/// `None` when it has no page for `status` (or the page cannot be built, which
+/// is logged) and the caller's default applies.
+async fn render_error_page(
+    handler: &crate::errors::ErrorHandler,
+    status: u16,
+    message: Option<&str>,
+    trace_id: &str,
+) -> Option<(ResponseHeader, bytes::Bytes)> {
+    if !handler.has_custom_page(status) {
+        return None;
+    }
+    let status_code = http::StatusCode::from_u16(status).ok()?;
+    let page =
+        match handler.generate_response(status_code, message.map(str::to_string), trace_id, None) {
+            Ok(page) => page,
+            Err(e) => {
+                warn!(
+                    correlation_id = %trace_id,
+                    status = status,
+                    error = %e,
+                    "Failed to generate custom error page, sending the default error body"
+                );
+                return None;
+            }
+        };
+    let (parts, body) = page.into_parts();
+    let body = http_body_util::BodyExt::collect(body)
+        .await
+        .map(|collected| collected.to_bytes())
+        .unwrap_or_default();
+    let mut header = ResponseHeader::build(status, None).ok()?;
+    for (key, value) in parts.headers.iter() {
+        header.insert_header(key.clone(), value.clone()).ok()?;
+    }
+    Some((header, body))
+}
+
+/// The response for `error`: `handler`'s page for its status if there is
+/// one, its default body otherwise, plus its headers, `Content-Length` and
+/// `X-Correlation-Id`.
+pub(super) async fn build_proxy_error(
+    handler: Option<&crate::errors::ErrorHandler>,
+    error: ProxyError<'_>,
+    trace_id: &str,
+) -> Result<(ResponseHeader, bytes::Bytes), Box<Error>> {
+    let page = match handler {
+        Some(handler) => render_error_page(handler, error.status, error.message, trace_id).await,
+        None => None,
+    };
+    let (mut header, body) = match page {
+        Some(page) => page,
+        None => {
+            let mut header = ResponseHeader::build(error.status, None)?;
+            header.insert_header("Content-Type", error.default_content_type)?;
+            (header, error.default_body)
+        }
+    };
+    for (name, value) in error.headers {
+        header.insert_header(name, value)?;
+    }
+    header.insert_header("Content-Length", body.len().to_string())?;
+    header.insert_header("X-Correlation-Id", trace_id)?;
+    Ok((header, body))
 }
 
 #[cfg(test)]
@@ -983,5 +1111,134 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(header(&other, "content-type"), Some("text/plain"));
+    }
+
+    fn handler_with_pages(pages: Vec<(u16, ErrorPage)>) -> ErrorHandler {
+        ErrorHandler::new(
+            ServiceType::Web,
+            Some(ErrorPageConfig {
+                pages: pages.into_iter().collect(),
+                default_format: ErrorFormat::Html,
+                include_stack_trace: false,
+                template_dir: None,
+            }),
+        )
+    }
+
+    fn json_page(message: Option<&str>, headers: &[(&str, &str)]) -> ErrorPage {
+        ErrorPage {
+            format: ErrorFormat::Json,
+            template: None,
+            message: message.map(str::to_string),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    fn rate_limited(body: &str) -> ProxyError<'_> {
+        ProxyError {
+            default_content_type: "text/plain; charset=utf-8",
+            headers: rate_limit_headers(10, 0, 1_700_000_000, 7),
+            ..ProxyError::text(429, body)
+        }
+    }
+
+    /// #557: a refusal the proxy writes itself (here a rate limit) gets the
+    /// route's page for its status, and keeps the headers the refusal
+    /// needs. A page header of the same name does not replace the value the
+    /// proxy computed for the request.
+    #[tokio::test]
+    async fn a_proxy_refusal_uses_the_routes_page_and_keeps_its_headers() {
+        let handler = handler_with_pages(vec![(
+            429,
+            json_page(
+                Some("Slow down"),
+                &[("Retry-After", "999"), ("Cache-Control", "no-store")],
+            ),
+        )]);
+
+        let (resp, body) = build_proxy_error(
+            Some(&handler),
+            rate_limited("Rate limit exceeded"),
+            "trace-1",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resp.status.as_u16(), 429);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["message"], "Slow down");
+        assert_eq!(
+            header(&resp, "content-type"),
+            Some("application/json; charset=utf-8")
+        );
+        assert_eq!(header(&resp, "cache-control"), Some("no-store"));
+        assert_eq!(header(&resp, "retry-after"), Some("7"));
+        assert_eq!(header(&resp, "x-ratelimit-limit"), Some("10"));
+        assert_eq!(header(&resp, "x-ratelimit-remaining"), Some("0"));
+        assert_eq!(header(&resp, "x-ratelimit-reset"), Some("1700000000"));
+        assert_eq!(
+            header(&resp, "content-length"),
+            Some(body.len().to_string().as_str())
+        );
+        assert_eq!(header(&resp, "x-correlation-id"), Some("trace-1"));
+    }
+
+    /// A status without a page keeps the refusal's own default body and
+    /// Content-Type, with its headers.
+    #[tokio::test]
+    async fn a_proxy_refusal_without_a_page_keeps_its_default() {
+        let handler = handler_with_pages(vec![(503, json_page(None, &[]))]);
+
+        for handler in [Some(&handler), None] {
+            let (resp, body) = build_proxy_error(handler, rate_limited("Rate limit exceeded"), "t")
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status.as_u16(), 429);
+            assert_eq!(&body[..], b"Rate limit exceeded");
+            assert_eq!(
+                header(&resp, "content-type"),
+                Some("text/plain; charset=utf-8")
+            );
+            assert_eq!(header(&resp, "retry-after"), Some("7"));
+            assert_eq!(header(&resp, "content-length"), Some("19"));
+        }
+    }
+
+    /// The proxy's wording for the refusal fills a page that sets no message
+    /// of its own; a page's message wins over it.
+    #[tokio::test]
+    async fn the_refusals_message_fills_a_page_without_one() {
+        let handler = handler_with_pages(vec![
+            (403, json_page(None, &[])),
+            (451, json_page(Some("Not here"), &[])),
+        ]);
+
+        let (_, body) = build_proxy_error(
+            Some(&handler),
+            ProxyError::text(403, "WebSocket not enabled for this route"),
+            "t",
+        )
+        .await
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["message"], "WebSocket not enabled for this route");
+
+        let (_, body) =
+            build_proxy_error(Some(&handler), ProxyError::text(451, "Access denied"), "t")
+                .await
+                .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["message"], "Not here");
+    }
+
+    #[test]
+    fn retry_after_is_left_out_when_not_positive() {
+        let headers = rate_limit_headers(5, 1, 42, 0);
+        assert!(headers.iter().all(|(name, _)| *name != "Retry-After"));
+        assert_eq!(headers.len(), 3);
     }
 }

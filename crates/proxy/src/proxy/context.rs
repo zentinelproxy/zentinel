@@ -230,6 +230,11 @@ pub struct RequestContext {
     /// Content-Type and Content-Length.
     pub(crate) error_page_body: Option<bytes::Bytes>,
 
+    /// The status and body of an agent's `Block` decision, when the agent
+    /// supplied a body. That body is sent as it is, in place of the route's
+    /// error page: the agent chose what to tell the client (#557).
+    pub(crate) agent_block: Option<(u16, String)>,
+
     // === Body Decompression ===
     /// Whether decompression is enabled for body inspection
     pub(crate) decompression_enabled: bool,
@@ -438,6 +443,7 @@ impl RequestContext {
             mcp_proxied_call: None,
             validated_request_body: None,
             error_page_body: None,
+            agent_block: None,
             a2a_method: None,
             body_inspection_agents: Vec::new(),
             decompression_enabled: false,
