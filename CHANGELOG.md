@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_6](#26106---2026-10-20) | 0.6.49 | 2026-10-20 | Concurrency and connection limits enforced (**`max-connections-per-client` from old starter configs now applies; read the upgrade notes**); custom error pages work; directory configs load from the CLI; Redis/memcached rate limiting actually used; hostname targets health-checked |
 | [26.10_5](#26105---2026-10-19) | 0.6.48 | 2026-10-19 | **Failing health checks take targets out of rotation**; rate limits count each client separately and `default-rps`/`burst` apply; Zentinel sends `X-Forwarded-*` and trusts incoming ones only from `trusted-proxies`; upstream error responses pass through unchanged; body limits answer 413; **read the upgrade notes** |
 | [26.10_4](#26104---2026-10-19) | 0.6.47 | 2026-10-19 | **An agent that restarts while the proxy runs is reconnected** (with `failure-mode "closed"` its routes returned 503 until the proxy restarted); **API schema validation works**: a schema that does not compile is a configuration error instead of silently disabling validation, and requests that pass validation reach the upstream instead of timing out; `service-type` is applied |
 | [26.10_3](#26103---2026-10-18) | 0.6.46 | 2026-10-18 | Security and dependency maintenance: `wasmtime` 49 for the WASM agent runtime (23 advisories, one critical), `rustls` 0.23.46 (4 advisories), OpenTelemetry 0.33; Cloudflare DNS-01 finds zones registered at a parent domain; building from source needs **Rust 1.96** |
@@ -89,6 +90,104 @@ for details.
 ## [Unreleased]
 
 _Nothing yet._
+
+---
+
+## [26.10_6] - 2026-10-20
+
+**Crate version:** 0.6.49
+
+Concurrency and connection limits are enforced, custom error pages work,
+directory configurations load from the command line, and the Redis and
+memcached rate-limit backends are actually used. **Read the upgrade notes:**
+limits that used to be ignored now apply.
+
+### Upgrade notes
+- **`max-connections-per-client` is enforced.** It used to be ignored, together
+  with `max-total-connections` and `max-in-flight-requests`. The starter
+  configuration installed by earlier releases sets `max-connections-per-client
+  100`, and existing installs keep that file. The client is the TCP peer, so
+  behind a load balancer or NAT the balancer counts as one client.
+  - **Exemption:** peers listed in the listener's `trusted-proxies` are exempt
+    from the per-client limit.
+  - **Startup note:** a listener with a per-client limit and no
+    `trusted-proxies` logs an INFO note at startup.
+  - **What to do:** list your load balancer, or remove the line.
+
+  (#542, #552)
+- **`max-in-flight-requests` and `max-total-connections` are enforced.** Only
+  values you wrote apply; unset means unlimited. A request over the in-flight
+  limit gets `503` with `Retry-After: 1`. Built-in handlers such as the health
+  endpoint are never refused. (#542, #552)
+- **Namespace `limits` apply** to the namespace's routes. The smallest of
+  global, namespace and route wins. Service `limits` are reported as ignored,
+  because services are not served yet (#548). (#542, #552)
+- **`error-pages` on a route now takes effect.** A configured page replaces both
+  the upstream's error and the proxy's own for that status; statuses without a
+  page behave as before. (#542, #550)
+- **An agent filter's `timeout-ms` applies.** It can only shorten the agent's
+  own timeout. (#542, #550)
+
+### Fixed
+- **Directory configurations load from the CLI.**
+  - **Entry points:** `zentinel -c <dir>` and `ZENTINEL_CONFIG=<dir>` work for
+    `run`, `test`, `lint`, `validate` and reload; this used to fail with "Is a
+    directory".
+  - **Parser:** the directory loader had its own parser for an older format,
+    which silently dropped listener TLS, route policies, filters and most
+    matches. Directories now use the same parser as single files.
+  - **Includes:** `zentinel test --strict` and `lint` check every file read,
+    including included files, and name the file.
+  - **Auto-reload** watches the directory.
+
+  (#541, #547)
+- **Redis and memcached rate limiting are used.** Before, every rate-limit pool
+  was in memory, so a "shared" limit was enforced separately on each instance.
+  - **Token buckets everywhere:** the distributed backends use the same token
+    bucket as the local limiter, with `burst`. Redis runs it as an atomic
+    script; memcached uses compare-and-swap.
+  - **IP addresses:** a memcached URL with an IP address
+    (`memcache://127.0.0.1:11211`) now connects; it used to fail and fall back.
+  - **Feature flags:** they compiled one backend out each; both now build.
+  - **Release binaries:** the official binaries are built without these
+    features and keep enforcing per instance, logging a warning. Build from
+    source with `--features distributed-rate-limit` for shared limits.
+
+  (#543, #549)
+- **Rate limiters are rebuilt on reload.** A changed `default-rps`, route limit
+  or `global` limit takes effect on `SIGHUP`; unchanged limiters keep their
+  counts. (#543, #549)
+- **Hostname targets are health-checked.**
+  - **Probing:** targets such as `localhost:8080` are resolved on every probe
+    cycle and each address is probed, so a failing hostname target leaves
+    rotation like an IP target.
+  - **Connecting:** with a health check configured, the proxy now dials the
+    first healthy address. Before, it always dialled the first resolved one
+    (`::1` for `localhost`).
+
+  (#544, #551)
+- **An early `SIGHUP` no longer kills a starting proxy.** It is queued, and the
+  reload runs once the proxy is ready. (#544, #551)
+- **Consistent hashing could panic** when its pool was rebuilt on a reload or
+  a discovery refresh. (#544, #551)
+- **Generated HTML and XML error pages are escaped.** A static route's error
+  message includes the request path, which was inserted unescaped. (#550)
+
+### Changed
+- **More values are reported when ignored:** an agent filter's `phase` (the
+  agent's `events` decide), unknown sticky-session `fallback` and
+  `cookie-same-site` values, invalid `error-pages` values, and a limit of `0`.
+  (#550, #552)
+- **A file reached by two entry files, or a circular include, is an error** in
+  a directory configuration. (#547)
+- **CI runs the Redis and memcached tests against real servers.** They used to
+  skip, and pass, when no server answered; that is how the unused backends went
+  unnoticed. (#549)
+
+Still open: namespace and service routing is largely not wired (#548); a few
+settings are still parsed and not applied (#553); hostname targets without a
+health check use only their first address, and DNS is resolved with a blocking
+call on the request path (#554).
 
 ---
 
