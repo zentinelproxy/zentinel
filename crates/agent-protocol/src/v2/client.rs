@@ -4,11 +4,12 @@
 //! allowing multiple concurrent requests over a single connection.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
-use tonic::transport::Channel;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::grpc_v2::{self, agent_service_v2_client::AgentServiceV2Client, ProxyToAgent};
@@ -126,6 +127,96 @@ pub struct AgentClientV2 {
     config: Option<serde_json::Value>,
 }
 
+/// TLS settings for a gRPC connection to an agent.
+///
+/// Mirrors the `ca-cert`, `client-cert` and `client-key` options of the agent
+/// `grpc` transport. There is no option to skip verification: a connection
+/// either verifies the agent's certificate or is not made.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentTlsOptions {
+    /// CA certificate (PEM) used to verify the agent. When unset, the system
+    /// trust store is used.
+    pub ca_cert: Option<PathBuf>,
+    /// Client certificate (PEM) presented to the agent for mTLS.
+    pub client_cert: Option<PathBuf>,
+    /// Private key (PEM) for `client_cert`.
+    pub client_key: Option<PathBuf>,
+}
+
+impl AgentTlsOptions {
+    /// Build the tonic TLS configuration, reading the files named by the options.
+    pub fn to_client_tls_config(&self) -> Result<ClientTlsConfig, AgentProtocolError> {
+        fn read(what: &str, path: &PathBuf) -> Result<Vec<u8>, AgentProtocolError> {
+            std::fs::read(path).map_err(|e| {
+                AgentProtocolError::ConnectionFailed(format!(
+                    "Failed to read {} '{}': {}",
+                    what,
+                    path.display(),
+                    e
+                ))
+            })
+        }
+
+        let mut config = ClientTlsConfig::new();
+        config = match &self.ca_cert {
+            Some(path) => {
+                config.ca_certificate(Certificate::from_pem(read("CA certificate", path)?))
+            }
+            None => config.with_native_roots(),
+        };
+        match (&self.client_cert, &self.client_key) {
+            (Some(cert), Some(key)) => {
+                config = config.identity(Identity::from_pem(
+                    read("client certificate", cert)?,
+                    read("client key", key)?,
+                ));
+            }
+            (None, None) => {}
+            _ => {
+                return Err(AgentProtocolError::ConnectionFailed(
+                    "client_cert and client_key must be given together".to_string(),
+                ));
+            }
+        }
+        Ok(config)
+    }
+}
+
+/// Build the tonic endpoint for `endpoint`, with `tls` applied.
+pub(crate) fn build_endpoint(
+    endpoint: &str,
+    tls: Option<&AgentTlsOptions>,
+    timeout: Duration,
+) -> Result<Endpoint, AgentProtocolError> {
+    let is_https = endpoint.starts_with("https://");
+    if tls.is_some() && !is_https {
+        return Err(AgentProtocolError::ConnectionFailed(format!(
+            "TLS is configured but endpoint '{}' is not https://; refusing to connect in plaintext",
+            endpoint
+        )));
+    }
+
+    let mut ep = Endpoint::from_shared(endpoint.to_string())
+        .map_err(|e| AgentProtocolError::ConnectionFailed(format!("Invalid endpoint: {}", e)))?
+        .connect_timeout(timeout)
+        .timeout(timeout);
+    if is_https {
+        // Both rustls providers are in the build (tonic's `tls-ring` and the
+        // workspace's `aws-lc-rs`), so rustls cannot pick one itself and panics
+        // inside the connect task if the process has not installed one.
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            return Err(AgentProtocolError::ConnectionFailed(
+                "no process-level rustls CryptoProvider is installed".to_string(),
+            ));
+        }
+        let config = tls.cloned().unwrap_or_default().to_client_tls_config()?;
+        ep = ep.tls_config(config).map_err(|e| {
+            AgentProtocolError::ConnectionFailed(format!("Invalid TLS config: {}", e))
+        })?;
+    }
+    Ok(ep)
+}
+
 impl AgentClientV2 {
     /// Create a new v2 client.
     pub async fn new(
@@ -133,15 +224,26 @@ impl AgentClientV2 {
         endpoint: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, AgentProtocolError> {
+        Self::new_with_tls(agent_id, endpoint, timeout, None).await
+    }
+
+    /// Create a new v2 client, applying `tls` to the connection.
+    ///
+    /// With `tls` set the endpoint must be `https://`; an `http://` endpoint
+    /// is refused rather than connected in plaintext. With `tls` unset, an
+    /// `https://` endpoint is verified against the system trust store.
+    pub async fn new_with_tls(
+        agent_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        timeout: Duration,
+        tls: Option<&AgentTlsOptions>,
+    ) -> Result<Self, AgentProtocolError> {
         let agent_id = agent_id.into();
         let endpoint = endpoint.into();
 
         debug!(agent_id = %agent_id, endpoint = %endpoint, "Creating v2 client");
 
-        let channel = Channel::from_shared(endpoint.clone())
-            .map_err(|e| AgentProtocolError::ConnectionFailed(format!("Invalid endpoint: {}", e)))?
-            .connect_timeout(timeout)
-            .timeout(timeout)
+        let channel = build_endpoint(&endpoint, tls, timeout)?
             .connect()
             .await
             .map_err(|e| {

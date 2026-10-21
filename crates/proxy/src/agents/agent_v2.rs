@@ -228,7 +228,12 @@ impl AgentV2 {
         // agent restarts delivers it before carrying a request (#593). It
         // used to be handed to a `send_configure` that dropped it.
         self.pool
-            .add_agent_with_config(&self.config.id, &endpoint, self.config.config.clone())
+            .add_agent_with_config(
+                &self.config.id,
+                &endpoint,
+                self.config.config.clone(),
+                self.tls_options(),
+            )
             .await
             .map_err(|e| {
                 error!(
@@ -259,6 +264,21 @@ impl AgentV2 {
     /// Clear the connection affinity for a completed request.
     pub fn clear_correlation_affinity(&self, correlation_id: &str) {
         self.pool.clear_correlation_affinity(correlation_id);
+    }
+
+    /// TLS settings of a gRPC transport, for the agent client.
+    fn tls_options(&self) -> Option<zentinel_agent_protocol::v2::AgentTlsOptions> {
+        use zentinel_config::AgentTransport;
+        match &self.config.transport {
+            AgentTransport::Grpc { tls: Some(tls), .. } => {
+                Some(zentinel_agent_protocol::v2::AgentTlsOptions {
+                    ca_cert: tls.ca_cert.clone(),
+                    client_cert: tls.client_cert.clone(),
+                    client_key: tls.client_key.clone(),
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Get endpoint from transport config.
