@@ -74,7 +74,10 @@ pub struct RateLimitHeaderInfo {
     pub reset_at: u64,
 }
 
-/// An agent's `Block` decision: what the client is answered with.
+/// An agent's decision to answer the client itself instead of letting the
+/// request through: what the client is answered with. A `Block` in any
+/// phase; in the request phases a `Redirect` or a `Challenge` too
+/// (see [`AgentBlock::for_request`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentBlock {
     pub status: u16,
@@ -86,11 +89,20 @@ pub(crate) struct AgentBlock {
     pub headers: Vec<(String, String)>,
 }
 
+/// The redirect statuses an agent's `Redirect` is answered with; any other
+/// status falls back to [`REDIRECT_FALLBACK_STATUS`].
+const REDIRECT_STATUSES: [u16; 5] = [301, 302, 303, 307, 308];
+const REDIRECT_FALLBACK_STATUS: u16 = 302;
+
 impl AgentBlock {
     /// The block response for `action`, if it is a block.
+    ///
+    /// Used by the response phases, which act on `Block` only so far:
+    /// `Redirect` and `Challenge` there are #588.
     pub(crate) fn from_action(action: &crate::agents::AgentAction) -> Option<Self> {
+        use crate::agents::AgentAction;
         match action {
-            crate::agents::AgentAction::Block {
+            AgentAction::Block {
                 status,
                 body,
                 headers,
@@ -108,7 +120,115 @@ impl AgentBlock {
                     headers,
                 })
             }
-            _ => None,
+            // #588: not yet acted on in the response phase.
+            AgentAction::Allow | AgentAction::Redirect { .. } | AgentAction::Challenge { .. } => {
+                None
+            }
+        }
+    }
+
+    /// The response for an agent's decision in a request phase (request
+    /// headers or request body), or `None` to let the request through.
+    ///
+    /// Only `Allow` lets it through. The match is exhaustive on purpose: a
+    /// decision type added later must be given a response here, it cannot
+    /// fall through to `Allow` (#595).
+    ///
+    /// - `Block`: the agent's status, body and headers.
+    /// - `Redirect` (#594): see [`AgentBlock::redirect`].
+    /// - `Challenge` (#595): see [`AgentBlock::challenge`].
+    pub(crate) fn for_request(action: &crate::agents::AgentAction) -> Option<Self> {
+        use crate::agents::AgentAction;
+        match action {
+            AgentAction::Allow => None,
+            AgentAction::Block { .. } => Self::from_action(action),
+            AgentAction::Redirect { url, status } => Some(Self::redirect(url, *status)),
+            AgentAction::Challenge { params, .. } => Some(Self::challenge(params)),
+        }
+    }
+
+    /// An agent's `Redirect`: the agent's status with `Location: url`.
+    ///
+    /// The status must be one of 301, 302, 303, 307 or 308; any other falls
+    /// back to 302. A URL that cannot be a header value (a control
+    /// character, say) cannot be redirected to: the request is refused with
+    /// a 500 instead of being let through or sent without a `Location`.
+    pub(crate) fn redirect(url: &str, status: u16) -> Self {
+        if http::HeaderValue::from_str(url).is_err() {
+            return Self {
+                status: 500,
+                body: None,
+                headers: Vec::new(),
+            };
+        }
+        let status = if REDIRECT_STATUSES.contains(&status) {
+            status
+        } else {
+            REDIRECT_FALLBACK_STATUS
+        };
+        Self {
+            status,
+            body: None,
+            headers: vec![("Location".to_string(), url.to_string())],
+        }
+    }
+
+    /// An agent's `Challenge`. The proxy cannot run a challenge itself, so
+    /// it fails closed: the request is never let through, and the client
+    /// is answered with the challenge as far as the agent's parameters
+    /// define one. Parameter names are matched case-insensitively:
+    ///
+    /// - `www-authenticate`: an HTTP authentication challenge. The answer
+    ///   is `401 Unauthorized` with this value as its `WWW-Authenticate`
+    ///   header.
+    /// - otherwise (a CAPTCHA, JavaScript or proof-of-work challenge, ...)
+    ///   the answer is `403 Forbidden`.
+    /// - `body`: the response body, e.g. the challenge page. Without one the
+    ///   route's error page for the status is sent, or the default refusal.
+    /// - `content-type`: the Content-Type of `body`; ignored without one.
+    ///
+    /// Other parameters (`token`, `challenge_url`, ...) are not sent to the
+    /// client: their meaning is the agent's, and an agent that wants them
+    /// in front of the client puts them into `body`.
+    pub(crate) fn challenge(params: &std::collections::HashMap<String, String>) -> Self {
+        let param = |name: &str| {
+            // The lowest-sorting key wins should two differ only in case,
+            // so the answer does not depend on the map's order.
+            params
+                .iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                .min_by(|a, b| a.0.cmp(b.0))
+                .map(|(_, value)| value.clone())
+        };
+        let mut headers = Vec::new();
+        let status = match param("www-authenticate") {
+            Some(challenge) => {
+                headers.push(("WWW-Authenticate".to_string(), challenge));
+                401
+            }
+            None => 403,
+        };
+        let body = param("body");
+        if body.is_some() {
+            if let Some(content_type) = param("content-type") {
+                headers.push(("Content-Type".to_string(), content_type));
+            }
+        }
+        Self {
+            status,
+            body,
+            headers,
+        }
+    }
+
+    /// The decision type `action` names, for logs and audit entries.
+    pub(crate) fn action_name(action: &crate::agents::AgentAction) -> &'static str {
+        use crate::agents::AgentAction;
+        match action {
+            AgentAction::Allow => "allow",
+            AgentAction::Block { .. } => "block",
+            AgentAction::Redirect { .. } => "redirect",
+            AgentAction::Challenge { .. } => "challenge",
         }
     }
 
@@ -968,6 +1088,164 @@ impl Default for RequestContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod agent_block {
+        use super::super::AgentBlock;
+        use crate::agents::AgentAction;
+        use std::collections::HashMap;
+
+        fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        }
+
+        fn challenge(pairs: &[(&str, &str)]) -> AgentAction {
+            AgentAction::Challenge {
+                challenge_type: "captcha".to_string(),
+                params: params(pairs),
+            }
+        }
+
+        #[test]
+        fn only_allow_lets_a_request_through() {
+            assert_eq!(AgentBlock::for_request(&AgentAction::Allow), None);
+            for action in [
+                AgentAction::Block {
+                    status: 403,
+                    body: None,
+                    headers: None,
+                },
+                AgentAction::Redirect {
+                    url: "https://example.com/".to_string(),
+                    status: 302,
+                },
+                challenge(&[]),
+            ] {
+                assert!(AgentBlock::for_request(&action).is_some(), "{action:?}");
+            }
+        }
+
+        #[test]
+        fn a_block_is_answered_as_the_agent_asked() {
+            let action = AgentAction::Block {
+                status: 451,
+                body: Some("no".to_string()),
+                headers: Some(HashMap::from([("X-B".to_string(), "1".to_string())])),
+            };
+            let block = AgentBlock::for_request(&action).unwrap();
+            assert_eq!(Some(block.clone()), AgentBlock::from_action(&action));
+            assert_eq!(block.status, 451);
+            assert_eq!(block.body.as_deref(), Some("no"));
+            assert_eq!(block.headers, vec![("X-B".to_string(), "1".to_string())]);
+        }
+
+        #[test]
+        fn the_response_phases_still_act_on_blocks_only() {
+            // #588 decides Redirect and Challenge there.
+            assert_eq!(AgentBlock::from_action(&challenge(&[])), None);
+            assert_eq!(
+                AgentBlock::from_action(&AgentAction::Redirect {
+                    url: "/x".to_string(),
+                    status: 302
+                }),
+                None
+            );
+        }
+
+        #[test]
+        fn a_redirect_keeps_a_redirect_status_and_sets_location() {
+            for status in [301, 302, 303, 307, 308] {
+                let block = AgentBlock::for_request(&AgentAction::Redirect {
+                    url: "https://example.com/login?next=%2F".to_string(),
+                    status,
+                })
+                .unwrap();
+                assert_eq!(block.status, status);
+                assert_eq!(block.body, None);
+                assert_eq!(
+                    block.headers,
+                    vec![(
+                        "Location".to_string(),
+                        "https://example.com/login?next=%2F".to_string()
+                    )]
+                );
+            }
+        }
+
+        #[test]
+        fn a_redirect_with_another_status_falls_back_to_302() {
+            for status in [0, 200, 300, 304, 305, 403, 500] {
+                let block = AgentBlock::redirect("/elsewhere", status);
+                assert_eq!(block.status, 302, "{status}");
+                assert_eq!(
+                    block.headers,
+                    vec![("Location".to_string(), "/elsewhere".to_string())]
+                );
+            }
+        }
+
+        #[test]
+        fn a_redirect_to_a_url_that_is_no_header_value_is_refused() {
+            let block = AgentBlock::redirect("/a\r\nSet-Cookie: x=1", 302);
+            assert_eq!(block.status, 500);
+            assert!(block.headers.is_empty());
+        }
+
+        #[test]
+        fn a_challenge_without_parameters_is_a_bare_403() {
+            let block = AgentBlock::for_request(&challenge(&[])).unwrap();
+            assert_eq!(block.status, 403);
+            assert_eq!(block.body, None);
+            assert!(block.headers.is_empty());
+        }
+
+        #[test]
+        fn a_www_authenticate_challenge_is_a_401_with_the_header() {
+            let block =
+                AgentBlock::for_request(&challenge(&[("WWW-Authenticate", "Basic realm=\"z\"")]))
+                    .unwrap();
+            assert_eq!(block.status, 401);
+            assert_eq!(
+                block.headers,
+                vec![(
+                    "WWW-Authenticate".to_string(),
+                    "Basic realm=\"z\"".to_string()
+                )]
+            );
+        }
+
+        #[test]
+        fn a_challenge_page_is_sent_with_its_content_type() {
+            let block = AgentBlock::challenge(&params(&[
+                ("body", "<html>solve me</html>"),
+                ("Content-Type", "text/html"),
+                ("token", "secret-token"),
+                ("challenge_url", "https://example.com/c"),
+            ]));
+            assert_eq!(block.status, 403);
+            assert_eq!(block.body.as_deref(), Some("<html>solve me</html>"));
+            // Only the content type: other parameters are the agent's.
+            assert_eq!(
+                block.headers,
+                vec![("Content-Type".to_string(), "text/html".to_string())]
+            );
+        }
+
+        #[test]
+        fn a_content_type_without_a_body_is_ignored() {
+            let block = AgentBlock::challenge(&params(&[("content-type", "text/html")]));
+            assert_eq!(block.status, 403);
+            assert!(block.headers.is_empty());
+        }
+
+        #[test]
+        fn action_names() {
+            assert_eq!(AgentBlock::action_name(&AgentAction::Allow), "allow");
+            assert_eq!(AgentBlock::action_name(&challenge(&[])), "challenge");
+        }
+    }
 
     #[test]
     fn test_rate_limit_header_info() {
