@@ -8012,6 +8012,7 @@ dependencies = [
  "chrono",
  "clap",
  "criterion",
+ "daemonix",
  "dashmap 6.2.1",
  "flate2",
  "futures",

@@ -785,14 +785,14 @@ fn init_logging(verbose: bool, timestamps: bool) {
     }
 }
 
-/// Pingora's command-line options, from the CLI flags and the config.
+/// Pingora's command-line options, from the CLI flags.
 ///
-/// `system { daemon #true }` was parsed and never read: only `-d` started a
-/// daemon (#527). Either now does. There is no way to switch daemon mode off
-/// from the command line, as there was none before.
-fn pingora_options(daemon: bool, upgrade: bool, server: &zentinel_config::ServerConfig) -> Opt {
+/// `daemon` is always off: in daemon mode the proxy has already forked by the
+/// time Pingora runs (see `zentinel_proxy::daemon`), and Pingora must not fork
+/// a second time.
+fn pingora_options(upgrade: bool) -> Opt {
     let mut opt = Opt::default();
-    opt.daemon = daemon || server.daemon;
+    opt.daemon = false;
     opt.upgrade = upgrade;
     opt
 }
@@ -863,6 +863,22 @@ fn run_server(
     let logging = resolve_logging_config(effective_config_path.as_deref(), &mut startup_log);
     init_logging(verbose, logging.timestamps);
     startup_log.emit();
+
+    // Daemonize now, while this is the only thread (#573). Everything started
+    // below -- the runtime, the signal thread, background tasks -- has to be
+    // started in the daemon: a fork keeps only the thread that called it.
+    // A configuration that does not load fails here, in the foreground.
+    let daemon_plan =
+        zentinel_proxy::daemon::DaemonPlan::prepare(effective_config_path.as_deref(), daemon)?;
+    if let Some(ref plan) = daemon_plan {
+        plan.daemonize()?;
+        info!(
+            from_cli = plan.from_cli,
+            pid = std::process::id(),
+            pid_file = %plan.pid_file.display(),
+            "Running as a daemon"
+        );
+    }
 
     // Create signal manager for cross-thread communication
     let signal_manager = Arc::new(SignalManager::new());
@@ -1008,10 +1024,7 @@ fn run_server(
     }
 
     // Create Pingora server with our configuration
-    let pingora_opt = pingora_options(daemon, upgrade, &config.server);
-    if pingora_opt.daemon {
-        info!(from_cli = daemon, "Running as a daemon");
-    }
+    let pingora_opt = pingora_options(upgrade);
     let mut server = Server::new_with_opt_and_conf(Some(pingora_opt), pingora_conf);
     server.bootstrap();
 
@@ -1299,6 +1312,13 @@ fn run_server(
         info!("Auto-reload enabled (watching config file)");
     }
     info!("Graceful shutdown enabled (SIGTERM/SIGINT)");
+
+    // A daemon switches to `system { user group }` here, where Pingora did it
+    // when it daemonized: after the configuration, keys and logs are read,
+    // before the listeners are bound.
+    if let Some(ref plan) = daemon_plan {
+        plan.drop_privileges()?;
+    }
 
     // Run server forever
     server.run_forever();
@@ -1637,23 +1657,5 @@ mod tests {
         assert!(ignored[0].contains("'adress'") && ignored[0].contains("is being ignored"));
 
         assert!(ignored_settings(None).is_empty());
-    }
-
-    #[test]
-    fn daemon_mode_comes_from_the_flag_or_the_config() {
-        let mut server = Config::default_for_testing().server;
-        for (flag, config, expected) in [
-            (false, false, false),
-            (true, false, true),
-            (false, true, true),
-            (true, true, true),
-        ] {
-            server.daemon = config;
-            assert_eq!(
-                pingora_options(flag, false, &server).daemon,
-                expected,
-                "flag {flag}, config {config}"
-            );
-        }
     }
 }

@@ -28,10 +28,10 @@ Global server configuration.
 | `worker-threads` | `u32` | `0` | Number of worker threads (0 = auto-detect CPU cores) |
 | `max-connections` | `u32` | `10000` | Maximum total connections |
 | `graceful-shutdown-timeout-secs` | `u64` | `30` | Graceful shutdown timeout in seconds |
-| `daemon` | `bool` | `false` | Run as daemon |
-| `pid-file` | `string` | - | Path to PID file |
-| `user` | `string` | - | User to switch to after binding |
-| `group` | `string` | - | Group to switch to after binding |
+| `daemon` | `bool` | `false` | Run as daemon, as with `-d`. The configuration is checked before the fork, so a broken one fails in the foreground |
+| `pid-file` | `string` | `/tmp/pingora.pid` | Path to the PID file a daemon writes (an existing one is renamed to `<pid-file>.old`) |
+| `user` | `string` | - | User a daemon switches to once the configuration, TLS keys and log files are loaded, before listeners are bound. Ignored in the foreground |
+| `group` | `string` | primary group of `user` | Group a daemon switches to, at the same point as `user`. Ignored in the foreground |
 | `working-directory` | `string` | - | Working directory |
 | `trace-id-format` | `string` | `"tinyflake"` | Trace ID format (`tinyflake` or `uuid`) |
 | `auto-reload` | `bool` | `false` | Auto-reload config on file changes |

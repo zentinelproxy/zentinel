@@ -729,6 +729,28 @@ impl ConfigManager {
 
 ---
 
+## Process
+
+### `daemon`
+
+Daemon mode (`-d` or `system { daemon #true }`).
+
+The proxy forks at the start of `run_server`, while the process has a single
+thread, and Pingora is told not to fork again: threads that exist at a fork
+are lost in the child, which is how the signal thread and the runtime used to
+be missing from the daemon (#573). Before the fork the configuration is loaded
+and validated, so a broken one fails in the foreground with a non-zero exit.
+
+**Key Struct:** `DaemonPlan`
+
+- `prepare` - decide on daemon mode and check the configuration
+- `daemonize` - fork; umask `0o007`, old pid file moved to `<pid-file>.old`,
+  pid file written and locked, stdout/stderr kept, current directory kept
+- `drop_privileges` - switch to `system { user group }` just before
+  `run_forever`, so listeners are bound after the switch (daemon mode only)
+
+---
+
 ## Built-in Handlers
 
 ### `builtin_handlers`
