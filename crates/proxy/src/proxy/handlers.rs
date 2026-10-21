@@ -409,14 +409,17 @@ impl ZentinelProxy {
                     Some(crate::agents::BodyAgent {
                         id: agent_filter.agent.clone(),
                         max_body_bytes: agent_filter.max_body_bytes,
+                        failure_mode: agent_filter
+                            .failure_mode
+                            .unwrap_or(route_config.policies.failure_mode),
                     })
                 }
                 _ => None,
             })
             .collect();
 
-        // Save agent IDs in context for response-phase processing
-        ctx.route_agent_ids = agent_ids.clone();
+        // Save the agent filters in context for response-phase processing
+        ctx.route_agents = agent_filters.clone();
 
         debug!(
             correlation_id = %ctx.trace_id,

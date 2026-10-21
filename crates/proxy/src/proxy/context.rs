@@ -383,8 +383,8 @@ pub struct RequestContext {
     pub(crate) compress_enabled: bool,
 
     // === Response-Phase Agent Processing ===
-    /// Agent IDs resolved from route filters (saved in request phase for response phase)
-    pub(crate) route_agent_ids: Vec<String>,
+    /// The route's agent filters (saved in request phase for response phase)
+    pub(crate) route_agents: Vec<crate::agents::FilterAgent>,
     /// Whether response-phase agent processing is enabled (agent subscribes to response events)
     pub(crate) response_agent_processing_enabled: bool,
     /// Accumulated response body buffer for agent processing (when agent needs full body)
@@ -509,7 +509,7 @@ impl RequestContext {
             filter_upstream_timeout_secs: None,
             cors_origin: None,
             compress_enabled: false,
-            route_agent_ids: Vec::new(),
+            route_agents: Vec::new(),
             response_agent_processing_enabled: false,
             response_agent_body_buffer: Vec::new(),
             response_agent_body_complete: false,

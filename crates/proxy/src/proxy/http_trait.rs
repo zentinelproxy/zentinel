@@ -2590,8 +2590,8 @@ impl ProxyHttp for ZentinelProxy {
         }
 
         // Process response headers through agents (for agents that subscribe to ResponseHeaders events)
-        if !ctx.route_agent_ids.is_empty() {
-            let agent_ids = ctx.route_agent_ids.clone();
+        if !ctx.route_agents.is_empty() {
+            let agent_ids = ctx.route_agents.clone();
             let mut resp_headers_map: std::collections::HashMap<String, Vec<String>> =
                 std::collections::HashMap::with_capacity(upstream_response.headers.len());
             for (name, value) in upstream_response.headers.iter() {
@@ -3099,13 +3099,13 @@ impl ProxyHttp for ZentinelProxy {
         }
 
         // Process response body through agents (for agents that subscribe to ResponseBody events)
-        if ctx.response_agent_processing_enabled && !ctx.route_agent_ids.is_empty() {
+        if ctx.response_agent_processing_enabled && !ctx.route_agents.is_empty() {
             if let Some(ref chunk) = body {
                 ctx.response_agent_body_buffer.extend_from_slice(chunk);
             }
 
             if end_of_stream {
-                let agent_ids = ctx.route_agent_ids.clone();
+                let agent_ids = ctx.route_agents.clone();
                 let buffer = std::mem::take(&mut ctx.response_agent_body_buffer);
                 let chunk_index = 0u32;
                 let total_size = Some(buffer.len());
@@ -4018,7 +4018,7 @@ impl ProxyHttp for ZentinelProxy {
 
         // Release per-request agent state (correlation affinity) now that the
         // request is complete; the pool TTL sweep is only the backstop.
-        if !ctx.route_agent_ids.is_empty()
+        if !ctx.route_agents.is_empty()
             || !ctx.body_inspection_agents.is_empty()
             || !ctx.websocket_inspection_agents.is_empty()
         {

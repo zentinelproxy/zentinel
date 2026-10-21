@@ -83,17 +83,23 @@ pub struct BodyAgent {
     pub id: String,
     /// The agent filter's `max-body-bytes`, if it set one.
     pub max_body_bytes: Option<usize>,
+    /// The filter's failure mode, else the route's. Applies when the agent
+    /// is not loaded; a loaded agent's call failures follow its own.
+    pub failure_mode: FailureMode,
+}
+
+impl From<&FilterAgent> for BodyAgent {
+    /// The agent of a filter, without a body limit of its own.
+    fn from(filter: &FilterAgent) -> Self {
+        Self {
+            id: filter.id.clone(),
+            max_body_bytes: None,
+            failure_mode: filter.failure_mode,
+        }
+    }
 }
 
 impl BodyAgent {
-    /// An agent without a filter limit of its own.
-    pub fn unlimited(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            max_body_bytes: None,
-        }
-    }
-
     /// The largest body this filter sends its agent, given the agent's own
     /// limit: the smaller of the two. A filter narrows its agent's limit for
     /// its routes; it cannot raise it.
@@ -103,7 +109,91 @@ impl BodyAgent {
     }
 }
 
+/// How an event path names an agent of a route's filter chain.
+trait AgentRef {
+    fn agent_id(&self) -> &str;
+}
+
+impl AgentRef for FilterAgent {
+    fn agent_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl AgentRef for BodyAgent {
+    fn agent_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl AgentRef for &str {
+    fn agent_id(&self) -> &str {
+        self
+    }
+}
+
+/// What one filter's agent id resolved to; see
+/// [`AgentManager::resolve_agents`].
+enum Resolved<'f, F> {
+    /// The agent is loaded. The `Arc` keeps it alive for the call even if a
+    /// reload retires it meanwhile, so the call finishes on it.
+    Loaded(&'f F, Arc<AgentV2>),
+    /// No agent with this id is loaded. Every event path treats this as a
+    /// failed call (#571).
+    NotLoaded(&'f F),
+}
+
 impl AgentManager {
+    /// Resolve a filter chain's agent ids to loaded agents. Every lookup of
+    /// an agent by id goes through here.
+    ///
+    /// A loaded agent that does not subscribe to `event_type` is left out
+    /// (`None`: no event filter). An id with no loaded agent is never left
+    /// out: its agent's subscriptions are unknown, and a filter naming it was
+    /// configured to inspect this request. Event paths must answer
+    /// [`Resolved::NotLoaded`] as a failed call -- see
+    /// [`report_not_loaded`](Self::report_not_loaded) -- so a new event path
+    /// cannot skip an unknown agent without a sound.
+    ///
+    /// The map's lock is held only for the lookup; calls run on the cloned
+    /// `Arc`s, so a reload can retire an agent without waiting for them.
+    async fn resolve_agents<'f, F: AgentRef>(
+        &self,
+        filters: &'f [F],
+        event_type: Option<EventType>,
+    ) -> Vec<Resolved<'f, F>> {
+        let agents = self.agents.read().await;
+        filters
+            .iter()
+            .filter_map(|filter| match agents.get(filter.agent_id()) {
+                Some(agent) => match event_type {
+                    Some(event) if !agent.handles_event(event) => None,
+                    _ => Some(Resolved::Loaded(filter, Arc::clone(agent))),
+                },
+                None => Some(Resolved::NotLoaded(filter)),
+            })
+            .collect()
+    }
+
+    /// Log and count a call to an agent that is not loaded. The caller then
+    /// answers it like any failed call of its event path.
+    fn report_not_loaded(
+        &self,
+        correlation_id: &str,
+        event_type: EventType,
+        agent_id: &str,
+        failure_mode: Option<FailureMode>,
+    ) {
+        self.metrics.record_failure();
+        error!(
+            correlation_id = %correlation_id,
+            agent_id = %agent_id,
+            event_type = ?event_type,
+            failure_mode = ?failure_mode,
+            "Filter references an agent that is not loaded"
+        );
+    }
+
     /// Create new agent manager.
     ///
     /// Each agent gets its own semaphore for queue isolation, preventing a slow
@@ -165,14 +255,15 @@ impl AgentManager {
     /// Check if any of the given route agents handle a specific event type.
     pub async fn any_agent_handles_event(
         &self,
-        route_agents: &[String],
+        route_agents: &[FilterAgent],
         event_type: EventType,
     ) -> bool {
-        let agents = self.agents.read().await;
-        route_agents
+        // An agent that is not loaded is not counted: whether it subscribes
+        // is unknown, and its failure is answered by the event's dispatch.
+        self.resolve_agents(route_agents, Some(event_type))
+            .await
             .iter()
-            .filter_map(|id| agents.get(id))
-            .any(|agent| agent.handles_event(event_type))
+            .any(|resolved| matches!(resolved, Resolved::Loaded(..)))
     }
 
     /// Process request headers through agents.
@@ -309,7 +400,7 @@ impl AgentManager {
         chunk_index: u32,
         bytes_sent: usize,
         total_size: Option<usize>,
-        route_agents: &[String],
+        route_agents: &[FilterAgent],
     ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
@@ -322,7 +413,7 @@ impl AgentManager {
 
         // Enforce per-agent body inspection limits on the cumulative size.
         // Agent filters' body settings concern request bodies only.
-        let route_agents: Vec<BodyAgent> = route_agents.iter().map(BodyAgent::unlimited).collect();
+        let route_agents: Vec<BodyAgent> = route_agents.iter().map(BodyAgent::from).collect();
         let inspecting_agents = match self
             .apply_body_limits(ctx, &route_agents, bytes_sent, EventType::ResponseBodyChunk)
             .await
@@ -355,7 +446,7 @@ impl AgentManager {
         ctx: &AgentCallContext,
         status: u16,
         headers: &HashMap<String, Vec<String>>,
-        route_agents: &[String],
+        route_agents: &[FilterAgent],
     ) -> ZentinelResult<AgentDecision> {
         let event = ResponseHeadersEvent {
             correlation_id: ctx.correlation_id.to_string(),
@@ -516,23 +607,18 @@ impl AgentManager {
         &self,
         event_type: EventType,
         event: &T,
-        route_agents: &[String],
+        route_agents: &[FilterAgent],
         ctx: &AgentCallContext,
     ) -> ZentinelResult<AgentDecision> {
         trace!(
             correlation_id = %ctx.correlation_id,
             event_type = ?event_type,
-            route_agents = ?route_agents,
+            route_agents = ?route_agents.iter().map(|a| &a.id).collect::<Vec<_>>(),
             "Starting agent event processing"
         );
 
         // Get relevant agents for this route and event type
-        let agents = self.agents.read().await;
-        let relevant_agents: Vec<_> = route_agents
-            .iter()
-            .filter_map(|id| agents.get(id))
-            .filter(|agent| agent.handles_event(event_type))
-            .collect();
+        let relevant_agents = self.resolve_agents(route_agents, Some(event_type)).await;
 
         if relevant_agents.is_empty() {
             trace!(
@@ -547,14 +633,33 @@ impl AgentManager {
             correlation_id = %ctx.correlation_id,
             event_type = ?event_type,
             agent_count = relevant_agents.len(),
-            agent_ids = ?relevant_agents.iter().map(|a| a.id()).collect::<Vec<_>>(),
+            agent_ids = ?route_agents.iter().map(|a| &a.id).collect::<Vec<_>>(),
             "Processing event through agents"
         );
 
         // Process through each agent sequentially
         let mut combined_decision = AgentDecision::default_allow();
 
-        for (agent_index, agent) in relevant_agents.iter().enumerate() {
+        for (agent_index, resolved) in relevant_agents.iter().enumerate() {
+            let agent = match resolved {
+                Resolved::Loaded(_, agent) => agent,
+                // Not loaded: a failed call that cannot be made, answered as
+                // an open circuit breaker is below, by the filter's failure
+                // mode (the agent has none of its own to apply).
+                Resolved::NotLoaded(filter) => {
+                    self.report_not_loaded(
+                        ctx.correlation_id.as_str(),
+                        event_type,
+                        &filter.id,
+                        Some(filter.failure_mode),
+                    );
+                    if filter.failure_mode == FailureMode::Closed {
+                        return Ok(AgentDecision::block(503, "Service unavailable")
+                            .with_decided_by(&filter.id));
+                    }
+                    continue;
+                }
+            };
             trace!(
                 correlation_id = %ctx.correlation_id,
                 agent_id = %agent.id(),
@@ -707,224 +812,6 @@ impl AgentManager {
         Ok(combined_decision)
     }
 
-    /// Process an event through relevant agents with per-filter failure modes.
-    ///
-    /// This is the preferred method for processing events as it respects the
-    /// failure mode configured on each filter, not just the agent's default.
-    async fn process_event_with_failure_modes<T: serde::Serialize>(
-        &self,
-        event_type: EventType,
-        event: &T,
-        route_agents: &[(String, FailureMode)],
-        ctx: &AgentCallContext,
-    ) -> ZentinelResult<AgentDecision> {
-        trace!(
-            correlation_id = %ctx.correlation_id,
-            event_type = ?event_type,
-            route_agents = ?route_agents.iter().map(|(id, _)| id).collect::<Vec<_>>(),
-            "Starting agent event processing with failure modes"
-        );
-
-        // Get relevant agents for this route and event type, preserving failure modes
-        let agents = self.agents.read().await;
-        let relevant_agents: Vec<_> = route_agents
-            .iter()
-            .filter_map(|(id, failure_mode)| agents.get(id).map(|agent| (agent, *failure_mode)))
-            .filter(|(agent, _)| agent.handles_event(event_type))
-            .collect();
-
-        if relevant_agents.is_empty() {
-            trace!(
-                correlation_id = %ctx.correlation_id,
-                event_type = ?event_type,
-                "No relevant agents for event, allowing request"
-            );
-            return Ok(AgentDecision::default_allow());
-        }
-
-        debug!(
-            correlation_id = %ctx.correlation_id,
-            event_type = ?event_type,
-            agent_count = relevant_agents.len(),
-            agent_ids = ?relevant_agents.iter().map(|(a, _)| a.id()).collect::<Vec<_>>(),
-            "Processing event through agents"
-        );
-
-        // Process through each agent sequentially
-        let mut combined_decision = AgentDecision::default_allow();
-
-        for (agent_index, (agent, filter_failure_mode)) in relevant_agents.iter().enumerate() {
-            trace!(
-                correlation_id = %ctx.correlation_id,
-                agent_id = %agent.id(),
-                agent_index = agent_index,
-                event_type = ?event_type,
-                filter_failure_mode = ?filter_failure_mode,
-                "Processing event through agent with filter failure mode"
-            );
-
-            // Acquire per-agent semaphore permit (queue isolation)
-            let semaphores = self.agent_semaphores.read().await;
-            let agent_semaphore = semaphores.get(agent.id()).cloned();
-            drop(semaphores); // Release lock before awaiting
-
-            let _permit = if let Some(semaphore) = agent_semaphore {
-                trace!(
-                    correlation_id = %ctx.correlation_id,
-                    agent_id = %agent.id(),
-                    "Acquiring per-agent semaphore permit"
-                );
-                Some(semaphore.acquire_owned().await.map_err(|_| {
-                    error!(
-                        correlation_id = %ctx.correlation_id,
-                        agent_id = %agent.id(),
-                        "Failed to acquire agent call semaphore permit"
-                    );
-                    ZentinelError::Internal {
-                        message: "Failed to acquire agent call permit".to_string(),
-                        correlation_id: Some(ctx.correlation_id.to_string()),
-                        source: None,
-                    }
-                })?)
-            } else {
-                // No semaphore found (shouldn't happen, but fail gracefully)
-                warn!(
-                    correlation_id = %ctx.correlation_id,
-                    agent_id = %agent.id(),
-                    "No semaphore found for agent, proceeding without queue isolation"
-                );
-                None
-            };
-
-            // Check circuit breaker
-            if !agent.circuit_breaker().is_closed() {
-                warn!(
-                    agent_id = %agent.id(),
-                    correlation_id = %ctx.correlation_id,
-                    filter_failure_mode = ?filter_failure_mode,
-                    "Circuit breaker open, skipping agent"
-                );
-
-                // Handle based on filter's failure mode (not agent's default)
-                if *filter_failure_mode == FailureMode::Closed {
-                    debug!(
-                        correlation_id = %ctx.correlation_id,
-                        agent_id = %agent.id(),
-                        "Blocking request due to circuit breaker (filter fail-closed mode)"
-                    );
-                    return Ok(AgentDecision::block(503, "Service unavailable")
-                        .with_decided_by(agent.id()));
-                }
-                // Fail-open: continue to next agent
-                continue;
-            }
-
-            // Call agent with timeout
-            let start = Instant::now();
-            let timeout_duration = Duration::from_millis(agent.timeout_ms());
-
-            trace!(
-                correlation_id = %ctx.correlation_id,
-                agent_id = %agent.id(),
-                timeout_ms = agent.timeout_ms(),
-                "Calling agent"
-            );
-
-            match timeout(timeout_duration, agent.call_event(event_type, event)).await {
-                Ok(Ok(response)) => {
-                    let duration = start.elapsed();
-                    agent.record_success(duration);
-
-                    trace!(
-                        correlation_id = %ctx.correlation_id,
-                        agent_id = %agent.id(),
-                        duration_ms = duration.as_millis(),
-                        decision = ?response,
-                        "Agent call succeeded"
-                    );
-
-                    // Merge response into combined decision (attributed to this agent)
-                    combined_decision.merge(AgentDecision::from_response(response, agent.id()));
-
-                    // If decision is to block/redirect/challenge, stop processing
-                    if !combined_decision.is_allow() {
-                        debug!(
-                            correlation_id = %ctx.correlation_id,
-                            agent_id = %agent.id(),
-                            decision = ?combined_decision,
-                            "Agent returned blocking decision, stopping agent chain"
-                        );
-                        break;
-                    }
-                }
-                Ok(Err(e)) => {
-                    agent.record_failure();
-                    error!(
-                        agent_id = %agent.id(),
-                        correlation_id = %ctx.correlation_id,
-                        error = %e,
-                        duration_ms = start.elapsed().as_millis(),
-                        filter_failure_mode = ?filter_failure_mode,
-                        "Agent call failed"
-                    );
-
-                    // Use filter's failure mode, not agent's default
-                    if *filter_failure_mode == FailureMode::Closed {
-                        debug!(
-                            correlation_id = %ctx.correlation_id,
-                            agent_id = %agent.id(),
-                            "Blocking request due to agent failure (filter fail-closed mode)"
-                        );
-                        return Ok(AgentDecision::block(503, "Agent unavailable")
-                            .with_decided_by(agent.id()));
-                    }
-                    // Fail-open: continue to next agent (or proceed without this agent)
-                    debug!(
-                        correlation_id = %ctx.correlation_id,
-                        agent_id = %agent.id(),
-                        "Continuing despite agent failure (filter fail-open mode)"
-                    );
-                }
-                Err(_) => {
-                    agent.record_timeout();
-                    warn!(
-                        agent_id = %agent.id(),
-                        correlation_id = %ctx.correlation_id,
-                        timeout_ms = agent.timeout_ms(),
-                        filter_failure_mode = ?filter_failure_mode,
-                        "Agent call timed out"
-                    );
-
-                    // Use filter's failure mode, not agent's default
-                    if *filter_failure_mode == FailureMode::Closed {
-                        debug!(
-                            correlation_id = %ctx.correlation_id,
-                            agent_id = %agent.id(),
-                            "Blocking request due to timeout (filter fail-closed mode)"
-                        );
-                        return Ok(AgentDecision::block(504, "Gateway timeout")
-                            .with_decided_by(agent.id()));
-                    }
-                    // Fail-open: continue to next agent
-                    debug!(
-                        correlation_id = %ctx.correlation_id,
-                        agent_id = %agent.id(),
-                        "Continuing despite timeout (filter fail-open mode)"
-                    );
-                }
-            }
-        }
-
-        trace!(
-            correlation_id = %ctx.correlation_id,
-            decision = ?combined_decision,
-            agents_processed = relevant_agents.len(),
-            "Agent event processing with failure modes completed"
-        );
-
-        Ok(combined_decision)
-    }
-
     /// Process an event through relevant agents in parallel.
     ///
     /// This method executes all agent calls concurrently using `join_all`, which
@@ -954,33 +841,39 @@ impl AgentManager {
         );
 
         // Get relevant agents for this route and event type
-        let agents = self.agents.read().await;
+        let resolved = self.resolve_agents(route_agents, Some(event_type)).await;
         let semaphores = self.agent_semaphores.read().await;
 
         // Collect agent info upfront to minimize lock duration
-        let agent_info: Vec<_> = route_agents
-            .iter()
-            .filter_map(|filter| {
-                let agent = agents.get(&filter.id)?;
-                if !agent.handles_event(event_type) {
-                    return None;
+        let mut not_loaded = Vec::new();
+        let agent_info: Vec<_> = resolved
+            .into_iter()
+            .filter_map(|resolved| match resolved {
+                Resolved::Loaded(filter, agent) => {
+                    let semaphore = semaphores.get(&filter.id).cloned();
+                    let timeout_ms = filter.effective_timeout_ms(agent.timeout_ms());
+                    Some((agent, filter.failure_mode, timeout_ms, semaphore))
                 }
-                let semaphore = semaphores.get(&filter.id).cloned();
-                let timeout_ms = filter.effective_timeout_ms(agent.timeout_ms());
-                Some((
-                    Arc::clone(agent),
-                    filter.failure_mode,
-                    timeout_ms,
-                    semaphore,
-                ))
+                Resolved::NotLoaded(filter) => {
+                    not_loaded.push(filter);
+                    None
+                }
             })
             .collect();
 
         // Release locks early
-        drop(agents);
         drop(semaphores);
 
-        if agent_info.is_empty() {
+        for filter in &not_loaded {
+            self.report_not_loaded(
+                ctx.correlation_id.as_str(),
+                event_type,
+                &filter.id,
+                Some(filter.failure_mode),
+            );
+        }
+
+        if agent_info.is_empty() && not_loaded.is_empty() {
             trace!(
                 correlation_id = %ctx.correlation_id,
                 event_type = ?event_type,
@@ -1097,7 +990,17 @@ impl AgentManager {
             .collect();
 
         // Execute all agent calls in parallel
-        let results = join_all(futures).await;
+        let mut results = join_all(futures).await;
+
+        // An agent that is not loaded is a call that failed: answered below
+        // exactly as one whose agent could not be reached.
+        results.extend(not_loaded.iter().map(|filter| {
+            Err((
+                filter.id.clone(),
+                filter.failure_mode,
+                "Agent not loaded".to_string(),
+            ))
+        }));
 
         // Process results and merge decisions
         let mut combined_decision = AgentDecision::default_allow();
@@ -1178,16 +1081,29 @@ impl AgentManager {
         agent_name: &str,
         event: GuardrailInspectEvent,
     ) -> ZentinelResult<AgentResponse> {
-        let agents = self.agents.read().await;
-        let agent = agents.get(agent_name).ok_or_else(|| ZentinelError::Agent {
-            agent: agent_name.to_string(),
-            message: format!("Agent '{}' not found", agent_name),
-            event: "guardrail_inspect".to_string(),
-            source: None,
-        })?;
-
-        let agent = Arc::clone(agent);
-        drop(agents); // Release lock before calling
+        let agent = match self
+            .resolve_agents(std::slice::from_ref(&agent_name), None)
+            .await
+            .pop()
+        {
+            Some(Resolved::Loaded(_, agent)) => agent,
+            // Not loaded: a failed call; the guardrail's failure mode
+            // decides what it means.
+            _ => {
+                self.report_not_loaded(
+                    &event.correlation_id,
+                    EventType::GuardrailInspect,
+                    agent_name,
+                    None,
+                );
+                return Err(ZentinelError::Agent {
+                    agent: agent_name.to_string(),
+                    message: format!("Agent '{}' not found", agent_name),
+                    event: "guardrail_inspect".to_string(),
+                    source: None,
+                });
+            }
+        };
 
         // Acquire per-agent semaphore permit
         let semaphores = self.agent_semaphores.read().await;
@@ -1366,10 +1282,14 @@ impl AgentManager {
     ///
     /// Returns None if the agent doesn't exist.
     pub async fn get_v2_metrics_collector(&self, agent_id: &str) -> Option<Arc<MetricsCollector>> {
-        let agents = self.agents.read().await;
-        agents
-            .get(agent_id)
-            .map(|agent| agent.pool_metrics_collector_arc())
+        match self
+            .resolve_agents(std::slice::from_ref(&agent_id), None)
+            .await
+            .pop()
+        {
+            Some(Resolved::Loaded(_, agent)) => Some(agent.pool_metrics_collector_arc()),
+            _ => None,
+        }
     }
 
     /// Enforce per-agent body inspection limits for a body of `body_size` bytes.
@@ -1387,22 +1307,27 @@ impl AgentManager {
         body_size: usize,
         event_type: EventType,
     ) -> BodyLimitsResult {
-        let agents = self.agents.read().await;
-        let limits: Vec<(String, FailureMode, usize)> = route_agents
+        let resolved = self.resolve_agents(route_agents, Some(event_type)).await;
+        let limits: Vec<(String, FailureMode, usize)> = resolved
             .iter()
-            .filter_map(|body_agent| agents.get(&body_agent.id).map(|a| (body_agent, a)))
-            .filter(|(_, agent)| agent.handles_event(event_type))
-            .map(|(body_agent, agent)| {
-                let limit = if event_type == EventType::ResponseBodyChunk {
-                    agent.max_response_body_bytes()
-                } else {
-                    agent.max_request_body_bytes()
-                };
-                (
-                    agent.id().to_string(),
-                    agent.failure_mode(),
-                    body_agent.effective_limit(limit),
-                )
+            .map(|resolved| match resolved {
+                Resolved::Loaded(body_agent, agent) => {
+                    let limit = if event_type == EventType::ResponseBodyChunk {
+                        agent.max_response_body_bytes()
+                    } else {
+                        agent.max_request_body_bytes()
+                    };
+                    (
+                        agent.id().to_string(),
+                        agent.failure_mode(),
+                        body_agent.effective_limit(limit),
+                    )
+                }
+                // No limit to enforce; passed on to the dispatch, which
+                // answers it as a failed call.
+                Resolved::NotLoaded(body_agent) => {
+                    (body_agent.id.clone(), body_agent.failure_mode, usize::MAX)
+                }
             })
             .collect();
 
@@ -1417,8 +1342,13 @@ impl AgentManager {
                 event_type = ?event_type,
                 "Body exceeds agent inspection limit, skipping agent (fail-open)"
             );
-            if let Some(agent) = agents.get(agent_id) {
-                agent.metrics().record_body_size_skip();
+            for resolved in &resolved {
+                if let Resolved::Loaded(_, agent) = resolved {
+                    if agent.id() == agent_id {
+                        agent.metrics().record_body_size_skip();
+                        break;
+                    }
+                }
             }
         }
 
@@ -1437,14 +1367,30 @@ impl AgentManager {
             ));
         }
 
-        BodyLimitsResult::Proceed(outcome.allowed)
+        let allowed = outcome
+            .allowed
+            .into_iter()
+            .map(|id| {
+                let failure_mode = route_agents
+                    .iter()
+                    .find(|body_agent| body_agent.id == id)
+                    .map_or(FailureMode::Closed, |body_agent| body_agent.failure_mode);
+                FilterAgent {
+                    id,
+                    failure_mode,
+                    timeout_ms: None,
+                }
+            })
+            .collect();
+        BodyLimitsResult::Proceed(allowed)
     }
 }
 
 /// Result of enforcing body inspection limits.
 enum BodyLimitsResult {
-    /// Agents (within their limits) that may inspect the body.
-    Proceed(Vec<String>),
+    /// Agents (within their limits) that may inspect the body, and those
+    /// that are not loaded.
+    Proceed(Vec<FilterAgent>),
     /// A fail-closed agent's limit was exceeded; the request must be blocked.
     Block(Box<AgentDecision>),
 }
@@ -1488,6 +1434,7 @@ fn evaluate_body_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     fn agent_from_kdl(circuit_breaker: &str) -> AgentConfig {
         let kdl = format!(
@@ -1620,6 +1567,7 @@ mod tests {
         let agent = |max_body_bytes| BodyAgent {
             id: "a".to_string(),
             max_body_bytes,
+            failure_mode: FailureMode::Closed,
         };
         assert_eq!(agent(None).effective_limit(1024), 1024);
         assert_eq!(agent(Some(16)).effective_limit(1024), 16);
@@ -1676,6 +1624,7 @@ mod tests {
         let limited = [BodyAgent {
             id: "waf".to_string(),
             max_body_bytes: Some(10),
+            failure_mode: FailureMode::Closed,
         }];
         let decision = manager
             .process_request_body(&call_context(), &[b'x'; 100], true, &limited)
@@ -1688,7 +1637,10 @@ mod tests {
 
         // Without the filter limit the same body is within the agent's 1024
         // bytes, so the agent is called (and, unreachable, fails instead).
-        let unlimited = [BodyAgent::unlimited("waf")];
+        let unlimited = [BodyAgent {
+            max_body_bytes: None,
+            ..limited[0].clone()
+        }];
         let outcome = manager
             .process_request_body(&call_context(), &[b'x'; 100], true, &unlimited)
             .await;
@@ -1701,5 +1653,141 @@ mod tests {
                 "the agent's own limit was not exceeded"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // #571: an agent that is not loaded is a failed call on every path
+    // ------------------------------------------------------------------
+
+    fn filter(id: &str, failure_mode: FailureMode) -> FilterAgent {
+        FilterAgent {
+            id: id.to_string(),
+            failure_mode,
+            timeout_ms: None,
+        }
+    }
+
+    fn body_filter(id: &str, failure_mode: FailureMode) -> BodyAgent {
+        BodyAgent::from(&filter(id, failure_mode))
+    }
+
+    fn status_of(decision: &AgentDecision) -> Option<u16> {
+        match decision.action {
+            crate::agents::AgentAction::Block { status, .. } => Some(status),
+            _ => None,
+        }
+    }
+
+    /// Every event path a filter's agent is dispatched on, against a manager
+    /// where the agent named is not loaded: `(path, decision)`.
+    async fn decisions_for_missing_agent(
+        failure_mode: FailureMode,
+    ) -> Vec<(&'static str, AgentDecision)> {
+        let manager = AgentManager::new(Vec::new()).await.expect("manager");
+        let ctx = call_context();
+        let filters = [filter("gone", failure_mode)];
+        let bodies = [body_filter("gone", failure_mode)];
+        let headers = HashMap::new();
+        let decide = |path, outcome: ZentinelResult<AgentDecision>| {
+            (path, outcome.unwrap_or_else(|e| panic!("{path}: {e}")))
+        };
+        let decisions = vec![
+            decide(
+                "request headers",
+                manager
+                    .process_request_headers(&ctx, HashMap::new(), &filters)
+                    .await,
+            ),
+            decide(
+                "request body",
+                manager
+                    .process_request_body(&ctx, b"x", true, &bodies)
+                    .await,
+            ),
+            decide(
+                "request body chunk",
+                manager
+                    .process_request_body_streaming(&ctx, b"x", false, 3, 64, None, &bodies)
+                    .await,
+            ),
+            decide(
+                "response headers",
+                manager
+                    .process_response_headers(&ctx, 200, &headers, &filters)
+                    .await,
+            ),
+            decide(
+                "response body chunk",
+                manager
+                    .process_response_body_streaming(&ctx, b"x", true, 0, 1, Some(1), &filters)
+                    .await,
+            ),
+        ];
+        assert_eq!(
+            manager.metrics().calls_failed.load(Ordering::Relaxed),
+            decisions.len() as u64,
+            "each missing-agent call is counted as a failed call"
+        );
+        decisions
+    }
+
+    /// #571: on main only request headers blocked; the body and response
+    /// paths skipped the unknown id and allowed.
+    #[tokio::test]
+    async fn a_fail_closed_filter_whose_agent_is_not_loaded_blocks_on_every_path() {
+        for (path, decision) in decisions_for_missing_agent(FailureMode::Closed).await {
+            assert_eq!(status_of(&decision), Some(503), "{path}: {decision:?}");
+            assert_eq!(decision.decided_by.as_deref(), Some("gone"), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fail_open_filter_whose_agent_is_not_loaded_allows_on_every_path() {
+        for (path, decision) in decisions_for_missing_agent(FailureMode::Open).await {
+            assert!(decision.is_allow(), "{path}: {decision:?}");
+        }
+    }
+
+    /// The case #571 names: an agent filter only the response phase
+    /// reaches (the request phase already answered), closed, agent gone.
+    #[tokio::test]
+    async fn a_response_only_filter_whose_agent_is_not_loaded_fails_closed() {
+        let manager = AgentManager::new(Vec::new()).await.expect("manager");
+        let decision = manager
+            .process_response_headers(
+                &call_context(),
+                200,
+                &HashMap::new(),
+                &[filter("response-only", FailureMode::Closed)],
+            )
+            .await
+            .expect("decided");
+        assert_eq!(status_of(&decision), Some(503));
+        // Not counted as subscribing to response bodies: its failure was
+        // answered by the response-headers dispatch.
+        assert!(
+            !manager
+                .any_agent_handles_event(
+                    &[filter("response-only", FailureMode::Closed)],
+                    EventType::ResponseBodyChunk
+                )
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn a_guardrail_whose_agent_is_not_loaded_is_a_failed_call() {
+        let manager = AgentManager::new(Vec::new()).await.expect("manager");
+        let event = GuardrailInspectEvent {
+            correlation_id: "t".to_string(),
+            inspection_type: zentinel_agent_protocol::GuardrailInspectionType::PromptInjection,
+            content: String::new(),
+            model: None,
+            categories: Vec::new(),
+            route_id: None,
+            metadata: HashMap::new(),
+        };
+        assert!(manager.call_guardrail_agent("gone", event).await.is_err());
+        assert_eq!(manager.metrics().calls_failed.load(Ordering::Relaxed), 1);
     }
 }
