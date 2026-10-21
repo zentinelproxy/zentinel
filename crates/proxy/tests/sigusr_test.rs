@@ -16,15 +16,21 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-fn free_port(range: std::ops::Range<u16>) -> u16 {
-    range
-        .into_iter()
-        .find(|&port| TcpListener::bind(("127.0.0.1", port)).is_ok())
-        .expect("a free port")
+/// A port the kernel just handed out for 127.0.0.1. It is released before the
+/// proxy binds it, so `start_proxy` retries when someone else takes it first.
+fn ephemeral_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .expect("bind an ephemeral port")
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
-fn backend(port: u16) {
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind backend");
+/// Start a backend on a port of its own choosing and return that port. The
+/// listener is never released, so this cannot race.
+fn backend() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind backend");
+    let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -43,6 +49,7 @@ fn backend(port: u16) {
             });
         }
     });
+    port
 }
 
 fn get(proxy: u16, path: &str) -> Option<u16> {
@@ -67,7 +74,7 @@ struct Proxy {
 }
 
 impl Proxy {
-    fn start(config: &Path, port: u16) -> Self {
+    fn try_start(config: &Path, port: u16) -> Result<Self, String> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_zentinel"))
             .arg("-c")
             .arg(config)
@@ -90,18 +97,39 @@ impl Proxy {
             lines,
             log: Vec::new(),
         };
-        proxy.wait_for("Zentinel proxy started successfully");
+        proxy.try_wait_for("Zentinel proxy started successfully")?;
         // The line is logged before the listeners are bound.
         let deadline = Instant::now() + Duration::from_secs(30);
         while TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < deadline, "the proxy never listened");
+            if let Some(status) = proxy.child.try_wait().unwrap() {
+                return Err(format!(
+                    "the proxy exited ({status:?}) before it listened; log:\n{}",
+                    proxy.drain_log()
+                ));
+            }
+            if Instant::now() > deadline {
+                return Err("the proxy never listened".to_string());
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
-        proxy
+        Ok(proxy)
+    }
+
+    fn drain_log(&mut self) -> String {
+        while let Ok(line) = self.lines.try_recv() {
+            self.log.push(line);
+        }
+        self.log.join("\n")
+    }
+
+    fn wait_for(&mut self, needle: &str) {
+        if let Err(message) = self.try_wait_for(needle) {
+            panic!("{message}");
+        }
     }
 
     /// Read the proxy's output until a line contains `needle`.
-    fn wait_for(&mut self, needle: &str) {
+    fn try_wait_for(&mut self, needle: &str) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             match self.lines.recv_timeout(Duration::from_millis(100)) {
@@ -109,20 +137,20 @@ impl Proxy {
                     let found = line.contains(needle);
                     self.log.push(line);
                     if found {
-                        return;
+                        return Ok(());
                     }
                 }
                 Err(_) => {
                     if let Some(status) = self.child.try_wait().unwrap() {
-                        panic!(
+                        return Err(format!(
                             "the proxy exited ({status:?}) before {needle:?}; log:\n{}",
-                            self.log.join("\n")
-                        );
+                            self.drain_log()
+                        ));
                     }
                 }
             }
         }
-        panic!("never saw {needle:?}; log:\n{}", self.log.join("\n"));
+        Err(format!("never saw {needle:?}; log:\n{}", self.drain_log()))
     }
 
     fn signal(&self, sig: libc::c_int) {
@@ -150,20 +178,18 @@ impl Drop for Proxy {
     }
 }
 
-#[test]
-fn sigusr1_reopens_the_logs_and_sigusr2_is_ignored() {
-    let backend_port = free_port(19960..19970);
-    backend(backend_port);
-    let proxy_port = free_port(19970..19980);
-
-    let dir = tempfile::tempdir().unwrap();
-    let access = dir.path().join("access.log");
-    let rotated = dir.path().join("access.log.1");
-    let config = dir.path().join("zentinel.kdl");
-    std::fs::write(
-        &config,
-        format!(
-            r#"
+/// Write the config for a fresh port and start the proxy on it. Another process
+/// can take the port between the probe and the bind, so a proxy that dies
+/// before it listens is tried again on a new port.
+fn start_proxy(dir: &Path, backend_port: u16, access: &Path) -> (Proxy, u16) {
+    let config = dir.join("zentinel.kdl");
+    let mut last = String::new();
+    for _ in 0..5 {
+        let proxy_port = ephemeral_port();
+        std::fs::write(
+            &config,
+            format!(
+                r#"
 system {{ worker-threads 1 }}
 listeners {{
     listener "http" {{
@@ -187,19 +213,42 @@ observability {{
     logging {{
         access-log {{
             enabled #true
-            file "{}"
+            file "{access}"
             format "json"
             buffer-size 1
+        }}
+        // The default error log is under /var/log/zentinel, which the test
+        // cannot rely on being writable; one log that fails to open leaves
+        // the manager without any log (#574).
+        error-log {{
+            enabled #true
+            file "{error}"
         }}
     }}
 }}
 "#,
-            access.display()
-        ),
-    )
-    .unwrap();
+                access = access.display(),
+                error = dir.join("error.log").display(),
+            ),
+        )
+        .unwrap();
+        match Proxy::try_start(&config, proxy_port) {
+            Ok(proxy) => return (proxy, proxy_port),
+            Err(message) => last = message,
+        }
+    }
+    panic!("the proxy would not start on 5 ports; last attempt:\n{last}");
+}
 
-    let mut proxy = Proxy::start(&config, proxy_port);
+#[test]
+fn sigusr1_reopens_the_logs_and_sigusr2_is_ignored() {
+    let backend_port = backend();
+
+    let dir = tempfile::tempdir().unwrap();
+    let access = dir.path().join("access.log");
+    let rotated = dir.path().join("access.log.1");
+
+    let (mut proxy, proxy_port) = start_proxy(dir.path(), backend_port, &access);
 
     assert_eq!(get(proxy_port, "/before"), Some(200));
     std::fs::rename(&access, &rotated).unwrap();

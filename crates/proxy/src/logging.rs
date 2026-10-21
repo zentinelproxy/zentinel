@@ -14,6 +14,8 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -646,7 +648,12 @@ impl LogFileWriter {
                 .with_context(|| format!("Failed to create log directory: {:?}", parent))?;
         }
 
-        let file = OpenOptions::new()
+        let mut options = OpenOptions::new();
+        // A file created here is not world-readable (the mode of an existing
+        // file is left alone), and the umask can only narrow it further.
+        #[cfg(unix)]
+        options.mode(0o640);
+        let file = options
             .create(true)
             .append(true)
             .open(path)
@@ -1190,6 +1197,33 @@ mod tests {
         manager.flush();
         let kept = std::fs::read_to_string(&moved).unwrap();
         assert!(kept.contains("one") && kept.contains("two"), "{kept}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_log_files_are_not_world_readable_and_existing_ones_keep_their_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let dir = tempdir().unwrap();
+        let created = dir.path().join("created.log");
+        LogFileWriter::new(&created, 8192).unwrap();
+        // 0640, narrowed further by a stricter umask but never widened.
+        assert_eq!(mode(&created) & !0o640, 0, "{:o}", mode(&created));
+
+        let existing = dir.path().join("existing.log");
+        std::fs::write(&existing, "").unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o664)).unwrap();
+        let mut writer = LogFileWriter::new(&existing, 8192).unwrap();
+        writer.reopen().unwrap();
+        assert_eq!(mode(&existing), 0o664);
+
+        // Reopening after a rotation creates the file again, also at 0640.
+        std::fs::rename(&created, dir.path().join("created.log.1")).unwrap();
+        let mut writer = LogFileWriter::new(&created, 8192).unwrap();
+        std::fs::remove_file(&created).unwrap();
+        writer.reopen().unwrap();
+        assert_eq!(mode(&created) & !0o640, 0, "{:o}", mode(&created));
     }
 
     #[test]
