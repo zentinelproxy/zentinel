@@ -524,11 +524,20 @@ mod tests {
             .collect()
     }
 
+    /// A balancer with a fixed RNG seed. The selection tests check a
+    /// distribution, so with an entropy-seeded RNG they fail by chance every
+    /// few hundred runs; a fixed seed makes every run see the same draws.
+    fn seeded_balancer(targets: Vec<UpstreamTarget>, config: P2cConfig) -> P2cBalancer {
+        let mut balancer = P2cBalancer::new(targets, config);
+        balancer.rng = Arc::new(RwLock::new(StdRng::seed_from_u64(0x2c)));
+        balancer
+    }
+
     #[tokio::test]
     async fn test_p2c_selection() {
         let targets = create_test_targets(5);
         let config = P2cConfig::default();
-        let balancer = P2cBalancer::new(targets.clone(), config);
+        let balancer = seeded_balancer(targets.clone(), config);
 
         // Simulate different loads
         balancer.metrics[0].connections.store(10, Ordering::Relaxed);
@@ -596,7 +605,7 @@ mod tests {
             power_of_three: true,
             ..Default::default()
         };
-        let balancer = P2cBalancer::new(targets.clone(), config);
+        let balancer = seeded_balancer(targets.clone(), config);
 
         // Set varied loads: target 0 has load 0, target 9 has load 18
         for i in 0..10 {
@@ -644,7 +653,7 @@ mod tests {
             use_weights: true,
             ..Default::default()
         };
-        let balancer = P2cBalancer::new(targets.clone(), config);
+        let balancer = seeded_balancer(targets.clone(), config);
 
         // Equal loads - weight should influence selection
         for i in 0..3 {
@@ -652,17 +661,19 @@ mod tests {
         }
 
         let mut selections = [0usize; 3];
-        for _ in 0..1000 {
+        for _ in 0..10_000 {
             if let Some(idx) = balancer.random_healthy_target().await {
                 selections[idx] += 1;
             }
         }
 
-        // Target 1 should get roughly twice the traffic due to weight
+        // Target 1 should get twice the traffic of target 0 due to weight. At
+        // 10,000 draws the ratio's standard deviation is about 2.5%, so these
+        // bounds are ~4 sigma wide and hold for any seed, not just this one.
         let ratio = selections[1] as f64 / selections[0] as f64;
         assert!(
-            ratio > 1.5 && ratio < 2.5,
-            "Weighted selection not working properly"
+            ratio > 1.8 && ratio < 2.2,
+            "Weighted selection not working properly: {selections:?} (ratio {ratio:.2})"
         );
     }
 }
