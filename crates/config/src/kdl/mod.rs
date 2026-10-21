@@ -719,6 +719,62 @@ fn parse_body_streaming_mode(mode: &str, agent_id: &str) -> Result<BodyStreaming
     }
 }
 
+/// Merge TLS-related children from a transport or nested `tls { }` block.
+fn collect_agent_tls<'a>(
+    nodes: impl Iterator<Item = &'a kdl::KdlNode>,
+    has_tls: &mut bool,
+    insecure_skip_verify: &mut bool,
+    ca_cert: &mut Option<PathBuf>,
+    client_cert: &mut Option<PathBuf>,
+    client_key: &mut Option<PathBuf>,
+) {
+    for child in nodes {
+        match child.name().value() {
+            "tls" => {
+                *has_tls = true;
+                if let Some(doc) = child.children() {
+                    collect_agent_tls(
+                        doc.nodes().iter(),
+                        has_tls,
+                        insecure_skip_verify,
+                        ca_cert,
+                        client_cert,
+                        client_key,
+                    );
+                }
+            }
+            "tls-insecure" => {
+                *has_tls = true;
+                *insecure_skip_verify = child
+                    .entries()
+                    .iter()
+                    .find(|e| e.name().is_none())
+                    .and_then(|e| e.value().as_bool())
+                    .unwrap_or(true);
+            }
+            "ca-cert" => {
+                *has_tls = true;
+                if let Some(path) = get_first_arg_string(child) {
+                    *ca_cert = Some(PathBuf::from(path));
+                }
+            }
+            "client-cert" => {
+                *has_tls = true;
+                if let Some(path) = get_first_arg_string(child) {
+                    *client_cert = Some(PathBuf::from(path));
+                }
+            }
+            "client-key" => {
+                *has_tls = true;
+                if let Some(path) = get_first_arg_string(child) {
+                    *client_key = Some(PathBuf::from(path));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Parse TLS configuration for agent transport
 fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
     let children = match node.children() {
@@ -732,35 +788,14 @@ fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
     let mut client_cert = None;
     let mut client_key = None;
 
-    for child in children.nodes() {
-        match child.name().value() {
-            "tls" | "tls-insecure" => {
-                has_tls = true;
-                if child.name().value() == "tls-insecure" {
-                    insecure_skip_verify = true;
-                }
-            }
-            "ca-cert" => {
-                has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
-                    ca_cert = Some(PathBuf::from(path));
-                }
-            }
-            "client-cert" => {
-                has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
-                    client_cert = Some(PathBuf::from(path));
-                }
-            }
-            "client-key" => {
-                has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
-                    client_key = Some(PathBuf::from(path));
-                }
-            }
-            _ => {}
-        }
-    }
+    collect_agent_tls(
+        children.nodes().iter(),
+        &mut has_tls,
+        &mut insecure_skip_verify,
+        &mut ca_cert,
+        &mut client_cert,
+        &mut client_key,
+    );
 
     if has_tls {
         Ok(Some(AgentTlsConfig {
@@ -3903,6 +3938,135 @@ mod inspect_first_tests {
         assert!(
             format!("{err:#}").contains("request-body-mode only"),
             "{err:#}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod agent_tls_tests {
+    use super::*;
+
+    fn parse_agent_transport(kdl: &str) -> AgentTransport {
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        parse_single_agent(doc.get("agent").unwrap())
+            .unwrap()
+            .transport
+    }
+
+    #[test]
+    fn test_agent_grpc_tls_options_directly_under_transport() {
+        let transport = parse_agent_transport(
+            r#"agent "a" type="waf" {
+                grpc "https://waf.internal:50051" {
+                    ca-cert "/etc/ca.crt"
+                    client-cert "/etc/client.crt"
+                    client-key "/etc/client.key"
+                }
+            }"#,
+        );
+        let AgentTransport::Grpc { tls: Some(tls), .. } = transport else {
+            panic!("expected grpc transport with tls");
+        };
+        assert_eq!(tls.ca_cert, Some(PathBuf::from("/etc/ca.crt")));
+        assert_eq!(tls.client_cert, Some(PathBuf::from("/etc/client.crt")));
+        assert_eq!(tls.client_key, Some(PathBuf::from("/etc/client.key")));
+        assert!(!tls.insecure_skip_verify);
+    }
+
+    #[test]
+    fn test_agent_grpc_tls_block_is_read() {
+        // The options inside a `tls { }` block used to be dropped: the block set
+        // "TLS is on" and nothing in it was read.
+        let transport = parse_agent_transport(
+            r#"agent "a" type="waf" {
+                grpc "https://waf.internal:50051" {
+                    tls {
+                        ca-cert "/etc/ca.crt"
+                        client-cert "/etc/client.crt"
+                        client-key "/etc/client.key"
+                    }
+                }
+            }"#,
+        );
+        let AgentTransport::Grpc { tls: Some(tls), .. } = transport else {
+            panic!("expected grpc transport with tls");
+        };
+        assert_eq!(tls.ca_cert, Some(PathBuf::from("/etc/ca.crt")));
+        assert_eq!(tls.client_cert, Some(PathBuf::from("/etc/client.crt")));
+        assert_eq!(tls.client_key, Some(PathBuf::from("/etc/client.key")));
+    }
+
+    #[test]
+    fn test_agent_tls_insecure_honours_its_value() {
+        let insecure = |body: &str| {
+            let kdl = format!(r#"agent "a" type="waf" {{ grpc "https://h:1" {{ {body} }} }}"#);
+            match parse_agent_transport(&kdl) {
+                AgentTransport::Grpc { tls: Some(t), .. } => t.insecure_skip_verify,
+                _ => panic!("expected grpc transport with tls"),
+            }
+        };
+        assert!(insecure("tls-insecure"));
+        assert!(insecure("tls-insecure #true"));
+        assert!(!insecure("tls-insecure #false"));
+        assert!(insecure("tls { tls-insecure }"));
+    }
+
+    #[test]
+    fn test_agent_tls_check_rejects_what_cannot_be_applied() {
+        let tls = |body: &str| {
+            let kdl = format!(r#"agent "a" type="waf" {{ grpc "https://h:1" {{ {body} }} }}"#);
+            match parse_agent_transport(&kdl) {
+                AgentTransport::Grpc { tls: Some(t), .. } => t,
+                _ => panic!("expected grpc transport with tls"),
+            }
+        };
+
+        // plaintext address with TLS options
+        let err = tls(r#"ca-cert "/x""#)
+            .check("http://h:1", false)
+            .unwrap_err();
+        assert!(err.contains("not https://"), "{err}");
+
+        // verification cannot be skipped
+        let err = tls("tls-insecure").check("https://h:1", false).unwrap_err();
+        assert!(err.contains("not supported"), "{err}");
+
+        // half an identity
+        let err = tls(r#"client-cert "/x""#)
+            .check("https://h:1", false)
+            .unwrap_err();
+        assert!(err.contains("together"), "{err}");
+
+        // missing file
+        let err = tls(r#"ca-cert "/nonexistent/ca.crt""#)
+            .check("https://h:1", true)
+            .unwrap_err();
+        assert!(err.contains("not a readable file"), "{err}");
+
+        // fine
+        tls(r#"ca-cert "/nonexistent/ca.crt""#)
+            .check("https://h:1", false)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_config_validate_rejects_tls_on_plaintext_agent() {
+        let kdl = r#"
+            system { worker-threads 1 }
+            listeners { listener "http" { address "127.0.0.1:8080"; protocol "http" } }
+            agents {
+                agent "waf" type="waf" {
+                    grpc "http://127.0.0.1:50051" { ca-cert "/etc/ca.crt" }
+                }
+            }
+        "#;
+        let err = match crate::Config::from_kdl(kdl) {
+            Ok(config) => config.validate().unwrap_err().to_string(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("Agent 'waf'") && err.contains("not https://"),
+            "{err}"
         );
     }
 }

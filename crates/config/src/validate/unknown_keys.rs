@@ -423,7 +423,8 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
         keys: crate::kdl::RECOGNIZED_AGENT_KEYS,
     },
     // An agent's transport blocks. Each also accepts its address as a bare
-    // argument (`grpc "http://..."`), which needs no key at all.
+    // argument (`grpc "http://..."`), which needs no key at all. The TLS
+    // options are read either directly here or inside a `tls { }` block.
     ClosedBlock {
         name: "unix-socket",
         nesting: Nesting::In("agent"),
@@ -432,12 +433,26 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
     ClosedBlock {
         name: "grpc",
         nesting: Nesting::In("agent"),
-        keys: &["address", "tls"],
+        keys: &[
+            "address",
+            "tls",
+            "ca-cert",
+            "client-cert",
+            "client-key",
+            "tls-insecure",
+        ],
     },
     ClosedBlock {
         name: "http",
         nesting: Nesting::In("agent"),
-        keys: &["url", "tls"],
+        keys: &[
+            "url",
+            "tls",
+            "ca-cert",
+            "client-cert",
+            "client-key",
+            "tls-insecure",
+        ],
     },
     // An agent transport's `tls` block -- a third meaning of the name, after
     // the listener's and the upstream's.
@@ -2189,6 +2204,28 @@ mod tests {
         assert!(
             warnings.iter().any(|w| w.contains("'timeout-msec'")),
             "{warnings:?}"
+        );
+    }
+
+    /// The documented form puts the TLS options directly under the transport;
+    /// the parser reads them there, so the lint must not call them ignored.
+    #[test]
+    fn agent_transport_tls_options_directly_under_grpc_are_recognized() {
+        let direct = r#"
+            agents {
+                agent "a" {
+                    grpc "https://localhost:50051" {
+                        ca-cert "/ca.crt"
+                        client-cert "/c.crt"
+                        client-key "/c.key"
+                    }
+                }
+            }
+        "#;
+        assert!(
+            warnings_for(direct).is_empty(),
+            "{:?}",
+            warnings_for(direct)
         );
     }
 
