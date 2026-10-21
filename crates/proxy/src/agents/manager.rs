@@ -194,6 +194,24 @@ impl AgentManager {
         );
     }
 
+    /// Take an agent out of service: no new call reaches it, and it is
+    /// retired -- calls already in flight finish on it, and its pool closes
+    /// when the last of them does, or at its retirement ceiling (#570).
+    ///
+    /// Returns whether an agent with this id was loaded.
+    pub async fn remove(&self, agent_id: &str) -> bool {
+        // Lock order: agents, then semaphores.
+        let removed = self.agents.write().await.remove(agent_id);
+        self.agent_semaphores.write().await.remove(agent_id);
+        match removed {
+            Some(agent) => {
+                agent.retire();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Create new agent manager.
     ///
     /// Each agent gets its own semaphore for queue isolation, preventing a slow
@@ -1789,5 +1807,212 @@ mod tests {
         };
         assert!(manager.call_guardrail_agent("gone", event).await.is_err());
         assert_eq!(manager.metrics().calls_failed.load(Ordering::Relaxed), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // #570: a retired agent closes on its last reference, or its ceiling
+    // ------------------------------------------------------------------
+
+    /// Answers request headers after `delay`, marking the request so the
+    /// caller can tell this agent answered it.
+    struct SlowAgent {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl zentinel_agent_protocol::v2::server::AgentHandlerV2 for SlowAgent {
+        fn capabilities(&self) -> zentinel_agent_protocol::v2::AgentCapabilities {
+            zentinel_agent_protocol::v2::AgentCapabilities::new("slow", "Slow Agent", "0.1.0")
+        }
+
+        async fn on_request_headers(&self, _event: RequestHeadersEvent) -> AgentResponse {
+            tokio::time::sleep(self.delay).await;
+            AgentResponse::default_allow().add_request_header(
+                zentinel_agent_protocol::HeaderOp::Set {
+                    name: "x-answered-by".to_string(),
+                    value: "old".to_string(),
+                },
+            )
+        }
+    }
+
+    /// A connected manager with one agent, "slow", answering after `delay`.
+    async fn manager_with_slow_agent(
+        delay: Duration,
+        timeout_ms: u64,
+    ) -> (Arc<AgentManager>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("slow.sock");
+        let server = zentinel_agent_protocol::v2::uds_server::UdsAgentServerV2::new(
+            "slow",
+            socket.clone(),
+            Box::new(SlowAgent { delay }),
+        );
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !socket.exists() {
+            assert!(Instant::now() < deadline, "the agent never listened");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let kdl = format!(
+            r#"
+            system {{ worker-threads 1 }}
+            listeners {{ listener "l" {{ address "127.0.0.1:8080" }} }}
+            upstreams {{ upstream "u" {{ target "127.0.0.1:9000" }} }}
+            routes {{ route "r" {{ matches {{ path-prefix "/" }}
+                                 upstream "u" }} }}
+            agents {{
+                agent "slow" type="custom" {{
+                    unix-socket "{}"
+                    events "request_headers"
+                    timeout-ms {timeout_ms}
+                    failure-mode "closed"
+                }}
+            }}
+            "#,
+            socket.display()
+        );
+        let config = zentinel_config::Config::from_kdl(&kdl).expect("parses");
+        let manager = AgentManager::new(config.agents).await.expect("manager");
+        manager.initialize().await.expect("initialized");
+        (Arc::new(manager), dir)
+    }
+
+    fn headers_for(path: &str) -> HashMap<String, Vec<String>> {
+        HashMap::from([(":path".to_string(), vec![path.to_string()])])
+    }
+
+    /// #570: a call that started before its agent was removed finishes on
+    /// that agent, and the agent's pool closes once the call lets go -- not
+    /// before, and not on a timer.
+    #[tokio::test]
+    async fn a_call_straddling_removal_finishes_on_the_old_agent_then_its_pool_closes() {
+        let (manager, _dir) = manager_with_slow_agent(Duration::from_millis(400), 5000).await;
+        let (weak, pool) = {
+            let agents = manager.agents.read().await;
+            (Arc::downgrade(&agents["slow"]), agents["slow"].pool())
+        };
+
+        let in_flight = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move {
+                manager
+                    .process_request_headers(
+                        &call_context(),
+                        headers_for("/"),
+                        &[filter("slow", FailureMode::Closed)],
+                    )
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(manager.remove("slow").await);
+        // New calls no longer reach it: not loaded, fail closed.
+        let after = manager
+            .process_request_headers(
+                &call_context(),
+                headers_for("/"),
+                &[filter("slow", FailureMode::Closed)],
+            )
+            .await
+            .expect("decided");
+        assert_eq!(status_of(&after), Some(503));
+        // The call in flight still holds it open.
+        assert!(
+            weak.upgrade().is_some_and(|a| !a.is_closed()),
+            "the in-flight call holds it open"
+        );
+        assert!(pool.agent_stats("slow").await.is_some(), "pool still open");
+
+        let decision = in_flight.await.expect("joined").expect("decided");
+        assert!(decision.is_allow(), "{decision:?}");
+        assert!(
+            decision.request_headers.iter().any(|op| matches!(
+                op,
+                zentinel_agent_protocol::HeaderOp::Set { name, value }
+                    if name == "x-answered-by" && value == "old"
+            )),
+            "the old agent answered: {decision:?}"
+        );
+
+        // Its last reference is gone: the pool closes now, well before the
+        // retirement ceiling (5 s timeout + 1 s here).
+        assert_eq!(weak.strong_count(), 0);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pool.agent_stats("slow").await.is_some() {
+            assert!(Instant::now() < deadline, "pool never closed");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// #570 (bounded): a call that hangs cannot keep a retired agent's pool
+    /// open past the ceiling.
+    #[tokio::test]
+    async fn a_hung_call_cannot_keep_a_retired_agent_open_past_its_ceiling() {
+        let (manager, _dir) = manager_with_slow_agent(Duration::from_secs(60), 30_000).await;
+        let agent = manager.agents.read().await["slow"].clone();
+        let pool = agent.pool();
+        let weak = Arc::downgrade(&agent);
+        assert_eq!(
+            agent.retirement_ceiling(),
+            Duration::from_millis(31_000),
+            "longest timeout (30 s call, 5 s chunk) + 1 s"
+        );
+
+        let hung = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move {
+                manager
+                    .process_request_headers(
+                        &call_context(),
+                        headers_for("/"),
+                        &[filter("slow", FailureMode::Closed)],
+                    )
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // What `remove` does, with a short ceiling for the test.
+        let removed = manager.agents.write().await.remove("slow").expect("loaded");
+        drop(agent);
+        removed.retire_within(Duration::from_millis(300));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            weak.upgrade().is_some_and(|a| !a.is_closed()),
+            "open before the ceiling"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while pool.agent_stats("slow").await.is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "the ceiling never closed the pool"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            weak.upgrade().is_none_or(|a| a.is_closed()),
+            "closed under the hung call"
+        );
+        hung.abort();
+    }
+
+    /// With no call holding it, a retired agent closes at once.
+    #[tokio::test]
+    async fn a_retired_agent_no_call_holds_closes_at_once() {
+        let (manager, _dir) = manager_with_slow_agent(Duration::ZERO, 1000).await;
+        let pool = manager.agents.read().await["slow"].pool();
+        assert!(manager.remove("slow").await);
+        assert!(!manager.remove("slow").await, "already gone");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pool.agent_stats("slow").await.is_some() {
+            assert!(Instant::now() < deadline, "pool never closed");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

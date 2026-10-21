@@ -3,8 +3,8 @@
 //! This module provides v2 agent support using the bidirectional streaming
 //! protocol with capabilities, health reporting, and metrics export.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use tracing::{debug, error, info, trace, warn};
@@ -28,6 +28,9 @@ use super::metrics::AgentMetrics;
 /// Zentinel value indicating no timestamp recorded
 const NO_TIMESTAMP: u64 = 0;
 
+/// Added to an agent's longest timeout to give its retirement ceiling.
+const RETIREMENT_MARGIN: Duration = Duration::from_secs(1);
+
 /// Protocol v2 agent with connection pooling and bidirectional streaming.
 pub struct AgentV2 {
     /// Agent configuration
@@ -47,6 +50,14 @@ pub struct AgentV2 {
     /// Background pool maintenance task (health checks, reconnection,
     /// affinity/session cleanup). Spawned by `initialize`, aborted by `shutdown`.
     maintenance_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Set once the pool has been closed (by `shutdown`, the retirement
+    /// ceiling, or the last reference being dropped), so it closes once.
+    closed: AtomicBool,
+    /// Set by `retire`: the agent is no longer configured and closes when
+    /// its last in-flight call lets go of it.
+    retired: AtomicBool,
+    /// The retirement ceiling's timer, aborted if the agent closes first.
+    ceiling_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl AgentV2 {
@@ -89,6 +100,9 @@ impl AgentV2 {
             last_success_ns: AtomicU64::new(NO_TIMESTAMP),
             consecutive_failures: AtomicU32::new(0),
             maintenance_handle: std::sync::Mutex::new(None),
+            closed: AtomicBool::new(false),
+            retired: AtomicBool::new(false),
+            ceiling_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -694,10 +708,97 @@ impl AgentV2 {
         }
     }
 
+    /// Whether this agent's pool has been closed.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// The agent's connection pool, for tests that watch it close.
+    #[cfg(test)]
+    pub(crate) fn pool(&self) -> Arc<AgentPool> {
+        Arc::clone(&self.pool)
+    }
+
+    /// The longest a retired agent stays open for calls still holding it:
+    /// its longest timeout, plus a margin.
+    ///
+    /// A call that started before the retirement ends within its timeout, so
+    /// past this point whatever still holds the agent is hung (or queued
+    /// behind a hung call), and the pool is closed under it.
+    pub fn retirement_ceiling(&self) -> Duration {
+        Duration::from_millis(self.config.timeout_ms.max(self.config.chunk_timeout_ms))
+            + RETIREMENT_MARGIN
+    }
+
+    /// Retire an agent that is no longer configured (removed or replaced by
+    /// a reload).
+    ///
+    /// The caller has already taken the agent out of the manager's map, so
+    /// no new call can reach it, and hands over its reference here. Calls
+    /// already in flight each hold their own `Arc`, and finish on this
+    /// agent. The pool closes when the last of them lets go (see `Drop`), or
+    /// at [`retirement_ceiling`](Self::retirement_ceiling), whichever comes
+    /// first. Either way "Retired agent closed" is logged with how.
+    pub fn retire(self: Arc<Self>) {
+        let ceiling = self.retirement_ceiling();
+        self.retire_within(ceiling);
+    }
+
+    /// [`retire`](Self::retire), with an explicit ceiling.
+    pub(crate) fn retire_within(self: Arc<Self>, ceiling: Duration) {
+        if self.retired.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let holders = Arc::strong_count(&self) - 1;
+        info!(
+            agent_id = %self.config.id,
+            in_flight_holders = holders,
+            ceiling_ms = ceiling.as_millis() as u64,
+            "Retiring agent; it closes when its last call finishes"
+        );
+
+        // Without a runtime there is no timer; the last reference still
+        // closes the pool.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let weak: Weak<Self> = Arc::downgrade(&self);
+            let handle = runtime.spawn(async move {
+                tokio::time::sleep(ceiling).await;
+                // A weak reference: the timer must not keep the agent alive.
+                let Some(agent) = weak.upgrade() else {
+                    return;
+                };
+                if agent.is_closed() {
+                    return;
+                }
+                warn!(
+                    agent_id = %agent.config.id,
+                    ceiling_ms = ceiling.as_millis() as u64,
+                    in_flight_holders = Arc::strong_count(&agent) - 1,
+                    "Retired agent still in use at its ceiling; closing it under its calls"
+                );
+                agent.shutdown().await;
+                info!(
+                    agent_id = %agent.config.id,
+                    closed_by = "ceiling",
+                    "Retired agent closed"
+                );
+            });
+            *self
+                .ceiling_handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
+        }
+        // `self` is dropped here: if no call holds the agent, this was the
+        // last reference and `Drop` closes the pool now.
+    }
+
     /// Shutdown agent.
     ///
     /// This removes the agent from the pool and closes all connections.
     pub async fn shutdown(&self) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         debug!(
             agent_id = %self.config.id,
             "Shutting down v2 agent"
@@ -737,6 +838,62 @@ impl AgentV2 {
             timeouts = stats.3,
             "V2 agent shutdown complete"
         );
+    }
+}
+
+impl Drop for AgentV2 {
+    /// The last reference is gone: close the pool if nothing else has.
+    ///
+    /// Closing the pool's connections is async, so it is spawned on the
+    /// current runtime. Without one (the process is tearing down), the
+    /// maintenance task is aborted and the connections close as the pool is
+    /// dropped.
+    fn drop(&mut self) {
+        let ceiling = self
+            .ceiling_handle
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = ceiling {
+            handle.abort();
+        }
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let maintenance = self
+            .maintenance_handle
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = maintenance {
+            handle.abort();
+        }
+
+        let retired = *self.retired.get_mut();
+        let id = self.config.id.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let pool = Arc::clone(&self.pool);
+                runtime.spawn(async move {
+                    // Not registered (never initialized) is fine: nothing to close.
+                    let _ = pool.remove_agent(&id).await;
+                    if retired {
+                        info!(agent_id = %id, closed_by = "last_reference", "Retired agent closed");
+                    } else {
+                        debug!(agent_id = %id, "Dropped agent closed");
+                    }
+                });
+            }
+            Err(_) => {
+                if retired {
+                    info!(
+                        agent_id = %id,
+                        closed_by = "last_reference_without_runtime",
+                        "Retired agent closed"
+                    );
+                }
+            }
+        }
     }
 }
 
