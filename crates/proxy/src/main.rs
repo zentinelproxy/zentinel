@@ -766,13 +766,20 @@ fn init_logging(verbose: bool, timestamps: bool) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level));
 
+    // A broken stdout must not panic the thread that logs (#576).
+    let writer = zentinel_proxy::logging::DropOnWriteError(std::io::stdout);
+
     // The two branches differ in the formatter's type, so they cannot be
     // collapsed into one builder expression.
     if timestamps {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(writer)
+            .init();
     } else {
         tracing_subscriber::fmt()
             .with_env_filter(filter)
+            .with_writer(writer)
             .without_time()
             .init();
     }

@@ -910,6 +910,60 @@ impl Drop for LogManager {
 /// Shared log manager that can be passed around
 pub type SharedLogManager = Arc<LogManager>;
 
+/// Log lines the log subscriber could not write, see [`DropOnWriteError`].
+static DROPPED_LOG_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Number of log lines dropped because stdout or stderr could not be written.
+pub fn dropped_log_writes() -> u64 {
+    DROPPED_LOG_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A [`MakeWriter`](tracing_subscriber::fmt::MakeWriter) for the log
+/// subscriber whose writes never fail: a line that cannot be written is
+/// dropped and counted in [`dropped_log_writes`].
+///
+/// When a write fails, tracing-subscriber reports it with `eprintln!`, and
+/// `eprintln!` panics if stderr cannot be written either. With stdout and
+/// stderr on a broken pipe (`zentinel 2>&1 | head` after `head` exits, or a
+/// dead log shipper) every log call panicked, killing whichever thread logged:
+/// the signal thread among them, so SIGTERM never stopped the proxy (#576).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DropOnWriteError<M>(pub M);
+
+impl<'a, M: tracing_subscriber::fmt::MakeWriter<'a>> tracing_subscriber::fmt::MakeWriter<'a>
+    for DropOnWriteError<M>
+{
+    type Writer = DropOnWriteError<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        DropOnWriteError(self.0.make_writer())
+    }
+
+    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
+        DropOnWriteError(self.0.make_writer_for(meta))
+    }
+}
+
+impl<W: Write> Write for DropOnWriteError<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.0.write(buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Err(e),
+            Err(_) => {
+                DROPPED_LOG_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Report the rest of the line as written, so it is dropped
+                // rather than retried.
+                Ok(buf.len())
+            }
+            written => written,
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = self.0.flush();
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,5 +1496,24 @@ mod tests {
         assert!(!manager.access_log_enabled());
         assert!(!manager.error_log_enabled());
         assert!(!manager.audit_log_enabled());
+    }
+
+    #[test]
+    fn drop_on_write_error_drops_failed_writes() {
+        struct BrokenPipe;
+        impl Write for BrokenPipe {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+
+        let before = dropped_log_writes();
+        let mut writer = DropOnWriteError(BrokenPipe);
+        writer.write_all(b"a log line\n").unwrap();
+        writer.flush().unwrap();
+        assert!(dropped_log_writes() > before);
     }
 }
