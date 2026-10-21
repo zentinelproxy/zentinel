@@ -17,7 +17,9 @@ use dashmap::DashMap;
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info, trace, warn};
 
-use crate::v2::client::{AgentClientV2, CancelReason, ConfigUpdateCallback, MetricsCallback};
+use crate::v2::client::{
+    AgentClientV2, AgentTlsOptions, CancelReason, ConfigUpdateCallback, MetricsCallback,
+};
 use crate::v2::control::ConfigUpdateType;
 use crate::v2::observability::{ConfigPusher, ConfigUpdateHandler, MetricsCollector};
 use crate::v2::protocol_metrics::ProtocolMetrics;
@@ -559,6 +561,8 @@ pub struct AgentPoolStats {
 struct AgentEntry {
     agent_id: String,
     endpoint: String,
+    /// TLS settings applied to every (re)connection of this agent.
+    tls: Option<AgentTlsOptions>,
     /// Connections are rarely modified (only on reconnect), so RwLock is acceptable here.
     /// The hot-path reads use try_read() to avoid blocking.
     connections: RwLock<Vec<Arc<PooledConnection>>>,
@@ -581,11 +585,17 @@ struct AgentEntry {
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(120);
 
 impl AgentEntry {
-    fn new(agent_id: String, endpoint: String, config: Option<serde_json::Value>) -> Self {
+    fn new(
+        agent_id: String,
+        endpoint: String,
+        config: Option<serde_json::Value>,
+        tls: Option<AgentTlsOptions>,
+    ) -> Self {
         Self {
             agent_id,
             endpoint,
             config,
+            tls,
             connections: RwLock::new(Vec::new()),
             capabilities: RwLock::new(None),
             round_robin_index: AtomicUsize::new(0),
@@ -1141,7 +1151,8 @@ impl AgentPool {
         agent_id: impl Into<String>,
         endpoint: impl Into<String>,
     ) -> Result<(), AgentProtocolError> {
-        self.add_agent_with_config(agent_id, endpoint, None).await
+        self.add_agent_with_config(agent_id, endpoint, None, None)
+            .await
     }
 
     /// Add an agent to the pool, with the configuration it is given.
@@ -1151,14 +1162,29 @@ impl AgentPool {
     /// delivers `config` before it carries a request: in the handshake, and
     /// as a Configure message the agent must accept. A connection whose
     /// agent rejects the configuration is not used (#593).
+    ///
+    /// `tls` is applied to every connection and reconnect for gRPC transports.
     pub async fn add_agent_with_config(
         &self,
         agent_id: impl Into<String>,
         endpoint: impl Into<String>,
         config: Option<serde_json::Value>,
+        tls: Option<AgentTlsOptions>,
     ) -> Result<(), AgentProtocolError> {
         let agent_id = agent_id.into();
         let endpoint = endpoint.into();
+
+        if !is_uds_endpoint(&endpoint) {
+            crate::v2::client::build_endpoint(
+                &endpoint,
+                tls.as_ref(),
+                self.config.request_timeout,
+            )?;
+        } else if tls.is_some() {
+            return Err(AgentProtocolError::ConnectionFailed(
+                "TLS is not applicable to a Unix domain socket endpoint".to_string(),
+            ));
+        }
 
         info!(
             agent_id = %agent_id,
@@ -1167,16 +1193,26 @@ impl AgentPool {
             "Adding agent to pool"
         );
 
-        let entry = Arc::new(AgentEntry::new(agent_id.clone(), endpoint.clone(), config));
+        let entry = Arc::new(AgentEntry::new(
+            agent_id.clone(),
+            endpoint.clone(),
+            config,
+            tls.clone(),
+        ));
 
         // Create initial connections, all at once. One after another, an
         // agent that does not answer cost every connection its full connect
         // timeout in turn before the agent was registered (#599).
-        let attempts = futures::future::join_all(
-            (0..self.config.connections_per_agent)
-                .map(|_| self.create_connection(&agent_id, &endpoint, entry.config.as_ref())),
-        )
-        .await;
+        let attempts =
+            futures::future::join_all((0..self.config.connections_per_agent).map(|_| {
+                self.create_connection(
+                    &agent_id,
+                    &endpoint,
+                    entry.config.as_ref(),
+                    entry.tls.as_ref(),
+                )
+            }))
+            .await;
         let mut connections = Vec::with_capacity(self.config.connections_per_agent);
         for (i, attempt) in attempts.into_iter().enumerate() {
             match attempt {
@@ -1254,6 +1290,22 @@ impl AgentPool {
         );
 
         Ok(())
+    }
+
+    /// Add an agent to the pool, connecting with `tls`.
+    ///
+    /// The TLS settings are checked before anything is registered: unreadable
+    /// files, or TLS settings on an endpoint that is not `https://`, fail here
+    /// rather than leaving an unhealthy agent that is retried forever (and, with
+    /// `failure-mode "open"`, silently bypassed).
+    pub async fn add_agent_with_tls(
+        &self,
+        agent_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        tls: Option<AgentTlsOptions>,
+    ) -> Result<(), AgentProtocolError> {
+        self.add_agent_with_config(agent_id, endpoint, None, tls)
+            .await
     }
 
     /// Remove an agent from the pool.
@@ -1335,6 +1387,7 @@ impl AgentPool {
             let entry = Arc::new(AgentEntry::new(
                 agent_id.to_string(),
                 format!("reverse://{}", agent_id),
+                None,
                 None,
             ));
 
@@ -2069,6 +2122,7 @@ impl AgentPool {
         agent_id: &str,
         endpoint: &str,
         config: Option<&serde_json::Value>,
+        tls: Option<&AgentTlsOptions>,
     ) -> Result<PooledConnection, AgentProtocolError> {
         // Detect transport type from endpoint
         let transport = if is_uds_endpoint(endpoint) {
@@ -2092,7 +2146,7 @@ impl AgentPool {
             // its own limit is the request timeout.
             let mut client = tokio::time::timeout(
                 self.config.connect_timeout,
-                AgentClientV2::new(agent_id, endpoint, self.config.request_timeout),
+                AgentClientV2::new_with_tls(agent_id, endpoint, self.config.request_timeout, tls),
             )
             .await
             .map_err(|_| AgentProtocolError::Timeout(self.config.connect_timeout))??;
@@ -2227,7 +2281,12 @@ impl AgentPool {
         debug!(agent_id = %agent_id, attempt = attempts + 1, "Attempting reconnect");
 
         match self
-            .create_connection(agent_id, &entry.endpoint, entry.config.as_ref())
+            .create_connection(
+                agent_id,
+                &entry.endpoint,
+                entry.config.as_ref(),
+                entry.tls.as_ref(),
+            )
             .await
         {
             Ok(conn) => {
@@ -2650,7 +2709,7 @@ mod tests {
     /// three by default, about fifteen seconds -- which covers most restarts.
     #[test]
     fn reconnect_backoff_grows_and_is_capped() {
-        let entry = AgentEntry::new("a".to_string(), "unix:/tmp/x.sock".to_string(), None);
+        let entry = AgentEntry::new("a".to_string(), "unix:/tmp/x.sock".to_string(), None, None);
         entry.mark_reconnect_attempt();
 
         // Fresh failure: the base interval has not elapsed, so not yet.
@@ -2665,7 +2724,7 @@ mod tests {
 
         // A zero-length base interval means any elapsed time qualifies, which
         // shows the cap arithmetic does not overflow into never.
-        let fresh = AgentEntry::new("b".to_string(), "unix:/tmp/y.sock".to_string(), None);
+        let fresh = AgentEntry::new("b".to_string(), "unix:/tmp/y.sock".to_string(), None, None);
         assert!(
             fresh.should_reconnect(Duration::from_secs(1)),
             "an agent that has never been tried is tried"

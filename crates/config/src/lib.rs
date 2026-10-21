@@ -948,6 +948,19 @@ impl Config {
                 });
             }
 
+            let tls = match &agent.transport {
+                AgentTransport::Grpc { address, tls } => tls.as_ref().map(|t| (address, t)),
+                AgentTransport::Http { url, tls } => tls.as_ref().map(|t| (url, t)),
+                AgentTransport::UnixSocket { .. } => None,
+            };
+            if let Some((address, tls)) = tls {
+                tls.check(address, validation::HAS_FILESYSTEM)
+                    .map_err(|e| ZentinelError::Config {
+                        message: format!("Agent '{}': {}", agent.id, e),
+                        source: None,
+                    })?;
+            }
+
             if let AgentTransport::UnixSocket { path } = &agent.transport {
                 if validation::HAS_FILESYSTEM
                     && !path.exists()

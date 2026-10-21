@@ -23,7 +23,9 @@ pub mod uds;
 pub mod uds_server;
 
 pub use capabilities::*;
-pub use client::{AgentClientV2, CancelReason, ConfigUpdateCallback, FlowState, MetricsCallback};
+pub use client::{
+    AgentClientV2, AgentTlsOptions, CancelReason, ConfigUpdateCallback, FlowState, MetricsCallback,
+};
 pub use control::*;
 pub use health::*;
 pub use metrics::*;
