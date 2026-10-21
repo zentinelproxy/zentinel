@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{error, warn};
 
@@ -625,11 +625,21 @@ impl AuditLogEntry {
 
 /// Buffered file writer for log files
 struct LogFileWriter {
+    path: PathBuf,
+    buffer_size: usize,
     writer: BufWriter<File>,
 }
 
 impl LogFileWriter {
     fn new(path: &Path, buffer_size: usize) -> Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+            buffer_size,
+            writer: Self::open(path, buffer_size)?,
+        })
+    }
+
+    fn open(path: &Path, buffer_size: usize) -> Result<BufWriter<File>> {
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -642,9 +652,17 @@ impl LogFileWriter {
             .open(path)
             .with_context(|| format!("Failed to open log file: {:?}", path))?;
 
-        Ok(Self {
-            writer: BufWriter::with_capacity(buffer_size, file),
-        })
+        Ok(BufWriter::with_capacity(buffer_size, file))
+    }
+
+    /// Flush what is buffered, then open the path again. After a log rotation
+    /// the path names a new file while the old handle still points at the
+    /// rotated one. If the path cannot be opened, the old handle is kept.
+    fn reopen(&mut self) -> Result<()> {
+        let fresh = Self::open(&self.path, self.buffer_size)?;
+        self.writer.flush()?;
+        self.writer = fresh;
+        Ok(())
     }
 
     fn write_line(&mut self, line: &str) -> Result<()> {
@@ -848,6 +866,30 @@ impl LogManager {
                 warn!("Failed to flush audit log: {}", e);
             }
         }
+    }
+
+    /// Reopen the access, error and audit log files at their configured
+    /// paths, so that a rotated file is let go and the new one is written to.
+    ///
+    /// A log whose path cannot be opened keeps writing to the file it has.
+    /// Returns the number of logs reopened.
+    pub fn reopen(&self) -> usize {
+        let mut reopened = 0;
+        for (name, writer) in [
+            ("access", &self.access_log),
+            ("error", &self.error_log),
+            ("audit", &self.audit_log),
+        ] {
+            let Some(writer) = writer else { continue };
+            match writer.lock().reopen() {
+                Ok(()) => reopened += 1,
+                Err(e) => warn!(
+                    "Failed to reopen {} log, keeping the old file: {:#}",
+                    name, e
+                ),
+            }
+        }
+        reopened
     }
 
     /// Check if access logging is enabled
@@ -1080,6 +1122,74 @@ mod tests {
         assert!(manager.access_log_enabled());
         assert!(manager.error_log_enabled());
         assert!(manager.audit_log_enabled());
+    }
+
+    #[test]
+    fn reopen_writes_to_the_file_now_at_the_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("error.log");
+        let rotated = dir.path().join("error.log.1");
+        let config = LoggingConfig {
+            level: "info".to_string(),
+            format: "json".to_string(),
+            timestamps: true,
+            file: None,
+            access_log: None,
+            error_log: Some(ErrorLogConfig {
+                enabled: true,
+                file: path.clone(),
+                level: "warn".to_string(),
+                buffer_size: 8192,
+            }),
+            audit_log: None,
+        };
+        let manager = LogManager::new(&config).unwrap();
+
+        manager.log_request_error("error", "before", "t1", None, None, None);
+        // What logrotate does: move the file away and leave the path empty.
+        std::fs::rename(&path, &rotated).unwrap();
+        assert_eq!(manager.reopen(), 1);
+        manager.log_request_error("error", "after", "t2", None, None, None);
+        manager.flush();
+
+        let old = std::fs::read_to_string(&rotated).unwrap();
+        let new = std::fs::read_to_string(&path).unwrap();
+        assert!(old.contains("before") && !old.contains("after"), "{old}");
+        assert!(new.contains("after") && !new.contains("before"), "{new}");
+    }
+
+    #[test]
+    fn reopen_keeps_the_old_file_when_the_path_cannot_be_opened() {
+        let dir = tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        let path = logs.join("error.log");
+        let config = LoggingConfig {
+            level: "info".to_string(),
+            format: "json".to_string(),
+            timestamps: true,
+            file: None,
+            access_log: None,
+            error_log: Some(ErrorLogConfig {
+                enabled: true,
+                file: path.clone(),
+                level: "warn".to_string(),
+                buffer_size: 8192,
+            }),
+            audit_log: None,
+        };
+        let manager = LogManager::new(&config).unwrap();
+        manager.log_request_error("error", "one", "t1", None, None, None);
+
+        // A directory where the file should be: the path cannot be opened.
+        let moved = dir.path().join("moved.log");
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(manager.reopen(), 0);
+
+        manager.log_request_error("error", "two", "t2", None, None, None);
+        manager.flush();
+        let kept = std::fs::read_to_string(&moved).unwrap();
+        assert!(kept.contains("one") && kept.contains("two"), "{kept}");
     }
 
     #[test]
