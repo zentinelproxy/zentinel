@@ -1,99 +1,56 @@
-<div align="center">
-
-<h1 align="center">
-  <img src=".github/static/zentinel-mascot.png" alt="zentinel mascot" width="96" />
-  <br>
-  Zentinel
-</h1>
-
 <p align="center">
-  <em>A security-first reverse proxy built to guard the free web.</em><br>
-  <em>Sleepable ops at the edge.</em>
-</p>
-
-<p align="center">
-  <a href="https://www.rust-lang.org/">
-    <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white&style=for-the-badge">
-  </a>
-  <a href="https://github.com/cloudflare/pingora">
-    <img alt="Pingora" src="https://img.shields.io/badge/Built%20on-Pingora-f5a97f?style=for-the-badge">
-  </a>
-  <a href="LICENSE">
-    <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-c6a0f6?style=for-the-badge">
+  <a href="https://zentinelproxy.io">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zentinelproxy/design/main/marks/lockup/zentinel-lockup-dark.svg">
+      <img alt="Zentinel" src="https://raw.githubusercontent.com/zentinelproxy/design/main/marks/lockup/zentinel-lockup-light.svg" height="52">
+    </picture>
   </a>
 </p>
 
-<p align="center">
-  <a href="https://docs.zentinelproxy.io/">Documentation</a> •
-  <a href="https://zentinelproxy.io/playground/">Playground</a> •
-  <a href="https://zentinelproxy.io/benchmarks/">Benchmarks</a> •
-  <a href="https://github.com/zentinelproxy/zentinel/discussions">Discussions</a> •
-  <a href="CONTRIBUTING.md">Contributing</a>
-</p>
+<h3 align="center">A security-first reverse proxy built to guard the free web</h3>
 
-</div>
-
----
-
-Zentinel is a high-performance reverse proxy built on [Cloudflare Pingora](https://github.com/cloudflare/pingora). It provides explicit limits, predictable behavior, and production-grade defaults for environments where operators need to sleep.
-
-**Performance:** Lowest p99 latency in [benchmarks](https://zentinelproxy.io/benchmarks/) against Envoy, HAProxy, Nginx, and Caddy. 1M-request soak tests with 99.95% success rate and zero memory leaks. Pure Rust WAF engine processes clean traffic at 912K req/s — 30x faster than the C++ ModSecurity reference.
+<p align="center">A reverse proxy on Cloudflare Pingora with explicit limits, predictable failure modes and security logic in crash-isolated agents, for operators who want to sleep.</p>
 
 <p align="center">
-  <img src=".github/static/demo.gif" alt="Zentinel demo — install, configure, run" width="720" />
+  <a href="https://github.com/zentinelproxy/zentinel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zentinelproxy/zentinel/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-9b4d8a?style=flat&labelColor=1f161e">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.96%2B-f68d31?style=flat&labelColor=1f161e&logo=rust&logoColor=white">
+  <img alt="Agent protocol" src="https://img.shields.io/badge/agent%20protocol-v2-f68d31?style=flat&labelColor=1f161e">
 </p>
 
-## Status
+<p align="center">
+  <a href="https://zentinelproxy.io">Website</a> &middot;
+  <a href="https://docs.zentinelproxy.io">Docs</a> &middot;
+  <a href="https://zentinelproxy.io/playground/">Playground</a> &middot;
+  <a href="https://github.com/zentinelproxy">All repositories</a>
+</p>
 
-Production-ready core (proxy, routing, TLS, caching, load balancing). Agents are individually versioned — WAF, Auth, and AI Gateway are stable; others are beta or alpha. See [zentinelproxy.io/agents](https://zentinelproxy.io/agents/) for per-agent status.
+Zentinel is a reverse proxy built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
+It ships bounded resources, deterministic timeouts and an explicit fail-open or
+fail-closed choice per route, and keeps parsing-heavy or risky security logic
+(WAF, auth, policy) out of the dataplane in external agents, so a buggy agent
+cannot take the proxy down with it.
 
-## Request Flow
+In the [benchmarks on zentinelproxy.io](https://zentinelproxy.io/benchmarks/)
+Zentinel had the lowest p99 of five proxies (Zentinel, Envoy, HAProxy, Nginx,
+Caddy) at 10,000 req/s, and a 1-hour, 1,000,000-request soak test finished with
+a 99.95% success rate and no memory leak detected.
 
-```
-   ┌────────┐                                       ┌──────────┐
-   │ Client │                                       │ Upstream │
-   └────┬───┘                                       └─────▲────┘
-        │                                                 │
-        ▼                                                 │
-   ╔═══════════ Zentinel (core, single binary) ══════════╤════╗
-   ║                                                     │    ║
-   ║  Listener ─▶ Routing ─▶ Filter chain ─▶ Forward ────┘    ║
-   ║  TLS, H2     priority   rate-limit,     LB,              ║
-   ║              + LRU      cache, hooks    retries          ║
-   ║                              │                           ║
-   ╚══════════════════════════════╪═══════════════════════════╝
-                                  │ UDS / gRPC (v2 agent protocol)
-                                  ▼
-          ╔═══════ External agents (separate processes) ═══════╗
-          ║   WAF · Auth · Rate-limit · …                      ║
-          ║   crash-isolated, any language                     ║
-          ╚════════════════════════════════════════════════════╝
-```
+<p align="center">
+  <img src=".github/static/demo.gif" alt="Zentinel demo: install, configure, run" width="720" />
+</p>
 
-> *Response retraces the filter chain back to the Client. Access logs and metrics emit at completion.*
+The core (proxy, routing, TLS, caching, load balancing) is production-ready.
+Agents are versioned separately; each one's status is on its
+[registry page](https://registry.zentinelproxy.io/).
 
-The dataplane runs as a single binary. Security and policy logic that is parsing-heavy or operationally risky lives in **external agents** behind UDS or gRPC, so a buggy agent cannot take the proxy down with it. See the [Manifesto](MANIFESTO.md) for the reasoning, and [`crates/proxy/docs/architecture.md`](crates/proxy/docs/architecture.md) for the per-phase details.
-
-## Quick Start
+## Quick start
 
 ```bash
-# Install (binary only)
 curl -fsSL https://get.zentinelproxy.io | sh
-
-# Install and start as a systemd service (Linux, root or sudo)
-curl -fsSL https://get.zentinelproxy.io | sh -s -- --enable-service
-
-# Or via Cargo
-cargo install zentinel-proxy
-
-# Or via Docker
-docker run -v $(pwd)/zentinel.kdl:/etc/zentinel/zentinel.kdl \
-  ghcr.io/zentinelproxy/zentinel --config /etc/zentinel/zentinel.kdl
 ```
 
-On systemd hosts the install script also drops `/etc/systemd/system/zentinel.service`, a sysusers snippet, and a starter config at `/etc/zentinel/zentinel.kdl`. Service enable and start are opt-in via `--enable-service`. See [`crates/proxy/docs/deployment.md`](crates/proxy/docs/deployment.md).
-
-Save this as `zentinel.kdl` — it proxies `localhost:8080` to a backend on port `8081`:
+Save this as `zentinel.kdl`. It proxies `localhost:8080` to a backend on port `8081`:
 
 ```kdl
 system {
@@ -124,14 +81,44 @@ upstreams {
 ```
 
 ```bash
-# Run
-zentinel --config zentinel.kdl
-
-# Validate config without starting
-zentinel test --config zentinel.kdl
+zentinel test -c zentinel.kdl   # validate the config and exit
+zentinel -c zentinel.kdl        # run
 ```
 
-**Proxying to an HTTPS backend?** Add a `tls` block to the upstream:
+The `system` block is required. More examples in [`config/examples/`](config/examples/)
+(API gateway, load balancing, WebSocket, caching, inference routing, ACME,
+namespaces and more), or build a config interactively with the
+[config builder](https://zentinelproxy.io/customize/).
+
+## Install
+
+```bash
+# Install script (binary only)
+curl -fsSL https://get.zentinelproxy.io | sh
+
+# Install and start as a systemd service (Linux, root or sudo)
+curl -fsSL https://get.zentinelproxy.io | sh -s -- --enable-service
+
+# From crates.io (the crate is zentinel-proxy, the binary is zentinel)
+cargo install zentinel-proxy
+
+# Docker
+docker run -p 8080:8080 -v $(pwd)/zentinel.kdl:/etc/zentinel/zentinel.kdl \
+  ghcr.io/zentinelproxy/zentinel -c /etc/zentinel/zentinel.kdl
+```
+
+On systemd hosts the install script also writes `/etc/systemd/system/zentinel.service`,
+a sysusers snippet and a starter config at `/etc/zentinel/zentinel.kdl`.
+Enabling and starting the service is opt-in (`--enable-service`). See
+[`crates/proxy/docs/deployment.md`](crates/proxy/docs/deployment.md).
+
+## Configuration
+
+Configuration is KDL. `zentinel test -c <file>` parses and validates it and
+rejects unknown keys, so a typo fails loudly instead of being ignored.
+
+**Proxying to an HTTPS backend?** Add a `tls` block to the upstream. Without it,
+Zentinel connects with plaintext HTTP regardless of the port.
 
 ```kdl
 upstreams {
@@ -144,52 +131,41 @@ upstreams {
 }
 ```
 
-Without the `tls` block, Zentinel connects with plaintext HTTP regardless of the port.
-
-More examples: [`config/examples/`](config/examples/) covers API gateways, load balancing, WebSocket, caching, inference routing, and more. Or use the [config builder](https://zentinelproxy.io/customize/) to generate a config interactively.
+Full reference: [docs.zentinelproxy.io](https://docs.zentinelproxy.io/).
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Service Types** | Web, API, Static, Builtin, and Inference (LLM/AI) |
-| **Load Balancing** | 14 algorithms: round-robin, weighted, least connections, Maglev, Peak EWMA, and more |
-| **Security** | TLS/mTLS, rate limiting, GeoIP filtering, WAF, zip bomb protection |
-| **Agentic Protocols** | Native MCP and A2A awareness — per-method and per-tool allow/deny, resolved from the JSON-RPC body rather than trusting mirrored headers |
-| **Agent Protocol** | External agents for WAF, auth, and custom logic — crash-isolated, any language |
-| **HTTP Caching** | Pingora-based response caching with stampede prevention and LRU eviction (memory, disk, or hybrid backends) |
-| **WebSocket Proxying** | RFC 6455 compliant with per-frame agent inspection and session affinity |
-| **Observability** | Prometheus metrics, structured logging, OpenTelemetry tracing |
-| **Hot Reload** | Zero-downtime config updates via SIGHUP with validation and atomic swap (routes, upstreams, agents; listener changes require a restart) |
+| Feature | What it does |
+|---|---|
+| Service types | `web`, `api`, `static`, `builtin` and `inference` (LLM/AI) routes |
+| Load balancing | 14 algorithms, including round-robin, weighted, least connections, consistent hash, Maglev, Peak EWMA and least-tokens-queued |
+| Security | TLS and mTLS, per-SNI certificates, ACME, rate limiting, GeoIP filtering, decompression (zip bomb) limits |
+| Agentic protocols | MCP and A2A awareness: per-method and per-tool allow/deny, resolved from the JSON-RPC body |
+| Agents | External processors for WAF, auth and custom logic over agent protocol v2 (UDS or gRPC), crash-isolated, any language |
+| HTTP caching | Pingora-based response caching with stampede prevention and memory, disk or hybrid backends |
+| WebSocket | RFC 6455 proxying with per-frame agent inspection |
+| Observability | Prometheus metrics and structured logging; OpenTelemetry tracing when built with `--features opentelemetry` (the released binaries are built without it) |
+| Hot reload | SIGHUP reloads routes, upstreams and agents after validation, with an atomic swap; listener changes need a restart |
 
-See the full feature breakdown at [zentinelproxy.io/features](https://zentinelproxy.io/features/).
+Full breakdown: [zentinelproxy.io/features](https://zentinelproxy.io/features/).
 
-### Use Cases
+### Use cases
 
-- **Reverse Proxy** — TLS termination, static file serving, compression, and security headers for web applications
-- **API Gateway** — Versioned routing, JWT/API key auth, per-client rate limiting, and JSON error responses
-- **Load Balancer** — Weighted traffic distribution, health checks, circuit breakers, and blue-green/canary deployments
-- **Inference Gateway** — Token-based rate limiting, model routing with glob patterns (`gpt-4*`, `claude-*`), prompt injection detection, and PII filtering for OpenAI, Anthropic, and generic LLM providers
-- **Agent Gateway (MCP / A2A)** — Per-method and per-tool allowlists for Model Context Protocol and Agent2Agent traffic, enforced against the JSON-RPC body so a mirrored `Mcp-Name` header cannot name one tool while the body calls another
-- **WebSocket Gateway** — Persistent connection proxying with frame inspection, message rate limiting, and session affinity
-- **Security Gateway** — WAF, GeoIP filtering, mTLS, and composable agent pipelines for custom security logic
+- **Reverse proxy**: TLS termination, static files, compression and security headers.
+- **API gateway**: versioned routing, JWT or API-key auth (via agents), per-client rate limiting, JSON error responses.
+- **Load balancer**: weighted distribution, health checks, circuit breakers, blue-green and canary rollouts.
+- **Inference gateway**: token-based rate limiting, model routing with glob patterns (`gpt-4*`, `claude-*`), and prompt-injection and PII filtering through agents.
+- **Agent gateway (MCP / A2A)**: per-method and per-tool allowlists enforced against the JSON-RPC body.
+- **WebSocket gateway**: persistent connection proxying with frame inspection and message rate limiting.
+- **Security gateway**: WAF, GeoIP filtering, mTLS and composable agent pipelines.
 
-Example configs for each: [`config/examples/`](config/examples/)
+Example configs for each: [`config/examples/`](config/examples/).
 
-## Why Zentinel
+## Agentic protocols
 
-Modern proxies accumulate hidden behavior, unbounded complexity, and operational risk that surfaces under stress. Zentinel takes a different approach:
-
-- **Bounded resources** — Memory limits, queue depths, deterministic timeouts. No surprise behavior.
-- **Explicit failure modes** — Fail-open or fail-closed per route, never ambiguous.
-- **External extensibility** — Security logic lives in agents, not the core. Small, stable dataplane.
-- **Observable by default** — Every decision is logged and metered. Features ship only when bounded, observed, and tested.
-
-The goal is infrastructure that is **correct, calm, and trustworthy**. See [`MANIFESTO.md`](MANIFESTO.md) for the full philosophy.
-
-## Agentic Protocols
-
-Zentinel understands **MCP** (Model Context Protocol) and **A2A** (Agent2Agent) natively. A route declares which methods and tools are permitted, and the proxy enforces that by reading the JSON-RPC envelope:
+Zentinel understands MCP (Model Context Protocol) and A2A (Agent2Agent). A route
+declares which methods and tools are permitted, and the proxy enforces that by
+reading the JSON-RPC envelope:
 
 ```kdl
 route "mcp" {
@@ -205,78 +181,146 @@ route "mcp" {
 }
 ```
 
-**Policy is resolved from the body, never from the mirrored headers.** MCP's Streamable HTTP transport copies the method and tool name into `Mcp-Method` and `Mcp-Name` so intermediaries can route without parsing JSON. Building an allowlist on those headers builds an allowlist that allows everything:
+**Policy is resolved from the body, never from the mirrored headers.** MCP's
+Streamable HTTP transport copies the method and tool name into `Mcp-Method` and
+`Mcp-Name` so intermediaries can route without parsing JSON. An allowlist built
+on those headers allows everything:
 
 ```http
-Mcp-Name: read_file                    ← what a header-based allowlist checks
+Mcp-Name: read_file                    <- what a header-based allowlist checks
 {"method":"tools/call","params":{"name":"delete_everything"}}
-                                ↑ what the server actually executes
+                                ^ what the server actually executes
 ```
 
-Zentinel reads the headers only to confirm they agree with the body, and refuses a request that disagrees with itself. Requests claiming a protocol revision older than `2026-07-28` are refused by default, because those revisions never required the two to match — without that check, an attacker opts out of validation by claiming an old version.
+Zentinel reads the headers only to confirm they agree with the body, and
+refuses a request that disagrees with itself. Requests claiming a protocol
+revision older than `2026-07-28` are refused by default, because those
+revisions never required the two to match; without that check, an attacker
+opts out of validation by claiming an old version. A2A defines no mirrored
+headers, so its policy reads the body directly.
 
-A2A defines no mirrored headers, so its policy reads the body directly and there is nothing to spoof.
+This decides whether a call may be *made*. Whether its *contents* are safe
+(prompt injection in an argument, PII in a payload) stays agent work.
 
-This decides whether a call may be *made*. Whether its *contents* are safe — prompt injection in an argument, PII in a payload — stays [agent](#agents) work.
+Reference: [Agentic protocols](https://docs.zentinelproxy.io/configuration/agentic/).
 
-Full reference: [Agentic Protocols](https://docs.zentinelproxy.io/configuration/agentic/)
+## How it works
+
+```
+   ┌────────┐                                       ┌──────────┐
+   │ Client │                                       │ Upstream │
+   └────┬───┘                                       └─────▲────┘
+        │                                                 │
+        ▼                                                 │
+   ╔═══════════ Zentinel (core, single binary) ══════════╤════╗
+   ║                                                     │    ║
+   ║  Listener ─▶ Routing ─▶ Filter chain ─▶ Forward ────┘    ║
+   ║  TLS, H2     priority   rate-limit,     LB,              ║
+   ║              + LRU      cache, hooks    retries          ║
+   ║                              │                           ║
+   ╚══════════════════════════════╪═══════════════════════════╝
+                                  │ UDS / gRPC (agent protocol v2)
+                                  ▼
+          ╔═══════ External agents (separate processes) ═══════╗
+          ║   WAF · Auth · Rate-limit · …                      ║
+          ║   crash-isolated, any language                     ║
+          ╚════════════════════════════════════════════════════╝
+```
+
+The response retraces the filter chain back to the client; access logs and
+metrics are emitted at completion. The dataplane is a single binary. See
+[`MANIFESTO.md`](MANIFESTO.md) for the reasoning and
+[`crates/proxy/docs/architecture.md`](crates/proxy/docs/architecture.md) for the
+per-phase details.
+
+### Why Zentinel
+
+- **Bounded resources**: memory limits, queue depths, deterministic timeouts.
+- **Explicit failure modes**: fail-open or fail-closed per route, never ambiguous.
+- **External extensibility**: security logic lives in agents, not the core, so the dataplane stays small.
+- **Observable by default**: decisions are logged and metered; features ship only when bounded, observed and tested.
 
 ## Agents
 
-Zentinel's security and extensibility lives in **agents** — external processes that hook into every request phase. Agents are crash-isolated from the proxy, independently deployable, and can be written in any language.
+Agents are external processes that hook into each request phase over agent
+protocol v2. They are crash-isolated from the proxy, deployed independently,
+and can be written in any language. Agents in the bundle install with
+`zentinel bundle install <name>` (`zentinel bundle list` shows them).
 
-Agent SDKs: [Rust](https://github.com/zentinelproxy/zentinel-agent-rust-sdk) · [Go](https://github.com/zentinelproxy/zentinel-agent-go-sdk) · [Python](https://github.com/zentinelproxy/zentinel-agent-python-sdk) · [TypeScript](https://github.com/zentinelproxy/zentinel-agent-typescript-sdk) · [Elixir](https://github.com/zentinelproxy/zentinel-agent-elixir-sdk) · [Kotlin](https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk) · [Haskell](https://github.com/zentinelproxy/zentinel-agent-haskell-sdk)
+SDKs: [Rust](https://github.com/zentinelproxy/zentinel-agent-rust-sdk) ·
+[Go](https://github.com/zentinelproxy/zentinel-agent-go-sdk) ·
+[Python](https://github.com/zentinelproxy/zentinel-agent-python-sdk) ·
+[TypeScript](https://github.com/zentinelproxy/zentinel-agent-typescript-sdk) ·
+[Elixir](https://github.com/zentinelproxy/zentinel-agent-elixir-sdk) ·
+[Kotlin](https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk) ·
+[Haskell](https://github.com/zentinelproxy/zentinel-agent-haskell-sdk)
 
-| Agent | Description |
-|-------|-------------|
-| [WAF](https://github.com/zentinelproxy/zentinel-agent-waf) | Pure Rust WAF — 200+ detection rules, ML-powered anomaly scoring, zero C dependencies |
-| [AI Gateway](https://github.com/zentinelproxy/zentinel-agent-ai-gateway) | Prompt injection detection, jailbreak prevention, PII filtering for LLM APIs |
-| [Policy](https://github.com/zentinelproxy/zentinel-agent-policy) | Multi-engine policy evaluation (Rego/OPA and Cedar) — written in Haskell |
-| [Auth](https://github.com/zentinelproxy/zentinel-agent-auth) | JWT, OIDC, SAML, mTLS, API keys with Cedar-based fine-grained authorization |
-| [Chaos](https://github.com/zentinelproxy/zentinel-agent-chaos) | Latency injection, error simulation, connection resets with safety guardrails |
-| [Lua](https://github.com/zentinelproxy/zentinel-agent-lua) | Sandboxed Lua scripting with VM pooling, hot-reload, and resource limits |
-| [ZentinelSec](https://github.com/zentinelproxy/zentinel-agent-zentinelsec) | Pure Rust ModSecurity — OWASP CRS-compatible SecLang parser, zero C dependencies |
-| [WebSocket Inspector](https://github.com/zentinelproxy/zentinel-agent-websocket-inspector) | Content filtering, JSON/MessagePack validation, and rate limiting for WebSocket frames |
-| [MQTT Gateway](https://github.com/zentinelproxy/zentinel-agent-mqtt-gateway) | IoT protocol security with topic ACLs, auth, and payload inspection |
+| Agent | What it does |
+|---|---|
+| [WAF](https://registry.zentinelproxy.io/waf/) | Pure Rust WAF: detection rules, anomaly scoring, API schema validation, bot protection |
+| [ZentinelSec](https://registry.zentinelproxy.io/zentinelsec/) | Pure Rust ModSecurity-compatible WAF for SecLang rules and the OWASP CRS, no C dependencies |
+| [AI Gateway](https://registry.zentinelproxy.io/ai-gateway/) | Pattern-based prompt-injection, jailbreak and PII detection for LLM APIs |
+| [Auth](https://registry.zentinelproxy.io/auth/) | JWT, OIDC, API keys, Basic, SAML, mTLS, with Cedar-based authorization |
+| [Policy](https://registry.zentinelproxy.io/policy/) | Rego/OPA and Cedar policy evaluation, written in Haskell (beta) |
+| [Chaos](https://registry.zentinelproxy.io/chaos/) | Latency, error and timeout injection with targeting and safety controls |
+| [Lua](https://registry.zentinelproxy.io/lua/) | Sandboxed Lua scripts for request and response processing |
+| [WebSocket Inspector](https://registry.zentinelproxy.io/websocket-inspector/) | Content filtering, schema validation and attack detection for WebSocket frames |
+| [MQTT Gateway](https://registry.zentinelproxy.io/mqtt-gateway/) | Topic ACLs, client auth and payload inspection for MQTT |
 
-Browse all 25+ agents at [zentinelproxy.io/agents](https://zentinelproxy.io/agents/).
+All agents: [registry.zentinelproxy.io](https://registry.zentinelproxy.io/).
 
 <details>
-<summary><strong>Crates</strong></summary>
+<summary><strong>Crates in this repository</strong></summary>
 
-Each crate has its own `docs/` directory with detailed documentation.
+Each crate has its own `docs/` directory where there is more to say.
 
-| Crate | Description |
-|-------|-------------|
-| [`zentinel-proxy`](crates/proxy/) | Core reverse proxy built on Pingora |
-| [`zentinel-config`](crates/config/) | KDL configuration parsing and validation |
-| [`zentinel-agent-protocol`](crates/agent-protocol/) | Agent communication protocol (v2) |
-| [`zentinel-common`](crates/common/) | Shared types, errors, and utilities |
-| [`wasm-runtime`](crates/wasm-runtime/) | WASM agent runtime using Wasmtime |
-| [`playground-wasm`](crates/playground-wasm/) | Browser bindings for the config playground |
-| [`sim`](crates/sim/) | WASM-compatible configuration simulator |
-| [`stack`](crates/stack/) | All-in-one process manager for proxy and agents |
+| Crate | Path | What it does |
+|---|---|---|
+| `zentinel-proxy` | [`crates/proxy/`](crates/proxy/) | The reverse proxy (binary `zentinel`) |
+| `zentinel-config` | [`crates/config/`](crates/config/) | KDL configuration parsing and validation |
+| `zentinel-agent-protocol` | [`crates/agent-protocol/`](crates/agent-protocol/) | Agent protocol v2 and IPC |
+| `zentinel-common` | [`crates/common/`](crates/common/) | Shared types, errors and utilities |
+| `zentinel-gateway` | [`crates/gateway/`](crates/gateway/) | Kubernetes Gateway API controller (in progress, see [`conformance.md`](crates/gateway/docs/conformance.md)) |
+| `zentinel-stack` | [`crates/stack/`](crates/stack/) | All-in-one launcher for the proxy and agents |
+| `zentinel-wasm-runtime` | [`crates/wasm-runtime/`](crates/wasm-runtime/) | WASM agent runtime on Wasmtime |
+| `zentinel-sim` | [`crates/sim/`](crates/sim/) | WASM-compatible configuration simulator |
+| `zentinel-playground-wasm` | [`crates/playground-wasm/`](crates/playground-wasm/) | Browser bindings for the [playground](https://zentinelproxy.io/playground/) |
+| `zentinel-config-inspect` | [`crates/config-inspect/`](crates/config-inspect/) | Static config topology analysis and visualization |
+
+`sim`, `playground-wasm` and `config-inspect` are excluded from the workspace
+and built separately.
 
 </details>
 
-## Control Plane
+## Development
 
-[**zentinel-control-plane**](https://github.com/zentinelproxy/zentinel-control-plane) — Fleet management for Zentinel proxies, built with Elixir/Phoenix. Centralized configuration, rolling deploys, and real-time observability across your Zentinel instances.
+The toolchain is pinned to Rust 1.96.0 in `rust-toolchain.toml`.
 
-## Contributing
+```bash
+mise run build       # cargo build --workspace
+mise run test-unit   # unit tests
+mise run test        # all tests
+mise run pre-push    # fmt-check, clippy -D warnings, docs (what CI requires)
+```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Using Claude Code? See
+[`.claude/CLAUDE.md`](.claude/CLAUDE.md) for project context and coding rules.
 
-**Using Claude Code?** See [`.claude/CLAUDE.md`](.claude/CLAUDE.md) for project context, architecture, and coding rules.
+## Related
 
-## Community
-
-- 📖 [Documentation](https://docs.zentinelproxy.io/) — Guides, reference, and examples
-- 🎮 [Playground](https://zentinelproxy.io/playground/) — Try the routing engine in your browser (WASM)
-- 📊 [Benchmarks](https://zentinelproxy.io/benchmarks/) — Performance, soak testing, and Envoy comparison
-- 💬 [Discussions](https://github.com/zentinelproxy/zentinel/discussions) — Questions, ideas, show & tell
-- 🐛 [Issues](https://github.com/zentinelproxy/zentinel/issues) — Bug reports and feature requests
+- [Documentation](https://docs.zentinelproxy.io/): guides, reference and examples
+- [Playground](https://zentinelproxy.io/playground/): try the routing engine in the browser (WASM)
+- [Benchmarks](https://zentinelproxy.io/benchmarks/): latency, soak and chaos results
+- [Agent registry](https://registry.zentinelproxy.io/): every agent and its status
+- [zentinel-control-plane](https://github.com/zentinelproxy/zentinel-control-plane): fleet management for Zentinel proxies (Elixir/Phoenix)
+- [Discussions](https://github.com/zentinelproxy/zentinel/discussions) and [issues](https://github.com/zentinelproxy/zentinel/issues)
 
 ## License
 
-Apache 2.0 — See [LICENSE](LICENSE).
+Apache-2.0, see [`LICENSE`](LICENSE).
+
+---
+
+<p align="center">
+  <sub>Part of <a href="https://zentinelproxy.io">Zentinel</a>, the security-first reverse proxy. The shisa guards the gate.</sub>
+</p>
