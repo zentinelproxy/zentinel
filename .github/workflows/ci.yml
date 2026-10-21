@@ -2,7 +2,8 @@
 # Validates code quality: formatting, linting, documentation, and unit tests.
 # Unit (lib) tests run here so regressions are caught before merge; the full
 # test suite (integration, doc tests) is in tests.yml (manual / weekly /
-# push-to-main only) to keep PR-trigger Action minutes low.
+# push-to-main only) to keep PR-trigger Action minutes low. On PRs, the
+# integration test targets the PR itself adds or changes run here too.
 
 name: CI
 
@@ -209,6 +210,81 @@ jobs:
       # `binary-uds` shipped hanging every agent call but one (#359, #360).
       - name: Run unit tests
         run: cargo test --workspace --lib --all-features
+
+  # Integration tests (crates/*/tests/) run only after merge, in tests.yml, so
+  # the test a PR adds to prove its fix was never run before the merge. #569's
+  # tests/sigusr_test.rs could not pass without a writable /var/log/zentinel,
+  # and every check was green (#574, #575).
+  #
+  # This runs only the test targets the PR adds or changes, which costs
+  # nothing on PRs that touch no test. scripts/pr-integration-tests.py maps
+  # files to targets via `cargo metadata` (package names differ from
+  # directory names; `[[test]]` paths and `autotests` are honoured), and runs
+  # every target of a crate when a shared helper under tests/ changes. Run it
+  # locally with `scripts/pr-integration-tests.py origin/main`.
+  #
+  # The job name is meant to become a required check, so keep it stable. On
+  # push the job is skipped (the full suite runs in tests.yml), which a
+  # required check counts as passing.
+  pr-integration-tests:
+    name: PR Integration Tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # A pull_request checkout is the merge commit refs/pull/N/merge, so
+      # HEAD^1 is the base branch tip and HEAD^1...HEAD is the PR's diff.
+      # Depth 2 is enough for both.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Plan integration tests
+        id: plan
+        run: python3 scripts/pr-integration-tests.py HEAD^1 HEAD
+
+      # Everything below is skipped when the plan is empty.
+      - name: Free disk space
+        if: steps.plan.outputs.targets != '0'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
+      - name: Cache cargo registry
+        if: steps.plan.outputs.targets != '0'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      # Same key as tests.yml: main's full-suite build already contains these
+      # targets, built with the same flags, so a PR starts from it.
+      - name: Cache cargo build
+        if: steps.plan.outputs.targets != '0'
+        uses: actions/cache@v6
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Install protoc
+        if: steps.plan.outputs.targets != '0'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      # --all-features, as tests.yml runs these targets after merge.
+      - name: Run integration tests
+        if: steps.plan.outputs.targets != '0'
+        run: python3 scripts/pr-integration-tests.py HEAD^1 HEAD --run
 
   # Crates in the workspace `exclude` list are built by nothing above, so they
   # can break without any job going red. zentinel-sim did exactly that: it
