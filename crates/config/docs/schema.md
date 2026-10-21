@@ -456,7 +456,7 @@ Reusable filter definitions.
 | `agent` | `string` | **required** | Agent ID reference |
 | `phase` | `string` | `"request"` | Execution phase |
 | `timeout-ms` | `u64` | - | Timeout override; can only shorten the agent's `timeout-ms` |
-| `failure-mode` | `string` | - | Failure mode override |
+| `failure-mode` | `string` | - | What a failed call to the agent means on routes using the filter: `open` continues, `closed` refuses (503; on a response body, the response is aborted). Unset uses the route's `policies { failure-mode }`. Applies to every request and response path, and overrides the agent's own `failure-mode` |
 | `inspect-body` | `bool` | - | `#false` sends this agent no request body on routes using the filter; unset or `#true` leaves it to the agent's `events` |
 | `max-body-bytes` | `u64` | - | Lowers the agent's `max-request-body-bytes` for routes using the filter; cannot raise it |
 
@@ -475,9 +475,9 @@ External processing agent configuration.
 | `transport` | `AgentTransport` | **required** | Transport configuration |
 | `events` | `[string]` | **required** | Events to handle |
 | `timeout-ms` | `u64` | `1000` | Call timeout (must be > 0) |
-| `failure-mode` | `string` | `"open"` | Failure mode (`open` allows on agent failure, `closed` blocks) |
+| `failure-mode` | `string` | `"open"` | Failure mode for WebSocket frames (`open` allows on agent failure, `closed` closes the connection). On routes, a failed call follows the agent filter's `failure-mode`, else the route's |
 | `circuit-breaker` | `CircuitBreakerConfig` | - | Circuit breaker |
-| `max-request-body-bytes` | `u64` | `1048576` (1 MiB) | Max request body inspected by this agent. Larger bodies follow `failure-mode`: `closed` blocks with 413, `open` skips this agent with a warning and metric |
+| `max-request-body-bytes` | `u64` | `1048576` (1 MiB) | Max request body inspected by this agent. Larger bodies follow the filter's `failure-mode`: `closed` blocks with 413, `open` skips this agent with a warning and metric |
 | `max-response-body-bytes` | `u64` | `1048576` (1 MiB) | Max response body inspected by this agent (same failure-mode semantics) |
 | `request-body-mode` | `string` | `"buffer"` | Body mode: `buffer`, `stream`, `hybrid` |
 | `max-concurrent-calls` | `u32` | `100` | Max concurrent calls |

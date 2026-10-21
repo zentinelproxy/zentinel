@@ -21,7 +21,7 @@ use crate::logging::{AuditEventType, AuditLogEntry};
 use crate::routing::RouteMatch;
 use crate::validation::SchemaValidator;
 
-use super::context::RequestContext;
+use super::context::{AgentBlock, RequestContext};
 use super::ZentinelProxy;
 
 use zentinel_common::CorrelationId;
@@ -577,8 +577,10 @@ impl ZentinelProxy {
             Ok(decision) => {
                 // Apply agent decision
                 if !decision.is_allow() {
-                    match decision.action {
-                        AgentAction::Block { status, body, .. } => {
+                    match &decision.action {
+                        &AgentAction::Block {
+                            status, ref body, ..
+                        } => {
                             warn!(
                                 correlation_id = %ctx.trace_id,
                                 agent_id = decision.decided_by.as_deref().unwrap_or("unknown"),
@@ -624,12 +626,13 @@ impl ZentinelProxy {
                             // An agent's own body is sent as it is; without
                             // one, the route's error page for the status
                             // applies (#557).
-                            ctx.agent_block = body.clone().map(|body| (status, body));
+                            ctx.agent_block = AgentBlock::from_action(&decision.action);
 
                             // Use HTTPStatus error type to send proper HTTP response
                             return Err(Error::explain(
                                 ErrorType::HTTPStatus(status),
-                                body.unwrap_or_else(|| "Blocked by agent".to_string()),
+                                body.clone()
+                                    .unwrap_or_else(|| "Blocked by agent".to_string()),
                             ));
                         }
                         AgentAction::Redirect { url, status } => {
@@ -737,6 +740,134 @@ impl ZentinelProxy {
             None => None,
         };
         build_proxy_error(handler.as_deref(), error, &ctx.trace_id).await
+    }
+
+    /// The response answering an agent's block: the agent's own body as
+    /// plain text when it gave one, else the route's page for the status, or
+    /// `default` where the route has none -- with the agent's headers either
+    /// way. Every agent block, in any phase, is answered through here.
+    pub(super) async fn agent_block_response(
+        &self,
+        ctx: &RequestContext,
+        block: &AgentBlock,
+        default: ProxyError<'_>,
+    ) -> Result<(ResponseHeader, bytes::Bytes), Box<Error>> {
+        let (mut header, body) = match &block.body {
+            Some(body) => {
+                build_proxy_error(None, ProxyError::text(block.status, body), &ctx.trace_id).await?
+            }
+            None => self.proxy_error_response(ctx, default).await?,
+        };
+        block.apply_headers(&mut header);
+        Ok((header, body))
+    }
+
+    /// Log (WARN), count and audit an agent's block of the upstream's
+    /// response (#584), as a request-phase block is.
+    ///
+    /// `aborted` is `None` for a block on response headers, which replaced
+    /// the response. For one on the response body it is the body bytes
+    /// already sent to the client and those withheld: the status has
+    /// usually gone out, so the response is aborted rather than replaced.
+    pub(super) fn record_response_block(
+        &self,
+        ctx: &RequestContext,
+        decision: &crate::agents::AgentDecision,
+        status: u16,
+        aborted: Option<(u64, usize)>,
+    ) {
+        let phase = if aborted.is_some() {
+            "response_body"
+        } else {
+            "response_headers"
+        };
+        let agent_id = decision.decided_by.as_deref().unwrap_or("unknown");
+        // The route's filter that runs this agent, for the log: a route may
+        // run one agent through several filters, the first is named.
+        let filter_id = ctx
+            .route_config
+            .as_ref()
+            .zip(ctx.config.as_ref())
+            .and_then(|(route, config)| {
+                route.filters.iter().find(|filter_id| {
+                    matches!(
+                        config.filters.get(*filter_id).map(|f| &f.filter),
+                        Some(zentinel_config::Filter::Agent(agent)) if agent.agent == agent_id
+                    )
+                })
+            })
+            .map(String::as_str)
+            .unwrap_or("unknown");
+
+        match aborted {
+            None => {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    agent_id = %agent_id,
+                    filter_id = %filter_id,
+                    status = status,
+                    "Response blocked by agent, upstream response replaced"
+                );
+                self.metrics
+                    .record_blocked_request("agent_response_blocked");
+            }
+            Some((bytes_sent, bytes_withheld)) => {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    agent_id = %agent_id,
+                    filter_id = %filter_id,
+                    status = status,
+                    body_bytes_sent = bytes_sent,
+                    body_bytes_withheld = bytes_withheld,
+                    "Response body blocked by agent, aborting the response"
+                );
+                self.metrics
+                    .record_blocked_request("agent_response_body_blocked");
+            }
+        }
+
+        let mut tags: Vec<String> = decision
+            .audit
+            .iter()
+            .flat_map(|a| a.tags.iter().cloned())
+            .collect();
+        tags.push(format!("agent:{agent_id}"));
+        let rule_ids: Vec<String> = decision
+            .audit
+            .iter()
+            .flat_map(|a| a.rule_ids.iter().cloned())
+            .collect();
+        let reason = match &decision.action {
+            crate::agents::AgentAction::Block {
+                body: Some(body), ..
+            } => body.clone(),
+            _ => "Response blocked by agent".to_string(),
+        };
+        let audit_entry = AuditLogEntry::new(
+            &ctx.trace_id,
+            AuditEventType::AgentDecision,
+            &ctx.method,
+            &ctx.path,
+            &ctx.client_ip,
+        )
+        .with_route_id(ctx.route_id.as_deref().unwrap_or("unknown"))
+        .with_agent_id(agent_id)
+        .with_action("block")
+        .with_status_code(status)
+        .with_reason(reason)
+        .with_tags(tags)
+        .with_rule_ids(rule_ids)
+        .with_metadata("phase", phase)
+        .with_metadata("filter_id", filter_id);
+        let audit_entry = match aborted {
+            Some((bytes_sent, _)) => {
+                audit_entry.with_metadata("body_bytes_sent", bytes_sent.to_string())
+            }
+            None => audit_entry,
+        };
+        self.log_manager.log_audit(&audit_entry);
     }
 
     /// Answer the request with an error the proxy raises itself, through the

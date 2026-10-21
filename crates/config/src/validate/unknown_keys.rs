@@ -930,19 +930,18 @@ fn agent_filter_body_problems(
 /// Whether an agent block's `failure-mode` is being relied on where it does
 /// not apply.
 ///
-/// The agent's own `failure-mode` decides what happens when the agent fails
-/// on a request body, a response or a WebSocket frame, and when a body is
-/// over its inspection limit (`AgentManager::process_event` and
-/// `apply_body_limits`). It does not decide the request-headers call, which
-/// is where most agents act: that uses the agent filter's `failure-mode`,
-/// then the route's `policies { failure-mode }`, then closed
-/// (`process_agents` in the proxy's handlers). An agent written with
-/// `failure-mode "open"` and a filter without one therefore blocks requests
-/// when the agent is down.
+/// What a failed call to an agent means on a route -- on request headers,
+/// request bodies, response headers and bodies, and for a body over the
+/// agent's inspection limit -- is decided by the agent filter's
+/// `failure-mode`, then the route's `policies { failure-mode }`, then closed
+/// (`FilterAgent::failure_mode` in the proxy, #584). The agent's own
+/// `failure-mode` applies only to WebSocket frames, which are not inspected
+/// per route. An agent written with `failure-mode "open"` and a filter
+/// without one therefore blocks requests when the agent is down.
 ///
-/// Honouring the agent's value there would turn setups that have been
-/// failing closed into ones that fail open, so the behaviour stays and this
-/// reports it instead -- only when some filter using the agent leaves the
+/// Honouring the agent's value would turn setups that have been failing
+/// closed into ones that fail open, so the behaviour stays and this reports
+/// it instead -- only when some filter using the agent leaves the
 /// decision open, since a filter with its own value states the intent.
 fn agent_failure_mode_problem(
     agent: &kdl::KdlNode,
@@ -957,11 +956,10 @@ fn agent_failure_mode_problem(
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "'failure-mode \"{value}\"' on agent '{agent_id}' is being ignored for request \
-         headers: that is decided by the agent filter's failure-mode, then the route's \
+        "'failure-mode \"{value}\"' on agent '{agent_id}' is being ignored for requests \
+         and responses: that is decided by the agent filter's failure-mode, then the route's \
          policies failure-mode, and is closed when neither is set. Set failure-mode on \
-         filter {filters} as well. The agent's own setting applies only to request bodies, \
-         responses, WebSocket frames and its body-size limits."
+         filter {filters} as well. The agent's own setting applies only to WebSocket frames."
     ))
 }
 
@@ -2636,7 +2634,7 @@ mod tests {
     fn an_agent_failure_mode_without_a_filter_one_is_reported() {
         let warnings = warnings_for(&agent_config(r#"failure-mode "open""#, ""));
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
-        assert!(warnings[0].contains("on agent 'waf' is being ignored for request headers"));
+        assert!(warnings[0].contains("on agent 'waf' is being ignored for requests and responses"));
         assert!(
             warnings[0].contains("filter 'waf-filter'"),
             "{}",

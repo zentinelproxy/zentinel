@@ -28,7 +28,7 @@ use crate::logging::{AccessLogEntry, AuditEventType, AuditLogEntry};
 use crate::rate_limit::HeaderAccessor;
 use crate::routing::RequestInfo;
 
-use super::context::{FallbackReason, RequestContext};
+use super::context::{AgentBlock, FallbackReason, RequestContext};
 use super::fallback::FallbackEvaluator;
 use super::fallback_metrics::get_fallback_metrics;
 use super::handlers;
@@ -2033,19 +2033,6 @@ impl ProxyHttp for ZentinelProxy {
             // Check if this is an HTTPStatus error (e.g., agent block or fail-closed)
             // In that case, we need to send a proper HTTP response instead of just closing the connection
             if let ErrorType::HTTPStatus(status) = e.etype() {
-                // An agent's own body is sent as it is: the agent chose what
-                // to tell the client. A block without one gets the route's
-                // error page for the status, when it has one (#557).
-                if let Some((_, body)) = ctx.agent_block.take() {
-                    debug!(
-                        correlation_id = %ctx.trace_id,
-                        status = status,
-                        body = %body,
-                        "Sending the agent's block response"
-                    );
-                    crate::http_helpers::write_error(session, *status, &body, "text/plain").await?;
-                    return Ok(true); // Request complete, don't continue to upstream
-                }
                 // Extract the message from the error (the context part after "HTTPStatus context:")
                 let error_msg = e.to_string();
                 let body = error_msg
@@ -2053,14 +2040,35 @@ impl ProxyHttp for ZentinelProxy {
                     .nth(1)
                     .map(|s| s.trim())
                     .unwrap_or("Request blocked");
-                debug!(
-                    correlation_id = %ctx.trace_id,
-                    status = status,
-                    body = %body,
-                    "Sending HTTP error response for agent block"
-                );
-                self.write_proxy_error(session, ctx, handlers::ProxyError::text(*status, body))
-                    .await?;
+                // An agent's own body is sent as it is: the agent chose what
+                // to tell the client. A block without one gets the route's
+                // error page for the status, when it has one (#557).
+                let default = handlers::ProxyError::text(*status, body);
+                match ctx.agent_block.take().filter(|b| b.status == *status) {
+                    Some(block) => {
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            status = status,
+                            "Sending the agent's block response"
+                        );
+                        let (header, body) =
+                            self.agent_block_response(ctx, &block, default).await?;
+                        session.set_keepalive(None);
+                        session
+                            .write_response_header(Box::new(header), false)
+                            .await?;
+                        session.write_response_body(Some(body), true).await?;
+                    }
+                    None => {
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            status = status,
+                            body = %body,
+                            "Sending HTTP error response for agent block"
+                        );
+                        self.write_proxy_error(session, ctx, default).await?;
+                    }
+                }
                 return Ok(true); // Request complete, don't continue to upstream
             }
             // For other errors, propagate them
@@ -2629,6 +2637,37 @@ impl ProxyHttp for ZentinelProxy {
                 .await
             {
                 Ok(decision) => {
+                    // A block replaces the upstream's response (#584). Nothing
+                    // has been sent to the client yet: Pingora writes the
+                    // upstream's header only after this filter returns, and
+                    // its body after that. The block response is written
+                    // here and the filter fails, so Pingora drops the
+                    // upstream's response -- its header and every body byte
+                    // -- and `fail_to_proxy` writes nothing more. Written
+                    // here rather than by `fail_to_proxy` because this filter
+                    // also runs for cache hits, where Pingora answers a
+                    // failed filter with a bare 500 instead.
+                    if let Some(block) = AgentBlock::from_action(&decision.action) {
+                        self.record_response_block(ctx, &decision, block.status, None);
+                        ctx.response_blocked = true;
+                        let (header, body) = self
+                            .agent_block_response(
+                                ctx,
+                                &block,
+                                handlers::ProxyError::text(block.status, "Blocked by agent"),
+                            )
+                            .await?;
+                        session.set_keepalive(None);
+                        session
+                            .write_response_header(Box::new(header), false)
+                            .await?;
+                        session.write_response_body(Some(body), true).await?;
+                        return Err(Error::explain(
+                            ErrorType::HTTPStatus(block.status),
+                            "Response blocked by agent",
+                        ));
+                    }
+
                     // Apply response header modifications from agent
                     for op in &decision.response_headers {
                         match op {
@@ -2658,8 +2697,28 @@ impl ProxyHttp for ZentinelProxy {
                         .await;
                     if has_body_agents {
                         ctx.response_agent_processing_enabled = true;
-                        // Since agent may replace the body, Content-Length is invalid.
-                        // Use Connection: close to signal end-of-body to the client.
+                        ctx.response_agent_body_limit =
+                            self.agent_manager.response_body_limit(&agent_ids).await;
+                        // The agent may replace the body, so the upstream's
+                        // Content-Length may not hold. The body is chunked
+                        // instead (HTTP/2 frames it itself), which also lets
+                        // the client tell a response aborted by a block on
+                        // its body (#584) from a complete one; only an
+                        // HTTP/1.0 client gets a close-delimited body, where
+                        // it cannot. The connection is not kept alive.
+                        let bodiless = matches!(status, 204 | 304)
+                            || session.req_header().method == http::Method::HEAD;
+                        if !bodiless {
+                            upstream_response.remove_header("Content-Length");
+                        }
+                        if !bodiless
+                            && !session.is_http2()
+                            && session.req_header().version >= http::Version::HTTP_11
+                        {
+                            upstream_response
+                                .insert_header("Transfer-Encoding", "chunked")
+                                .ok();
+                        }
                         upstream_response.insert_header("Connection", "close").ok();
                         session.downstream_session.set_keepalive(None);
                         debug!(
@@ -3104,11 +3163,14 @@ impl ProxyHttp for ZentinelProxy {
                 ctx.response_agent_body_buffer.extend_from_slice(chunk);
             }
 
-            if end_of_stream {
+            // Decided at the end of the body, or as soon as it is over every
+            // agent's limit: the buffer is bounded by the largest of them.
+            let over_limit = ctx.response_agent_body_buffer.len() > ctx.response_agent_body_limit;
+            if end_of_stream || over_limit {
                 let agent_ids = ctx.route_agents.clone();
                 let buffer = std::mem::take(&mut ctx.response_agent_body_buffer);
                 let chunk_index = 0u32;
-                let total_size = Some(buffer.len());
+                let total_size = end_of_stream.then_some(buffer.len());
                 let trace_id = ctx.trace_id.clone();
                 let client_ip = ctx.client_ip.clone();
                 let host = ctx.host.clone();
@@ -3146,7 +3208,7 @@ impl ProxyHttp for ZentinelProxy {
                         .process_response_body_streaming(
                             &agent_ctx,
                             &buffer,
-                            true, // is_last
+                            end_of_stream, // is_last
                             chunk_index,
                             buffer.len(),
                             total_size,
@@ -3155,8 +3217,43 @@ impl ProxyHttp for ZentinelProxy {
                         .await
                 });
 
-                match result {
+                // Until the agent decides, nothing of the body has gone to
+                // the client: every chunk was withheld above. What it gets
+                // now is the buffered body, the agent's replacement for it,
+                // or -- on a block -- none of it.
+                let total = buffer.len();
+                let mut buffer = Some(Bytes::from(buffer));
+                let failed = match result {
                     Ok(Ok(decision)) => {
+                        // A block here usually comes after the response's
+                        // status and headers went out, so it cannot replace
+                        // the response as a block on the headers does
+                        // (#584). The response is aborted instead: the body
+                        // is dropped, the filter fails, Pingora closes the
+                        // connection without ending the body, and
+                        // `fail_to_proxy` writes nothing more. The chunked
+                        // framing `response_filter` set lets the client
+                        // see the body is incomplete. (If the header has
+                        // not gone out, `fail_to_proxy` sends the block
+                        // response instead.)
+                        if let Some(block) = AgentBlock::from_action(&decision.action) {
+                            *body = None;
+                            ctx.response_blocked = true;
+                            self.record_response_block(
+                                ctx,
+                                &decision,
+                                block.status,
+                                Some((ctx.response_bytes, total)),
+                            );
+                            // For `fail_to_proxy`, should the header not have
+                            // gone out yet.
+                            ctx.agent_block = Some(block.clone());
+                            return Err(Error::explain(
+                                ErrorType::HTTPStatus(block.status),
+                                "Response body blocked by agent; response aborted",
+                            ));
+                        }
+
                         // Apply response body mutation if present
                         if let Some(mutation) = decision.response_body_mutation {
                             if let Some(ref data) = mutation.data {
@@ -3168,11 +3265,11 @@ impl ProxyHttp for ZentinelProxy {
                                     ) {
                                         debug!(
                                             correlation_id = %ctx.trace_id,
-                                            original_size = buffer.len(),
+                                            original_size = total,
                                             new_size = decoded.len(),
                                             "Agent replaced response body"
                                         );
-                                        *body = Some(Bytes::from(decoded));
+                                        buffer = Some(Bytes::from(decoded));
                                         ctx.response_agent_body_complete = true;
                                     } else {
                                         warn!(
@@ -3189,23 +3286,53 @@ impl ProxyHttp for ZentinelProxy {
                         // Apply any additional response header modifications
                         // Note: Cannot modify response headers here (sync context, headers already sent)
                         // Header mods should be done in response_filter via ResponseHeaders event
+                        None
                     }
-                    Ok(Err(e)) => {
+                    Ok(Err(e)) => Some(e.to_string()),
+                    Err(skipped) => Some(skipped.to_string()),
+                };
+
+                if let Some(error) = failed {
+                    // The call could not be made. Its filters' failure mode
+                    // decides, as for any failed agent call (#584).
+                    let fail_closed = ctx
+                        .route_agents
+                        .iter()
+                        .any(|agent| agent.failure_mode == zentinel_config::FailureMode::Closed);
+                    if fail_closed {
+                        *body = None;
+                        ctx.response_blocked = true;
                         warn!(
                             correlation_id = %ctx.trace_id,
-                            error = %e,
-                            "Agent response body processing failed, passing through original"
+                            error = %error,
+                            body_bytes_sent = ctx.response_bytes,
+                            body_bytes_withheld = total,
+                            "Agent response body processing failed, aborting the response (fail-closed)"
                         );
+                        self.metrics
+                            .record_blocked_request("agent_response_body_failed");
+                        return Err(Error::explain(
+                            ErrorType::HTTPStatus(503),
+                            "Agent response body processing failed",
+                        ));
                     }
-                    Err(skipped) => {
-                        warn!(
-                            correlation_id = %ctx.trace_id,
-                            error = %skipped,
-                            "Agent response body processing skipped, passing through original"
-                        );
-                    }
+                    warn!(
+                        correlation_id = %ctx.trace_id,
+                        error = %error,
+                        "Agent response body processing failed, passing through original (fail-open)"
+                    );
                 }
-            } else if !end_of_stream {
+
+                // The buffered body (or the agent's), sent in one piece. It
+                // used to be dropped when the agent left it unchanged: the
+                // client got only the final chunk.
+                *body = buffer;
+                if !end_of_stream {
+                    // Over every agent's limit and let through (fail-open,
+                    // logged by the limit check): the rest is not inspected.
+                    ctx.response_agent_processing_enabled = false;
+                }
+            } else {
                 // Buffer chunks — suppress output until we have the full body
                 *body = None;
                 return Ok(None);
@@ -3830,19 +3957,55 @@ impl ProxyHttp for ZentinelProxy {
             _ => 502,
         };
 
-        error!(
-            correlation_id = %ctx.trace_id,
-            route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
-            upstream = ctx.upstream.as_deref().unwrap_or("unknown"),
-            error_type = ?e.etype(),
-            error = %e,
-            error_code = error_code,
-            "Proxy error occurred"
-        );
+        // An agent blocked the response (#584), logged and counted where it
+        // happened. On its headers the block response has been written
+        // already. On its body the response is aborted -- unless nothing of
+        // it had been sent: Pingora writes a header together with the body
+        // that arrived with it, so a body read in one go is decided on
+        // before its header went out, and the block response is sent below
+        // in place of the whole response, as on response headers.
+        if ctx.response_blocked {
+            let written = session.response_written().is_some();
+            if written || ctx.agent_block.is_none() {
+                return pingora_proxy::FailToProxy {
+                    error_code,
+                    can_reuse_downstream: false,
+                };
+            }
+            debug!(
+                correlation_id = %ctx.trace_id,
+                status = error_code,
+                "Nothing of the blocked response was sent, answering with the block response"
+            );
+        } else {
+            error!(
+                correlation_id = %ctx.trace_id,
+                route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                upstream = ctx.upstream.as_deref().unwrap_or("unknown"),
+                error_type = ?e.etype(),
+                error = %e,
+                error_code = error_code,
+                "Proxy error occurred"
+            );
 
-        // Record the error in metrics
-        self.metrics
-            .record_blocked_request(&format!("proxy_error_{}", error_code));
+            // Record the error in metrics
+            self.metrics
+                .record_blocked_request(&format!("proxy_error_{}", error_code));
+        }
+
+        // A response under way cannot be answered with another: its header
+        // went out, and an error body written now would reach the client
+        // as part of the response's own body. The connection is closed
+        // instead, which the client sees as an incomplete response.
+        if session
+            .response_written()
+            .is_some_and(|written| !written.status.is_informational())
+        {
+            return pingora_proxy::FailToProxy {
+                error_code,
+                can_reuse_downstream: false,
+            };
+        }
 
         // Write error response to ensure client receives a proper HTTP response
         // This is necessary because some errors occur before the upstream connection
@@ -3855,20 +4018,17 @@ impl ProxyHttp for ZentinelProxy {
         let agent_block = ctx
             .agent_block
             .take()
-            .filter(|(status, _)| *status == error_code);
-        let refusal = match &agent_block {
-            Some((_, body)) => handlers::ProxyError::text(error_code, body),
-            None => handlers::ProxyError {
-                status: error_code,
-                message: None,
-                default_body: Bytes::from(proxy_error_body(error_code, &ctx.trace_id)),
-                default_content_type: "application/json",
-                headers: Vec::new(),
-            },
-        };
-        let refusal = refusal.with_header("Connection", "close");
+            .filter(|block| block.status == error_code);
+        let refusal = handlers::ProxyError {
+            status: error_code,
+            message: None,
+            default_body: Bytes::from(proxy_error_body(error_code, &ctx.trace_id)),
+            default_content_type: "application/json",
+            headers: Vec::new(),
+        }
+        .with_header("Connection", "close");
         let built = match &agent_block {
-            Some(_) => handlers::build_proxy_error(None, refusal, &ctx.trace_id).await,
+            Some(block) => self.agent_block_response(ctx, block, refusal).await,
             None => self.proxy_error_response(ctx, refusal).await,
         };
         let (header, body) = match built {
@@ -3958,7 +4118,7 @@ impl ProxyHttp for ZentinelProxy {
         // mid-stream, a client that went away. The peer did nothing wrong,
         // and counting these let a client trip the circuit breaker on a
         // healthy upstream.
-        if *e.esource() != pingora::ErrorSource::Downstream {
+        if *e.esource() != pingora::ErrorSource::Downstream && !ctx.response_blocked {
             let peer_address = peer.address().to_string();
             let upstream_pools = self.upstream_pools.clone();
             let upstream_id_owned = upstream_id.to_string();
@@ -5426,9 +5586,8 @@ impl ZentinelProxy {
 
                     let (status, message) = match &decision.action {
                         crate::agents::AgentAction::Block { status, body, .. } => {
-                            // Sent by `fail_to_proxy` in place of the
-                            // route's error page (#557).
-                            ctx.agent_block = body.clone().map(|body| (*status, body));
+                            // Answered by `fail_to_proxy` (#557).
+                            ctx.agent_block = AgentBlock::from_action(&decision.action);
                             (
                                 *status,
                                 body.clone().unwrap_or_else(|| "Blocked".to_string()),
@@ -5628,9 +5787,8 @@ impl ZentinelProxy {
 
                     let (status, message) = match &decision.action {
                         crate::agents::AgentAction::Block { status, body, .. } => {
-                            // Sent by `fail_to_proxy` in place of the
-                            // route's error page (#557).
-                            ctx.agent_block = body.clone().map(|body| (*status, body));
+                            // Answered by `fail_to_proxy` (#557).
+                            ctx.agent_block = AgentBlock::from_action(&decision.action);
                             (
                                 *status,
                                 body.clone().unwrap_or_else(|| "Blocked".to_string()),

@@ -74,6 +74,68 @@ pub struct RateLimitHeaderInfo {
     pub reset_at: u64,
 }
 
+/// An agent's `Block` decision: what the client is answered with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentBlock {
+    pub status: u16,
+    /// The agent's own body. Without one the route's error page for
+    /// `status` is sent, or the proxy's default refusal.
+    pub body: Option<String>,
+    /// Headers the agent asked for on its block response, whichever body it
+    /// gets. Framing headers are not taken from it.
+    pub headers: Vec<(String, String)>,
+}
+
+impl AgentBlock {
+    /// The block response for `action`, if it is a block.
+    pub(crate) fn from_action(action: &crate::agents::AgentAction) -> Option<Self> {
+        match action {
+            crate::agents::AgentAction::Block {
+                status,
+                body,
+                headers,
+            } => {
+                let mut headers: Vec<(String, String)> = headers
+                    .iter()
+                    .flatten()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect();
+                // A stable order: the agent's map has none.
+                headers.sort();
+                Some(Self {
+                    status: *status,
+                    body: body.clone(),
+                    headers,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Set the agent's headers on its block response. Headers that frame
+    /// the body or the connection stay the proxy's: an agent setting them
+    /// would misframe the response.
+    pub(crate) fn apply_headers(&self, header: &mut pingora_http::ResponseHeader) {
+        const PROXY_OWNED: [&str; 6] = [
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "keep-alive",
+            "upgrade",
+            "x-correlation-id",
+        ];
+        for (name, value) in &self.headers {
+            if PROXY_OWNED
+                .iter()
+                .any(|owned| name.eq_ignore_ascii_case(owned))
+            {
+                continue;
+            }
+            let _ = header.insert_header(name.clone(), value.as_str());
+        }
+    }
+}
+
 /// Request context maintained throughout the request lifecycle.
 ///
 /// This struct uses a hybrid approach:
@@ -237,10 +299,16 @@ pub struct RequestContext {
     /// Content-Type and Content-Length.
     pub(crate) error_page_body: Option<bytes::Bytes>,
 
-    /// The status and body of an agent's `Block` decision, when the agent
-    /// supplied a body. That body is sent as it is, in place of the route's
-    /// error page: the agent chose what to tell the client (#557).
-    pub(crate) agent_block: Option<(u16, String)>,
+    /// An agent's `Block` decision, for the response that answers it. An
+    /// agent's own body is sent as it is, in place of the route's error
+    /// page: the agent chose what to tell the client (#557).
+    pub(crate) agent_block: Option<AgentBlock>,
+
+    /// An agent blocked the response (#584). On response headers the block
+    /// response was written in place of the upstream's; on the response
+    /// body the response was aborted. Either way nothing more may be
+    /// written to the client, and the upstream did nothing wrong.
+    pub(crate) response_blocked: bool,
 
     // === Body Decompression ===
     /// Whether decompression is enabled for body inspection
@@ -389,6 +457,10 @@ pub struct RequestContext {
     pub(crate) response_agent_processing_enabled: bool,
     /// Accumulated response body buffer for agent processing (when agent needs full body)
     pub(crate) response_agent_body_buffer: Vec<u8>,
+    /// The most response body any of the route's agents inspects: the
+    /// buffer above never grows past it. A body that does is decided on at
+    /// that point, by the agents' body limits.
+    pub(crate) response_agent_body_limit: usize,
     /// Whether response body has been fully received by agent
     pub(crate) response_agent_body_complete: bool,
 }
@@ -452,6 +524,7 @@ impl RequestContext {
             validated_request_body: None,
             error_page_body: None,
             agent_block: None,
+            response_blocked: false,
             a2a_method: None,
             body_inspection_agents: Vec::new(),
             decompression_enabled: false,
@@ -512,6 +585,7 @@ impl RequestContext {
             route_agents: Vec::new(),
             response_agent_processing_enabled: false,
             response_agent_body_buffer: Vec::new(),
+            response_agent_body_limit: usize::MAX,
             response_agent_body_complete: false,
             in_flight: Vec::new(),
         }

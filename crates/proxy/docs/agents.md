@@ -70,7 +70,7 @@ agents {
         }
     }
     // Body inspection limits: bodies larger than max-request-body-bytes /
-    // max-response-body-bytes (default 1 MiB each) follow the agent's
+    // max-response-body-bytes (default 1 MiB each) follow the filter's
     // failure-mode — "closed" blocks the request with 413, "open" skips
     // this agent's inspection with a warning and a body_size_skips metric.
     // Agents whose limit accommodates the body still inspect it.
@@ -236,6 +236,27 @@ pub struct RoutingMutations {
 }
 ```
 
+### Decisions in the Response Phase
+
+An agent subscribed to `response-headers` or `response-body` can block the
+response as well as change it.
+
+| Decided on | What the client gets |
+|------------|----------------------|
+| Response headers | The block response **in place of** the upstream's: the agent's status, its body (as `text/plain`) and its headers, or, without a body, the route's error page for the status (`Blocked by agent` where the route has none). No byte of the upstream's response is sent. |
+| Response body | The upstream's status and headers have normally gone out already, so the response is **aborted**: the connection is closed without ending the body. The body is withheld until the agent has decided, so the client receives none of it, and the chunked framing the proxy uses for such responses lets it see the body is incomplete (HTTP/1.0 clients get a close-delimited body and cannot). A body that arrived together with its headers is decided on before anything is sent; it is answered with the block response, as on response headers. |
+
+The response body is buffered for the agents up to the largest of their
+`max-response-body-bytes`. A body over it is decided on at that point by the
+filter's `failure-mode`: `closed` refuses it with 413 (aborting the response
+if its status is out), `open` sends it on uninspected, whole.
+
+Both are logged at WARN with the agent, its filter and (for the body) how
+many body bytes had been sent, counted as blocked requests
+(`agent_response_blocked`, `agent_response_body_blocked`) and written to
+the audit log as an agent decision with `phase` `response_headers` or
+`response_body`. Neither is counted against the upstream.
+
 ## Failure Handling
 
 ### Failure Modes
@@ -244,6 +265,16 @@ pub struct RoutingMutations {
 |------|----------|
 | `open` | Allow request if agent fails (fail-open) |
 | `closed` | Block request if agent fails (fail-closed) |
+
+A failed call -- the agent is not loaded, unreachable, behind an open
+circuit breaker, too slow, or the body is over its inspection limit --
+follows the **filter's** `failure-mode`, else the route's `policies
+{ failure-mode }` (closed by default). This holds on every path: request
+headers and body, response headers and body. On the request side a
+fail-closed failure answers 503 (504 for a timeout, 413 for a body over the
+limit); on response headers the upstream response is replaced by that
+refusal; on the response body the response is aborted as above. The
+agent's own `failure-mode` applies only to WebSocket frames.
 
 ### Circuit Breaker
 

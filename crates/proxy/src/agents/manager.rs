@@ -57,6 +57,12 @@ pub struct FilterAgent {
     /// The agent's id.
     pub id: String,
     /// What a failed call means: the filter's failure mode, else the route's.
+    ///
+    /// This decides on every event path -- request headers and body,
+    /// response headers and body, body-size limits -- for an agent that is
+    /// not loaded, unreachable, behind an open circuit breaker or too slow.
+    /// The agent's own `failure-mode` does not: it is one agent's default,
+    /// and a route's filter is the policy for that route (#584).
     pub failure_mode: FailureMode,
     /// The filter's `timeout-ms`, if it set one.
     pub timeout_ms: Option<u64>,
@@ -83,8 +89,8 @@ pub struct BodyAgent {
     pub id: String,
     /// The agent filter's `max-body-bytes`, if it set one.
     pub max_body_bytes: Option<usize>,
-    /// The filter's failure mode, else the route's. Applies when the agent
-    /// is not loaded; a loaded agent's call failures follow its own.
+    /// The filter's failure mode, else the route's; see
+    /// [`FilterAgent::failure_mode`].
     pub failure_mode: FailureMode,
 }
 
@@ -282,6 +288,23 @@ impl AgentManager {
             .await
             .iter()
             .any(|resolved| matches!(resolved, Resolved::Loaded(..)))
+    }
+
+    /// The largest response body any of the route's agents inspects: their
+    /// `max-response-body-bytes`. A response body is buffered for them up
+    /// to this size; one larger is over every agent's limit, and answered by
+    /// the body-limit rule without being buffered any further.
+    pub async fn response_body_limit(&self, route_agents: &[FilterAgent]) -> usize {
+        self.resolve_agents(route_agents, Some(EventType::ResponseBodyChunk))
+            .await
+            .iter()
+            .filter_map(|resolved| match resolved {
+                Resolved::Loaded(_, agent) => Some(agent.max_response_body_bytes()),
+                // Answered by the dispatch, without a body to inspect.
+                Resolved::NotLoaded(_) => None,
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Process request headers through agents.
@@ -659,11 +682,11 @@ impl AgentManager {
         let mut combined_decision = AgentDecision::default_allow();
 
         for (agent_index, resolved) in relevant_agents.iter().enumerate() {
-            let agent = match resolved {
-                Resolved::Loaded(_, agent) => agent,
+            let (filter, agent) = match resolved {
+                Resolved::Loaded(filter, agent) => (filter, agent),
                 // Not loaded: a failed call that cannot be made, answered as
                 // an open circuit breaker is below, by the filter's failure
-                // mode (the agent has none of its own to apply).
+                // mode.
                 Resolved::NotLoaded(filter) => {
                     self.report_not_loaded(
                         ctx.correlation_id.as_str(),
@@ -727,12 +750,12 @@ impl AgentManager {
                 warn!(
                     agent_id = %agent.id(),
                     correlation_id = %ctx.correlation_id,
-                    failure_mode = ?agent.failure_mode(),
+                    failure_mode = ?filter.failure_mode,
                     "Circuit breaker open, skipping agent"
                 );
 
                 // Handle based on failure mode
-                if agent.failure_mode() == FailureMode::Closed {
+                if filter.failure_mode == FailureMode::Closed {
                     debug!(
                         correlation_id = %ctx.correlation_id,
                         agent_id = %agent.id(),
@@ -789,12 +812,16 @@ impl AgentManager {
                         correlation_id = %ctx.correlation_id,
                         error = %e,
                         duration_ms = start.elapsed().as_millis(),
-                        failure_mode = ?agent.failure_mode(),
+                        failure_mode = ?filter.failure_mode,
                         "Agent call failed"
                     );
 
-                    if agent.failure_mode() == FailureMode::Closed {
-                        return Err(e);
+                    // Answered like the other failures here and like a failed
+                    // call on request headers: a 503 decision, not an error
+                    // each caller would have to map to a failure mode again.
+                    if filter.failure_mode == FailureMode::Closed {
+                        return Ok(AgentDecision::block(503, "Service unavailable")
+                            .with_decided_by(agent.id()));
                     }
                 }
                 Err(_) => {
@@ -803,11 +830,11 @@ impl AgentManager {
                         agent_id = %agent.id(),
                         correlation_id = %ctx.correlation_id,
                         timeout_ms = agent.timeout_ms(),
-                        failure_mode = ?agent.failure_mode(),
+                        failure_mode = ?filter.failure_mode,
                         "Agent call timed out"
                     );
 
-                    if agent.failure_mode() == FailureMode::Closed {
+                    if filter.failure_mode == FailureMode::Closed {
                         debug!(
                             correlation_id = %ctx.correlation_id,
                             agent_id = %agent.id(),
@@ -1314,8 +1341,8 @@ impl AgentManager {
     ///
     /// An agent's limit is its own `max-request-body-bytes` (or
     /// `max-response-body-bytes`), lowered by its filter's `max-body-bytes`.
-    /// Agents whose limit is exceeded are handled according to their failure
-    /// mode: fail-closed produces a 413 Block decision, fail-open skips that
+    /// Agents whose limit is exceeded are handled according to their filter's
+    /// failure mode: fail-closed produces a 413 Block decision, fail-open skips that
     /// agent loudly (warn + metric) while agents within their limit still
     /// inspect the body.
     async fn apply_body_limits(
@@ -1337,7 +1364,7 @@ impl AgentManager {
                     };
                     (
                         agent.id().to_string(),
-                        agent.failure_mode(),
+                        body_agent.failure_mode,
                         body_agent.effective_limit(limit),
                     )
                 }
@@ -1791,6 +1818,90 @@ mod tests {
                 )
                 .await
         );
+    }
+
+    /// #584: a loaded agent that cannot be reached is answered by its
+    /// filter's failure mode on every path, not by the agent's own. Before,
+    /// request headers followed the filter and every other path the agent.
+    #[tokio::test]
+    async fn an_unreachable_agent_follows_its_filters_failure_mode_on_every_path() {
+        for (agent_mode, filter_mode) in
+            [("open", FailureMode::Closed), ("closed", FailureMode::Open)]
+        {
+            let kdl = format!(
+                r#"
+                system {{ worker-threads 1 }}
+                listeners {{ listener "l" {{ address "127.0.0.1:8080" }} }}
+                upstreams {{ upstream "u" {{ target "127.0.0.1:9000" }} }}
+                routes {{ route "r" {{ matches {{ path-prefix "/" }}
+                                     upstream "u" }} }}
+                agents {{
+                    agent "down" type="custom" {{
+                        unix-socket "/nonexistent/zentinel-584.sock"
+                        events "request_headers" "request_body" "response_headers" "response_body"
+                        timeout-ms 200
+                        failure-mode "{agent_mode}"
+                    }}
+                }}
+                "#
+            );
+            let config = zentinel_config::Config::from_kdl(&kdl).expect("parses");
+            let manager = AgentManager::new(config.agents).await.expect("manager");
+            let ctx = call_context();
+            let filters = [filter("down", filter_mode)];
+            let bodies = [body_filter("down", filter_mode)];
+            let outcomes = [
+                (
+                    "request headers",
+                    manager
+                        .process_request_headers(&ctx, HashMap::new(), &filters)
+                        .await,
+                ),
+                (
+                    "request body",
+                    manager
+                        .process_request_body(&ctx, b"x", true, &bodies)
+                        .await,
+                ),
+                (
+                    "request body chunk",
+                    manager
+                        .process_request_body_streaming(&ctx, b"x", false, 3, 64, None, &bodies)
+                        .await,
+                ),
+                (
+                    "response headers",
+                    manager
+                        .process_response_headers(&ctx, 200, &HashMap::new(), &filters)
+                        .await,
+                ),
+                (
+                    "response body chunk",
+                    manager
+                        .process_response_body_streaming(&ctx, b"x", true, 0, 1, Some(1), &filters)
+                        .await,
+                ),
+            ];
+            for (path, outcome) in outcomes {
+                let decision = outcome.unwrap_or_else(|e| panic!("{path}: {e}"));
+                match filter_mode {
+                    FailureMode::Closed => {
+                        let status = status_of(&decision);
+                        assert!(
+                            matches!(status, Some(503 | 504)),
+                            "{path}, agent {agent_mode}: {decision:?}"
+                        );
+                        assert_eq!(decision.decided_by.as_deref(), Some("down"), "{path}");
+                    }
+                    FailureMode::Open => {
+                        assert!(
+                            decision.is_allow(),
+                            "{path}, agent {agent_mode}: {decision:?}"
+                        )
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
