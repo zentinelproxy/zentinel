@@ -53,7 +53,8 @@ use crate::inference::InferenceRateLimitManager;
 use crate::logging::{LogManager, SharedLogManager};
 use crate::rate_limit::{RateLimitConfig, RateLimitManager};
 use crate::reload::{
-    ConfigManager, GracefulReloadCoordinator, ReloadEvent, RouteValidator, UpstreamValidator,
+    ConfigManager, GracefulReloadCoordinator, ReloadEvent, RouteMatcherValidator, RouteValidator,
+    UpstreamValidator,
 };
 use crate::routing::RouteMatcher;
 
@@ -187,22 +188,18 @@ impl ZentinelProxy {
         let config_manager =
             Arc::new(ConfigManager::new(&effective_config_path, config.clone()).await?);
 
-        // Add validators
-        config_manager.add_validator(Box::new(RouteValidator)).await;
-        config_manager
-            .add_validator(Box::new(UpstreamValidator))
-            .await;
+        Self::add_reload_validators(&config_manager).await;
 
         // Route matcher of the global listeners
-        let route_matcher = Arc::new(RwLock::new(RouteMatcher::with_cache_size(
+        let route_matcher = Arc::new(RwLock::new(crate::routing::compile_route_set(
+            &config,
+            &Scope::Global,
             crate::routing::routes_served_on(&config, &Scope::Global),
-            None,
-            config.server.route_cache_size,
         )?));
 
         // Build per-listener route matchers for listeners bound to a namespace
         // or service (empty unless any listener is).
-        let listener_matchers = Arc::new(RwLock::new(Self::build_listener_matchers(&config)));
+        let listener_matchers = Arc::new(RwLock::new(Self::build_listener_matchers(&config)?));
 
         // Active health checks are started further down, once. The runner
         // exists before the pools so each pool can attach to its upstream's
@@ -396,6 +393,20 @@ impl ZentinelProxy {
         self.cache_manager.stats()
     }
 
+    /// The validators every reload must pass before its configuration is
+    /// stored.
+    async fn add_reload_validators(config_manager: &ConfigManager) {
+        config_manager.add_validator(Box::new(RouteValidator)).await;
+        // The route matchers the reload handler builds must compile, or the
+        // reload would be stored and then only half applied (#577).
+        config_manager
+            .add_validator(Box::new(RouteMatcherValidator))
+            .await;
+        config_manager
+            .add_validator(Box::new(UpstreamValidator))
+            .await;
+    }
+
     /// Build per-listener route matchers for listeners bound to a namespace
     /// or a service.
     ///
@@ -405,52 +416,32 @@ impl ZentinelProxy {
     /// serves the routes [`Config::routes_served_on`] gives for that scope, in
     /// isolation from the global ones. Global listeners are omitted: they use
     /// the global matcher. Listeners of one scope share one matcher.
-    fn build_listener_matchers(config: &Config) -> ListenerMatchers {
+    ///
+    /// Fails if the route set of any scope does not compile. It used to log
+    /// and leave that listener serving no routes at all.
+    fn build_listener_matchers(
+        config: &Config,
+    ) -> std::result::Result<ListenerMatchers, crate::routing::RouteSetError> {
         let mut by_scope: HashMap<Scope, Arc<RouteMatcher>> = HashMap::new();
-        let mut matchers = ListenerMatchers::default();
-        for listener in &config.listeners {
-            let scope = listener.scope();
+        for (scope, routes) in crate::routing::route_sets(config) {
             if scope.is_global() {
                 continue;
             }
-            let matcher = match by_scope.get(&scope) {
-                Some(matcher) => Arc::clone(matcher),
-                None => {
-                    let routes = crate::routing::routes_served_on(config, &scope);
-                    let route_count = routes.len();
-                    let matcher = match RouteMatcher::with_cache_size(
-                        routes,
-                        None,
-                        config.server.route_cache_size,
-                    ) {
-                        Ok(matcher) => {
-                            info!(
-                                scope = %scope,
-                                routes = route_count,
-                                "Compiled route set of a namespace or service listener"
-                            );
-                            matcher
-                        }
-                        // Serve nothing rather than leave the listener out of
-                        // the map, which would give it the global routes.
-                        Err(e) => {
-                            error!(
-                                listener_id = %listener.id,
-                                scope = %scope,
-                                error = %e,
-                                "Failed to compile route matcher for listener scope; \
-                                 it serves no routes"
-                            );
-                            match RouteMatcher::new(Vec::new(), None) {
-                                Ok(empty) => empty,
-                                Err(_) => continue,
-                            }
-                        }
-                    };
-                    let matcher = Arc::new(matcher);
-                    by_scope.insert(scope.clone(), Arc::clone(&matcher));
-                    matcher
-                }
+            let route_count = routes.len();
+            let matcher = crate::routing::compile_route_set(config, &scope, routes)?;
+            info!(
+                scope = %scope,
+                routes = route_count,
+                "Compiled route set of a namespace or service listener"
+            );
+            by_scope.insert(scope, Arc::new(matcher));
+        }
+
+        let mut matchers = ListenerMatchers::default();
+        for listener in &config.listeners {
+            let scope = listener.scope();
+            let Some(matcher) = by_scope.get(&scope) else {
+                continue;
             };
             info!(
                 listener_id = %listener.id,
@@ -458,7 +449,7 @@ impl ZentinelProxy {
                 scope = %scope,
                 "Listener bound to the route set of its scope"
             );
-            if !matchers.insert(&listener.address, matcher) {
+            if !matchers.insert(&listener.address, Arc::clone(matcher)) {
                 error!(
                     listener_id = %listener.id,
                     address = %listener.address,
@@ -467,7 +458,7 @@ impl ZentinelProxy {
                 );
             }
         }
-        matchers
+        Ok(matchers)
     }
 
     /// Setup the configuration reload handler
@@ -484,12 +475,19 @@ impl ZentinelProxy {
 
         tokio::spawn(async move {
             loop {
-                match reload_rx.recv().await {
-                    Ok(ReloadEvent::Applied { .. }) => {}
+                // A rollback changes `current()` just as a reload does, so
+                // everything below is re-synced to it as well (#577).
+                let rolled_back = match reload_rx.recv().await {
+                    Ok(ReloadEvent::Applied { .. }) => false,
+                    Ok(ReloadEvent::RolledBack { reason, .. }) => {
+                        info!(%reason, "Configuration rolled back, re-applying it");
+                        true
+                    }
                     Ok(_) => continue,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!("Reload handler lagged by {n} events, applying latest config");
                         // Fall through to reload with the latest config
+                        false
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
@@ -499,30 +497,60 @@ impl ZentinelProxy {
                     // routes, upstreams and filters are rebuilt here too.
                     let new_config = config_manager_clone.current();
 
-                    // Update route matcher FIRST (most critical for traffic)
+                    // Compile every route set FIRST (most critical for
+                    // traffic), and change nothing unless all of them compile.
+                    // `RouteMatcherValidator` rejects such a configuration
+                    // before it is stored, so this is a backstop: hand
+                    // `current()` back to the previous configuration, whose
+                    // `RolledBack` event re-syncs everything to it.
                     let global_routes =
                         crate::routing::routes_served_on(&new_config, &Scope::Global);
                     let global_route_count = global_routes.len();
-                    match RouteMatcher::with_cache_size(
+                    let compiled = crate::routing::compile_route_set(
+                        &new_config,
+                        &Scope::Global,
                         global_routes,
-                        None,
-                        new_config.server.route_cache_size,
-                    ) {
-                        Ok(new_matcher) => {
-                            *route_matcher.write() = new_matcher;
-                            info!(
-                                routes = global_route_count,
-                                "Routes of the global listeners reloaded successfully"
+                    )
+                    .and_then(|global| Ok((global, Self::build_listener_matchers(&new_config)?)));
+                    let (new_matcher, new_listener_matchers) = match compiled {
+                        Ok(compiled) => compiled,
+                        // Already the previous configuration: rolling back
+                        // again would loop.
+                        Err(e) if rolled_back => {
+                            error!(
+                                error = %e,
+                                "Rolled-back configuration does not compile; routes, rate \
+                                 limiters, health checks and upstream pools left unchanged"
                             );
+                            continue;
                         }
                         Err(e) => {
-                            error!(error = %e, "Failed to compile route matcher");
+                            error!(
+                                error = %e,
+                                "Reloaded configuration does not compile; rolling back"
+                            );
+                            if let Err(e) = config_manager_clone
+                                .rollback(format!("route matcher build failed: {e}"))
+                                .await
+                            {
+                                error!(
+                                    error = %e,
+                                    "Rollback failed; routes, rate limiters, health checks \
+                                     and upstream pools left unchanged"
+                                );
+                            }
+                            continue;
                         }
-                    }
+                    };
+                    *route_matcher.write() = new_matcher;
+                    info!(
+                        routes = global_route_count,
+                        "Routes of the global listeners reloaded successfully"
+                    );
 
-                    // Rebuild per-listener (namespace- and service-bound)
+                    // Swap in the per-listener (namespace- and service-bound)
                     // route matchers
-                    *listener_matchers.write() = Self::build_listener_matchers(&new_config);
+                    *listener_matchers.write() = new_listener_matchers;
 
                     // Rebuild rate limiters. They were built once at startup, so a
                     // changed, added or removed limit (route filter or policy,
@@ -1080,7 +1108,7 @@ mod listener_matcher_tests {
         let config = zentinel_config::Config::from_kdl(KDL)
             .expect("config parses")
             .lower_scopes();
-        let matchers = ZentinelProxy::build_listener_matchers(&config);
+        let matchers = ZentinelProxy::build_listener_matchers(&config).unwrap();
 
         // Only the namespace-bound listener gets a dedicated matcher.
         assert_eq!(matchers.len(), 1);
@@ -1124,7 +1152,7 @@ mod listener_matcher_tests {
         let config = zentinel_config::Config::from_kdl(kdl)
             .expect("config parses")
             .lower_scopes();
-        let matchers = ZentinelProxy::build_listener_matchers(&config);
+        let matchers = ZentinelProxy::build_listener_matchers(&config).unwrap();
         assert!(matchers.is_empty());
     }
 
@@ -1165,7 +1193,7 @@ mod listener_matcher_tests {
         let config = zentinel_config::Config::from_kdl(WILDCARD_KDL)
             .expect("config parses")
             .lower_scopes();
-        let matchers = ZentinelProxy::build_listener_matchers(&config);
+        let matchers = ZentinelProxy::build_listener_matchers(&config).unwrap();
 
         // Every interface a `0.0.0.0` bind can accept on must resolve.
         for arrival in ["127.0.0.1:8080", "203.0.113.5:8080", "10.0.0.7:8080"] {
@@ -1196,7 +1224,7 @@ mod listener_matcher_tests {
         let config = zentinel_config::Config::from_kdl(WILDCARD_KDL)
             .expect("config parses")
             .lower_scopes();
-        let matchers = ZentinelProxy::build_listener_matchers(&config);
+        let matchers = ZentinelProxy::build_listener_matchers(&config).unwrap();
         assert!(matchers.get(local("203.0.113.5:9090")).is_none());
     }
 
@@ -1264,7 +1292,7 @@ mod listener_matcher_tests {
         assert_eq!(matched.config.upstream.as_deref(), Some("api:backend"));
         assert!(global.match_request(&req("/other")).is_none());
 
-        let matchers = ZentinelProxy::build_listener_matchers(&config);
+        let matchers = ZentinelProxy::build_listener_matchers(&config).unwrap();
         assert_eq!(matchers.len(), 2);
         let pay = matchers.get(local("127.0.0.1:9100")).expect("pay listener");
         let matched = pay.match_request(&req("/api/x")).expect("pay route");
@@ -1736,5 +1764,217 @@ mod default_rate_limit_tests {
         );
         assert_eq!(statuses(&manager, "plain", 1).await, vec![429]);
         assert_eq!(statuses(&manager, "own", 1).await, vec![429]);
+    }
+}
+
+/// #577: a rollback must re-sync everything the reload handler maintains, and
+/// a reload must be applied completely or not at all.
+#[cfg(test)]
+mod reload_rollback_tests {
+    use super::*;
+    use crate::reload::ReloadTrigger;
+    use crate::routing::RequestInfo;
+
+    /// One route `id` matching `regex`, plus `extra` top-level blocks.
+    fn kdl(id: &str, regex: &str, extra: &str) -> String {
+        format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{
+                listener "http" {{ address "127.0.0.1:19291" protocol "http" }}
+            }}
+            routes {{
+                route "{id}" {{
+                    matches {{ path-regex "{regex}" }}
+                    builtin-handler "status"
+                }}
+            }}
+            {extra}
+            "#
+        )
+    }
+
+    /// Config A: route `a` with a default rate limit, so it has a limiter.
+    fn config_a() -> String {
+        kdl("a", "^/a", "rate-limits { default-rps 100 }")
+    }
+
+    /// A route whose pattern is not a valid regex. `Config::validate` does
+    /// not compile route patterns, so only the route matcher rejects it.
+    fn uncompilable() -> String {
+        kdl("broken", "^/(unclosed", "")
+    }
+
+    struct Harness {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+        manager: Arc<ConfigManager>,
+        routes: Arc<RwLock<RouteMatcher>>,
+        limits: Arc<RateLimitManager>,
+    }
+
+    impl Harness {
+        /// The reload handler as `ZentinelProxy::new` sets it up, on config
+        /// A, with or without the reload validators.
+        async fn start(validators: bool) -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("zentinel.kdl");
+            std::fs::write(&path, config_a()).expect("write config");
+            let initial = Config::from_kdl(&config_a()).expect("config A parses");
+            let manager = Arc::new(ConfigManager::new(&path, initial).await.expect("manager"));
+            if validators {
+                ZentinelProxy::add_reload_validators(&manager).await;
+            }
+            let config = manager.current();
+            let routes = Arc::new(RwLock::new(
+                crate::routing::compile_route_set(
+                    &config,
+                    &Scope::Global,
+                    crate::routing::routes_served_on(&config, &Scope::Global),
+                )
+                .expect("config A compiles"),
+            ));
+            let listeners = Arc::new(RwLock::new(
+                ZentinelProxy::build_listener_matchers(&config).expect("config A compiles"),
+            ));
+            let limits = Arc::new(ZentinelProxy::initialize_rate_limiters(&config));
+            ZentinelProxy::setup_reload_handler(
+                Arc::clone(&manager),
+                Arc::clone(&routes),
+                listeners,
+                Registry::from_map(HashMap::new()),
+                Arc::new(HealthCheckRunner::new()),
+                Arc::clone(&limits),
+            )
+            .await;
+            Self {
+                _dir: dir,
+                path,
+                manager,
+                routes,
+                limits,
+            }
+        }
+
+        fn write(&self, kdl: &str) {
+            std::fs::write(&self.path, kdl).expect("write config");
+        }
+
+        /// The route the global matcher picks for `path`.
+        fn routed(&self, path: &str) -> Option<String> {
+            self.routes
+                .read()
+                .match_request(&RequestInfo::new("GET", path, "x"))
+                .map(|m| m.route_id.as_str().to_string())
+        }
+
+        fn current_routes(&self) -> Vec<String> {
+            self.manager
+                .current()
+                .routes
+                .iter()
+                .map(|r| r.id.clone())
+                .collect()
+        }
+
+        /// Whether the proxy is on config A in every way checked here.
+        fn on_config_a(&self) -> bool {
+            self.current_routes() == ["a"]
+                && self.routed("/a").as_deref() == Some("a")
+                && self.limits.has_route_specific_limiter("a")
+        }
+    }
+
+    /// The reload handler applies events on its own task.
+    async fn eventually(check: impl Fn() -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if check() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        check()
+    }
+
+    /// The handler ignored `RolledBack`: after a rollback `current()` was
+    /// config A again while routes and rate limiters stayed on config B.
+    #[tokio::test]
+    async fn a_rollback_re_applies_the_previous_config() {
+        let h = Harness::start(true).await;
+        assert!(h.on_config_a());
+
+        h.write(&kdl("b", "^/b", ""));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("config B reloads");
+        assert!(
+            eventually(|| h.routed("/b").as_deref() == Some("b")).await,
+            "config B was not applied"
+        );
+        assert!(!h.limits.has_route_specific_limiter("a"));
+
+        h.manager
+            .rollback("test".to_string())
+            .await
+            .expect("rollback");
+        assert!(
+            eventually(|| h.on_config_a() && h.routed("/b").is_none()).await,
+            "after the rollback current() is {:?} but /a routes to {:?}, /b to {:?}, \
+             and route a has a limiter: {}",
+            h.current_routes(),
+            h.routed("/a"),
+            h.routed("/b"),
+            h.limits.has_route_specific_limiter("a")
+        );
+    }
+
+    /// A reload whose routes cannot compile used to be stored as `current()`
+    /// and then only half applied. It is now rejected before it is stored.
+    #[tokio::test]
+    async fn a_reload_whose_routes_do_not_compile_is_rejected() {
+        let h = Harness::start(true).await;
+        h.write(&uncompilable());
+        let err = h
+            .manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect_err("routes that do not compile must be rejected");
+        assert!(err.to_string().contains("global"), "{err}");
+        assert!(err.to_string().contains("unclosed"), "{err}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(h.on_config_a());
+    }
+
+    /// The backstop, should a configuration whose routes cannot compile get
+    /// past validation: the handler rebuilt rate limiters, health checks and
+    /// pools from it while keeping the old routes, and left it as
+    /// `current()`. It now changes nothing and rolls back.
+    #[tokio::test]
+    async fn routes_that_fail_in_the_handler_roll_the_reload_back() {
+        let h = Harness::start(false).await;
+        h.write(&uncompilable());
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("without the validators the reload is stored");
+        assert!(
+            eventually(|| h.on_config_a()).await,
+            "after a failed route build current() is {:?}, /a routes to {:?}, \
+             and route a has a limiter: {}",
+            h.current_routes(),
+            h.routed("/a"),
+            h.limits.has_route_specific_limiter("a")
+        );
+        assert_eq!(
+            h.manager
+                .stats()
+                .rollbacks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "exactly one rollback"
+        );
     }
 }

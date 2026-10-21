@@ -21,6 +21,7 @@ static ROUTE_CACHE_EVICTIONS: LazyLock<Option<IntCounter>> = LazyLock::new(|| {
     .ok()
 });
 
+use zentinel_common::ids::Scope;
 use zentinel_common::types::Priority;
 use zentinel_common::RouteId;
 use zentinel_config::{MatchCondition, RouteConfig, RoutePolicies};
@@ -868,6 +869,54 @@ fn route_compiles(route: &RouteConfig) -> Result<(), RouteError> {
     RouteMatcher::with_cache_size(vec![route.clone()], None, 1).map(|_| ())
 }
 
+/// Every route set the proxy compiles into a matcher of its own: the routes
+/// of the global listeners first, then those of each namespace or service
+/// scope that has a listener, once per scope, in listener order.
+///
+/// `config` is the lowered configuration. Startup, the reload handler and
+/// [`crate::reload::RouteMatcherValidator`] all go through this, so a reload
+/// is validated against exactly the matchers it would build.
+pub fn route_sets(config: &zentinel_config::Config) -> Vec<(Scope, Vec<RouteConfig>)> {
+    let mut scopes = vec![Scope::Global];
+    for listener in &config.listeners {
+        let scope = listener.scope();
+        if !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    scopes
+        .into_iter()
+        .map(|scope| {
+            let routes = routes_served_on(config, &scope);
+            (scope, routes)
+        })
+        .collect()
+}
+
+/// Compile one of the [`route_sets`] of `config` with the configured route
+/// cache size.
+pub fn compile_route_set(
+    config: &zentinel_config::Config,
+    scope: &Scope,
+    routes: Vec<RouteConfig>,
+) -> Result<RouteMatcher, RouteSetError> {
+    RouteMatcher::with_cache_size(routes, None, config.server.route_cache_size).map_err(|source| {
+        RouteSetError {
+            scope: scope.clone(),
+            source,
+        }
+    })
+}
+
+/// A route set that does not compile, with the scope whose listeners serve it.
+#[derive(Debug, thiserror::Error)]
+#[error("the routes served on the {scope} listeners do not compile: {source}")]
+pub struct RouteSetError {
+    pub scope: Scope,
+    #[source]
+    pub source: RouteError,
+}
+
 /// Route matching errors
 #[derive(Debug, thiserror::Error)]
 pub enum RouteError {
@@ -898,6 +947,7 @@ impl std::fmt::Debug for CompiledMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zentinel_common::ids::Scope;
     use zentinel_common::types::Priority;
     use zentinel_config::{MatchCondition, RouteConfig};
 
@@ -1098,6 +1148,7 @@ mod tests {
 #[cfg(test)]
 mod probe_113 {
     use super::*;
+    use zentinel_common::ids::Scope;
     use zentinel_common::types::Priority;
     use zentinel_config::{MatchCondition, RouteConfig};
 
@@ -1196,6 +1247,7 @@ mod probe_113 {
 mod route_cache_correctness {
     use super::*;
     use std::collections::HashMap;
+    use zentinel_common::ids::Scope;
     use zentinel_common::types::Priority;
     use zentinel_config::{MatchCondition, RouteConfig};
 
@@ -1404,6 +1456,7 @@ mod route_cache_correctness {
 mod route_matching_edges {
     use super::*;
     use std::collections::HashMap;
+    use zentinel_common::ids::Scope;
     use zentinel_common::types::Priority;
     use zentinel_config::{MatchCondition, RouteConfig};
 

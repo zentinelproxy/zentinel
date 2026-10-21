@@ -108,6 +108,42 @@ impl ConfigValidator for RouteValidator {
     }
 }
 
+/// Rejects a configuration whose routes cannot be compiled into the route
+/// matchers the proxy would build from it: the one of the global listeners
+/// and one per namespace or service scope that has a listener.
+///
+/// `Config::validate` does not compile route patterns, so an invalid
+/// `path-regex` on a global route passed it. On reload that configuration was
+/// stored as `current()` and the handler then failed to build its routes,
+/// leaving the proxy on a mix of old routes and new everything else (#577).
+/// Rejected here, it is never stored.
+pub struct RouteMatcherValidator;
+
+#[async_trait::async_trait]
+impl ConfigValidator for RouteMatcherValidator {
+    async fn validate(&self, config: &Config) -> ZentinelResult<()> {
+        // Validators see the configuration as loaded; the proxy builds its
+        // matchers from the lowered one. Lowering is idempotent, so this is
+        // also right for the already-lowered configuration a rollback
+        // re-validates.
+        let config = config.lower_scopes();
+        for (scope, routes) in crate::routing::route_sets(&config) {
+            crate::routing::compile_route_set(&config, &scope, routes).map_err(|e| {
+                ZentinelError::Config {
+                    message: format!("Configuration rejected: {e}"),
+                    source: None,
+                }
+            })?;
+        }
+        debug!("Route matcher validation passed");
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "RouteMatcherValidator"
+    }
+}
+
 /// Upstream configuration validator
 ///
 /// Performs runtime-specific upstream validation. The schema-level validation
@@ -198,5 +234,69 @@ impl ConfigValidator for UpstreamValidator {
 
     fn name(&self) -> &str {
         "UpstreamValidator"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(routes: &str, extra: &str) -> Config {
+        Config::from_kdl(&format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{ listener "public" {{ address "127.0.0.1:18080" }} }}
+            routes {{ {routes} }}
+            {extra}
+            "#
+        ))
+        .expect("config parses")
+    }
+
+    const BROKEN: &str = r#"route "broken" {
+        matches { path-regex "^/(unclosed" }
+        builtin-handler "status"
+    }"#;
+
+    const FINE: &str = r#"route "fine" {
+        matches { path-regex "^/fine" }
+        builtin-handler "status"
+    }"#;
+
+    #[tokio::test]
+    async fn rejects_a_global_route_that_does_not_compile() {
+        let config = config(BROKEN, "");
+        // The gap this validator closes: schema validation passes it.
+        config
+            .validate()
+            .expect("Config::validate does not compile route patterns");
+        let err = RouteMatcherValidator
+            .validate(&config)
+            .await
+            .expect_err("an invalid path-regex must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("global listeners"), "{msg}");
+        assert!(msg.contains("^/(unclosed"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn accepts_routes_that_compile_in_every_scope() {
+        let namespace = format!(
+            r#"namespace "api" {{
+                listeners {{ listener "api" {{ address "127.0.0.1:18081" }} }}
+                routes {{ {FINE} }}
+            }}"#
+        );
+        let config = config(FINE, &namespace);
+        RouteMatcherValidator
+            .validate(&config)
+            .await
+            .expect("routes that compile pass");
+        // Already lowered, as on rollback.
+        RouteMatcherValidator
+            .validate(&config.lower_scopes())
+            .await
+            .expect("lowering is idempotent");
     }
 }
