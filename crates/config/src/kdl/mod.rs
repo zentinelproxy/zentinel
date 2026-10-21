@@ -3799,4 +3799,44 @@ routes {
                 .timestamps
         );
     }
+
+    /// #574: a logging block without `error-log` used to open
+    /// /var/log/zentinel/error.log anyway, and a failure there took the
+    /// configured access and audit logs down with it. File logs are opt-in.
+    #[test]
+    fn error_log_is_off_unless_configured() {
+        assert!(logging_config("#true").error_log.is_none());
+        assert!(crate::observability::LoggingConfig::default()
+            .error_log
+            .is_none());
+    }
+
+    /// Writing the block, even empty, still gets the documented defaults.
+    #[test]
+    fn empty_error_log_block_uses_defaults() {
+        let kdl = r#"
+schema-version "1.0"
+system { worker-threads 1 }
+observability { logging { error-log { } } }
+listeners { listener "l" { address "127.0.0.1:8080" } }
+routes {
+    route "r" {
+        matches { path "/" }
+        service-type "builtin"
+        builtin-handler "health"
+    }
+}
+"#;
+        let error_log = Config::from_kdl(kdl)
+            .expect("parses")
+            .observability
+            .logging
+            .error_log
+            .expect("error-log block is kept");
+        assert!(error_log.enabled);
+        assert_eq!(
+            error_log.file,
+            std::path::PathBuf::from("/var/log/zentinel/error.log")
+        );
+    }
 }

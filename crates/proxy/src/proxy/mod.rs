@@ -279,28 +279,20 @@ impl ZentinelProxy {
             app_state.instance_id.clone(),
         ));
 
-        // Create log manager for file-based logging
-        let log_manager = match LogManager::new(&config.observability.logging) {
-            Ok(manager) => {
-                if manager.access_log_enabled() {
-                    info!("Access logging enabled");
-                }
-                if manager.error_log_enabled() {
-                    info!("Error logging enabled");
-                }
-                if manager.audit_log_enabled() {
-                    info!("Audit logging enabled");
-                }
-                Arc::new(manager)
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to initialize log manager, file logging disabled: {}",
-                    e
-                );
-                Arc::new(LogManager::disabled())
-            }
-        };
+        // Create log manager for file-based logging. An access or error log
+        // that cannot be opened is reported by `LogManager::new` and left off;
+        // a configured audit log that cannot be opened stops startup.
+        let log_manager = LogManager::new(&config.observability.logging)?;
+        if log_manager.access_log_enabled() {
+            info!("Access logging enabled");
+        }
+        if log_manager.error_log_enabled() {
+            info!("Error logging enabled");
+        }
+        if log_manager.audit_log_enabled() {
+            info!("Audit logging enabled");
+        }
+        let log_manager = Arc::new(log_manager);
 
         // Register audit reload hook to log configuration changes
         {

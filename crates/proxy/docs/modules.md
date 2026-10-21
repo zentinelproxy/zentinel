@@ -616,6 +616,10 @@ Structured logging for access, errors, and audit.
 - `Json` - Structured JSON
 - `Combined` - Apache/nginx combined format
 
+Each log file is opened independently: an access or error log that cannot be
+opened is reported and left off without affecting the others, while a
+configured audit log that cannot be opened fails startup.
+
 **Key Struct:** `LogManager`
 
 ```rust

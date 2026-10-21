@@ -671,49 +671,35 @@ pub struct LogManager {
 
 impl LogManager {
     /// Create a new log manager from configuration
+    ///
+    /// Each log file is opened on its own. An access or error log that cannot
+    /// be opened is reported, naming the log and its path, and left off; the
+    /// other logs are unaffected. An audit log that cannot be opened is an
+    /// error, because running without a configured audit trail is not a
+    /// failure an operator should discover after the fact.
     pub fn new(config: &LoggingConfig) -> Result<Self> {
-        let (access_log, access_log_format) = if let Some(ref access_config) = config.access_log {
-            if access_config.enabled {
-                let format = Self::parse_access_format(&access_config.format);
-                let writer = Mutex::new(LogFileWriter::new(
-                    &access_config.file,
-                    access_config.buffer_size,
-                )?);
-                (Some(writer), format)
-            } else {
-                (None, AccessLogFormat::Json)
-            }
-        } else {
-            (None, AccessLogFormat::Json)
+        let (access_log, access_log_format) = match config.access_log {
+            Some(ref access_config) if access_config.enabled => (
+                Self::open_or_report("access", &access_config.file, access_config.buffer_size),
+                Self::parse_access_format(&access_config.format),
+            ),
+            _ => (None, AccessLogFormat::Json),
         };
 
-        let (error_log, error_log_level) = if let Some(ref error_config) = config.error_log {
-            if error_config.enabled {
-                (
-                    Some(Mutex::new(LogFileWriter::new(
-                        &error_config.file,
-                        error_config.buffer_size,
-                    )?)),
-                    error_config.level.clone(),
-                )
-            } else {
-                (None, "warn".to_string())
-            }
-        } else {
-            (None, "warn".to_string())
+        let (error_log, error_log_level) = match config.error_log {
+            Some(ref error_config) if error_config.enabled => (
+                Self::open_or_report("error", &error_config.file, error_config.buffer_size),
+                error_config.level.clone(),
+            ),
+            _ => (None, "warn".to_string()),
         };
 
-        let audit_log = if let Some(ref audit_config) = config.audit_log {
-            if audit_config.enabled {
-                Some(Mutex::new(LogFileWriter::new(
-                    &audit_config.file,
-                    audit_config.buffer_size,
-                )?))
-            } else {
-                None
-            }
-        } else {
-            None
+        let audit_log = match config.audit_log {
+            Some(ref audit_config) if audit_config.enabled => Some(Mutex::new(
+                LogFileWriter::new(&audit_config.file, audit_config.buffer_size)
+                    .with_context(|| format!("Failed to open audit log {:?}", audit_config.file))?,
+            )),
+            _ => None,
         };
 
         Ok(Self {
@@ -725,6 +711,24 @@ impl LogManager {
             audit_log,
             audit_config: config.audit_log.clone(),
         })
+    }
+
+    /// Open a log file, reporting a failure instead of returning it so that
+    /// one log that cannot be opened does not take the others down with it.
+    fn open_or_report(kind: &str, path: &Path, buffer_size: usize) -> Option<Mutex<LogFileWriter>> {
+        match LogFileWriter::new(path, buffer_size) {
+            Ok(writer) => Some(Mutex::new(writer)),
+            Err(e) => {
+                error!(
+                    log = kind,
+                    path = %path.display(),
+                    "Failed to open {} log, it is disabled: {:#}",
+                    kind,
+                    e
+                );
+                None
+            }
+        }
     }
 
     /// Create a disabled log manager (no file logging)
@@ -1305,5 +1309,138 @@ mod tests {
         assert!(parsed.get("namespace").is_none());
         assert!(parsed.get("service").is_none());
         assert!(parsed.get("upstream_addr").is_none());
+    }
+
+    /// A path no process can open: its parent is a regular file, so creating
+    /// the log directory fails even when the tests run as root.
+    fn unopenable_path(dir: &Path, name: &str) -> std::path::PathBuf {
+        let blocker = dir.join("not-a-directory");
+        std::fs::write(&blocker, b"").unwrap();
+        blocker.join(name)
+    }
+
+    fn access_log_config(file: std::path::PathBuf) -> AccessLogConfig {
+        AccessLogConfig {
+            file,
+            ..AccessLogConfig::default()
+        }
+    }
+
+    /// #574: an error log that cannot be opened used to make `new` fail, and
+    /// the proxy then dropped every file log, including the access log the
+    /// user had configured.
+    #[test]
+    fn test_unopenable_error_log_leaves_access_log_working() {
+        let dir = tempdir().unwrap();
+        let access_log_path = dir.path().join("access.log");
+
+        let config = LoggingConfig {
+            access_log: Some(access_log_config(access_log_path.clone())),
+            error_log: Some(ErrorLogConfig {
+                file: unopenable_path(dir.path(), "error.log"),
+                ..ErrorLogConfig::default()
+            }),
+            ..LoggingConfig::default()
+        };
+
+        let manager = LogManager::new(&config).expect("an error log failure is not fatal");
+        assert!(manager.access_log_enabled());
+        assert!(!manager.error_log_enabled());
+
+        let mut entry = AccessLogEntry {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            trace_id: "trace-574".to_string(),
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            query: None,
+            protocol: "HTTP/1.1".to_string(),
+            status: 200,
+            body_bytes: 0,
+            duration_ms: 1,
+            client_ip: "127.0.0.1".to_string(),
+            user_agent: None,
+            referer: None,
+            host: None,
+            route_id: None,
+            upstream: None,
+            upstream_attempts: 0,
+            instance_id: "inst-1".to_string(),
+            namespace: None,
+            service: None,
+            body_bytes_sent: 0,
+            upstream_addr: None,
+            connection_reused: false,
+            rate_limit_hit: false,
+            geo_country: None,
+        };
+        manager.log_access(&entry);
+        entry.trace_id = "trace-574-2".to_string();
+        manager.log_access(&entry);
+        manager.flush();
+
+        let written = std::fs::read_to_string(&access_log_path).unwrap();
+        assert_eq!(written.lines().count(), 2);
+        assert!(written.contains("trace-574"));
+    }
+
+    /// The same independence the other way round: an access log that cannot
+    /// be opened does not disable the error log.
+    #[test]
+    fn test_unopenable_access_log_leaves_error_log_working() {
+        let dir = tempdir().unwrap();
+        let error_log_path = dir.path().join("error.log");
+
+        let config = LoggingConfig {
+            access_log: Some(access_log_config(unopenable_path(dir.path(), "access.log"))),
+            error_log: Some(ErrorLogConfig {
+                file: error_log_path.clone(),
+                ..ErrorLogConfig::default()
+            }),
+            ..LoggingConfig::default()
+        };
+
+        let manager = LogManager::new(&config).expect("an access log failure is not fatal");
+        assert!(!manager.access_log_enabled());
+        assert!(manager.error_log_enabled());
+
+        manager.log_request_error("error", "upstream down", "trace-574", None, None, None);
+        manager.flush();
+        assert!(std::fs::read_to_string(&error_log_path)
+            .unwrap()
+            .contains("upstream down"));
+    }
+
+    /// A configured audit log that cannot be opened is fatal, and the error
+    /// names the audit log and its path so the operator can fix it.
+    #[test]
+    fn test_unopenable_audit_log_is_an_error() {
+        let dir = tempdir().unwrap();
+        let audit_log_path = unopenable_path(dir.path(), "audit.log");
+
+        let config = LoggingConfig {
+            access_log: Some(access_log_config(dir.path().join("access.log"))),
+            audit_log: Some(AuditLogConfig {
+                file: audit_log_path.clone(),
+                ..AuditLogConfig::default()
+            }),
+            ..LoggingConfig::default()
+        };
+
+        let err = match LogManager::new(&config) {
+            Ok(_) => panic!("an audit log that cannot be opened must not be skipped"),
+            Err(e) => format!("{:#}", e),
+        };
+        assert!(err.contains("audit log"), "{err}");
+        assert!(err.contains(&format!("{:?}", audit_log_path)), "{err}");
+    }
+
+    /// A log that is not configured is not opened, so the default config
+    /// touches no file at all.
+    #[test]
+    fn test_default_config_opens_no_log_files() {
+        let manager = LogManager::new(&LoggingConfig::default()).unwrap();
+        assert!(!manager.access_log_enabled());
+        assert!(!manager.error_log_enabled());
+        assert!(!manager.audit_log_enabled());
     }
 }

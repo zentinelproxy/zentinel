@@ -104,7 +104,9 @@ impl Default for LoggingConfig {
             timestamps: default_true(),
             file: None,
             access_log: None,
-            error_log: Some(ErrorLogConfig::default()),
+            // Every file log is opt-in. The `ErrorLogConfig` defaults apply
+            // once an `error-log` block is written, not before.
+            error_log: None,
             audit_log: None,
         }
     }

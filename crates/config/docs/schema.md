@@ -590,6 +590,12 @@ Metrics, logging, and tracing configuration.
 | `error-log` | `ErrorLogConfig` | - | Error log config |
 | `audit-log` | `AuditLogConfig` | - | Audit log config |
 
+File logs are opt-in: a log is opened only when its block is present (and not
+`enabled #false`). Each file is independent. An access or error log that cannot
+be opened is reported at startup, naming the log and its path, and stays off
+while the other logs keep working. A configured audit log that cannot be opened
+stops startup, so a deployment never runs without the audit trail it asked for.
+
 ### AccessLogConfig
 
 | Property | Type | Default | Description |
