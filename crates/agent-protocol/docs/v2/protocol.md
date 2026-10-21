@@ -106,12 +106,18 @@ Proxy                                    Agent
 | `0x11` | `RequestBodyChunk` | Proxy → Agent | Request body chunk |
 | `0x12` | `ResponseHeaders` | Proxy → Agent | HTTP response headers |
 | `0x13` | `ResponseBodyChunk` | Proxy → Agent | Response body chunk |
-| `0x20` | `Decision` | Agent → Proxy | Processing decision |
-| `0x21` | `BodyMutation` | Agent → Proxy | Body chunk mutation |
-| `0x30` | `CancelRequest` | Proxy → Agent | Cancel in-flight request |
-| `0x31` | `CancelAll` | Proxy → Agent | Cancel all requests |
-| `0xF0` | `Ping` | Either | Keep-alive ping |
-| `0xF1` | `Pong` | Either | Keep-alive response |
+| `0x14` | `RequestComplete` | Proxy → Agent | Request finished (logging) |
+| `0x15` | `WebSocketFrame` | Proxy → Agent | WebSocket frame |
+| `0x16` | `GuardrailInspect` | Proxy → Agent | Guardrail inspection |
+| `0x17` | `Configure` | Proxy → Agent | The agent's configuration (see [Configuration delivery](#configuration-delivery)) |
+| `0x20` | `AgentResponse` | Agent → Proxy | Decision for an event, routed by `correlation_id` |
+| `0x30` | `HealthStatus` | Agent → Proxy | Health report |
+| `0x31` | `MetricsReport` | Agent → Proxy | Metrics report |
+| `0x32` | `ConfigUpdateRequest` | Agent → Proxy | Agent asks for a config change |
+| `0x33` | `FlowControl` | Agent → Proxy | Pause / resume |
+| `0x40` | `Cancel` | Proxy → Agent | Cancel an in-flight request |
+| `0x41` | `Ping` | Either | Keep-alive ping |
+| `0x42` | `Pong` | Either | Keep-alive response |
 
 ### Example Frame
 
@@ -125,31 +131,80 @@ Proxy                                    Agent
 
 ### Handshake Protocol
 
-Connection establishment requires a handshake:
+Connection establishment requires a handshake. Both messages are always JSON;
+the encoding negotiated in it applies to every message after it.
 
 ```rust
 pub struct UdsHandshakeRequest {
-    pub protocol_version: u32,        // Must be 2
-    pub client_name: String,          // Proxy identifier
-    pub supported_features: Vec<String>,
+    pub supported_versions: Vec<u32>,         // [2]
+    pub proxy_id: String,
+    pub proxy_version: String,
+    pub config: Option<serde_json::Value>,    // The agent's `config { }` block
+    pub supported_encodings: Vec<UdsEncoding>, // Omitted when only JSON
 }
 
 pub struct UdsHandshakeResponse {
     pub protocol_version: u32,
-    pub agent_name: String,
     pub capabilities: UdsCapabilities,
-}
-
-pub struct UdsCapabilities {
-    pub handles_request_headers: bool,
-    pub handles_request_body: bool,
-    pub handles_response_headers: bool,
-    pub handles_response_body: bool,
-    pub supports_streaming: bool,
-    pub supports_cancellation: bool,
-    pub max_concurrent_requests: Option<u32>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub encoding: UdsEncoding,                 // Defaults to JSON
 }
 ```
+
+## Configuration delivery
+
+The `config { }` block of an agent in the proxy's KDL is delivered on **every
+connection** the proxy makes to the agent: each pooled connection, and every
+reconnect after the agent restarts. A connection carries no request before
+its configuration has been delivered.
+
+```kdl
+agent "waf" type="custom" {
+    unix-socket "/run/zentinel/waf.sock"
+    config {
+        paranoia-level 2
+    }
+}
+```
+
+The block is converted to JSON (`{"paranoia-level": 2}`) and sent twice per
+connection:
+
+1. **In the handshake** — `UdsHandshakeRequest.config` (UDS) or
+   `HandshakeRequest.config_json` (gRPC, `"{}"` when there is none). It reaches
+   `AgentHandlerV2::on_handshake`, whose default ignores it.
+2. **As a Configure message** right after the handshake, which the SDK servers
+   hand to `AgentHandlerV2::on_configure(config, version)`:
+   - **UDS:** message `0x17` with payload
+     `{"correlation_id": "...", "config": {...}, "config_version": null}`. The
+     agent answers with an `AgentResponse` carrying that `correlation_id`
+     (`UdsAgentServerV2` does this): `Allow` accepts, anything else rejects.
+     The proxy waits for the longer of the agent's timeout and 5 s.
+   - **gRPC:** `ProxyToAgent.configure` (`ConfigureEvent`, `is_initial: true`),
+     followed by a `Ping`. The protocol has no reply to a configure event, so
+     an agent that rejects it ends the stream (`GrpcAgentServerV2` does this);
+     the `Pong` confirms it was handled.
+
+A connection whose agent rejects its configuration, or does not answer in
+time, is not used: it counts as a failed connection, the pool keeps retrying
+it, and the agent's filters fail open or closed by their `failure-mode`.
+Rejections are logged at ERROR. An agent without a `config { }` block is sent
+no Configure message.
+
+`on_configure` is therefore called once per connection, several times for
+one agent process (once per pooled connection), and again after every
+reconnect. It must be idempotent: applying the same configuration again
+should not reset state such as rate-limit buckets.
+
+The configuration is sent only when a connection is made; there is no
+in-place reconfigure. A reload does not rebuild agents yet (#564), so a
+changed `config { }` block takes effect after a restart of the proxy. Once
+reloads rebuild changed agents, the new configuration arrives the same way,
+on the new agent's connections.
+
+Reverse connections (below) are registered by the agent and are sent no
+configuration.
 
 ---
 

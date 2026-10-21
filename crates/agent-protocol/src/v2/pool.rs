@@ -527,6 +527,8 @@ struct AgentEntry {
     last_reconnect_attempt_ms: AtomicU64,
     /// Cached aggregate health - true if any connection is healthy
     healthy: AtomicBool,
+    /// Configuration delivered on every connection to this agent (#593).
+    config: Option<serde_json::Value>,
 }
 
 /// Largest interval between reconnection attempts.
@@ -537,10 +539,11 @@ struct AgentEntry {
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(120);
 
 impl AgentEntry {
-    fn new(agent_id: String, endpoint: String) -> Self {
+    fn new(agent_id: String, endpoint: String, config: Option<serde_json::Value>) -> Self {
         Self {
             agent_id,
             endpoint,
+            config,
             connections: RwLock::new(Vec::new()),
             capabilities: RwLock::new(None),
             round_robin_index: AtomicUsize::new(0),
@@ -1096,17 +1099,41 @@ impl AgentPool {
         agent_id: impl Into<String>,
         endpoint: impl Into<String>,
     ) -> Result<(), AgentProtocolError> {
+        self.add_agent_with_config(agent_id, endpoint, None).await
+    }
+
+    /// Add an agent to the pool, with the configuration it is given.
+    ///
+    /// Like [`Self::add_agent`], and every connection to the agent -- each
+    /// pooled connection, and every reconnect after the agent restarts --
+    /// delivers `config` before it carries a request: in the handshake, and
+    /// as a Configure message the agent must accept. A connection whose
+    /// agent rejects the configuration is not used (#593).
+    pub async fn add_agent_with_config(
+        &self,
+        agent_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        config: Option<serde_json::Value>,
+    ) -> Result<(), AgentProtocolError> {
         let agent_id = agent_id.into();
         let endpoint = endpoint.into();
 
-        info!(agent_id = %agent_id, endpoint = %endpoint, "Adding agent to pool");
+        info!(
+            agent_id = %agent_id,
+            endpoint = %endpoint,
+            has_config = config.is_some(),
+            "Adding agent to pool"
+        );
 
-        let entry = Arc::new(AgentEntry::new(agent_id.clone(), endpoint.clone()));
+        let entry = Arc::new(AgentEntry::new(agent_id.clone(), endpoint.clone(), config));
 
         // Create initial connections
         let mut connections = Vec::with_capacity(self.config.connections_per_agent);
         for i in 0..self.config.connections_per_agent {
-            match self.create_connection(&agent_id, &endpoint).await {
+            match self
+                .create_connection(&agent_id, &endpoint, entry.config.as_ref())
+                .await
+            {
                 Ok(conn) => {
                     connections.push(Arc::new(conn));
                     debug!(
@@ -1256,9 +1283,13 @@ impl AgentPool {
             );
         } else {
             // Create new agent entry
+            // A reverse connection's agent registers itself, so there is no
+            // configuration to deliver: the pool only holds one for agents
+            // added with `add_agent_with_config`.
             let entry = Arc::new(AgentEntry::new(
                 agent_id.to_string(),
                 format!("reverse://{}", agent_id),
+                None,
             ));
 
             // Register with ConfigPusher
@@ -1893,6 +1924,7 @@ impl AgentPool {
         &self,
         agent_id: &str,
         endpoint: &str,
+        config: Option<&serde_json::Value>,
     ) -> Result<PooledConnection, AgentProtocolError> {
         // Detect transport type from endpoint
         let transport = if is_uds_endpoint(endpoint) {
@@ -1905,6 +1937,7 @@ impl AgentPool {
             // Set callbacks before connecting
             client.set_metrics_callback(Arc::clone(&self.metrics_callback));
             client.set_config_update_callback(Arc::clone(&self.config_update_callback));
+            client.set_config(config.cloned());
 
             client.connect().await?;
             V2Transport::Uds(client)
@@ -1916,6 +1949,7 @@ impl AgentPool {
             // Set callbacks before connecting
             client.set_metrics_callback(Arc::clone(&self.metrics_callback));
             client.set_config_update_callback(Arc::clone(&self.config_update_callback));
+            client.set_config(config.cloned());
 
             client.connect().await?;
             V2Transport::Grpc(client)
@@ -2040,7 +2074,10 @@ impl AgentPool {
 
         debug!(agent_id = %agent_id, attempt = attempts + 1, "Attempting reconnect");
 
-        match self.create_connection(agent_id, &entry.endpoint).await {
+        match self
+            .create_connection(agent_id, &entry.endpoint, entry.config.as_ref())
+            .await
+        {
             Ok(conn) => {
                 // Capabilities are learned here as well as in `add_agent`, and
                 // have to be: an agent that was unreachable at startup is now
@@ -2415,7 +2452,7 @@ mod tests {
     /// three by default, about fifteen seconds -- which covers most restarts.
     #[test]
     fn reconnect_backoff_grows_and_is_capped() {
-        let entry = AgentEntry::new("a".to_string(), "unix:/tmp/x.sock".to_string());
+        let entry = AgentEntry::new("a".to_string(), "unix:/tmp/x.sock".to_string(), None);
         entry.mark_reconnect_attempt();
 
         // Fresh failure: the base interval has not elapsed, so not yet.
@@ -2430,7 +2467,7 @@ mod tests {
 
         // A zero-length base interval means any elapsed time qualifies, which
         // shows the cap arithmetic does not overflow into never.
-        let fresh = AgentEntry::new("b".to_string(), "unix:/tmp/y.sock".to_string());
+        let fresh = AgentEntry::new("b".to_string(), "unix:/tmp/y.sock".to_string(), None);
         assert!(
             fresh.should_reconnect(Duration::from_secs(1)),
             "an agent that has never been tried is tried"

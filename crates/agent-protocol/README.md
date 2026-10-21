@@ -98,7 +98,7 @@ The protocol supports 8 event types covering the full request/response lifecycle
 
 | Event | Description | Typical Use |
 |-------|-------------|-------------|
-| `Configure` | Initial handshake with agent capabilities | Feature negotiation |
+| `Configure` | The agent's `config { }` block, sent on every connection after the handshake | Agent configuration (see [protocol.md](docs/v2/protocol.md#configuration-delivery)) |
 | `RequestHeaders` | Request headers received | Auth, routing, early blocking |
 | `RequestBodyChunk` | Request body chunk (streaming) | Body inspection, transformation |
 | `ResponseHeaders` | Response headers from upstream | Header modification |

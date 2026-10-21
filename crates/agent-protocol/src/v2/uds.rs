@@ -366,6 +366,29 @@ pub struct AgentClientV2Uds {
     metrics_callback: Option<MetricsCallback>,
     /// Callback for config update requests
     config_update_callback: Option<ConfigUpdateCallback>,
+    /// The agent's configuration (the `config { }` block of its KDL), sent
+    /// on every connection: in the handshake, and as a Configure message
+    /// right after it (#593).
+    config: Option<serde_json::Value>,
+}
+
+/// Shortest time an agent is given to acknowledge its configuration.
+///
+/// The request timeout of an agent can be a few milliseconds, which is no
+/// measure of how long applying a configuration takes (compiling rules,
+/// loading keys). The acknowledgement waits for the longer of the two.
+pub(crate) const MIN_CONFIGURE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Distinguishes the correlation ids of configure messages.
+static CONFIGURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// A correlation id for the configure message sent on a new connection.
+pub(crate) fn configure_correlation_id(agent_id: &str) -> String {
+    format!(
+        "zentinel-configure-{}-{}",
+        agent_id,
+        CONFIGURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 impl AgentClientV2Uds {
@@ -401,7 +424,20 @@ impl AgentClientV2Uds {
             in_flight: AtomicU64::new(0),
             metrics_callback: None,
             config_update_callback: None,
+            config: None,
         })
+    }
+
+    /// Set the configuration delivered to the agent on every connection.
+    ///
+    /// `connect` puts it into the handshake and then sends it as a Configure
+    /// message, which `UdsAgentServerV2` hands to `AgentHandlerV2::on_configure`.
+    /// The connection only counts as established once the agent has accepted
+    /// it: a rejection, or no answer within the configure timeout, fails
+    /// `connect`, so an agent never serves requests without the configuration
+    /// it was given. `None` (the default) sends nothing.
+    pub fn set_config(&mut self, config: Option<serde_json::Value>) {
+        self.config = config;
     }
 
     /// Returns the list of supported encodings for this client.
@@ -461,7 +497,7 @@ impl AgentClientV2Uds {
             supported_versions: vec![PROTOCOL_VERSION_2],
             proxy_id: "zentinel-proxy".to_string(),
             proxy_version: env!("CARGO_PKG_VERSION").to_string(),
-            config: None,
+            config: self.config.clone(),
             supported_encodings: Self::supported_encodings(),
         };
 
@@ -651,6 +687,62 @@ impl AgentClientV2Uds {
             warn!(agent_id = %agent_id, "Agent socket closed; connection marked disconnected");
         });
 
+        if let Some(config) = &self.config {
+            if let Err(e) = self.deliver_config(config).await {
+                let _ = self.close().await;
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send the agent its configuration and wait for it to be accepted.
+    ///
+    /// Runs on every connection, so a pooled connection, and one made after
+    /// the agent restarted, is configured like the first. The handshake
+    /// carries the configuration too, but the SDK's server does not pass the
+    /// handshake's to `on_configure`; this message is what reaches it, on
+    /// every released SDK.
+    async fn deliver_config(&self, config: &serde_json::Value) -> Result<(), AgentProtocolError> {
+        let correlation_id = configure_correlation_id(&self.agent_id);
+        let envelope = serde_json::json!({
+            "config": config,
+            "config_version": serde_json::Value::Null,
+        });
+        let timeout = self.timeout.max(MIN_CONFIGURE_TIMEOUT);
+        let response = self
+            .send_configure_with_timeout(&correlation_id, &envelope, timeout)
+            .await
+            .map_err(|e| {
+                error!(
+                    agent_id = %self.agent_id,
+                    error = %e,
+                    "Agent did not acknowledge its configuration; connection not used"
+                );
+                AgentProtocolError::ConnectionFailed(format!(
+                    "agent did not acknowledge its configuration: {e}"
+                ))
+            })?;
+
+        if !matches!(response.decision, crate::Decision::Allow) {
+            let reason = match &response.decision {
+                crate::Decision::Block { body, status, .. } => {
+                    body.clone().unwrap_or_else(|| format!("status {status}"))
+                }
+                other => format!("{other:?}"),
+            };
+            error!(
+                agent_id = %self.agent_id,
+                reason = %reason,
+                "Agent rejected its configuration; connection not used"
+            );
+            return Err(AgentProtocolError::ConnectionFailed(format!(
+                "agent rejected its configuration: {reason}"
+            )));
+        }
+
+        info!(agent_id = %self.agent_id, "Agent accepted its configuration");
         Ok(())
     }
 
@@ -745,6 +837,16 @@ impl AgentClientV2Uds {
         correlation_id: &str,
         event: &serde_json::Value,
     ) -> Result<AgentResponse, AgentProtocolError> {
+        self.send_configure_with_timeout(correlation_id, event, self.timeout)
+            .await
+    }
+
+    async fn send_configure_with_timeout(
+        &self,
+        correlation_id: &str,
+        event: &serde_json::Value,
+        timeout: Duration,
+    ) -> Result<AgentResponse, AgentProtocolError> {
         let mut payload = event.clone();
         match payload.as_object_mut() {
             Some(obj) => {
@@ -764,7 +866,7 @@ impl AgentClientV2Uds {
                 );
             }
         }
-        self.send_event(MessageType::Configure, correlation_id, &payload)
+        self.send_event_with_timeout(MessageType::Configure, correlation_id, &payload, timeout)
             .await
     }
 
@@ -928,6 +1030,18 @@ impl AgentClientV2Uds {
         correlation_id: &str,
         event: &T,
     ) -> Result<AgentResponse, AgentProtocolError> {
+        self.send_event_with_timeout(msg_type, correlation_id, event, self.timeout)
+            .await
+    }
+
+    /// Send an event and wait up to `timeout` for its response.
+    async fn send_event_with_timeout<T: serde::Serialize>(
+        &self,
+        msg_type: MessageType,
+        correlation_id: &str,
+        event: &T,
+        timeout: Duration,
+    ) -> Result<AgentResponse, AgentProtocolError> {
         // Once the reader has seen the socket close, nothing will answer: fail
         // now rather than queue the event and wait out the full timeout.
         if !*self.connected.read().await {
@@ -990,14 +1104,14 @@ impl AgentClientV2Uds {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(self.timeout, rx)
+        let response = tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| {
                 self.pending
                     .try_lock()
                     .ok()
                     .map(|mut p| p.remove(correlation_id));
-                AgentProtocolError::Timeout(self.timeout)
+                AgentProtocolError::Timeout(timeout)
             })?
             .map_err(|_| AgentProtocolError::ConnectionClosed)?;
 

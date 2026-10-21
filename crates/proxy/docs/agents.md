@@ -142,7 +142,7 @@ filters {
 | `response-body` | Response | Called with response body |
 | `response-body-chunk` | Response | Called per chunk for streaming responses |
 | `log` | Logging | Called at request completion for logging |
-| `configure` | Startup | Called at startup/reload for agent config |
+| `configure` | Connection | The agent's `config { }` block, delivered on every connection (each pooled connection and every reconnect) before any request; a rejected configuration makes the connection unusable |
 
 ### Event Flow
 
