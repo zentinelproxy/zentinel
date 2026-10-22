@@ -1,0 +1,44 @@
+# Runs the agent SDK conformance harness (sdk-conformance/) against the
+# reference agent, built on this repository's protocol crate.
+#
+# The SDKs run the same harness in their own CI against their own agents. This
+# job keeps the harness honest from this side: a change to the protocol crate
+# or the proxy that breaks what the harness expects shows up here, before the
+# SDKs' CI goes red for a reason that is not theirs.
+name: SDK conformance
+
+on:
+  pull_request:
+    paths:
+      - 'sdk-conformance/**'
+      - 'crates/agent-protocol/**'
+      - 'crates/proxy/src/agents/**'
+      - '.github/workflows/sdk-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reference-agent:
+    name: Reference agent (UDS + gRPC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            sdk-conformance/reference-agent
+      - name: Build zentinel and the reference agent
+        run: |
+          cargo build -p zentinel-proxy --bin zentinel
+          cargo build --manifest-path sdk-conformance/reference-agent/Cargo.toml
+      - name: Run the harness
+        run: |
+          agent=sdk-conformance/reference-agent/target/debug/zentinel-conformance-reference-agent
+          python3 sdk-conformance/run.py \
+            --zentinel-bin target/debug/zentinel \
+            --agent-cmd "$agent --socket {socket}" \
+            --grpc-agent-cmd "$agent --grpc {grpc}"

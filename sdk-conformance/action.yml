@@ -1,0 +1,91 @@
+name: Zentinel agent SDK conformance
+description: >
+  Run an SDK's agent behind a real zentinel binary and check that it speaks
+  agent protocol v2: handshake, configure, header mutations, block, request
+  body inspection, reconnect. See sdk-conformance/README.md.
+
+inputs:
+  agent-command:
+    description: Command that starts the agent on the Unix socket `{socket}`.
+    required: false
+    default: ""
+  grpc-agent-command:
+    description: Command that starts the agent on the gRPC address `{grpc}` (host:port).
+    required: false
+    default: ""
+  profile:
+    description: "`full` (the conformance agent) or `hello` (the README quick-start agent)."
+    required: false
+    default: full
+  zentinel-version:
+    description: >
+      Zentinel release tag to download (for example 26.10_8). It must include
+      zentinel#603 (config delivery); leave empty and set zentinel-ref to
+      build from source until such a release exists.
+    required: false
+    default: ""
+  zentinel-url:
+    description: URL of a zentinel release tarball, instead of zentinel-version.
+    required: false
+    default: ""
+  zentinel-ref:
+    description: >
+      Git ref of zentinelproxy/zentinel to build `zentinel` from (debug build)
+      when no release is given. Slow on a cold cache.
+    required: false
+    default: ""
+  working-directory:
+    description: Directory the agent commands run in.
+    required: false
+    default: "."
+
+outputs:
+  results:
+    description: Path of the JSON results file.
+    value: ${{ steps.run.outputs.results }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check out zentinel to build it
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == ''
+      uses: actions/checkout@v4
+      with:
+        repository: zentinelproxy/zentinel
+        ref: ${{ inputs.zentinel-ref }}
+        path: .zentinel-src
+
+    - name: Install Rust
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == ''
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache the zentinel build
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == ''
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: .zentinel-src
+
+    - name: Build zentinel
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == ''
+      shell: bash
+      run: |
+        cd .zentinel-src
+        cargo build -p zentinel-proxy --bin zentinel
+        echo "ZENTINEL_BIN=$PWD/target/debug/zentinel" >> "$GITHUB_ENV"
+
+    - name: Run the conformance harness
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AGENT_CMD: ${{ inputs.agent-command }}
+        GRPC_AGENT_CMD: ${{ inputs.grpc-agent-command }}
+        PROFILE: ${{ inputs.profile }}
+        ZENTINEL_VERSION: ${{ inputs.zentinel-version }}
+        ZENTINEL_URL: ${{ inputs.zentinel-url }}
+      run: |
+        args=(--profile "$PROFILE" --json-out "$RUNNER_TEMP/conformance-$PROFILE.json")
+        [ -n "$AGENT_CMD" ] && args+=(--agent-cmd "$AGENT_CMD")
+        [ -n "$GRPC_AGENT_CMD" ] && args+=(--grpc-agent-cmd "$GRPC_AGENT_CMD")
+        echo "results=$RUNNER_TEMP/conformance-$PROFILE.json" >> "$GITHUB_OUTPUT"
+        python3 "$GITHUB_ACTION_PATH/run.py" "${args[@]}"
