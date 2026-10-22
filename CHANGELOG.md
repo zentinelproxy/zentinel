@@ -127,6 +127,13 @@ for details.
   otherwise it is inspected as sent. The unreachable route-policy fallbacks
   on agent dispatch errors use the same rule (the request-headers one now
   answers 503 instead of 500).
+- **`request-body-mode "stream"` / `"hybrid:N"` were parsed and then ignored**
+  (#602): every request body was buffered whole before any agent saw it. The
+  mode is now taken from the route's body agents. When they disagree, the
+  most conservative applies: `buffer` over `hybrid` (largest threshold) over
+  `stream`, so no agent gets less of the body at once than it asked for.
+  Decisions on streamed chunks (Block, Challenge, Redirect) are answered as on
+  a buffered body.
 
 ### Changed
 

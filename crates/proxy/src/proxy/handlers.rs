@@ -455,6 +455,11 @@ impl ZentinelProxy {
 
             if is_allowed_type || allowed_types.is_empty() {
                 ctx.body_inspection_enabled = true;
+                // The agents' `request-body-mode`, most conservative
+                // first when they disagree (#602). It was never set, so
+                // every body was buffered whatever the agents asked for.
+                ctx.request_body_streaming_mode =
+                    self.agent_manager.request_body_mode(&body_agents).await;
                 ctx.body_inspection_agents = body_agents;
 
                 // Set up decompression if enabled in WAF config

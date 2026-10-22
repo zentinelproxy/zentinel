@@ -147,6 +147,11 @@ impl AgentV2 {
         self.config.timeout_ms
     }
 
+    /// How this agent wants the request body: its `request-body-mode`.
+    pub fn request_body_mode(&self) -> zentinel_config::BodyStreamingMode {
+        self.config.request_body_mode
+    }
+
     /// Maximum request body size (bytes) this agent will inspect.
     pub fn max_request_body_bytes(&self) -> usize {
         self.config
