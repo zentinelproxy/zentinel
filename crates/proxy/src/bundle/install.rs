@@ -1,7 +1,8 @@
 //! Agent installation logic
 //!
-//! Handles placing downloaded binaries in the correct locations and
-//! optionally setting up configuration and systemd services.
+//! Handles placing downloaded binaries in the correct locations. What the
+//! agents are started with, and how the proxy is wired to them, is in
+//! [`super::setup`].
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -28,8 +29,14 @@ pub struct InstallPaths {
     /// Directory for agent binaries
     pub bin_dir: PathBuf,
 
-    /// Directory for agent configuration files
+    /// Directory for files `bundle install` writes for the proxy (the
+    /// generated `agents.kdl`) and for files agents need (`--config`,
+    /// `--script`), which the user creates.
     pub config_dir: PathBuf,
+
+    /// Directory the Unix-socket agents listen in. The generated KDL and the
+    /// agents' `--socket` both point here.
+    pub socket_dir: PathBuf,
 
     /// Directory for systemd service files (Linux only)
     pub systemd_dir: Option<PathBuf>,
@@ -44,6 +51,7 @@ impl InstallPaths {
         Self {
             bin_dir: PathBuf::from("/usr/local/bin"),
             config_dir: PathBuf::from("/etc/zentinel/agents"),
+            socket_dir: PathBuf::from(SYSTEM_SOCKET_DIR),
             systemd_dir: Some(PathBuf::from("/etc/systemd/system")),
             system_wide: true,
         }
@@ -55,6 +63,10 @@ impl InstallPaths {
         Self {
             bin_dir: PathBuf::from(&home).join(".local/bin"),
             config_dir: PathBuf::from(&home).join(".config/zentinel/agents"),
+            // Not $XDG_RUNTIME_DIR: the path is written into the proxy's KDL,
+            // so it must be the same in every session, and nothing (no
+            // systemd RuntimeDirectory=) recreates it after a logout.
+            socket_dir: PathBuf::from(&home).join(".local/state/zentinel/run"),
             systemd_dir: Some(PathBuf::from(&home).join(".config/systemd/user")),
             system_wide: false,
         }
@@ -65,6 +77,7 @@ impl InstallPaths {
         Self {
             bin_dir: prefix.join("bin"),
             config_dir: prefix.join("etc/zentinel/agents"),
+            socket_dir: prefix.join("run/zentinel"),
             systemd_dir: Some(prefix.join("lib/systemd/system")),
             system_wide: false,
         }
@@ -101,6 +114,7 @@ impl InstallPaths {
     pub fn all_writable(&self) -> bool {
         is_writable(&self.bin_dir)
             && is_writable(&self.config_dir)
+            && is_writable(&self.socket_dir)
             && self
                 .systemd_dir
                 .as_ref()
@@ -112,6 +126,7 @@ impl InstallPaths {
     pub fn ensure_dirs(&self) -> Result<(), InstallError> {
         create_dir_if_missing(&self.bin_dir)?;
         create_dir_if_missing(&self.config_dir)?;
+        create_socket_dir(&self.socket_dir, self.system_wide)?;
         if let Some(ref systemd_dir) = self.systemd_dir {
             create_dir_if_missing(systemd_dir)?;
         }
@@ -119,7 +134,42 @@ impl InstallPaths {
     }
 }
 
-/// Check if a directory is writable
+/// Where a system-wide install's agents listen.
+///
+/// Not `/run/zentinel`: that is the proxy unit's `RuntimeDirectory=`, which
+/// systemd deletes whenever the proxy stops, so agent sockets in it would
+/// vanish on every proxy restart while the agents kept running. The agent
+/// units declare this directory with `RuntimeDirectoryPreserve=yes` instead.
+#[cfg(target_os = "linux")]
+pub const SYSTEM_SOCKET_DIR: &str = "/run/zentinel-agents";
+/// Where a system-wide install's agents listen (no `/run` on macOS).
+#[cfg(not(target_os = "linux"))]
+pub const SYSTEM_SOCKET_DIR: &str = "/var/run/zentinel-agents";
+
+/// Create the socket directory.
+///
+/// User and prefix installs get `0700`: the agents and the proxy run as the
+/// installing user, and nobody else should reach the agents. A system-wide
+/// one gets `0750`; its agent units run as `zentinel` and systemd re-owns the
+/// directory to them on start (`RuntimeDirectory=`).
+fn create_socket_dir(path: &Path, system_wide: bool) -> Result<(), InstallError> {
+    let existed = path.exists();
+    create_dir_if_missing(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if !existed {
+            let mode = if system_wide { 0o750 } else { 0o700 };
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (existed, system_wide);
+    }
+    Ok(())
+}
+
 /// Whether **this process** can create entries in `path`.
 ///
 /// The obvious implementation is wrong, and was here:
@@ -269,188 +319,6 @@ fn parse_version_output(output: &str) -> Option<String> {
     }
 
     None
-}
-
-/// Generate a default configuration file for an agent
-pub fn generate_default_config(agent_name: &str) -> String {
-    match agent_name {
-        "waf" => r#"# WAF Agent Configuration
-# ModSecurity-based Web Application Firewall
-# See https://zentinelproxy.io/docs/agents/waf
-
-socket:
-  path: /var/run/zentinel/waf.sock
-  mode: 0660
-
-logging:
-  level: info
-  format: json
-
-modsecurity:
-  engine: "On"
-
-crs:
-  paranoia_level: 1
-  inbound_anomaly_score_threshold: 5
-  outbound_anomaly_score_threshold: 4
-"#
-        .to_string(),
-
-        "ratelimit" => r#"# Rate Limit Agent Configuration
-# Token bucket rate limiting
-# See https://zentinelproxy.io/docs/agents/ratelimit
-
-socket:
-  path: /var/run/zentinel/ratelimit.sock
-  mode: 0660
-
-logging:
-  level: info
-  format: json
-
-rules:
-  - name: default
-    match:
-      path_prefix: /
-    limit:
-      requests_per_second: 100
-      burst: 200
-    key: client_ip
-"#
-        .to_string(),
-
-        "denylist" => r#"# Denylist Agent Configuration
-# IP and path blocking
-# See https://zentinelproxy.io/docs/agents/denylist
-
-socket:
-  path: /var/run/zentinel/denylist.sock
-  mode: 0660
-
-logging:
-  level: info
-  format: json
-
-ip_denylist:
-  enabled: true
-  # Add IPs to block:
-  # ips:
-  #   - 192.168.1.100
-  #   - 10.0.0.0/8
-
-path_denylist:
-  enabled: true
-  patterns:
-    - ".*\\.php$"
-    - "/wp-admin.*"
-    - "/wp-login.*"
-    - "/.env"
-    - "/\\.git.*"
-"#
-        .to_string(),
-
-        _ => format!(
-            "# {} agent configuration\n\
-             # See https://zentinelproxy.io/docs/agents/{}\n\n\
-             socket:\n\
-               path: /var/run/zentinel/{}.sock\n\
-               mode: 0660\n\n\
-             logging:\n\
-               level: info\n\
-               format: json\n",
-            agent_name, agent_name, agent_name
-        ),
-    }
-}
-
-/// Install a configuration file
-pub fn install_config(
-    config_dir: &Path,
-    agent_name: &str,
-    content: &str,
-    force: bool,
-) -> Result<PathBuf, InstallError> {
-    let config_path = config_dir.join(format!("{}.yaml", agent_name));
-
-    // Don't overwrite existing config unless forced
-    if config_path.exists() && !force {
-        tracing::info!(
-            path = %config_path.display(),
-            "Config file already exists, skipping (use --force to overwrite)"
-        );
-        return Ok(config_path);
-    }
-
-    tracing::info!(
-        path = %config_path.display(),
-        "Installing configuration file"
-    );
-
-    std::fs::write(&config_path, content)?;
-    Ok(config_path)
-}
-
-/// Generate a systemd service file for an agent
-pub fn generate_systemd_service(agent_name: &str, bin_path: &Path, config_path: &Path) -> String {
-    let binary_name = format!("zentinel-{}-agent", agent_name);
-
-    format!(
-        r#"[Unit]
-Description=Zentinel {} Agent
-Documentation=https://zentinelproxy.io/docs/agents/{}
-After=zentinel.service
-BindsTo=zentinel.service
-PartOf=zentinel.target
-
-[Service]
-Type=simple
-ExecStart={} --config {}
-Restart=on-failure
-RestartSec=5s
-
-User=zentinel
-Group=zentinel
-
-Environment="RUST_LOG=info,zentinel_{}_agent=info"
-
-RuntimeDirectory=zentinel
-RuntimeDirectoryMode=0755
-
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=zentinel-{}
-
-[Install]
-WantedBy=zentinel.target
-"#,
-        agent_name,
-        agent_name,
-        bin_path.display(),
-        config_path.display(),
-        agent_name,
-        agent_name
-    )
-}
-
-/// Install a systemd service file
-pub fn install_systemd_service(
-    systemd_dir: &Path,
-    agent_name: &str,
-    content: &str,
-) -> Result<PathBuf, InstallError> {
-    let service_path = systemd_dir.join(format!("zentinel-{}.service", agent_name));
-
-    tracing::info!(
-        path = %service_path.display(),
-        "Installing systemd service"
-    );
-
-    std::fs::write(&service_path, content)?;
-    Ok(service_path)
 }
 
 #[cfg(test)]
@@ -610,62 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_default_config_waf() {
-        let config = generate_default_config("waf");
-        assert!(config.contains("socket:"));
-        assert!(config.contains("modsecurity:"));
-        assert!(config.contains("crs:"));
-        assert!(config.contains("paranoia_level"));
-        assert!(config.contains("/var/run/zentinel/waf.sock"));
-    }
-
-    #[test]
-    fn test_generate_default_config_ratelimit() {
-        let config = generate_default_config("ratelimit");
-        assert!(config.contains("socket:"));
-        assert!(config.contains("rules:"));
-        assert!(config.contains("requests_per_second"));
-        assert!(config.contains("burst"));
-        assert!(config.contains("/var/run/zentinel/ratelimit.sock"));
-    }
-
-    #[test]
-    fn test_generate_default_config_denylist() {
-        let config = generate_default_config("denylist");
-        assert!(config.contains("socket:"));
-        assert!(config.contains("ip_denylist:"));
-        assert!(config.contains("path_denylist:"));
-        assert!(config.contains("patterns:"));
-        assert!(config.contains("/var/run/zentinel/denylist.sock"));
-    }
-
-    #[test]
-    fn test_generate_default_config_unknown() {
-        let config = generate_default_config("custom");
-        assert!(config.contains("custom agent configuration"));
-        assert!(config.contains("/var/run/zentinel/custom.sock"));
-    }
-
-    #[test]
-    fn test_generate_systemd_service() {
-        let service = generate_systemd_service(
-            "waf",
-            Path::new("/usr/local/bin/zentinel-waf-agent"),
-            Path::new("/etc/zentinel/agents/waf.yaml"),
-        );
-
-        assert!(service.contains("[Unit]"));
-        assert!(service.contains("[Service]"));
-        assert!(service.contains("[Install]"));
-        assert!(service.contains("Description=Zentinel waf Agent"));
-        assert!(service.contains("ExecStart=/usr/local/bin/zentinel-waf-agent"));
-        assert!(service.contains("--config /etc/zentinel/agents/waf.yaml"));
-        assert!(service.contains("User=zentinel"));
-        assert!(service.contains("WantedBy=zentinel.target"));
-        assert!(service.contains("After=zentinel.service"));
-    }
-
-    #[test]
     fn test_install_binary() {
         let temp = tempfile::tempdir().unwrap();
         let source_dir = temp.path().join("source");
@@ -707,67 +519,12 @@ mod tests {
     }
 
     #[test]
-    fn test_install_config_new() {
-        let temp = tempfile::tempdir().unwrap();
-        let config_dir = temp.path();
-
-        let result = install_config(config_dir, "waf", "test: content", false);
-        assert!(result.is_ok());
-
-        let config_path = result.unwrap();
-        assert!(config_path.exists());
-        assert_eq!(
-            std::fs::read_to_string(&config_path).unwrap(),
-            "test: content"
-        );
-    }
-
-    #[test]
-    fn test_install_config_skip_existing() {
-        let temp = tempfile::tempdir().unwrap();
-        let config_dir = temp.path();
-
-        // Create existing config
-        let existing_path = config_dir.join("waf.yaml");
-        std::fs::write(&existing_path, "original content").unwrap();
-
-        // Try to install without force
-        let result = install_config(config_dir, "waf", "new content", false);
-        assert!(result.is_ok());
-
-        // Should not have overwritten
-        assert_eq!(
-            std::fs::read_to_string(&existing_path).unwrap(),
-            "original content"
-        );
-    }
-
-    #[test]
-    fn test_install_config_force_overwrite() {
-        let temp = tempfile::tempdir().unwrap();
-        let config_dir = temp.path();
-
-        // Create existing config
-        let existing_path = config_dir.join("waf.yaml");
-        std::fs::write(&existing_path, "original content").unwrap();
-
-        // Install with force
-        let result = install_config(config_dir, "waf", "new content", true);
-        assert!(result.is_ok());
-
-        // Should have overwritten
-        assert_eq!(
-            std::fs::read_to_string(&existing_path).unwrap(),
-            "new content"
-        );
-    }
-
-    #[test]
     fn test_install_paths_ensure_dirs() {
         let temp = tempfile::tempdir().unwrap();
         let paths = InstallPaths {
             bin_dir: temp.path().join("bin"),
             config_dir: temp.path().join("config"),
+            socket_dir: temp.path().join("run"),
             systemd_dir: Some(temp.path().join("systemd")),
             system_wide: false,
         };
@@ -780,6 +537,16 @@ mod tests {
 
         assert!(paths.bin_dir.exists());
         assert!(paths.config_dir.exists());
+        assert!(paths.socket_dir.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&paths.socket_dir)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700, "user socket dir must be private");
+        }
         assert!(paths.systemd_dir.as_ref().unwrap().exists());
     }
 

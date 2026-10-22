@@ -102,6 +102,32 @@ for details.
   release (`auth`, `policy`, `ai-gateway`, `data-masking`); they are removed.
 - On a platform an agent is not published for (no agent is built for
   `darwin-x86_64`), `bundle install` says so instead of reporting a 404.
+- **An agent installed with `zentinel bundle install` did not listen where
+  the proxy looked for it.** The install wrote a YAML file per agent with a
+  `socket:` block and a systemd unit running `<agent> --config <that file>`,
+  but agents take their socket on the command line and none reads that file,
+  so each listened on its built-in default (`/tmp/...`) while the documented
+  KDL pointed at `/var/run/zentinel/...`. The install now starts every agent
+  with `--socket <path>`, or `--grpc-address 127.0.0.1:<port>` for agents
+  whose release only serves gRPC (zentinelsec, content-scanner, js, wasm,
+  transform), and writes `agents.kdl` next to it: the `agents { }` block for
+  every installed agent, on the same socket or address, ready for
+  `include` from `zentinel.kdl`. The per-agent YAML files are no longer
+  written (the install points out old ones; delete them). Agents whose
+  release needs a file of its own (`--config` for content-scanner,
+  ip-reputation, grpc-inspector and chaos; `--script` for lua and js;
+  `--module` for wasm) are started with that flag and a path in the config
+  directory, and the install says to create it.
+- **`bundle install --systemd` units could not start for a non-root
+  install** (`User=zentinel` in a user unit, `ProtectHome=` hiding
+  `~/.local/bin`), and as root they were bound to a `zentinel.target` nothing
+  installs and started after the proxy that connects to them. Root installs
+  now get system units running as `zentinel` with a shared, preserved
+  `/run/zentinel-agents` socket directory (not the proxy's own
+  `RuntimeDirectory`, which systemd deletes whenever the proxy stops),
+  ordered before `zentinel.service`; other installs get user units. User and
+  prefix installs keep sockets in a `0700` directory they create
+  (`~/.local/state/zentinel/run`, `<prefix>/run/zentinel`).
 - **An agent that accepted the connection but never answered the handshake
   kept the proxy from starting** (#599): the listener never opened, whatever
   the agent's `failure-mode`. The connect and handshake of every agent
@@ -155,6 +181,17 @@ for details.
 
 ### Changed
 
+- **The `ratelimit` agent is no longer in the bundle**: rate limiting is
+  built into Zentinel (`policies { rate-limit { ... } }`). `zentinel bundle
+  install ratelimit` says so instead of installing it; `zentinel bundle
+  uninstall ratelimit` still removes a copy installed earlier.
+- `bundle-versions.lock` has three optional per-agent tables, so older lock
+  files still parse: `[transports]` (`"uds"`, the default, or `"grpc"`),
+  `[grpc_ports]` and `[required_files]`. The binary and
+  `scripts/check-bundle-lock.py` reject inconsistent entries.
+  `ZENTINEL_BUNDLE_DOWNLOAD_URL` replaces `https://github.com` in asset URLs,
+  for a mirror of the releases. `bundle list --verbose` shows each agent's
+  transport and required file.
 - `bundle-versions.lock` lists the platforms each agent is released for
   (`[bundle] platforms`, per-agent `[platforms]`), and the two copies in the
   repository must be identical. CI (`Bundle lock`) requests every asset the

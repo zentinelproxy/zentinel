@@ -3,11 +3,12 @@
 //! Implements the `zentinel bundle` subcommand and its subcommands.
 
 use crate::bundle::fetch::{detect_arch, detect_os, download_agent};
-use crate::bundle::install::{
-    generate_default_config, generate_systemd_service, install_binary, install_config,
-    install_systemd_service, uninstall_binary, InstallPaths,
+use crate::bundle::install::{install_binary, uninstall_binary, InstallPaths};
+use crate::bundle::lock::{retired_reason, AgentInfo, BundleLock};
+use crate::bundle::setup::{
+    generate_agents_kdl, generate_systemd_unit, is_legacy_generated_config, launch_command,
+    required_file_path, systemd_unit_name, write_generated, Endpoint, AGENTS_KDL,
 };
-use crate::bundle::lock::BundleLock;
 use crate::bundle::status::BundleStatus;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -36,7 +37,8 @@ pub enum BundleCommand {
         #[arg(long, short = 'f')]
         force: bool,
 
-        /// Also install systemd service files
+        /// Also write a systemd unit per agent (system units for a root
+        /// install, user units otherwise)
         #[arg(long)]
         systemd: bool,
 
@@ -126,6 +128,8 @@ fn cmd_install(
     println!("Bundle version: {}", lock.bundle.version);
     println!("Platform:       {}-{}", detect_os(), detect_arch());
     println!("Install path:   {}", paths.bin_dir.display());
+    println!("Sockets:        {}", paths.socket_dir.display());
+    println!("Config:         {}", paths.config_dir.display());
     if paths.system_wide {
         println!("Mode:           system-wide (requires root)");
     } else {
@@ -135,12 +139,7 @@ fn cmd_install(
 
     // Get agents to install
     let agents: Vec<_> = match &agent {
-        Some(name) => {
-            let agent_info = lock
-                .agent(name)
-                .ok_or_else(|| anyhow::anyhow!("Unknown agent: {}", name))?;
-            vec![agent_info]
-        }
+        Some(name) => vec![find_agent(lock, name)?],
         None => lock.agents(),
     };
 
@@ -173,7 +172,13 @@ fn cmd_install(
                 paths.bin_dir.display(),
                 action
             );
+            println!("      start: {}", launch_command(agent, &paths));
         }
+        println!();
+        println!(
+            "Would write {}",
+            paths.config_dir.join(AGENTS_KDL).display()
+        );
         return Ok(());
     }
 
@@ -192,6 +197,9 @@ fn cmd_install(
     let mut installed = 0;
     let mut skipped = 0;
     let mut failed = 0;
+    // Agents that are in place after this run (installed now or already up to
+    // date): the ones to print start commands and write units for.
+    let mut ready: Vec<&AgentInfo> = Vec::new();
 
     for agent in &agents {
         let agent_status = status.agents.iter().find(|a| a.name == agent.name);
@@ -205,6 +213,7 @@ fn cmd_install(
                         agent.name, agent.version
                     );
                     skipped += 1;
+                    ready.push(agent);
                     continue;
                 }
             }
@@ -234,22 +243,6 @@ fn cmd_install(
             continue;
         }
 
-        // Install config
-        let config_content = generate_default_config(&agent.name);
-        let config_path = install_config(&paths.config_dir, &agent.name, &config_content, force)
-            .context("Failed to install config")?;
-
-        // Install systemd service if requested
-        if install_systemd {
-            if let Some(ref systemd_dir) = paths.systemd_dir {
-                let bin_path = paths.bin_dir.join(&agent.binary_name);
-                let service_content =
-                    generate_systemd_service(&agent.name, &bin_path, &config_path);
-                install_systemd_service(systemd_dir, &agent.name, &service_content)
-                    .context("Failed to install systemd service")?;
-            }
-        }
-
         let checksum_status = if download.checksum_verified {
             "verified"
         } else {
@@ -262,7 +255,15 @@ fn cmd_install(
             checksum_status
         );
         installed += 1;
+        ready.push(agent);
     }
+
+    let units = if install_systemd {
+        write_systemd_units(&ready, &paths)?
+    } else {
+        Vec::new()
+    };
+    let kdl_path = write_agents_kdl(lock, &paths)?;
 
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -271,16 +272,8 @@ fn cmd_install(
         installed, skipped, failed
     );
 
-    if installed > 0 {
-        println!();
-        println!("To start the agents:");
-        if paths.system_wide && install_systemd {
-            println!("  sudo systemctl daemon-reload");
-            println!("  sudo systemctl start zentinel.target");
-        } else {
-            println!("  # Add agent endpoints to your zentinel.kdl config");
-            println!("  # See: https://zentinelproxy.io/docs/bundle");
-        }
+    if !ready.is_empty() {
+        print_next_steps(&ready, &paths, &units, kdl_path.as_deref());
     }
 
     if failed > 0 {
@@ -288,6 +281,144 @@ fn cmd_install(
     }
 
     Ok(())
+}
+
+/// Look an agent up by name, explaining retired agents instead of calling
+/// them unknown.
+fn find_agent(lock: &BundleLock, name: &str) -> Result<AgentInfo> {
+    if let Some(agent) = lock.agent(name) {
+        return Ok(agent);
+    }
+    if let Some(reason) = retired_reason(name) {
+        anyhow::bail!("{} is no longer part of the bundle: {}", name, reason);
+    }
+    anyhow::bail!(
+        "Unknown agent: {} (`zentinel bundle list` shows the bundled agents)",
+        name
+    )
+}
+
+/// Write one systemd unit per agent; returns the unit names written.
+fn write_systemd_units(agents: &[&AgentInfo], paths: &InstallPaths) -> Result<Vec<String>> {
+    let Some(ref dir) = paths.systemd_dir else {
+        return Ok(Vec::new());
+    };
+    let mut names = Vec::new();
+    for agent in agents {
+        let name = systemd_unit_name(agent);
+        let path = dir.join(&name);
+        write_generated(&path, &generate_systemd_unit(agent, paths))
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+        names.push(name);
+    }
+    Ok(names)
+}
+
+/// Write `agents.kdl` for every bundled agent whose binary is installed, so
+/// installing agents one at a time still leaves one complete block.
+fn write_agents_kdl(lock: &BundleLock, paths: &InstallPaths) -> Result<Option<PathBuf>> {
+    let present: Vec<AgentInfo> = lock
+        .agents()
+        .into_iter()
+        .filter(|a| paths.bin_dir.join(&a.binary_name).exists())
+        .collect();
+    if present.is_empty() {
+        return Ok(None);
+    }
+    let path = paths.config_dir.join(AGENTS_KDL);
+    write_generated(
+        &path,
+        &generate_agents_kdl(&present, paths, &lock.bundle.version),
+    )
+    .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(Some(path))
+}
+
+/// Tell the user how to start what was installed and wire it into the proxy.
+fn print_next_steps(
+    agents: &[&AgentInfo],
+    paths: &InstallPaths,
+    units: &[String],
+    kdl_path: Option<&std::path::Path>,
+) {
+    println!();
+    if let Some(kdl_path) = kdl_path {
+        println!("Proxy configuration: {}", kdl_path.display());
+        println!("  Add this line to zentinel.kdl, then route traffic through the agents");
+        println!("  with `filter` blocks (see the comments in that file):");
+        println!("    include \"{}\"", kdl_path.display());
+        println!();
+    }
+
+    if !units.is_empty() {
+        let (ctl, dir_note) = if paths.system_wide {
+            ("sudo systemctl", None)
+        } else if paths.systemd_dir == crate::bundle::install::InstallPaths::user().systemd_dir {
+            ("systemctl --user", None)
+        } else {
+            (
+                "systemctl --user",
+                paths.systemd_dir.as_ref().map(|d| {
+                    format!(
+                        "  # user units: link them from {} into ~/.config/systemd/user first",
+                        d.display()
+                    )
+                }),
+            )
+        };
+        println!("To start the agents:");
+        if let Some(note) = dir_note {
+            println!("{note}");
+        }
+        println!("  {ctl} daemon-reload");
+        println!("  {ctl} enable --now {}", units.join(" "));
+    } else {
+        println!("To start the agents (or rerun with --systemd for service units):");
+        for agent in agents {
+            println!("  {}", launch_command(agent, paths));
+        }
+    }
+
+    for agent in agents {
+        if let Some(problem) = Endpoint::for_agent(agent, paths).problem() {
+            println!();
+            println!("Warning: {}: {}", agent.name, problem);
+        }
+        if let Some(path) = required_file_path(agent, paths) {
+            let legacy = std::fs::read_to_string(&path)
+                .map(|c| is_legacy_generated_config(&c))
+                .unwrap_or(false);
+            if !path.exists() || legacy {
+                println!();
+                println!(
+                    "Note: {} does not start without {}, in the agent's own format{}.",
+                    agent.name,
+                    path.display(),
+                    if legacy {
+                        " (the file there was written by an earlier `bundle install` and is not one)"
+                    } else {
+                        ""
+                    }
+                );
+                println!(
+                    "  See https://github.com/{}#configuration",
+                    agent.repository
+                );
+            }
+            continue;
+        }
+        let legacy = paths.config_dir.join(format!("{}.yaml", agent.name));
+        if std::fs::read_to_string(&legacy)
+            .map(|c| is_legacy_generated_config(&c))
+            .unwrap_or(false)
+        {
+            println!();
+            println!(
+                "Note: {} was written by an earlier `bundle install`; no agent reads it. You can delete it.",
+                legacy.display()
+            );
+        }
+    }
 }
 
 /// Status command implementation
@@ -323,6 +454,17 @@ fn cmd_list(lock: &BundleLock, verbose: bool) -> Result<()> {
             println!("    Repository: {}", agent.repository);
             println!("    Binary:     {}", agent.binary_name);
             println!(
+                "    Transport:  {}",
+                match agent.transport {
+                    crate::bundle::lock::Transport::Uds => "unix socket (--socket)".to_string(),
+                    crate::bundle::lock::Transport::Grpc { port } =>
+                        format!("gRPC (--grpc-address 127.0.0.1:{port})"),
+                }
+            );
+            if let Some(req) = &agent.required_file {
+                println!("    Needs:      {} {}", req.flag, req.file);
+            }
+            println!(
                 "    URL:        {}",
                 agent.download_url(detect_os(), detect_arch())
             );
@@ -345,13 +487,26 @@ fn cmd_uninstall(lock: &BundleLock, agent: Option<String>, dry_run: bool) -> Res
     println!("Zentinel Bundle Uninstaller");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let agents: Vec<_> = match &agent {
-        Some(name) => {
-            let agent_info = lock
-                .agent(name)
-                .ok_or_else(|| anyhow::anyhow!("Unknown agent: {}", name))?;
-            vec![agent_info]
+    // A retired agent is no longer in the lock, but a binary installed
+    // earlier may still be there to remove.
+    if let Some(name) = agent.as_deref().filter(|n| retired_reason(n).is_some()) {
+        let binary = format!("zentinel-{}-agent", name);
+        let path = paths.bin_dir.join(&binary);
+        if dry_run {
+            if path.exists() {
+                println!("[DRY RUN] Would uninstall:");
+                println!("  {} ({})", name, path.display());
+            }
+        } else if uninstall_binary(&paths.bin_dir, &binary)? {
+            println!("  Removed {}", name);
+        } else {
+            println!("  {} is not installed in {}", name, paths.bin_dir.display());
         }
+        return Ok(());
+    }
+
+    let agents: Vec<_> = match &agent {
+        Some(name) => vec![find_agent(lock, name)?],
         None => lock.agents(),
     };
 

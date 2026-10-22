@@ -27,7 +27,6 @@ platforms = ["linux-x86_64", "linux-aarch64", "darwin-aarch64"]
 [agents]
 # Core agents (included in default bundle install)
 waf = "0.4.0"
-ratelimit = "0.3.0"
 denylist = "0.3.0"
 
 # Security agents
@@ -67,11 +66,13 @@ spiffe = "0.3.0"
 #   policy        no release
 #   ai-gateway    no release
 #   data-masking  no repository zentinelproxy/zentinel-agent-data-masking
+# Retired:
+#   ratelimit     rate limiting is built into Zentinel (`rate-limit` in a
+#                 route's policies); `bundle install ratelimit` says so
 
 [repositories]
 # Core agents
 waf = "zentinelproxy/zentinel-agent-waf"
-ratelimit = "zentinelproxy/zentinel-agent-ratelimit"
 denylist = "zentinelproxy/zentinel-agent-denylist"
 
 # Security agents
@@ -108,6 +109,43 @@ spiffe = "zentinelproxy/zentinel-agent-spiffe"
 
 [platforms]
 # Per-agent overrides of [bundle] platforms (none at the moment).
+
+[transports]
+# How the proxy reaches each agent, and so how `bundle install` starts it:
+#   "uds"  (the default for agents not listed): agent protocol v2 over a Unix
+#          socket; started with `--socket <socket dir>/<name>.sock` and wired
+#          in as `unix-socket "<same path>"`.
+#   "grpc": agent protocol v2 over gRPC, for agents the pinned release can only
+#          serve that way; started with `--grpc-address 127.0.0.1:<port>`
+#          ([grpc_ports]) and wired in as `grpc address="http://127.0.0.1:<port>"`.
+# Describes the release pinned in [agents]: when a bump adds `--socket` to one
+# of these, remove it here.
+zentinelsec = "grpc"
+content-scanner = "grpc"
+js = "grpc"
+wasm = "grpc"
+transform = "grpc"
+
+[grpc_ports]
+# Loopback port for each "grpc" agent. Must be unique.
+zentinelsec = 50151
+content-scanner = 50152
+js = 50153
+wasm = 50154
+transform = 50155
+
+[required_files]
+# Agents whose pinned release does not start without a file of its own.
+# `bundle install` passes `<flag> <config dir>/<file>` and tells you to create
+# the file (it does not invent one: the format is the agent's). Remove an entry
+# once the agent's `--config` becomes optional.
+content-scanner = { flag = "--config", file = "content-scanner.yaml" }
+ip-reputation = { flag = "--config", file = "ip-reputation.yaml" }
+grpc-inspector = { flag = "--config", file = "grpc-inspector.yaml" }
+chaos = { flag = "--config", file = "chaos.yaml" }
+lua = { flag = "--script", file = "lua.lua" }
+js = { flag = "--script", file = "js.js" }
+wasm = { flag = "--module", file = "wasm.wasm" }
 
 [checksums]
 # SHA256 checksums for verification (optional, updated by release CI)

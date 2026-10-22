@@ -28,20 +28,28 @@
 //! version = "26.01_1"
 //!
 //! [agents]
-//! waf = "0.2.0"
-//! ratelimit = "0.2.0"
-//! denylist = "0.2.0"
+//! waf = "0.4.0"
+//! zentinelsec = "0.4.0"
 //!
 //! [repositories]
 //! waf = "zentinelproxy/zentinel-agent-waf"
-//! ratelimit = "zentinelproxy/zentinel-agent-ratelimit"
-//! denylist = "zentinelproxy/zentinel-agent-denylist"
+//! zentinelsec = "zentinelproxy/zentinel-agent-zentinelsec"
+//!
+//! [transports]            # optional; agents not listed use "uds"
+//! zentinelsec = "grpc"
+//!
+//! [grpc_ports]            # required for each "grpc" agent
+//! zentinelsec = 50151
 //! ```
+//!
+//! What an installed agent is started with, and the `agents.kdl` that wires
+//! the proxy to it, are generated together in `setup.rs`.
 
 mod commands;
 mod fetch;
 mod install;
 mod lock;
+mod setup;
 mod status;
 
 pub use commands::{run_bundle_command, BundleArgs, BundleCommand};

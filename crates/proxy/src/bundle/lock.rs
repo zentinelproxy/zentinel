@@ -17,6 +17,14 @@ const API_BUNDLE_URL: &str = "https://api.zentinelproxy.io/v1/bundle/";
 const LEGACY_LOCK_URL: &str =
     "https://raw.githubusercontent.com/zentinelproxy/zentinel/main/bundle-versions.lock";
 
+/// Where release assets are downloaded from.
+const GITHUB_BASE: &str = "https://github.com";
+
+/// Environment variable that replaces [`GITHUB_BASE`] in asset URLs, for a
+/// mirror of the releases (same `<owner>/<repo>/releases/download/...` layout)
+/// in an air-gapped network, and for testing.
+pub const DOWNLOAD_BASE_ENV: &str = "ZENTINEL_BUNDLE_DOWNLOAD_URL";
+
 /// Maximum schema version this CLI understands
 const MAX_SCHEMA_VERSION: u32 = 1;
 
@@ -34,6 +42,9 @@ pub enum LockError {
 
     #[error("Failed to fetch lock file from remote: {0}")]
     Fetch(String),
+
+    #[error("Invalid lock file: {0}")]
+    Invalid(String),
 
     #[error(
         "Unsupported API schema version {version} (max supported: {max}). Please update zentinel."
@@ -104,6 +115,9 @@ impl From<ApiBundleResponse> for BundleLock {
             repositories,
             binary_names,
             platforms,
+            transports: HashMap::new(),
+            grpc_ports: HashMap::new(),
+            required_files: HashMap::new(),
             checksums: HashMap::new(),
             precomputed_urls: download_urls,
         }
@@ -132,6 +146,19 @@ pub struct BundleLock {
     #[serde(default)]
     pub platforms: HashMap<String, Vec<String>>,
 
+    /// Per-agent transport ("uds" or "grpc"); agents not listed use "uds".
+    #[serde(default)]
+    pub transports: HashMap<String, String>,
+
+    /// Loopback port for each agent whose transport is "grpc".
+    #[serde(default)]
+    pub grpc_ports: HashMap<String, u16>,
+
+    /// Files an agent's release cannot start without (agent name -> flag and
+    /// file name under the install's config directory).
+    #[serde(default)]
+    pub required_files: HashMap<String, RequiredFile>,
+
     /// Optional checksums for verification
     #[serde(default)]
     pub checksums: HashMap<String, String>,
@@ -156,6 +183,41 @@ pub struct BundleInfo {
     pub platforms: Vec<String>,
 }
 
+/// Agents that used to be in the bundle and no longer are, with the reason
+/// `bundle install <name>` gives instead of "Unknown agent".
+const RETIRED_AGENTS: &[(&str, &str)] = &[(
+    "ratelimit",
+    "the ratelimit agent is retired: rate limiting is built into Zentinel. \
+     Add `policies { rate-limit { requests-per-second 100 burst 20 } }` to a route \
+     instead. `zentinel bundle uninstall ratelimit` removes an agent installed earlier.",
+)];
+
+/// Why an agent is no longer in the bundle, if it was retired.
+pub fn retired_reason(name: &str) -> Option<&'static str> {
+    RETIRED_AGENTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, reason)| *reason)
+}
+
+/// How the proxy reaches an agent, and therefore how the agent is started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// Agent protocol v2 over a Unix domain socket (`--socket <path>`).
+    Uds,
+    /// Agent protocol v2 over gRPC on a loopback port (`--grpc-address`).
+    Grpc { port: u16 },
+}
+
+/// A file an agent does not start without (e.g. `--script lua.lua`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RequiredFile {
+    /// The agent's command-line flag that takes the file's path.
+    pub flag: String,
+    /// File name, relative to the install's config directory.
+    pub file: String,
+}
+
 /// Information about a bundled agent
 #[derive(Debug, Clone)]
 pub struct AgentInfo {
@@ -176,6 +238,12 @@ pub struct AgentInfo {
 
     /// Platforms this release is published for; empty means unknown.
     pub platforms: Vec<String>,
+
+    /// How the proxy reaches this agent.
+    pub transport: Transport,
+
+    /// A file the agent needs to start, if any.
+    pub required_file: Option<RequiredFile>,
 }
 
 impl BundleLock {
@@ -198,7 +266,65 @@ impl BundleLock {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Result<Self, LockError> {
         let lock: BundleLock = toml::from_str(content)?;
+        lock.validate()?;
         Ok(lock)
+    }
+
+    /// Reject per-agent metadata `bundle install` could not act on.
+    ///
+    /// The tables are optional (older lock files have none of them), but an
+    /// entry that is present must be usable: a "grpc" agent without a port
+    /// would otherwise be started on a port nothing in the generated KDL uses.
+    fn validate(&self) -> Result<(), LockError> {
+        let invalid = |msg: String| Err(LockError::Invalid(msg));
+        let mut ports: HashMap<u16, &str> = HashMap::new();
+        for (name, transport) in &self.transports {
+            match transport.as_str() {
+                "uds" => {}
+                "grpc" => {
+                    let Some(port) = self.grpc_ports.get(name) else {
+                        return invalid(format!(
+                            "[transports] {name} = \"grpc\" needs a [grpc_ports] entry"
+                        ));
+                    };
+                    if *port == 0 {
+                        return invalid(format!("[grpc_ports] {name}: port 0"));
+                    }
+                    if let Some(other) = ports.insert(*port, name) {
+                        return invalid(format!(
+                            "[grpc_ports] {name} and {other} both use port {port}"
+                        ));
+                    }
+                }
+                other => {
+                    return invalid(format!(
+                        "[transports] {name} = {other:?}: expected \"uds\" or \"grpc\""
+                    ))
+                }
+            }
+        }
+        for name in self.grpc_ports.keys() {
+            if self.transports.get(name).map(String::as_str) != Some("grpc") {
+                return invalid(format!(
+                    "[grpc_ports] {name} is not a \"grpc\" agent in [transports]"
+                ));
+            }
+        }
+        for (name, req) in &self.required_files {
+            if !req.flag.starts_with("--") {
+                return invalid(format!(
+                    "[required_files] {name}: flag {:?} must start with --",
+                    req.flag
+                ));
+            }
+            if req.file.is_empty() || req.file.contains('/') || req.file.starts_with('.') {
+                return invalid(format!(
+                    "[required_files] {name}: file {:?} must be a plain file name",
+                    req.file
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Fetch the latest bundle metadata, trying the API first with legacy fallback.
@@ -296,26 +422,13 @@ impl BundleLock {
 
     /// Get information about all bundled agents
     pub fn agents(&self) -> Vec<AgentInfo> {
-        self.agents
-            .iter()
-            .filter_map(|(name, version)| {
-                let repository = self.repositories.get(name)?;
-                let binary_name = self
-                    .binary_names
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| format!("zentinel-{}-agent", name));
-                let precomputed_urls = self.precomputed_urls_for(name);
-                Some(AgentInfo {
-                    name: name.clone(),
-                    version: version.clone(),
-                    repository: repository.clone(),
-                    binary_name,
-                    precomputed_urls,
-                    platforms: self.platforms_for(name),
-                })
-            })
-            .collect()
+        let mut agents: Vec<AgentInfo> = self
+            .agents
+            .keys()
+            .filter_map(|name| self.agent(name))
+            .collect();
+        agents.sort_by(|a, b| a.name.cmp(&b.name));
+        agents
     }
 
     /// Get information about a specific agent
@@ -328,6 +441,13 @@ impl BundleLock {
             .cloned()
             .unwrap_or_else(|| format!("zentinel-{}-agent", name));
         let precomputed_urls = self.precomputed_urls_for(name);
+        let transport = match (
+            self.transports.get(name).map(String::as_str),
+            self.grpc_ports.get(name),
+        ) {
+            (Some("grpc"), Some(port)) => Transport::Grpc { port: *port },
+            _ => Transport::Uds,
+        };
         Some(AgentInfo {
             name: name.to_string(),
             version: version.clone(),
@@ -335,6 +455,8 @@ impl BundleLock {
             binary_name,
             precomputed_urls,
             platforms: self.platforms_for(name),
+            transport,
+            required_file: self.required_files.get(name).cloned(),
         })
     }
 
@@ -398,9 +520,18 @@ impl AgentInfo {
         }
 
         // Fall back to constructed URL
+        let base = std::env::var(DOWNLOAD_BASE_ENV)
+            .ok()
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| GITHUB_BASE.to_string());
         format!(
-            "https://github.com/{}/releases/download/v{}/{}-{}-{}.tar.gz",
-            self.repository, self.version, self.binary_name, self.version, platform_key
+            "{}/{}/releases/download/v{}/{}-{}-{}.tar.gz",
+            base.trim_end_matches('/'),
+            self.repository,
+            self.version,
+            self.binary_name,
+            self.version,
+            platform_key
         )
     }
 
@@ -592,6 +723,8 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             binary_name: "zentinel-waf-agent".to_string(),
             precomputed_urls: HashMap::new(),
             platforms: Vec::new(),
+            transport: Transport::Uds,
+            required_file: None,
         };
 
         let url = agent.download_url("linux", "amd64");
@@ -610,6 +743,8 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             binary_name: "zentinel-ratelimit-agent".to_string(),
             precomputed_urls: HashMap::new(),
             platforms: Vec::new(),
+            transport: Transport::Uds,
+            required_file: None,
         };
 
         let url = agent.download_url("linux", "arm64");
@@ -628,6 +763,8 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             binary_name: "zentinel-denylist-agent".to_string(),
             precomputed_urls: HashMap::new(),
             platforms: Vec::new(),
+            transport: Transport::Uds,
+            required_file: None,
         };
 
         let url = agent.download_url("darwin", "arm64");
@@ -644,6 +781,8 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             binary_name: "zentinel-waf-agent".to_string(),
             precomputed_urls: HashMap::new(),
             platforms: Vec::new(),
+            transport: Transport::Uds,
+            required_file: None,
         };
 
         let url = agent.checksum_url("linux", "amd64");
@@ -666,9 +805,10 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
         // Core agents
         assert!(lock.agent("waf").is_some(), "waf agent should be in bundle");
         assert!(
-            lock.agent("ratelimit").is_some(),
-            "ratelimit agent should be in bundle"
+            lock.agent("ratelimit").is_none(),
+            "ratelimit is retired: rate limiting is built in"
         );
+        assert!(retired_reason("ratelimit").is_some());
         assert!(
             lock.agent("denylist").is_some(),
             "denylist agent should be in bundle"
@@ -696,6 +836,20 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
         assert!(
             lock.agents.len() >= 20,
             "bundle should have at least 20 agents"
+        );
+
+        // zentinelsec 0.4.0 only serves gRPC.
+        assert_eq!(
+            lock.agent("zentinelsec").unwrap().transport,
+            Transport::Grpc { port: 50151 }
+        );
+        assert_eq!(lock.agent("waf").unwrap().transport, Transport::Uds);
+        assert_eq!(
+            lock.agent("lua").unwrap().required_file,
+            Some(RequiredFile {
+                flag: "--script".to_string(),
+                file: "lua.lua".to_string()
+            })
         );
     }
 
@@ -756,6 +910,84 @@ waf = "zentinelproxy/zentinel-agent-waf"
                 agent.name
             );
         }
+    }
+
+    /// Every table `bundle install` acts on must agree with [agents], or
+    /// an agent would be started one way and wired another.
+    #[test]
+    fn test_embedded_lock_setup_tables_name_bundled_agents() {
+        let lock = BundleLock::embedded().unwrap();
+        for name in lock
+            .transports
+            .keys()
+            .chain(lock.grpc_ports.keys())
+            .chain(lock.required_files.keys())
+        {
+            assert!(lock.agents.contains_key(name), "{name} is not bundled");
+        }
+    }
+
+    #[test]
+    fn test_old_lock_without_setup_tables_defaults_to_uds() {
+        let lock = BundleLock::from_str(
+            r#"
+[bundle]
+version = "26.03_01"
+
+[agents]
+zentinelsec = "0.3.0"
+
+[repositories]
+zentinelsec = "zentinelproxy/zentinel-agent-zentinelsec"
+"#,
+        )
+        .unwrap();
+        let agent = lock.agent("zentinelsec").unwrap();
+        assert_eq!(agent.transport, Transport::Uds);
+        assert_eq!(agent.required_file, None);
+    }
+
+    #[test]
+    fn test_inconsistent_setup_tables_are_rejected() {
+        let base = r#"
+[bundle]
+version = "x"
+[agents]
+a = "1.0.0"
+b = "1.0.0"
+[repositories]
+a = "o/a"
+b = "o/b"
+"#;
+        for (extra, why) in [
+            ("[transports]\na = \"grpc\"\n", "grpc without port"),
+            ("[transports]\na = \"tcp\"\n", "unknown transport"),
+            ("[grpc_ports]\na = 1\n", "port without grpc"),
+            (
+                "[transports]\na = \"grpc\"\nb = \"grpc\"\n[grpc_ports]\na = 5\nb = 5\n",
+                "duplicate port",
+            ),
+            (
+                "[required_files]\na = { flag = \"config\", file = \"a.yaml\" }\n",
+                "flag without --",
+            ),
+            (
+                "[required_files]\na = { flag = \"--config\", file = \"../a.yaml\" }\n",
+                "file with a path",
+            ),
+        ] {
+            let err = BundleLock::from_str(&format!("{base}{extra}"));
+            assert!(matches!(err, Err(LockError::Invalid(_))), "{why}: {err:?}");
+        }
+        let ok = BundleLock::from_str(&format!(
+            "{base}[transports]\na = \"grpc\"\nb = \"uds\"\n[grpc_ports]\na = 50000\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            ok.agent("a").unwrap().transport,
+            Transport::Grpc { port: 50000 }
+        );
+        assert_eq!(ok.agent("b").unwrap().transport, Transport::Uds);
     }
 
     #[test]
@@ -824,6 +1056,8 @@ waf = "zentinelproxy/zentinel-agent-waf"
             binary_name: "zentinel-waf-agent".to_string(),
             precomputed_urls: HashMap::new(),
             platforms: Vec::new(),
+            transport: Transport::Uds,
+            required_file: None,
         };
 
         let url = agent.download_url("linux", "amd64");
@@ -848,6 +1082,8 @@ waf = "zentinelproxy/zentinel-agent-waf"
             binary_name: "zentinel-waf-agent".to_string(),
             precomputed_urls: precomputed,
             platforms: Vec::new(),
+            transport: Transport::Uds,
+            required_file: None,
         };
 
         // Should use precomputed URL

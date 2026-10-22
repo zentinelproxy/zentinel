@@ -11,6 +11,11 @@ vendored copy of it. This script fails when:
     which is what `cargo publish` packages) are not byte-identical;
   * an agent has no repository, or a platform name is not one the proxy
     can ask for (linux|darwin)-(x86_64|aarch64);
+  * the per-agent setup tables `bundle install` acts on are inconsistent:
+    [transports] values other than "uds"/"grpc", a "grpc" agent without a
+    unique [grpc_ports] entry, or a [required_files] entry that is not
+    { flag = "--...", file = "<plain name>" } (crates/proxy/src/bundle/lock.rs
+    refuses the same lock at runtime);
   * (unless --offline) any agent/platform asset is not downloadable. A
     missing .sha256 next to it is reported as a warning: the installer then
     skips verification, and older agent releases ship none. URLs are built exactly as crates/proxy/src/bundle/lock.rs
@@ -77,6 +82,43 @@ def asset_urls(lock: dict) -> tuple[list[tuple[str, str, str]], list[str]]:
     return out, errors
 
 
+def setup_errors(lock: dict) -> list[str]:
+    """Check [transports], [grpc_ports] and [required_files]."""
+    errors: list[str] = []
+    agents = lock.get("agents", {})
+    transports = lock.get("transports", {})
+    ports = lock.get("grpc_ports", {})
+    required = lock.get("required_files", {})
+    for table, entries in (("transports", transports), ("grpc_ports", ports), ("required_files", required)):
+        for extra in sorted(set(entries) - set(agents)):
+            errors.append(f"[{table}] {extra} has no entry in [agents]")
+    seen: dict[int, str] = {}
+    for agent, transport in sorted(transports.items()):
+        if transport not in ("uds", "grpc"):
+            errors.append(f"[transports] {agent} = {transport!r}: expected \"uds\" or \"grpc\"")
+        elif transport == "grpc":
+            port = ports.get(agent)
+            if not isinstance(port, int) or not 0 < port < 65536:
+                errors.append(f"{agent}: \"grpc\" transport needs a [grpc_ports] port, got {port!r}")
+            elif port in seen:
+                errors.append(f"[grpc_ports] {agent} and {seen[port]} both use port {port}")
+            else:
+                seen[port] = agent
+    for agent in sorted(ports):
+        if transports.get(agent) != "grpc":
+            errors.append(f"[grpc_ports] {agent} is not a \"grpc\" agent in [transports]")
+    for agent, req in sorted(required.items()):
+        if not isinstance(req, dict) or set(req) != {"flag", "file"}:
+            errors.append(f"[required_files] {agent}: expected {{ flag = ..., file = ... }}")
+            continue
+        if not str(req["flag"]).startswith("--"):
+            errors.append(f"[required_files] {agent}: flag {req['flag']!r} must start with --")
+        f = str(req["file"])
+        if not f or "/" in f or f.startswith("."):
+            errors.append(f"[required_files] {agent}: file {f!r} must be a plain file name")
+    return errors
+
+
 def reachable(url: str) -> str | None:
     """None if the URL answers 200 after redirects, else a reason."""
     req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "zentinel-bundle-check"})
@@ -111,6 +153,7 @@ def main() -> int:
     lock = tomllib.loads(contents[0].decode())
     assets, lock_errors = asset_urls(lock)
     errors += lock_errors
+    errors += setup_errors(lock)
     print(f"bundle {lock['bundle']['version']}: {len(lock['agents'])} agents, {len(assets)} assets")
 
     if not args.offline:
