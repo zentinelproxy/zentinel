@@ -5592,11 +5592,13 @@ impl ZentinelProxy {
                 );
             }
             Err(e) => {
-                let fail_closed = ctx
-                    .route_config
-                    .as_ref()
-                    .map(|r| r.policies.failure_mode == zentinel_config::FailureMode::Closed)
-                    .unwrap_or(false);
+                // Every failure of an agent itself (not loaded, circuit
+                // open, call error, timeout) arrives above as a decision,
+                // decided by its filter's failure mode. This is only the
+                // call that could not be dispatched (the agent's call
+                // permit could not be had), and follows the same rule
+                // (#597).
+                let fail_closed = ctx.request_body_agents_fail_closed();
 
                 if fail_closed {
                     error!(
@@ -5695,14 +5697,11 @@ impl ZentinelProxy {
                         self.metrics
                             .record_decompression_failure(encoding, failure_reason);
 
-                        // Decompression failed - decide based on failure mode
-                        let fail_closed = ctx
-                            .route_config
-                            .as_ref()
-                            .map(|r| {
-                                r.policies.failure_mode == zentinel_config::FailureMode::Closed
-                            })
-                            .unwrap_or(false);
+                        // The body cannot be inspected as sent. Decided by
+                        // the body agents' filters, else the route, as any
+                        // failure on the body is (#597); it used to be the
+                        // route's policy alone.
+                        let fail_closed = ctx.request_body_agents_fail_closed();
 
                         if fail_closed {
                             error!(
@@ -5779,11 +5778,9 @@ impl ZentinelProxy {
                 );
             }
             Err(e) => {
-                let fail_closed = ctx
-                    .route_config
-                    .as_ref()
-                    .map(|r| r.policies.failure_mode == zentinel_config::FailureMode::Closed)
-                    .unwrap_or(false);
+                // Only a call that could not be dispatched; see the
+                // streaming path above (#597).
+                let fail_closed = ctx.request_body_agents_fail_closed();
 
                 if fail_closed {
                     error!(

@@ -1008,6 +1008,21 @@ impl RequestContext {
         self.inference_provider_override = provider_override;
     }
 
+    /// Whether a failure on the request body, other than an agent's
+    /// decision, refuses the request: whether any agent the body goes to
+    /// has a filter (else its route) set to `failure-mode "closed"`.
+    ///
+    /// The same rule as for every failed agent call (#584) and for the
+    /// response body: a failure that is no single agent's -- the body could
+    /// not be decompressed for inspection, or the call could not be
+    /// dispatched at all -- concerns all of them, so one closed filter is
+    /// enough (#597).
+    pub(crate) fn request_body_agents_fail_closed(&self) -> bool {
+        self.body_inspection_agents
+            .iter()
+            .any(|agent| agent.failure_mode == zentinel_config::FailureMode::Closed)
+    }
+
     /// The request body limit that applies to this request, given the
     /// global `limits` one.
     ///
@@ -1093,6 +1108,25 @@ impl Default for RequestContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_body_failures_follow_the_body_agents_filters() {
+        use zentinel_config::FailureMode;
+        let agent = |id: &str, failure_mode| crate::agents::BodyAgent {
+            id: id.to_string(),
+            max_body_bytes: None,
+            failure_mode,
+        };
+        let mut ctx = RequestContext::new();
+        // No body agents: nothing to fail closed for.
+        assert!(!ctx.request_body_agents_fail_closed());
+        ctx.body_inspection_agents = vec![agent("a", FailureMode::Open)];
+        assert!(!ctx.request_body_agents_fail_closed());
+        // One closed filter is enough.
+        ctx.body_inspection_agents
+            .push(agent("b", FailureMode::Closed));
+        assert!(ctx.request_body_agents_fail_closed());
+    }
 
     mod agent_block {
         use super::super::AgentBlock;

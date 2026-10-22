@@ -120,6 +120,13 @@ for details.
   phase's own changes. Request-header changes made on the request body cannot
   be applied (the upstream request's header is already sent by then); they
   are dropped with a warning logged once per agent, and documented.
+- **A request body that could not be decompressed for agent inspection was
+  decided by the route's `failure-mode` alone** (#597), ignoring the agent
+  filters'. It now follows the same rule as every other failure on the body:
+  any body agent whose filter (else route) is `closed` refuses it with 400;
+  otherwise it is inspected as sent. The unreachable route-policy fallbacks
+  on agent dispatch errors use the same rule (the request-headers one now
+  answers 503 instead of 500).
 
 ### Changed
 

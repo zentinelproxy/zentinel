@@ -610,19 +610,28 @@ impl ZentinelProxy {
                 );
             }
             Err(e) => {
+                // Not reached today: every agent failure (not loaded,
+                // circuit open, call error, timeout) comes back as a
+                // decision above, decided by its filter's failure mode
+                // (#584), and the parallel dispatch returns no error of its
+                // own. Should one appear, it is no single agent's, and
+                // follows the same rule: one closed filter refuses (#597).
+                // The route's policy is already each filter's default.
+                let fail_closed = agent_filters
+                    .iter()
+                    .any(|agent| agent.failure_mode == zentinel_config::FailureMode::Closed);
                 error!(
                     correlation_id = %ctx.trace_id,
                     error = %e,
+                    fail_closed = fail_closed,
                     "Agent processing failed"
                 );
-                // Check failure mode from cached route config
-                if route_config.policies.failure_mode == zentinel_config::FailureMode::Closed {
+                if fail_closed {
                     return Err(Error::explain(
-                        ErrorType::InternalError,
+                        ErrorType::HTTPStatus(503),
                         "Agent processing failed",
                     ));
                 }
-                // Otherwise fail-open and continue
             }
         }
 
