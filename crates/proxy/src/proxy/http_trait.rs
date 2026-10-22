@@ -5574,29 +5574,16 @@ impl ZentinelProxy {
                     }
                 }
 
-                // Check decision (only final if needs_more is false)
-                if !decision.needs_more && !decision.is_allow() {
-                    warn!(
-                        correlation_id = %ctx.trace_id,
-                        agent_id = decision.decided_by.as_deref().unwrap_or("unknown"),
-                        action = ?decision.action,
-                        "Agent blocked request body"
-                    );
-                    self.metrics.record_blocked_request("agent_body_inspection");
-
-                    let (status, message) = match &decision.action {
-                        crate::agents::AgentAction::Block { status, body, .. } => {
-                            // Answered by `fail_to_proxy` (#557).
-                            ctx.agent_block = AgentBlock::from_action(&decision.action);
-                            (
-                                *status,
-                                body.clone().unwrap_or_else(|| "Blocked".to_string()),
-                            )
-                        }
-                        _ => (403, "Forbidden".to_string()),
-                    };
-
-                    return Err(Error::explain(ErrorType::HTTPStatus(status), message));
+                // Check decision (only final if needs_more is false).
+                // Anything but Allow is answered by `fail_to_proxy` (#557,
+                // #595).
+                if !decision.needs_more {
+                    self.refuse_on_agent_request_decision(
+                        ctx,
+                        &decision,
+                        "request_body",
+                        "agent_body_inspection",
+                    )?;
                 }
 
                 trace!(
@@ -5776,29 +5763,14 @@ impl ZentinelProxy {
             .await
         {
             Ok(decision) => {
-                if !decision.is_allow() {
-                    warn!(
-                        correlation_id = %ctx.trace_id,
-                        agent_id = decision.decided_by.as_deref().unwrap_or("unknown"),
-                        action = ?decision.action,
-                        "Agent blocked request body"
-                    );
-                    self.metrics.record_blocked_request("agent_body_inspection");
-
-                    let (status, message) = match &decision.action {
-                        crate::agents::AgentAction::Block { status, body, .. } => {
-                            // Answered by `fail_to_proxy` (#557).
-                            ctx.agent_block = AgentBlock::from_action(&decision.action);
-                            (
-                                *status,
-                                body.clone().unwrap_or_else(|| "Blocked".to_string()),
-                            )
-                        }
-                        _ => (403, "Forbidden".to_string()),
-                    };
-
-                    return Err(Error::explain(ErrorType::HTTPStatus(status), message));
-                }
+                // Anything but Allow is answered by `fail_to_proxy` (#557,
+                // #595).
+                self.refuse_on_agent_request_decision(
+                    ctx,
+                    &decision,
+                    "request_body",
+                    "agent_body_inspection",
+                )?;
 
                 trace!(
                     correlation_id = %ctx.trace_id,

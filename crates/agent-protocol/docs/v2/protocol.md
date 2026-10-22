@@ -336,10 +336,41 @@ pub struct DecisionMessage {
 
 pub enum Decision {
     Allow,
-    Block { status: u16, body: Option<String>, headers: HashMap<String, String> },
+    Block { status: u16, body: Option<String>, headers: Option<HashMap<String, String>> },
     Redirect { url: String, status: u16 },
+    Challenge { challenge_type: String, params: HashMap<String, String> },
 }
 ```
+
+#### How the proxy answers a decision in the request phases
+
+In the request-headers and request-body phases (streamed or buffered),
+every decision but `Allow` stops the request: it is never proxied, and the
+proxy answers the client itself.
+
+| Decision | Response |
+|----------|----------|
+| `Allow` | The request is proxied, with the agent's header changes. |
+| `Block` | `status`, with the agent's `body` and `headers`. Without a body, the route's error page for the status, or the default refusal. |
+| `Redirect` | `status` with `Location: <url>`. The status must be 301, 302, 303, 307 or 308; any other is answered as 302. A `url` that is not a valid header value is refused with 500. |
+| `Challenge` | See below. |
+
+The proxy cannot run a challenge itself, so a `Challenge` fails closed:
+the client gets a response built from the challenge's `params` (names
+matched case-insensitively), and the upstream is never contacted.
+
+| Param | Effect |
+|-------|--------|
+| `www-authenticate` | An HTTP authentication challenge: `401 Unauthorized` with this value as the `WWW-Authenticate` header. Without it the status is `403 Forbidden` (CAPTCHA, JavaScript, proof-of-work and other challenges). |
+| `body` | The response body, e.g. the challenge page. Without one, the route's error page for the status, or the default refusal. |
+| `content-type` | The `Content-Type` of `body`; ignored without a `body`. |
+
+Other params (`token`, `challenge_url`, ...) are not sent to the client;
+an agent that wants the client to see them puts them into `body`. The proxy
+logs the challenge type (and the param names, not their values) at INFO.
+
+In the response phases, only `Block` is acted on so far; `Redirect` and
+`Challenge` there are tracked in zentinelproxy/zentinel#588.
 
 ### CancelRequest
 
