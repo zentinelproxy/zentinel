@@ -867,6 +867,14 @@ fn validate_agents(config: &Config, errors: &mut Vec<String>) {
             ));
         }
 
+        if agent.connect_timeout_ms == Some(0) {
+            errors.push(format!(
+                "Agent '{}' has connect-timeout-ms 0. Timeouts must be greater than 0; \
+                 omit the field for the default of 5000.",
+                agent.id
+            ));
+        }
+
         if agent.chunk_timeout_ms == 0 {
             warn!(agent_id = %agent.id, "Agent has zero chunk timeout");
             errors.push(format!(
@@ -1727,6 +1735,43 @@ mod tests {
         assert!(
             errors.contains("Agent 'waf' has timeout_ms 0"),
             "expected zero timeout error, got: {errors}"
+        );
+    }
+
+    /// `connect-timeout-ms` is read into the agent (#599), and is unset
+    /// when absent so the pool's default applies.
+    #[test]
+    fn agent_connect_timeout_is_read() {
+        let config = config_with_agent_block(
+            r#"
+            agent "set" type="waf" {
+                unix-socket path="/tmp/set.sock"
+                connect-timeout-ms 750
+            }
+            agent "unset" type="waf" {
+                unix-socket path="/tmp/unset.sock"
+            }
+            "#,
+        );
+        let by_id = |id: &str| config.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(by_id("set").connect_timeout_ms, Some(750));
+        assert_eq!(by_id("unset").connect_timeout_ms, None);
+    }
+
+    #[test]
+    fn agent_zero_connect_timeout_fails_validation() {
+        let config = config_with_agent_block(
+            r#"
+            agent "waf" type="waf" {
+                unix-socket path="/tmp/waf.sock"
+                connect-timeout-ms 0
+            }
+            "#,
+        );
+        let errors = validation_errors(&config);
+        assert!(
+            errors.contains("Agent 'waf' has connect-timeout-ms 0"),
+            "expected zero connect timeout error, got: {errors}"
         );
     }
 

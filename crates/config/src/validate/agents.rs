@@ -239,6 +239,7 @@ mod tests {
             events: vec![AgentEvent::RequestHeaders],
             pool: None,
             timeout_ms: 1000,
+            connect_timeout_ms: None,
             failure_mode: crate::FailureMode::default(),
             circuit_breaker: None,
             max_request_body_bytes: None,

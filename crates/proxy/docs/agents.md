@@ -390,22 +390,33 @@ agent "content-filter" {
 
 ## Connection Pooling
 
-Each agent uses the v2 protocol's built-in connection pool with configurable
-connections per agent, load balancing, and health checking. The pool is managed
-internally by the agent and handles reconnection automatically.
+Each agent uses the v2 protocol's built-in connection pool (four connections
+per agent, round-robin, health-checked). The pool is managed internally by the
+agent and handles reconnection automatically: a connection that fails is
+retried in the background, with a backoff that grows to two minutes.
 
-Configuration:
+A new connection waits at most `connect-timeout-ms` (default 5000) for the
+agent to accept it and answer the handshake:
 
 ```kdl
-agent "waf-agent" {
-    pool {
-        connections-per-agent 4
-        load-balance-strategy "round_robin"
-        connect-timeout-ms 5000
-        health-check-interval-ms 10000
-    }
+agent "waf-agent" type="waf" {
+    unix-socket "/var/run/zentinel/waf.sock"
+    timeout-ms 100
+    connect-timeout-ms 2000
 }
 ```
+
+An agent that does not answer in time is not used until it does: its filters
+follow their `failure-mode` (`open` forwards the request uninspected,
+`closed` answers 503), and the pool keeps reconnecting. Startup does not wait
+for it: all agents connect at once, and the proxy starts serving after at
+most the longest `connect-timeout-ms` plus 5 s for the agents to acknowledge
+their configuration. An agent still connecting then is connected in the
+background.
+
+The other pool settings (connections per agent, load balancing, reconnect
+interval, health-check interval) are not configurable from KDL; a `pool { }`
+block in an agent is reported as an unknown key.
 
 ## Metrics
 

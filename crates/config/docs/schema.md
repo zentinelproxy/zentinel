@@ -475,6 +475,7 @@ External processing agent configuration.
 | `transport` | `AgentTransport` | **required** | Transport configuration |
 | `events` | `[string]` | **required** | Events to handle |
 | `timeout-ms` | `u64` | `1000` | Call timeout (must be > 0) |
+| `connect-timeout-ms` | `u64` | `5000` | Longest a new connection waits for the agent to accept it and answer the handshake (must be > 0). An agent that does not answer is not used and is reconnected in the background; its filters follow their `failure-mode` |
 | `failure-mode` | `string` | `"open"` | Failure mode for WebSocket frames (`open` allows on agent failure, `closed` closes the connection). On routes, a failed call follows the agent filter's `failure-mode`, else the route's |
 | `circuit-breaker` | `CircuitBreakerConfig` | - | Circuit breaker |
 | `max-request-body-bytes` | `u64` | `1048576` (1 MiB) | Max request body inspected by this agent. Larger bodies follow the filter's `failure-mode`: `closed` blocks with 413, `open` skips this agent with a warning and metric |

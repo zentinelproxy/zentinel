@@ -22,7 +22,7 @@ use crate::v2::control::ConfigUpdateType;
 use crate::v2::observability::{ConfigPusher, ConfigUpdateHandler, MetricsCollector};
 use crate::v2::protocol_metrics::ProtocolMetrics;
 use crate::v2::reverse::ReverseConnectionClient;
-use crate::v2::uds::AgentClientV2Uds;
+use crate::v2::uds::{AgentClientV2Uds, DEFAULT_CONNECT_TIMEOUT};
 use crate::v2::AgentCapabilities;
 use crate::{
     AgentProtocolError, AgentResponse, GuardrailInspectEvent, RequestBodyChunkEvent,
@@ -114,7 +114,10 @@ pub struct AgentPoolConfig {
     pub connections_per_agent: usize,
     /// Load balancing strategy
     pub load_balance_strategy: LoadBalanceStrategy,
-    /// Connection timeout
+    /// Longest a new connection waits for the agent to accept it and answer
+    /// the handshake (#599). The configuration delivered after the
+    /// handshake has its own wait, the longer of `request_timeout` and five
+    /// seconds.
     pub connect_timeout: Duration,
     /// Request timeout
     pub request_timeout: Duration,
@@ -178,7 +181,7 @@ impl Default for AgentPoolConfig {
         Self {
             connections_per_agent: 4,
             load_balance_strategy: LoadBalanceStrategy::RoundRobin,
-            connect_timeout: Duration::from_secs(5),
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             request_timeout: Duration::from_secs(30),
             reconnect_interval: Duration::from_secs(5),
             max_reconnect_attempts: 3,
@@ -1127,13 +1130,17 @@ impl AgentPool {
 
         let entry = Arc::new(AgentEntry::new(agent_id.clone(), endpoint.clone(), config));
 
-        // Create initial connections
+        // Create initial connections, all at once. One after another, an
+        // agent that does not answer cost every connection its full connect
+        // timeout in turn before the agent was registered (#599).
+        let attempts = futures::future::join_all(
+            (0..self.config.connections_per_agent)
+                .map(|_| self.create_connection(&agent_id, &endpoint, entry.config.as_ref())),
+        )
+        .await;
         let mut connections = Vec::with_capacity(self.config.connections_per_agent);
-        for i in 0..self.config.connections_per_agent {
-            match self
-                .create_connection(&agent_id, &endpoint, entry.config.as_ref())
-                .await
-            {
+        for (i, attempt) in attempts.into_iter().enumerate() {
+            match attempt {
                 Ok(conn) => {
                     connections.push(Arc::new(conn));
                     debug!(
@@ -1938,18 +1945,26 @@ impl AgentPool {
             client.set_metrics_callback(Arc::clone(&self.metrics_callback));
             client.set_config_update_callback(Arc::clone(&self.config_update_callback));
             client.set_config(config.cloned());
+            client.set_connect_timeout(self.config.connect_timeout);
 
             client.connect().await?;
             V2Transport::Uds(client)
         } else {
             // gRPC transport (default)
-            let mut client =
-                AgentClientV2::new(agent_id, endpoint, self.config.request_timeout).await?;
+            // Opening the channel is bounded by the connect timeout as well:
+            // its own limit is the request timeout.
+            let mut client = tokio::time::timeout(
+                self.config.connect_timeout,
+                AgentClientV2::new(agent_id, endpoint, self.config.request_timeout),
+            )
+            .await
+            .map_err(|_| AgentProtocolError::Timeout(self.config.connect_timeout))??;
 
             // Set callbacks before connecting
             client.set_metrics_callback(Arc::clone(&self.metrics_callback));
             client.set_config_update_callback(Arc::clone(&self.config_update_callback));
             client.set_config(config.cloned());
+            client.set_connect_timeout(self.config.connect_timeout);
 
             client.connect().await?;
             V2Transport::Grpc(client)
@@ -2443,6 +2458,52 @@ mod tests {
             !entry.healthy.load(Ordering::Acquire),
             "it is registered, not pretended healthy"
         );
+    }
+
+    /// #599: an agent that accepts its connections and never answers the
+    /// handshake costs `add_agent` one connect timeout, not one per pooled
+    /// connection (or forever, as it did over UDS), and is registered
+    /// unhealthy so maintenance keeps trying.
+    #[tokio::test]
+    async fn a_silent_agent_is_given_up_on_after_one_connect_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silent.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&accepted);
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::Relaxed);
+                held.push(stream);
+            }
+        });
+
+        let connect_timeout = Duration::from_millis(300);
+        let pool = AgentPool::with_config(AgentPoolConfig {
+            connect_timeout,
+            ..Default::default()
+        });
+        let start = Instant::now();
+        let result = pool
+            .add_agent("silent", format!("unix:{}", path.display()))
+            .await;
+        let took = start.elapsed();
+
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            took < connect_timeout * 3,
+            "add_agent took {took:?} with a {connect_timeout:?} connect timeout"
+        );
+        assert_eq!(
+            accepted.load(Ordering::Relaxed),
+            pool.config.connections_per_agent,
+            "every pooled connection was attempted"
+        );
+        let entry = pool.agents.get("silent").expect("registered");
+        assert!(!entry.healthy.load(Ordering::Acquire));
+        assert!(entry.connections.read().await.is_empty());
+        server.abort();
     }
 
     /// The reconnect interval grows with consecutive failures and is capped,

@@ -2116,6 +2116,7 @@ mod tests {
                     unix-socket "/var/run/zentinel/waf.sock"
                     events "request_headers" "request_body"
                     timeout-ms 200
+                    connect-timeout-ms 750
                     failure-mode "closed"
                     max-concurrent-calls 100
                     circuit-breaker {

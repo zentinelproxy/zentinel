@@ -152,6 +152,16 @@ pub struct UdsHandshakeResponse {
 }
 ```
 
+The proxy waits at most the agent's connect timeout (`connect-timeout-ms`,
+default 5 s; `AgentPoolConfig::connect_timeout`, `set_connect_timeout` on the
+clients) for the connection to be accepted and the handshake answered, on
+both transports. An agent that accepts the connection and never answers fails
+that connection like any other failed connect: it is not used, the agent's
+filters follow their `failure-mode`, and the pool retries in the background
+with backoff. The proxy's startup does not wait for it beyond that timeout
+(plus 5 s for the configuration below), and the pool's connections to an
+agent are opened at the same time rather than one after another.
+
 ## Configuration delivery
 
 The `config { }` block of an agent in the proxy's KDL is delivered on **every

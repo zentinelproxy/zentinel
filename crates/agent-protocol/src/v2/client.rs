@@ -89,6 +89,9 @@ pub struct AgentClientV2 {
     channel: Channel,
     /// Request timeout
     timeout: Duration,
+    /// Longest `connect` waits for the stream to open and the agent's
+    /// handshake response (#599). See [`Self::set_connect_timeout`].
+    connect_timeout: Duration,
     /// Negotiated capabilities
     capabilities: RwLock<Option<AgentCapabilities>>,
     /// Negotiated protocol version
@@ -149,6 +152,7 @@ impl AgentClientV2 {
             agent_id,
             channel,
             timeout,
+            connect_timeout: crate::v2::uds::DEFAULT_CONNECT_TIMEOUT,
             capabilities: RwLock::new(None),
             protocol_version: AtomicU64::new(1), // Default to v1 until handshake
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -243,6 +247,17 @@ impl AgentClientV2 {
         self.config = config;
     }
 
+    /// Set how long `connect` waits for the stream to open and for the
+    /// agent's handshake response, together
+    /// ([`DEFAULT_CONNECT_TIMEOUT`](crate::v2::DEFAULT_CONNECT_TIMEOUT)
+    /// unless set). An agent that does not answer in time fails `connect`
+    /// with [`AgentProtocolError::Timeout`]. Delivering the configuration
+    /// afterwards has its own wait, the longer of the request timeout and
+    /// five seconds.
+    pub fn set_connect_timeout(&mut self, timeout: Duration) {
+        self.connect_timeout = timeout;
+    }
+
     /// Set the metrics callback for receiving agent metrics reports.
     ///
     /// This callback is invoked whenever the agent sends a metrics report
@@ -259,8 +274,17 @@ impl AgentClientV2 {
         self.config_update_callback = Some(callback);
     }
 
-    /// Connect and perform handshake.
-    pub async fn connect(&self) -> Result<(), AgentProtocolError> {
+    /// Open the stream, send the handshake and read its response.
+    async fn open_and_handshake(
+        &self,
+    ) -> Result<
+        (
+            mpsc::Sender<ProxyToAgent>,
+            tonic::Streaming<grpc_v2::AgentToProxy>,
+            grpc_v2::AgentToProxy,
+        ),
+        AgentProtocolError,
+    > {
         let mut client = AgentServiceV2Client::new(self.channel.clone());
 
         // Create bidirectional stream
@@ -295,13 +319,34 @@ impl AgentClientV2 {
         })?;
 
         // Wait for handshake response
-        let handshake_resp = tokio::time::timeout(self.timeout, inbound.message())
+        let handshake_resp = inbound
+            .message()
             .await
-            .map_err(|_| AgentProtocolError::Timeout(self.timeout))?
             .map_err(|e| AgentProtocolError::ConnectionFailed(format!("Stream error: {}", e)))?
             .ok_or_else(|| {
                 AgentProtocolError::ConnectionFailed("Empty handshake response".to_string())
             })?;
+
+        Ok((tx, inbound, handshake_resp))
+    }
+
+    /// Connect and perform handshake.
+    pub async fn connect(&self) -> Result<(), AgentProtocolError> {
+        // Opening the stream and the handshake are bounded together: an agent
+        // that accepts the connection and never answers held this until the
+        // request timeout and longer, and with it the proxy's startup (#599).
+        let (tx, mut inbound, handshake_resp) =
+            match tokio::time::timeout(self.connect_timeout, self.open_and_handshake()).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    error!(
+                        agent_id = %self.agent_id,
+                        timeout_ms = self.connect_timeout.as_millis(),
+                        "Agent did not answer the handshake in time; connection not used"
+                    );
+                    return Err(AgentProtocolError::Timeout(self.connect_timeout));
+                }
+            };
 
         // Process handshake response
         if let Some(grpc_v2::agent_to_proxy::Message::Handshake(resp)) = handshake_resp.message {

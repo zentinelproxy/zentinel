@@ -102,6 +102,16 @@ for details.
   release (`auth`, `policy`, `ai-gateway`, `data-masking`); they are removed.
 - On a platform an agent is not published for (no agent is built for
   `darwin-x86_64`), `bundle install` says so instead of reporting a 404.
+- **An agent that accepted the connection but never answered the handshake
+  kept the proxy from starting** (#599): the listener never opened, whatever
+  the agent's `failure-mode`. The connect and handshake of every agent
+  connection are now bounded by the new agent setting `connect-timeout-ms`
+  (default 5000), the pool opens an agent's connections at once rather than one
+  after another, and startup waits for agents at most the longest connect
+  timeout plus 5 s for their configuration. An agent that has not answered is
+  not used: its filters follow their `failure-mode` (`open` forwards
+  uninspected, `closed` answers 503) and the pool keeps reconnecting in the
+  background, so the agent is used as soon as it answers.
 
 ### Changed
 

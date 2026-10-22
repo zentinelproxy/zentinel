@@ -335,6 +335,9 @@ pub struct AgentClientV2Uds {
     socket_path: String,
     /// Request timeout
     timeout: Duration,
+    /// Longest `connect` waits for the socket and the agent's handshake
+    /// response (#599). See [`Self::set_connect_timeout`].
+    connect_timeout: Duration,
     /// Negotiated capabilities
     capabilities: RwLock<Option<AgentCapabilities>>,
     /// Negotiated protocol version
@@ -379,6 +382,14 @@ pub struct AgentClientV2Uds {
 /// loading keys). The acknowledgement waits for the longer of the two.
 pub(crate) const MIN_CONFIGURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long `connect` waits, by default, for the agent to accept the
+/// connection and answer the handshake.
+///
+/// An agent that accepts a connection and never answers used to hold
+/// `connect` forever, and with it the proxy's startup: the listener never
+/// opened (#599).
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Distinguishes the correlation ids of configure messages.
 static CONFIGURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -412,6 +423,7 @@ impl AgentClientV2Uds {
             agent_id,
             socket_path,
             timeout,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             capabilities: RwLock::new(None),
             protocol_version: AtomicU64::new(0),
             encoding: RwLock::new(UdsEncoding::Json),
@@ -438,6 +450,16 @@ impl AgentClientV2Uds {
     /// it was given. `None` (the default) sends nothing.
     pub fn set_config(&mut self, config: Option<serde_json::Value>) {
         self.config = config;
+    }
+
+    /// Set how long `connect` waits for the socket to accept and for the
+    /// agent's handshake response, together ([`DEFAULT_CONNECT_TIMEOUT`]
+    /// unless set). An agent that does not answer in time fails `connect`
+    /// with [`AgentProtocolError::Timeout`]. Delivering the configuration
+    /// afterwards has its own wait, the longer of the request timeout and
+    /// five seconds.
+    pub fn set_connect_timeout(&mut self, timeout: Duration) {
+        self.connect_timeout = timeout;
     }
 
     /// Returns the list of supported encodings for this client.
@@ -469,14 +491,18 @@ impl AgentClientV2Uds {
         self.config_update_callback = Some(callback);
     }
 
-    /// Connect and perform handshake.
-    pub async fn connect(&self) -> Result<(), AgentProtocolError> {
-        info!(
-            agent_id = %self.agent_id,
-            socket_path = %self.socket_path,
-            "Connecting to agent via UDS v2"
-        );
-
+    /// Open the socket, send the handshake and read its response.
+    #[allow(clippy::type_complexity)]
+    async fn open_and_handshake(
+        &self,
+    ) -> Result<
+        (
+            BufReader<tokio::net::unix::OwnedReadHalf>,
+            BufWriter<tokio::net::unix::OwnedWriteHalf>,
+            UdsHandshakeResponse,
+        ),
+        AgentProtocolError,
+    > {
         // Connect to Unix socket
         let stream = UnixStream::connect(&self.socket_path).await.map_err(|e| {
             error!(
@@ -519,6 +545,34 @@ impl AgentClientV2Uds {
 
         let response: UdsHandshakeResponse = serde_json::from_slice(&response_bytes)
             .map_err(|e| AgentProtocolError::InvalidMessage(e.to_string()))?;
+
+        Ok((reader, writer, response))
+    }
+
+    /// Connect and perform handshake.
+    pub async fn connect(&self) -> Result<(), AgentProtocolError> {
+        info!(
+            agent_id = %self.agent_id,
+            socket_path = %self.socket_path,
+            "Connecting to agent via UDS v2"
+        );
+
+        // The socket and the handshake are bounded together: an agent that
+        // accepts the connection and never answers held this forever, and
+        // with it the proxy's startup (#599).
+        let (mut reader, mut writer, response) =
+            match tokio::time::timeout(self.connect_timeout, self.open_and_handshake()).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    error!(
+                        agent_id = %self.agent_id,
+                        socket_path = %self.socket_path,
+                        timeout_ms = self.connect_timeout.as_millis(),
+                        "Agent did not answer the handshake in time; connection not used"
+                    );
+                    return Err(AgentProtocolError::Timeout(self.connect_timeout));
+                }
+            };
 
         if !response.success {
             return Err(AgentProtocolError::ConnectionFailed(

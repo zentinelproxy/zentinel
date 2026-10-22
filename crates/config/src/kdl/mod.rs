@@ -328,6 +328,7 @@ pub(crate) const RECOGNIZED_AGENT_KEYS: &[&str] = &[
     "grpc",
     "http",
     "timeout-ms",
+    "connect-timeout-ms",
     "failure-mode",
     "events",
     "circuit-breaker",
@@ -510,6 +511,7 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
 
     let mut transport = None;
     let mut timeout_ms = DEFAULT_AGENT_TIMEOUT_MS;
+    let mut connect_timeout_ms = None;
     let mut failure_mode = FailureMode::Open;
     let mut events = Vec::new();
     let mut circuit_breaker = None;
@@ -552,6 +554,13 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 if let Some(entry) = child.entries().first() {
                     if let Some(v) = entry.value().as_integer() {
                         timeout_ms = v as u64;
+                    }
+                }
+            }
+            "connect-timeout-ms" => {
+                if let Some(entry) = child.entries().first() {
+                    if let Some(v) = entry.value().as_integer() {
+                        connect_timeout_ms = Some(v.clamp(0, u64::MAX as i128) as u64);
                     }
                 }
             }
@@ -654,6 +663,7 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
         events,
         pool: None,
         timeout_ms,
+        connect_timeout_ms,
         failure_mode,
         circuit_breaker,
         max_request_body_bytes,

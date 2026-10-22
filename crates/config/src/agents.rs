@@ -180,6 +180,15 @@ pub struct AgentConfig {
     #[serde(default = "default_agent_timeout")]
     pub timeout_ms: u64,
 
+    /// Longest a new connection to the agent waits for it to accept and
+    /// answer the handshake (`connect-timeout-ms`; default 5000).
+    ///
+    /// An agent that has not answered by then is not used: its filters
+    /// follow their failure mode and the pool keeps reconnecting in the
+    /// background, and the proxy's startup does not wait for it (#599).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_ms: Option<u64>,
+
     /// Failure mode when agent is unavailable
     #[serde(default)]
     pub failure_mode: FailureMode,

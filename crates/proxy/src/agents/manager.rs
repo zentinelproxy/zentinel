@@ -1208,34 +1208,75 @@ impl AgentManager {
     }
 
     /// Initialize agent connections.
+    ///
+    /// Every agent connects at once, and startup waits for them at most the
+    /// longest [`AgentV2::startup_wait`] (connect timeout plus five seconds
+    /// for the configuration). An agent that has not connected by then --
+    /// one that accepts the connection and never answers, say -- does not
+    /// hold the listeners closed (#599): its connection attempt carries on
+    /// in the background, its filters follow their failure mode meanwhile,
+    /// and its pool keeps reconnecting with backoff.
     pub async fn initialize(&self) -> ZentinelResult<()> {
-        let agents = self.agents.read().await;
+        let agents: Vec<(String, Arc<AgentV2>)> = self
+            .agents
+            .read()
+            .await
+            .iter()
+            .map(|(id, agent)| (id.clone(), Arc::clone(agent)))
+            .collect();
 
         info!(agent_count = agents.len(), "Initializing agent connections");
 
+        let wait = agents
+            .iter()
+            .map(|(_, agent)| agent.startup_wait())
+            .max()
+            .unwrap_or_default();
+        let total = agents.len();
+        let mut tasks = tokio::task::JoinSet::new();
+        for (id, agent) in agents {
+            tasks.spawn(async move {
+                debug!(agent_id = %id, "Initializing agent connection");
+                let result = agent.initialize().await;
+                match &result {
+                    Err(e) => error!(agent_id = %id, error = %e, "Failed to initialize agent"),
+                    Ok(()) => trace!(agent_id = %id, "Agent initialized successfully"),
+                }
+                (id, result.is_ok())
+            });
+        }
+
         let mut initialized_count = 0;
         let mut failed_count = 0;
-
-        for (id, agent) in agents.iter() {
-            debug!(agent_id = %id, "Initializing agent connection");
-            if let Err(e) = agent.initialize().await {
-                error!(
-                    agent_id = %id,
-                    error = %e,
-                    "Failed to initialize agent"
-                );
-                failed_count += 1;
-                // Continue with other agents
-            } else {
-                trace!(agent_id = %id, "Agent initialized successfully");
-                initialized_count += 1;
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+                Ok(Some(Ok((_, true)))) => initialized_count += 1,
+                Ok(Some(Ok((_, false)))) => failed_count += 1,
+                Ok(Some(Err(e))) => {
+                    error!(error = %e, "Agent initialization task failed");
+                    failed_count += 1;
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    // Still connecting: the attempts finish on their own.
+                    warn!(
+                        still_connecting = tasks.len(),
+                        waited_ms = wait.as_millis(),
+                        "Not waiting any longer for agents to connect; their filters \
+                         follow their failure mode until they do"
+                    );
+                    tasks.detach_all();
+                    break;
+                }
             }
         }
 
         info!(
             initialized = initialized_count,
             failed = failed_count,
-            total = agents.len(),
+            still_connecting = total - initialized_count - failed_count,
+            total,
             "Agent initialization complete"
         );
 

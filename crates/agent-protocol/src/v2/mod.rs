@@ -45,7 +45,7 @@ pub use server::{
 pub use streaming::*;
 pub use uds::{
     AgentClientV2Uds, MessageType, UdsCapabilities, UdsEncoding, UdsFeatures, UdsHandshakeRequest,
-    UdsHandshakeResponse, UdsLimits, MAX_UDS_MESSAGE_SIZE,
+    UdsHandshakeResponse, UdsLimits, DEFAULT_CONNECT_TIMEOUT, MAX_UDS_MESSAGE_SIZE,
 };
 pub use uds_server::UdsAgentServerV2;
 

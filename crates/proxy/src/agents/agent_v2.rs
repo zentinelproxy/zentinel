@@ -31,6 +31,10 @@ const NO_TIMESTAMP: u64 = 0;
 /// Added to an agent's longest timeout to give its retirement ceiling.
 const RETIREMENT_MARGIN: Duration = Duration::from_secs(1);
 
+/// The shortest wait the pool gives an agent to acknowledge its
+/// configuration (the protocol crate's `MIN_CONFIGURE_TIMEOUT`).
+const MIN_CONFIGURE_WAIT: Duration = Duration::from_secs(5);
+
 /// Protocol v2 agent with connection pooling and bidirectional streaming.
 pub struct AgentV2 {
     /// Agent configuration
@@ -58,6 +62,8 @@ pub struct AgentV2 {
     retired: AtomicBool,
     /// The retirement ceiling's timer, aborted if the agent closes first.
     ceiling_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The pool's connect timeout, for [`startup_wait`](Self::startup_wait).
+    connect_timeout: Duration,
 }
 
 impl AgentV2 {
@@ -72,7 +78,7 @@ impl AgentV2 {
         );
 
         // Convert config pool settings to protocol pool config
-        let pool_config = config
+        let mut pool_config = config
             .pool
             .as_ref()
             .map(|p| ProtocolPoolConfig {
@@ -88,6 +94,12 @@ impl AgentV2 {
                 ..Default::default()
             })
             .unwrap_or_default();
+        // The agent's own `connect-timeout-ms` bounds each new connection's
+        // connect and handshake (#599); without it, the pool's default.
+        if let Some(ms) = config.connect_timeout_ms {
+            pool_config.connect_timeout = Duration::from_millis(ms);
+        }
+        let connect_timeout = pool_config.connect_timeout;
 
         let pool = Arc::new(AgentPool::with_config(pool_config));
 
@@ -103,7 +115,16 @@ impl AgentV2 {
             closed: AtomicBool::new(false),
             retired: AtomicBool::new(false),
             ceiling_handle: std::sync::Mutex::new(None),
+            connect_timeout,
         }
+    }
+
+    /// The longest startup waits for this agent's first connections: its
+    /// connect timeout, plus the shortest wait for its configuration to be
+    /// acknowledged. Past it the proxy serves without the agent, whose
+    /// filters follow their failure mode until the connection is made (#599).
+    pub fn startup_wait(&self) -> Duration {
+        self.connect_timeout + MIN_CONFIGURE_WAIT
     }
 
     /// Get the agent ID.
