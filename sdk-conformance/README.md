@@ -142,6 +142,21 @@ Build the agent before the harness starts it, rather than through `go run` or
 similar: the harness waits up to 120 s (`--agent-start-timeout`) for the agent
 to listen, and it starts the agent twice.
 
+## Pitfalls the SDKs hit
+
+- **UDS:** the frame length counts the type byte. Every field of the
+  handshake reply's `capabilities` (`features`, `limits` included) is
+  required and must not be null. Each `AgentResponse` must carry its
+  request's correlation id in `audit.custom.correlation_id`, or the proxy
+  never matches it and the request times out. The Configure message (0x17)
+  needs a reply like any event.
+- **gRPC:** the proxy's client waits for the stream's response headers
+  before it sends the handshake, and grpc-go and grpc-js hold those back
+  until the server's first message. Send the headers as soon as the stream
+  opens, or both sides wait until the connect times out. Pong the Ping that
+  follows a ConfigureEvent only after the configuration has been applied,
+  and end the stream to reject it.
+
 ## Known proxy limitations it works around
 
 - Response headers set in the request-headers phase do not reach the client

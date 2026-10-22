@@ -31,7 +31,8 @@ inputs:
   zentinel-ref:
     description: >
       Git ref of zentinelproxy/zentinel to build `zentinel` from (debug build)
-      when no release is given. Slow on a cold cache.
+      when no release is given. Slow on a cold cache. The build exports
+      ZENTINEL_BIN, so later uses of the action in the same job reuse it.
     required: false
     default: ""
   working-directory:
@@ -48,7 +49,7 @@ runs:
   using: composite
   steps:
     - name: Check out zentinel to build it
-      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == ''
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == '' && env.ZENTINEL_BIN == ''
       uses: actions/checkout@v4
       with:
         repository: zentinelproxy/zentinel
@@ -56,17 +57,17 @@ runs:
         path: .zentinel-src
 
     - name: Install Rust
-      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == ''
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == '' && env.ZENTINEL_BIN == ''
       uses: dtolnay/rust-toolchain@stable
 
     - name: Cache the zentinel build
-      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == ''
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == '' && env.ZENTINEL_BIN == ''
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: .zentinel-src
 
     - name: Build zentinel
-      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == ''
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == '' && env.ZENTINEL_BIN == ''
       shell: bash
       run: |
         cd .zentinel-src
