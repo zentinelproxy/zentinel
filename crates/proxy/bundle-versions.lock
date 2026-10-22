@@ -19,52 +19,52 @@
 
 [bundle]
 # Bundle version (CalVer: YY.MM_PATCH)
-version = "26.10_01"
+version = "26.10_02"
 # Platforms every agent is released for, unless [platforms] overrides it.
 # darwin-x86_64 is not built by any agent release workflow.
 platforms = ["linux-x86_64", "linux-aarch64", "darwin-aarch64"]
 
 [agents]
 # Core agents (included in default bundle install)
-waf = "0.4.0"
-denylist = "0.3.0"
+waf = "0.4.1"
+denylist = "0.4.0"
 
 # Security agents
 zentinelsec = "0.4.0"
-modsec = "0.4.0"
-ip-reputation = "0.4.0"
-bot-management = "0.4.0"
-content-scanner = "0.4.0"
+modsec = "0.4.1"
+ip-reputation = "0.5.0"
+bot-management = "0.5.0"
+content-scanner = "0.5.0"
+ai-gateway = "0.3.0"
 
 # API security agents
-graphql-security = "0.4.0"
-grpc-inspector = "0.4.0"
-soap = "0.4.0"
-api-deprecation = "0.4.0"
+graphql-security = "0.5.0"
+grpc-inspector = "0.5.0"
+soap = "0.5.0"
+api-deprecation = "0.5.0"
 
 # Protocol agents
-websocket-inspector = "0.4.0"
-mqtt-gateway = "0.4.0"
+websocket-inspector = "0.5.0"
+mqtt-gateway = "0.5.0"
 
 # Scripting agents
-lua = "0.3.0"
-js = "0.3.0"
-wasm = "0.3.0"
+lua = "0.4.0"
+js = "0.4.0"
+wasm = "0.4.0"
 
 # Utility agents
-transform = "0.4.0"
-audit-logger = "0.4.0"
-mock-server = "0.4.0"
-chaos = "0.4.0"
-image-optimization = "0.2.0"
+transform = "0.5.0"
+audit-logger = "0.5.0"
+mock-server = "0.5.0"
+chaos = "0.5.0"
+image-optimization = "0.3.0"
 
 # Identity agents
-spiffe = "0.3.0"
+spiffe = "0.4.0"
 
 # Not in the bundle, because no release asset exists under the URL above:
 #   auth          0.2.0 ships only `sentinel-auth-agent-linux-amd64`
 #   policy        no release
-#   ai-gateway    no release
 #   data-masking  no repository zentinelproxy/zentinel-agent-data-masking
 # Retired:
 #   ratelimit     rate limiting is built into Zentinel (`rate-limit` in a
@@ -81,6 +81,7 @@ modsec = "zentinelproxy/zentinel-agent-modsec"
 ip-reputation = "zentinelproxy/zentinel-agent-ip-reputation"
 bot-management = "zentinelproxy/zentinel-agent-bot-management"
 content-scanner = "zentinelproxy/zentinel-agent-content-scanner"
+ai-gateway = "zentinelproxy/zentinel-agent-ai-gateway"
 
 # API security agents
 graphql-security = "zentinelproxy/zentinel-agent-graphql-security"
@@ -121,28 +122,16 @@ spiffe = "zentinelproxy/zentinel-agent-spiffe"
 # Describes the release pinned in [agents]: when a bump adds `--socket` to one
 # of these, remove it here.
 zentinelsec = "grpc"
-content-scanner = "grpc"
-js = "grpc"
-wasm = "grpc"
-transform = "grpc"
 
 [grpc_ports]
 # Loopback port for each "grpc" agent. Must be unique.
 zentinelsec = 50151
-content-scanner = 50152
-js = 50153
-wasm = 50154
-transform = 50155
 
 [required_files]
 # Agents whose pinned release does not start without a file of its own.
 # `bundle install` passes `<flag> <config dir>/<file>` and tells you to create
 # the file (it does not invent one: the format is the agent's). Remove an entry
 # once the agent's `--config` becomes optional.
-content-scanner = { flag = "--config", file = "content-scanner.yaml" }
-ip-reputation = { flag = "--config", file = "ip-reputation.yaml" }
-grpc-inspector = { flag = "--config", file = "grpc-inspector.yaml" }
-chaos = { flag = "--config", file = "chaos.yaml" }
 lua = { flag = "--script", file = "lua.lua" }
 js = { flag = "--script", file = "js.js" }
 wasm = { flag = "--module", file = "wasm.wasm" }

@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_8](#26108---2026-10-22) | 0.6.51 | 2026-10-22 | **Agents get their `config { }` block and are acted on in every phase** (config delivered on every connection, response-phase blocks enforced, Challenge fails closed, request bodies reach subscribed agents and are held back until allowed; **read the upgrade notes**); a silent agent no longer holds up startup; daemon mode works; **every bundled agent is rebuilt from its tag and smoke-tested** (most published agents could not complete a v2 handshake over a socket) |
 | [26.10_7](#26107---2026-10-20) | 0.6.50 | 2026-10-20 | **Namespaces and services served end to end** (namespace routes without a listener of their own are now live on the global listeners; **read the upgrade notes**); error pages replace the proxy's own refusals; agent filter body settings apply; host-name targets fall back across addresses without blocking DNS |
 | [26.10_6](#26106---2026-10-20) | 0.6.49 | 2026-10-20 | Concurrency and connection limits enforced (**`max-connections-per-client` from old starter configs now applies; read the upgrade notes**); custom error pages work; directory configs load from the CLI; Redis/memcached rate limiting actually used; hostname targets health-checked |
 | [26.10_5](#26105---2026-10-19) | 0.6.48 | 2026-10-19 | **Failing health checks take targets out of rotation**; rate limits count each client separately and `default-rps`/`burst` apply; Zentinel sends `X-Forwarded-*` and trusts incoming ones only from `trusted-proxies`; upstream error responses pass through unchanged; body limits answer 413; **read the upgrade notes** |
@@ -90,54 +91,161 @@ for details.
 
 ## [Unreleased]
 
-### Fixed
+---
 
-- **`zentinel bundle install` installed agents that could not protect anything**
-  (#598). The bundle pinned waf, modsec and zentinelsec 0.3.0: waf and modsec
-  0.3.0 speak the v1 agent protocol, so the v2 handshake failed and every
-  request got a 503 (or skipped the agent under `failure-mode "open"`), and
-  zentinelsec 0.3.0 exits at startup on current CRS. The bundle now pins 0.4.0
-  of all three, built from their tags and smoke-tested behind a real Zentinel
-  before publishing. The bundle also listed agents with no downloadable
-  release (`auth`, `policy`, `ai-gateway`, `data-masking`); they are removed.
-- On a platform an agent is not published for (no agent is built for
-  `darwin-x86_64`), `bundle install` says so instead of reporting a 404.
-- **An agent installed with `zentinel bundle install` did not listen where
-  the proxy looked for it.** The install wrote a YAML file per agent with a
-  `socket:` block and a systemd unit running `<agent> --config <that file>`,
-  but agents take their socket on the command line and none reads that file,
-  so each listened on its built-in default (`/tmp/...`) while the documented
-  KDL pointed at `/var/run/zentinel/...`. The install now starts every agent
-  with `--socket <path>`, or `--grpc-address 127.0.0.1:<port>` for agents
-  whose release only serves gRPC (zentinelsec, content-scanner, js, wasm,
-  transform), and writes `agents.kdl` next to it: the `agents { }` block for
-  every installed agent, on the same socket or address, ready for
-  `include` from `zentinel.kdl`. The per-agent YAML files are no longer
-  written (the install points out old ones; delete them). Agents whose
-  release needs a file of its own (`--config` for content-scanner,
-  ip-reputation, grpc-inspector and chaos; `--script` for lua and js;
-  `--module` for wasm) are started with that flag and a path in the config
-  directory, and the install says to create it.
-- **`bundle install --systemd` units could not start for a non-root
-  install** (`User=zentinel` in a user unit, `ProtectHome=` hiding
-  `~/.local/bin`), and as root they were bound to a `zentinel.target` nothing
-  installs and started after the proxy that connects to them. Root installs
-  now get system units running as `zentinel` with a shared, preserved
-  `/run/zentinel-agents` socket directory (not the proxy's own
-  `RuntimeDirectory`, which systemd deletes whenever the proxy stops),
-  ordered before `zentinel.service`; other installs get user units. User and
-  prefix installs keep sockets in a `0700` directory they create
-  (`~/.local/state/zentinel/run`, `<prefix>/run/zentinel`).
+## [26.10_8] - 2026-10-22
+
+**Crate version:** 0.6.51
+
+Agents now get what they were configured with and are acted on in every phase.
+An agent's `config { }` block reaches it, response-phase blocks and Challenge
+decisions are enforced, request bodies reach the agents that subscribe to them
+and are held back from the upstream until they allow it, and an agent that
+never answers can no longer hold up startup. Daemon mode works, reload
+rollbacks are applied, and the bundle installs agents that speak the current
+protocol. **Read the upgrade notes:** agents that used to be passed by now
+decide.
+
+### Upgrade notes
+- **An agent's `config { }` block is delivered, on every connection.** Before,
+  it never reached the agent. It is now sent on the first connection, each
+  pooled connection and every reconnect.
+  - **Agents that ignored their config start receiving it.** Check that each
+    agent's `config { }` block says what you mean: fields it leaves out can
+    replace the agent's command-line flags with defaults (ai-gateway, waf,
+    modsec, graphql-security, denylist), and agents that reset state on
+    configure now do so per connection (ratelimit, ai-gateway,
+    websocket-inspector, mqtt-gateway, waf, image-optimization).
+  - **An agent that rejects its config, or does not answer it, is not used.**
+    The connection fails with an ERROR log and is retried; meanwhile its
+    filters' `failure-mode` applies (`closed` answers 503).
+  - **Recommended:** waf and modsec **0.4.1**, which configure idempotently
+    and merge a partial block instead of replacing everything (modsec 0.4.0
+    loaded zero rules from a partial config and reported success). The bundle
+    now pins them.
+  - **The auth agent refuses configs that enable SAML, mTLS or token exchange**
+    (zentinelproxy/zentinel-agent-auth#7), which it cannot verify yet. Such an
+    auth agent is not used, and its routes follow their `failure-mode`.
+  - **Transports:** UDS agents built on any released Rust SDK get their config
+    as soon as the proxy is upgraded. gRPC agents need a rebuild against this
+    release's `zentinel-agent-protocol`.
+
+  (#593, #603)
+- **Agent Challenge decisions fail closed.** The request is never proxied: a
+  `www-authenticate` parameter gives `401` with that `WWW-Authenticate`,
+  otherwise `403`. Before, a headers-phase Challenge was proxied as if allowed.
+  **Redirect decisions now redirect** with the agent's `Location` (301, 302,
+  303, 307 and 308 keep their status, any other becomes 302); they used to
+  answer 500. (#594, #595, #601)
+- **Agent blocks in the response phase are enforced.** A block on the response
+  headers sends the block response and no upstream byte; a block on a body
+  chunk after the status has gone out aborts the connection. Responses
+  inspected by body agents are now chunked, with no `Content-Length`.
+  - **Stricter by default:** the filter's `failure-mode` (else the route's,
+    default `closed`) now decides on every path. An agent with no filter
+    `failure-mode`, on a route at the default, now refuses on body and response
+    failures where it used to pass them when the agent itself was `open`.
+
+  (#584, #587)
+- **Request bodies go to agents subscribed to `request_body` without a `waf`
+  block.** Before, request bodies reached agents only with `waf {
+  body-inspection { inspect-request-body } }`. Set `inspect-request-body
+  #false` to keep bodies from agents. (#609)
+- **In buffer and hybrid mode the request body is held back from the upstream
+  until the agents allow it.** Before, a refused body could reach the upstream
+  whole. The upstream still sees the request line and headers before the body
+  decision (#608 tracks an opt-in mode that avoids it). (#602, #609)
+- **`request-body-mode "stream"` / `"hybrid:N"` are honored.** Every body used
+  to be buffered whole. When a route's body agents disagree, the most
+  conservative mode applies. (#602, #609)
+- **A request body that cannot be decompressed follows the filters'
+  `failure-mode`:** any closed body agent's filter (else the route) answers
+  `400`. A request-headers dispatch failure now answers `503` instead of
+  `500`. (#597, #609)
+- **New agent setting `connect-timeout-ms`** (default 5000) bounds the connect
+  and handshake. Startup no longer waits on silent agents: it waits at most the
+  longest connect timeout plus 5 s; an agent that has not answered is not used,
+  its filters follow their `failure-mode`, and it is used once it answers.
+  (#599, #606)
+- **Daemon mode works.** With `-d` or `system { daemon #true }`, `SIGHUP`,
+  `SIGTERM`, agents, health checks and the metrics server now work in the
+  daemon. A `user` without a `group` now also switches to that user's primary
+  group, and a broken config exits 1 in the foreground. (#573, #582)
+- **Logging:**
+  - **A configured audit log that cannot be opened stops startup**
+    (`Failed to open audit log "<path>"`).
+  - Each log file is opened on its own: an access or error log that cannot be
+    opened is reported at ERROR and only that log is off. Before, one failure
+    turned off all file logging.
+  - **A config without an `error-log` block no longer writes
+    `/var/log/zentinel/error.log`.** The same entries still go to stdout;
+    `error-log {}` keeps the documented path. The shipped configs set it
+    explicitly.
+
+  (#574, #579)
+- **A reload with an invalid `path-regex` is rejected**, and the running config
+  stays as it was; before, it was half applied. A rollback now re-applies the
+  previous config to every subsystem. A listener scope whose routes do not
+  compile now fails startup. (#577, #583)
+- **A filter that references an agent that is not loaded fails** on every
+  event path (ERROR log, counted in `calls_failed`, then its `failure-mode`).
+  Before, it was silently allowed. A removed agent is closed when its last
+  in-flight call finishes. (#570, #571, #585)
+- **License metadata is `Apache-2.0`,** matching `LICENSE`. It said `MIT OR
+  Apache-2.0`; already-published versions keep theirs. (#605)
+
+### Fixed
+- **An agent's `config { }` block never reached the agent** (#593). The UDS
+  handshake hardcoded no config and `GrpcAgentServerV2` dropped Configure.
+  Config is now sent in the handshake and followed by a Configure (UDS) or a
+  `ConfigureEvent` and Ping (gRPC), whose reply confirms it was handled.
+  `AgentV2::send_configure` and `send_configuration`, which ignored their
+  payload, are removed, along with their false "sent on next connection" log.
+  Reverse connections are not wired into the proxy and get no config. (#603)
+- **Request-phase Challenge decisions were proxied** (headers phase) or turned
+  into a bare 403 (body phase), and **Redirects answered 500 with no
+  `Location`** (#594, #595). A Challenge's `body` parameter is sent as the
+  response body (with `content-type` if given); otherwise the route's error
+  page is used, as for Block. Other parameters stay server-side and are logged
+  by name only. A redirect URL that is not a valid header value gets 500.
+  Body-phase refusals are now audited. (#601)
+- **Response-phase agent decisions were ignored** (#584): CRS outbound rules in
+  the WAF agents never blocked anything. Also fixed: a response body an agent
+  left unchanged was dropped except for its last chunk; the response-body
+  buffer had no size limit (it now stops at the route agents' largest
+  `max-response-body-bytes`); an error was written into an interrupted body
+  after its header had gone out. Audited as `AgentDecision` with a `phase`;
+  new blocked-request reasons `agent_response_blocked` and
+  `agent_response_body_blocked`. (#587)
+- **A filter referencing an agent that is not loaded was silently allowed** on
+  the request headers, request body and response paths (#571). (#585)
+- **A removed agent's pool was never closed** (#570). It now closes when the
+  last call holding it finishes, bounded by max(`timeout-ms`,
+  `chunk-timeout-ms`) + 1 s, logged as `Retired agent closed`. (#585)
+- **Daemon mode lost its signal handling and background tasks** (#573). The
+  runtime, agent pools, health checks, reload task and signal thread were
+  started before Pingora forked, and a fork keeps only the calling thread. The
+  proxy now forks first, while it has one thread; the config is still read and
+  validated before the fork, and privileges are dropped just before serving,
+  as before. (#582)
+- **One log file that could not be opened turned off all file logging**
+  (#574), including configured access and audit logs, because the default
+  config brought in an error log under `/var/log/zentinel/`. (#579)
+- **With stdout and stderr on a broken pipe, `SIGTERM` did not stop the
+  proxy** (#576): every log call panicked its thread, including the signal
+  thread, and Pingora waited out its 300 s grace period. A failed log write is
+  now dropped instead. (#580)
+- **Reload rollbacks were never applied, and a reload whose routes could not
+  compile was stored and half applied** (#577). Every route set is compiled
+  before the config is stored, and the error names the scope and pattern.
+  (#583)
 - **An agent that accepted the connection but never answered the handshake
   kept the proxy from starting** (#599): the listener never opened, whatever
   the agent's `failure-mode`. The connect and handshake of every agent
-  connection are now bounded by the new agent setting `connect-timeout-ms`
-  (default 5000), the pool opens an agent's connections at once rather than one
-  after another, and startup waits for agents at most the longest connect
-  timeout plus 5 s for their configuration. An agent that has not answered is
-  not used: its filters follow their `failure-mode` (`open` forwards
-  uninspected, `closed` answers 503) and the pool keeps reconnecting in the
-  background, so the agent is used as soon as it answers.
+  connection are now bounded by `connect-timeout-ms`, the pool opens an
+  agent's connections at once rather than one after another, and agents are
+  initialised in parallel. The pool keeps reconnecting in the background.
+  (#606)
 - **Agent response-header changes made in the request phases never reached
   the client** (#596). An allowed request's `response_headers` from the
   request-headers or request-body phase were discarded, so e.g. the
@@ -145,21 +253,21 @@ for details.
   They are now applied to the client's response, before the response-headers
   phase's own changes. Request-header changes made on the request body cannot
   be applied (the upstream request's header is already sent by then); they
-  are dropped with a warning logged once per agent, and documented.
+  are dropped with a warning logged once per agent, and documented. (#609)
 - **A request body that could not be decompressed for agent inspection was
   decided by the route's `failure-mode` alone** (#597), ignoring the agent
   filters'. It now follows the same rule as every other failure on the body:
   any body agent whose filter (else route) is `closed` refuses it with 400;
   otherwise it is inspected as sent. The unreachable route-policy fallbacks
   on agent dispatch errors use the same rule (the request-headers one now
-  answers 503 instead of 500).
+  answers 503 instead of 500). (#609)
 - **`request-body-mode "stream"` / `"hybrid:N"` were parsed and then ignored**
   (#602): every request body was buffered whole before any agent saw it. The
   mode is now taken from the route's body agents. When they disagree, the
   most conservative applies: `buffer` over `hybrid` (largest threshold) over
   `stream`, so no agent gets less of the body at once than it asked for.
   Decisions on streamed chunks (Block, Challenge, Redirect) are answered as on
-  a buffered body.
+  a buffered body. (#609)
 - **A request body the agents refused could still reach the upstream whole**
   (found while fixing #602). In buffer mode the body was forwarded chunk by
   chunk while it was being buffered for inspection, and the agents were asked
@@ -170,17 +278,62 @@ for details.
   request's headers (they are sent before the body is read); see the agent
   protocol docs. Also fixed: a hybrid-mode body under the threshold whose end
   arrived on its own was never inspected, and a streamed chunk an agent
-  dropped ended the upstream body instead of being left out.
+  dropped ended the upstream body instead of being left out. (#609)
 - **Agents subscribed to `request_body` never got a body without a `waf`
   block.** Request-body inspection was enabled only by `waf { body-inspection
   { inspect-request-body } }`, so with no `waf` block such an agent could not
   see or block any body, while response bodies went to their agents
   regardless. Request bodies now go to every route agent that subscribes to
   them unless `inspect-request-body #false` is set. Without a `waf` block,
-  every content type is sent.
+  every content type is sent. (#609)
+- **`zentinel bundle install` installed agents that could not protect anything**
+  (#598). The bundle pinned waf, modsec and zentinelsec 0.3.0: waf and modsec
+  0.3.0 speak the v1 agent protocol, so the v2 handshake failed and every
+  request got a 503 (or skipped the agent under `failure-mode "open"`), and
+  zentinelsec 0.3.0 exits at startup on current CRS. A survey of every pinned
+  release found the same for nearly all of them: only waf, modsec and
+  zentinelsec worked over a Unix socket, most others spoke the v1 framing or
+  never listened, and 17 of 23 were not built from their tag. Every agent now
+  releases through one shared workflow (`zentinelproxy/.github`
+  `agent-release.yml`) that builds from the tag with `--locked` and smoke-tests
+  the binary behind a real Zentinel on every platform before publishing it
+  with a `.sha256`. The bundle (now `26.10_02`) pins only such releases: waf
+  and modsec 0.4.1; denylist, lua, js, wasm, spiffe and zentinelsec 0.4.0;
+  ip-reputation, bot-management, content-scanner, graphql-security,
+  grpc-inspector, soap, api-deprecation, websocket-inspector, mqtt-gateway,
+  transform, audit-logger, mock-server and chaos 0.5.0; image-optimization
+  and **ai-gateway** (new to the bundle) 0.3.0. `policy` and `data-masking`
+  stay out (no release). Binaries up to 0.6.50 keep their compiled-in lock
+  and still install the old releases. (#604, #611)
+- On a platform an agent is not published for (no agent is built for
+  `darwin-x86_64`), `bundle install` says so instead of reporting a 404.
+  (#604)
+- **An agent installed with `zentinel bundle install` did not listen where
+  the proxy looked for it.** The install wrote a YAML file per agent with a
+  `socket:` block and a systemd unit running `<agent> --config <that file>`,
+  but agents take their socket on the command line and none reads that file,
+  so each listened on its built-in default (`/tmp/...`) while the documented
+  KDL pointed at `/var/run/zentinel/...`. The install now starts every agent
+  with `--socket <path>`, or `--grpc-address 127.0.0.1:<port>` for agents
+  whose release only serves gRPC (zentinelsec), and writes `agents.kdl` next to it: the `agents { }` block for
+  every installed agent, on the same socket or address, ready for
+  `include` from `zentinel.kdl`. The per-agent YAML files are no longer
+  written (the install points out old ones; delete them). Agents whose
+  release needs a file of its own (`--script` for lua and js, `--module` for
+  wasm) are started with that flag and a path in the config
+  directory, and the install says to create it.
+- **`bundle install --systemd` units could not start for a non-root
+  install** (`User=zentinel` in a user unit, `ProtectHome=` hiding
+  `~/.local/bin`), and as root they were bound to a `zentinel.target` nothing
+  installs and started after the proxy that connects to them. Root installs
+  now get system units running as `zentinel` with a shared, preserved
+  `/run/zentinel-agents` socket directory (not the proxy's own
+  `RuntimeDirectory`, which systemd deletes whenever the proxy stops),
+  ordered before `zentinel.service`; other installs get user units. User and
+  prefix installs keep sockets in a `0700` directory they create
+  (`~/.local/state/zentinel/run`, `<prefix>/run/zentinel`). (#611)
 
 ### Changed
-
 - **The `ratelimit` agent is no longer in the bundle**: rate limiting is
   built into Zentinel (`policies { rate-limit { ... } }`). `zentinel bundle
   install ratelimit` says so instead of installing it; `zentinel bundle
@@ -197,7 +350,30 @@ for details.
   repository must be identical. CI (`Bundle lock`) requests every asset the
   lock points at and fails if one is missing, so the lock can no longer name a
   release that does not exist. api.zentinelproxy.io serves `/v1/bundle/` from a
-  vendored copy of the same file.
+  vendored copy of the same file. The lock is now at bundle version
+  `26.10_02`. (#604)
+- **CI runs the integration tests a PR adds or changes** (#575). They used to
+  run only after merge, so the test proving a fix never ran before it was
+  merged. A new `PR Integration Tests` job maps the changed files to test
+  targets with `cargo metadata`. (#578)
+- The P2C load-balancer distribution tests are seeded, so they can no longer
+  fail by chance. (#581)
+- The README follows the shared Zentinel format; claims that did not match the
+  code (WAF throughput, ML scoring, agent status, OpenTelemetry in release
+  binaries) are corrected. (#592)
+
+### Added
+- **Agent SDK conformance harness** (`sdk-conformance/`): one
+  language-neutral test that runs a real `zentinel`, a fixture upstream and an
+  agent, and checks the handshake, Configure, header mutations, Block, request
+  body inspection and reconnect, over UDS and gRPC. SDK CI uses it as the
+  `zentinelproxy/zentinel/sdk-conformance` action; a reference agent built on
+  the protocol crate runs it on PRs here. (#600, #607)
+
+Still open: the upstream sees a request's headers before agents decide on its
+body (#608); response-phase Redirect and Challenge decisions are ignored (#588);
+WebSocket frames still use the agent's own `failure-mode` (#586); reload does
+not rebuild agents, so a changed `config { }` block needs a restart (#564).
 
 ---
 
