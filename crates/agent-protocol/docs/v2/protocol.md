@@ -379,6 +379,28 @@ Other params (`token`, `challenge_url`, ...) are not sent to the client;
 an agent that wants the client to see them puts them into `body`. The proxy
 logs the challenge type (and the param names, not their values) at INFO.
 
+#### Header changes on an allowed request
+
+`request_headers` and `response_headers` of an `Allow` decision are
+applied as follows (zentinelproxy/zentinel#596):
+
+| Phase | `request_headers` | `response_headers` |
+|-------|-------------------|--------------------|
+| Request headers | Applied to the request sent upstream. | Applied to the response sent to the client. |
+| Request body (buffered or streamed) | **Dropped**, with a warning logged once per agent. | Applied to the response sent to the client. |
+| Response headers | -- | Applied to the response sent to the client. |
+
+Response-header changes from the request phases are applied first, so an
+agent consulted on the response headers has the last word on a header.
+On a streamed body, a change made after the upstream has already answered
+comes too late and is not applied.
+
+Request-header changes from the request-body phase cannot be applied: the
+proxy sends the upstream request's header before it reads the client's
+body, in every `request-body-mode`, so the header is gone by the time any
+body decision is made. An agent that needs to change request headers does
+it on `RequestHeaders`.
+
 In the response phases, only `Block` is acted on so far; `Redirect` and
 `Challenge` there are tracked in zentinelproxy/zentinel#588.
 

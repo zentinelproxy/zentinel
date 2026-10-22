@@ -19,6 +19,11 @@ pub struct AgentDecision {
     pub request_headers: Vec<HeaderOp>,
     /// Header modifications for response
     pub response_headers: Vec<HeaderOp>,
+    /// The agents whose responses carried `request_headers`, in order.
+    ///
+    /// Kept so that request-header changes that cannot be applied (those
+    /// from the request-body phase, #596) can be reported per agent.
+    pub request_headers_from: Vec<String>,
     /// Audit metadata from all agents
     pub audit: Vec<AuditMetadata>,
     /// Routing metadata updates
@@ -59,6 +64,7 @@ impl AgentDecision {
             decided_by: None,
             request_headers: Vec::new(),
             response_headers: Vec::new(),
+            request_headers_from: Vec::new(),
             audit: Vec::new(),
             routing_metadata: HashMap::new(),
             needs_more: false,
@@ -78,6 +84,7 @@ impl AgentDecision {
             decided_by: None,
             request_headers: Vec::new(),
             response_headers: Vec::new(),
+            request_headers_from: Vec::new(),
             audit: Vec::new(),
             routing_metadata: HashMap::new(),
             needs_more: false,
@@ -96,6 +103,9 @@ impl AgentDecision {
     pub fn from_response(response: AgentResponse, agent_id: &str) -> Self {
         let mut decision: Self = response.into();
         decision.decided_by = Some(agent_id.to_string());
+        if !decision.request_headers.is_empty() {
+            decision.request_headers_from = vec![agent_id.to_string()];
+        }
         decision
     }
 
@@ -118,6 +128,7 @@ impl AgentDecision {
         // Merge header modifications
         self.request_headers.extend(other.request_headers);
         self.response_headers.extend(other.response_headers);
+        self.request_headers_from.extend(other.request_headers_from);
 
         // Merge audit metadata
         self.audit.extend(other.audit);
@@ -168,6 +179,7 @@ impl From<AgentResponse> for AgentDecision {
             decided_by: None,
             request_headers: response.request_headers,
             response_headers: response.response_headers,
+            request_headers_from: Vec::new(),
             audit: vec![response.audit],
             routing_metadata: response.routing_metadata,
             needs_more: response.needs_more,
@@ -222,5 +234,30 @@ mod tests {
         let decision = AgentDecision::from_response(response, "waf");
         assert!(!decision.is_allow());
         assert_eq!(decision.decided_by.as_deref(), Some("waf"));
+    }
+
+    #[test]
+    fn request_header_changes_remember_which_agents_made_them() {
+        let set = |name: &str| HeaderOp::Set {
+            name: name.to_string(),
+            value: "1".to_string(),
+        };
+        let mut combined = AgentDecision::default_allow();
+        combined.merge(AgentDecision::from_response(
+            AgentResponse::default_allow().add_request_header(set("x-a")),
+            "a",
+        ));
+        // Only response headers: not named.
+        combined.merge(AgentDecision::from_response(
+            AgentResponse::default_allow().add_response_header(set("x-b")),
+            "b",
+        ));
+        combined.merge(AgentDecision::from_response(
+            AgentResponse::default_allow().add_request_header(set("x-c")),
+            "c",
+        ));
+        assert_eq!(combined.request_headers_from, vec!["a", "c"]);
+        assert_eq!(combined.request_headers.len(), 2);
+        assert_eq!(combined.response_headers.len(), 1);
     }
 }

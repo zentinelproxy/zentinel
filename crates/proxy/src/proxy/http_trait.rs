@@ -2597,6 +2597,15 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
+        // Response-header changes agents asked for in the request phases,
+        // on a request they allowed (#596). Applied before the response
+        // phase's own below, so an agent consulted on the response has the
+        // last word on a header.
+        if !ctx.agent_response_headers.is_empty() {
+            let ops = std::mem::take(&mut ctx.agent_response_headers);
+            handlers::apply_agent_response_header_ops(upstream_response, &ops);
+        }
+
         // Process response headers through agents (for agents that subscribe to ResponseHeaders events)
         if !ctx.route_agents.is_empty() {
             let agent_ids = ctx.route_agents.clone();
@@ -2669,23 +2678,10 @@ impl ProxyHttp for ZentinelProxy {
                     }
 
                     // Apply response header modifications from agent
-                    for op in &decision.response_headers {
-                        match op {
-                            zentinel_agent_protocol::HeaderOp::Set { name, value } => {
-                                upstream_response
-                                    .insert_header(name.clone(), value.as_str())
-                                    .ok();
-                            }
-                            zentinel_agent_protocol::HeaderOp::Add { name, value } => {
-                                upstream_response
-                                    .append_header(name.clone(), value.as_str())
-                                    .ok();
-                            }
-                            zentinel_agent_protocol::HeaderOp::Remove { name } => {
-                                upstream_response.remove_header(name);
-                            }
-                        }
-                    }
+                    handlers::apply_agent_response_header_ops(
+                        upstream_response,
+                        &decision.response_headers,
+                    );
 
                     // Check if any agent subscribes to response body events
                     let has_body_agents = self
@@ -5545,7 +5541,7 @@ impl ZentinelProxy {
             )
             .await
         {
-            Ok(decision) => {
+            Ok(mut decision) => {
                 // Track if agent needs more data
                 ctx.agent_needs_more = decision.needs_more;
 
@@ -5585,6 +5581,9 @@ impl ZentinelProxy {
                         "agent_body_inspection",
                     )?;
                 }
+                // Not refused: keep its header changes (#596). Those for the
+                // response apply if the upstream has not answered yet.
+                Self::keep_body_phase_header_ops(ctx, &mut decision);
 
                 trace!(
                     correlation_id = %ctx.trace_id,
@@ -5762,7 +5761,7 @@ impl ZentinelProxy {
             .process_request_body(&agent_ctx, &body_for_inspection, end_of_stream, &agent_ids)
             .await
         {
-            Ok(decision) => {
+            Ok(mut decision) => {
                 // Anything but Allow is answered by `fail_to_proxy` (#557,
                 // #595).
                 self.refuse_on_agent_request_decision(
@@ -5771,6 +5770,8 @@ impl ZentinelProxy {
                     "request_body",
                     "agent_body_inspection",
                 )?;
+                // Allowed: keep its header changes (#596).
+                Self::keep_body_phase_header_ops(ctx, &mut decision);
 
                 trace!(
                     correlation_id = %ctx.trace_id,

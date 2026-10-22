@@ -581,8 +581,16 @@ impl ZentinelProxy {
                     "agent_blocked",
                 )?;
 
-                // Apply header modifications
-                for op in decision.request_headers {
+                // Apply header modifications. The response-header changes
+                // are for the client's response, and applied to it in
+                // `response_filter` (#596).
+                let crate::agents::AgentDecision {
+                    request_headers,
+                    response_headers,
+                    ..
+                } = decision;
+                ctx.agent_response_headers.extend(response_headers);
+                for op in request_headers {
                     match op {
                         zentinel_agent_protocol::HeaderOp::Set { name, value } => {
                             req_header.insert_header(name, &value).ok();
@@ -787,6 +795,59 @@ impl ZentinelProxy {
         // error page for the status applies (#557).
         ctx.agent_block = Some(block);
         Err(Error::explain(ErrorType::HTTPStatus(status), message))
+    }
+
+    /// Keep what an allowed request-body decision asks of the headers
+    /// (#596).
+    ///
+    /// Its response-header changes are kept for `response_filter`, which
+    /// applies them to the client's response like those from the
+    /// request-headers phase. Its request-header changes cannot be applied:
+    /// Pingora sends the upstream request's header (after
+    /// `upstream_request_filter`) before it reads the client's body and runs
+    /// `request_body_filter`, in buffer mode as in stream mode, so the
+    /// upstream already has the header by the time any body decision is
+    /// made. They are dropped, with a warning once per agent so that an
+    /// agent relying on them is noticed; an agent that needs to change
+    /// request headers does it on `request_headers`.
+    pub(super) fn keep_body_phase_header_ops(
+        ctx: &mut RequestContext,
+        decision: &mut crate::agents::AgentDecision,
+    ) {
+        ctx.agent_response_headers
+            .append(&mut decision.response_headers);
+        if decision.request_headers.is_empty() {
+            return;
+        }
+        let names: Vec<&str> = decision
+            .request_headers
+            .iter()
+            .map(|op| match op {
+                zentinel_agent_protocol::HeaderOp::Set { name, .. }
+                | zentinel_agent_protocol::HeaderOp::Add { name, .. }
+                | zentinel_agent_protocol::HeaderOp::Remove { name } => name.as_str(),
+            })
+            .collect();
+        debug!(
+            correlation_id = %ctx.trace_id,
+            agents = ?decision.request_headers_from,
+            headers = ?names,
+            "Dropping request-header changes from the request-body phase"
+        );
+        for agent_id in &decision.request_headers_from {
+            if first_body_phase_request_header_warning(agent_id) {
+                warn!(
+                    agent_id = %agent_id,
+                    headers = ?names,
+                    "Agent changed request headers on the request body; the upstream \
+                     request's headers are already sent then, so these changes are \
+                     dropped. Change request headers on request_headers instead. \
+                     (Logged once per agent.)"
+                );
+            }
+        }
+        decision.request_headers.clear();
+        decision.request_headers_from.clear();
     }
 
     /// The response answering an agent's block: the agent's own body as
@@ -1152,6 +1213,38 @@ pub(super) async fn build_proxy_error(
     header.insert_header("Content-Length", body.len().to_string())?;
     header.insert_header("X-Correlation-Id", trace_id)?;
     Ok((header, body))
+}
+
+/// Whether this is the first time `agent_id` changed request headers on
+/// the request body in this process; see
+/// [`ZentinelProxy::keep_body_phase_header_ops`].
+fn first_body_phase_request_header_warning(agent_id: &str) -> bool {
+    static WARNED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    WARNED
+        .lock()
+        .map(|mut warned| warned.insert(agent_id.to_string()))
+        .unwrap_or(false)
+}
+
+/// Apply an agent's header changes to a response header.
+pub(super) fn apply_agent_response_header_ops(
+    response: &mut ResponseHeader,
+    ops: &[zentinel_agent_protocol::HeaderOp],
+) {
+    for op in ops {
+        match op {
+            zentinel_agent_protocol::HeaderOp::Set { name, value } => {
+                response.insert_header(name.clone(), value.as_str()).ok();
+            }
+            zentinel_agent_protocol::HeaderOp::Add { name, value } => {
+                response.append_header(name.clone(), value.as_str()).ok();
+            }
+            zentinel_agent_protocol::HeaderOp::Remove { name } => {
+                response.remove_header(name);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

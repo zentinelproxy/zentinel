@@ -365,6 +365,10 @@ pub struct RequestContext {
     /// Agents whose filter sets `inspect-body #false` are left out, and each
     /// carries its filter's `max-body-bytes`.
     pub(crate) body_inspection_agents: Vec<crate::agents::BodyAgent>,
+    /// Response-header changes agents asked for in the request phases
+    /// (request headers, request body), applied to the client's response
+    /// in `response_filter` before the response phases' own (#596).
+    pub(crate) agent_response_headers: Vec<zentinel_agent_protocol::HeaderOp>,
 
     // === Agentic protocol policy (MCP / A2A) ===
     /// Request body accumulated for MCP/A2A policy evaluation.
@@ -647,6 +651,7 @@ impl RequestContext {
             response_blocked: false,
             a2a_method: None,
             body_inspection_agents: Vec::new(),
+            agent_response_headers: Vec::new(),
             decompression_enabled: false,
             body_content_encoding: None,
             max_decompression_ratio: 100.0,

@@ -112,6 +112,14 @@ for details.
   not used: its filters follow their `failure-mode` (`open` forwards
   uninspected, `closed` answers 503) and the pool keeps reconnecting in the
   background, so the agent is used as soon as it answers.
+- **Agent response-header changes made in the request phases never reached
+  the client** (#596). An allowed request's `response_headers` from the
+  request-headers or request-body phase were discarded, so e.g. the
+  api-deprecation agent's `Deprecation` / `Sunset` headers were never sent.
+  They are now applied to the client's response, before the response-headers
+  phase's own changes. Request-header changes made on the request body cannot
+  be applied (the upstream request's header is already sent by then); they
+  are dropped with a warning logged once per agent, and documented.
 
 ### Changed
 
