@@ -379,6 +379,15 @@ Other params (`token`, `challenge_url`, ...) are not sent to the client;
 an agent that wants the client to see them puts them into `body`. The proxy
 logs the challenge type (and the param names, not their values) at INFO.
 
+#### When an agent gets the request body
+
+An agent gets `RequestBodyChunk` events when it subscribes to them
+(`events "request_body"`), its route filter does not set `inspect-body
+#false`, and `waf { body-inspection { inspect-request-body #false } }` is
+not set. No `waf` block is needed (one used to be, and without it no
+agent got a request body). Without a `waf` block, bodies of every content
+type are sent; with one, those in its `body-inspection { content-types }`.
+
 #### What the upstream sees of a request refused on its body
 
 The proxy connects to the upstream and sends the request line and headers

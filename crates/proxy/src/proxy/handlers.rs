@@ -426,14 +426,25 @@ impl ZentinelProxy {
             "Processing request through agents"
         );
 
-        // Set up body inspection if enabled
+        // Set up body inspection: for the route's agents that subscribe to
+        // the request body, unless `waf { body-inspection {
+        // inspect-request-body #false } }` turns it off. It used to need a
+        // `waf` block: without one, an agent subscribed to `request_body`
+        // silently never got a body, while response bodies went to their
+        // agents regardless.
         let body_inspection_enabled = config
             .waf
             .as_ref()
             .map(|w| w.body_inspection.inspect_request_body)
-            .unwrap_or(false);
+            .unwrap_or(true);
 
-        if body_inspection_enabled && !body_agents.is_empty() {
+        if body_inspection_enabled
+            && !body_agents.is_empty()
+            && self
+                .agent_manager
+                .any_body_agent_handles_request_body(&body_agents)
+                .await
+        {
             // Check content-type allowlist
             let content_type = session
                 .req_header()

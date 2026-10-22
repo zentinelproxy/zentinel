@@ -145,6 +145,13 @@ for details.
   protocol docs. Also fixed: a hybrid-mode body under the threshold whose end
   arrived on its own was never inspected, and a streamed chunk an agent
   dropped ended the upstream body instead of being left out.
+- **Agents subscribed to `request_body` never got a body without a `waf`
+  block.** Request-body inspection was enabled only by `waf { body-inspection
+  { inspect-request-body } }`, so with no `waf` block such an agent could not
+  see or block any body, while response bodies went to their agents
+  regardless. Request bodies now go to every route agent that subscribes to
+  them unless `inspect-request-body #false` is set. Without a `waf` block,
+  every content type is sent.
 
 ### Changed
 

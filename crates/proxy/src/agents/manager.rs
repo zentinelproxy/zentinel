@@ -290,6 +290,18 @@ impl AgentManager {
             .any(|resolved| matches!(resolved, Resolved::Loaded(..)))
     }
 
+    /// Whether any of a route's body agents subscribes to the request body
+    /// (`events "request_body"`); the request-side counterpart of
+    /// [`Self::any_agent_handles_event`]. An agent that is not loaded counts:
+    /// whether it subscribes is unknown, and the body path answers its
+    /// failure by its filter's failure mode, as it always has.
+    pub async fn any_body_agent_handles_request_body(&self, body_agents: &[BodyAgent]) -> bool {
+        !self
+            .resolve_agents(body_agents, Some(EventType::RequestBodyChunk))
+            .await
+            .is_empty()
+    }
+
     /// The largest response body any of the route's agents inspects: their
     /// `max-response-body-bytes`. A response body is buffered for them up
     /// to this size; one larger is over every agent's limit, and answered by

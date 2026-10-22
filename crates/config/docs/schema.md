@@ -549,7 +549,7 @@ Web Application Firewall configuration.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `inspect-request-body` | `bool` | `true` | Inspect request bodies |
+| `inspect-request-body` | `bool` | `true` | Send request bodies to the route's agents that subscribe to `request_body`. `#false` keeps them from every agent. Without a `waf` block, request bodies go to those agents too, with the defaults below except `content-types` (every content type is sent) |
 | `inspect-response-body` | `bool` | `false` | Inspect response bodies |
 | `max-inspection-bytes` | `u64` | `1048576` | Max bytes to inspect |
 | `content-types` | `[string]` | *form/json/xml* | Content types to inspect |
