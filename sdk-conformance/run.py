@@ -147,11 +147,16 @@ class Upstream:
                 with upstream.lock:
                     upstream.seen[self.path] = record
                 out = json.dumps(record).encode()
-                self.send_response(200)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(out)))
-                self.end_headers()
-                self.wfile.write(out)
+                try:
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+                except (BrokenPipeError, ConnectionResetError):
+                    # The proxy drops the upstream request of a body-blocked
+                    # request; nothing is waiting for this answer.
+                    pass
 
             do_GET = do_POST = do_PUT = handle_any
 
