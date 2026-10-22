@@ -1,0 +1,19 @@
+# The conformance agent (sdk-conformance/README.md) written against the
+# protocol crate itself: the reference every SDK's conformance agent is
+# compared with, and the check that the harness passes a correct agent.
+#
+# Its own workspace, so it never joins the proxy's build or CI.
+[package]
+name = "zentinel-conformance-reference-agent"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+zentinel-agent-protocol = { path = "../../crates/agent-protocol" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+async-trait = "0.1"
+serde_json = "1"
+base64 = "0.22"
