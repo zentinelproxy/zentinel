@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tonic::transport::Channel;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::grpc_v2::{self, agent_service_v2_client::AgentServiceV2Client, ProxyToAgent};
 use crate::headers::iter_flat;
@@ -117,6 +117,10 @@ pub struct AgentClientV2 {
     metrics_callback: Option<MetricsCallback>,
     /// Callback for config update requests
     config_update_callback: Option<ConfigUpdateCallback>,
+    /// The agent's configuration (the `config { }` block of its KDL), sent
+    /// on every connection: in the handshake, and as a Configure event right
+    /// after it (#593).
+    config: Option<serde_json::Value>,
 }
 
 impl AgentClientV2 {
@@ -156,7 +160,87 @@ impl AgentClientV2 {
             in_flight: AtomicU64::new(0),
             metrics_callback: None,
             config_update_callback: None,
+            config: None,
         })
+    }
+
+    /// Wait until the agent has handled the configure event just sent.
+    ///
+    /// The protocol has no reply to a configure event, so a ping follows it:
+    /// the server handles a stream's messages in order, so its pong means the
+    /// configuration was applied, and a stream that ends first means it was
+    /// rejected. (An agent built on an SDK that ignores configure events
+    /// answers the ping all the same; nothing on the wire can tell.)
+    async fn await_config_ack(
+        &self,
+        tx: &mpsc::Sender<ProxyToAgent>,
+        inbound: &mut tonic::Streaming<grpc_v2::AgentToProxy>,
+    ) -> Result<(), AgentProtocolError> {
+        let sequence = self.ping_sequence.fetch_add(1, Ordering::Relaxed);
+        tx.send(ProxyToAgent {
+            message: Some(grpc_v2::proxy_to_agent::Message::Ping(grpc_v2::Ping {
+                sequence,
+                timestamp_ms: now_ms(),
+            })),
+        })
+        .await
+        .map_err(|e| AgentProtocolError::ConnectionFailed(format!("Ping failed: {e}")))?;
+
+        let timeout = self.timeout.max(crate::v2::uds::MIN_CONFIGURE_TIMEOUT);
+        let outcome = tokio::time::timeout(timeout, async {
+            loop {
+                match inbound.message().await {
+                    Ok(Some(msg)) => {
+                        if let Some(grpc_v2::agent_to_proxy::Message::Pong(pong)) = msg.message {
+                            if pong.sequence == sequence {
+                                return Ok(());
+                            }
+                        }
+                        // Anything else this early (health, metrics) is
+                        // superseded by the reports that follow.
+                    }
+                    Ok(None) => {
+                        return Err(
+                            "the agent closed the stream (it rejected the configuration)"
+                                .to_string(),
+                        )
+                    }
+                    Err(e) => return Err(format!("stream error: {e}")),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Err(format!("no answer within {timeout:?}")));
+
+        match outcome {
+            Ok(()) => {
+                info!(agent_id = %self.agent_id, "Agent accepted its configuration");
+                Ok(())
+            }
+            Err(reason) => {
+                error!(
+                    agent_id = %self.agent_id,
+                    reason = %reason,
+                    "Agent did not accept its configuration; connection not used"
+                );
+                Err(AgentProtocolError::ConnectionFailed(format!(
+                    "agent did not accept its configuration: {reason}"
+                )))
+            }
+        }
+    }
+
+    /// Set the configuration delivered to the agent on every connection.
+    ///
+    /// `connect` puts it into the handshake's `config_json` and then sends a
+    /// `ConfigureEvent` (`is_initial: true`) ahead of any request on the
+    /// stream, which `GrpcAgentServerV2` hands to
+    /// `AgentHandlerV2::on_configure`. The connection only counts as
+    /// established once the agent has handled it: an agent that rejects its
+    /// configuration ends the stream, and `connect` fails. `None` (the
+    /// default) sends no configure event.
+    pub fn set_config(&mut self, config: Option<serde_json::Value>) {
+        self.config = config;
     }
 
     /// Set the metrics callback for receiving agent metrics reports.
@@ -197,7 +281,11 @@ impl AgentClientV2 {
                     supported_versions: vec![PROTOCOL_VERSION_2, 1],
                     proxy_id: "zentinel-proxy".to_string(),
                     proxy_version: env!("CARGO_PKG_VERSION").to_string(),
-                    config_json: "{}".to_string(),
+                    config_json: match &self.config {
+                        Some(config) => serde_json::to_string(config)
+                            .map_err(|e| AgentProtocolError::Serialization(e.to_string()))?,
+                        None => "{}".to_string(),
+                    },
                 },
             )),
         };
@@ -241,6 +329,21 @@ impl AgentClientV2 {
             return Err(AgentProtocolError::ConnectionFailed(
                 "Invalid handshake response".to_string(),
             ));
+        }
+
+        // The configuration goes out before the sender is shared, so it is
+        // the first thing on the stream after the handshake: the server
+        // handles a stream's messages in order, so no request on this
+        // connection reaches the agent before its configuration.
+        if let Some(config) = &self.config {
+            tx.send(configure_message(config, None, true)?)
+                .await
+                .map_err(|e| {
+                    AgentProtocolError::ConnectionFailed(format!(
+                        "Failed to send configuration: {e}"
+                    ))
+                })?;
+            self.await_config_ack(&tx, &mut inbound).await?;
         }
 
         // Store outbound sender
@@ -701,16 +804,7 @@ impl AgentClientV2 {
         config: serde_json::Value,
         version: Option<String>,
     ) -> Result<(), AgentProtocolError> {
-        let msg = ProxyToAgent {
-            message: Some(grpc_v2::proxy_to_agent::Message::Configure(
-                grpc_v2::ConfigureEvent {
-                    config_json: serde_json::to_string(&config).unwrap_or_default(),
-                    config_version: version,
-                    is_initial: false,
-                    timestamp_ms: now_ms(),
-                },
-            )),
-        };
+        let msg = configure_message(&config, version, false)?;
 
         let outbound = self.outbound_tx.lock().await;
         if let Some(sender) = outbound.as_ref() {
@@ -1170,6 +1264,25 @@ fn extract_correlation_id<T: serde::Serialize>(event: &T) -> String {
         }
     }
     uuid::Uuid::new_v4().to_string()
+}
+
+/// A `ConfigureEvent` carrying `config`.
+fn configure_message(
+    config: &serde_json::Value,
+    version: Option<String>,
+    is_initial: bool,
+) -> Result<ProxyToAgent, AgentProtocolError> {
+    Ok(ProxyToAgent {
+        message: Some(grpc_v2::proxy_to_agent::Message::Configure(
+            grpc_v2::ConfigureEvent {
+                config_json: serde_json::to_string(config)
+                    .map_err(|e| AgentProtocolError::Serialization(e.to_string()))?,
+                config_version: version,
+                is_initial,
+                timestamp_ms: now_ms(),
+            },
+        )),
+    })
 }
 
 fn now_ms() -> u64 {

@@ -190,9 +190,14 @@ impl AgentV2 {
             }
         }
 
-        // Add agent to pool - pool will establish connections
+        // Add agent to pool - pool will establish connections.
+        //
+        // The agent's `config { }` block travels with every connection the
+        // pool makes, so each pooled connection and every reconnect after the
+        // agent restarts delivers it before carrying a request (#593). It
+        // used to be handed to a `send_configure` that dropped it.
         self.pool
-            .add_agent(&self.config.id, &endpoint)
+            .add_agent_with_config(&self.config.id, &endpoint, self.config.config.clone())
             .await
             .map_err(|e| {
                 error!(
@@ -213,13 +218,9 @@ impl AgentV2 {
             agent_id = %self.config.id,
             endpoint = %endpoint,
             connect_time_ms = start.elapsed().as_millis(),
+            has_config = self.config.config.is_some(),
             "V2 agent pool initialized"
         );
-
-        // Send configuration if present
-        if let Some(config_value) = &self.config.config {
-            self.send_configure(config_value.clone()).await?;
-        }
 
         Ok(())
     }
@@ -247,29 +248,6 @@ impl AgentV2 {
                     source: None,
                 })
             }
-        }
-    }
-
-    /// Send configuration to the agent via the pool's config push mechanism.
-    async fn send_configure(&self, _config: serde_json::Value) -> ZentinelResult<()> {
-        use zentinel_agent_protocol::v2::ConfigUpdateType;
-
-        if let Some(push_id) = self
-            .pool
-            .push_config_to_agent(&self.config.id, ConfigUpdateType::RequestReload)
-        {
-            info!(
-                agent_id = %self.config.id,
-                push_id = %push_id,
-                "Configuration push sent to agent"
-            );
-            Ok(())
-        } else {
-            debug!(
-                agent_id = %self.config.id,
-                "Agent does not support config push, config will be sent on next connection"
-            );
-            Ok(())
         }
     }
 
@@ -678,34 +656,6 @@ impl AgentV2 {
     /// Returns the push ID if the agent supports config push, None otherwise.
     pub fn push_config(&self, update_type: ConfigUpdateType) -> Option<String> {
         self.pool.push_config_to_agent(&self.config.id, update_type)
-    }
-
-    /// Send a configuration update to this agent via the control stream.
-    ///
-    /// This is a direct config push using the `ConfigureEvent` message.
-    pub async fn send_configuration(&self, config: serde_json::Value) -> ZentinelResult<()> {
-        // Get a connection and send the configure event
-        // For now, we rely on the pool's config push mechanism
-        // which tracks acknowledgments and retries
-        if let Some(push_id) = self.push_config(ConfigUpdateType::RequestReload) {
-            debug!(
-                agent_id = %self.config.id,
-                push_id = %push_id,
-                "Configuration push initiated"
-            );
-            Ok(())
-        } else {
-            warn!(
-                agent_id = %self.config.id,
-                "Agent does not support config push"
-            );
-            Err(ZentinelError::Agent {
-                agent: self.config.id.clone(),
-                message: "Agent does not support config push".to_string(),
-                event: "send_configuration".to_string(),
-                source: None,
-            })
-        }
     }
 
     /// Whether this agent's pool has been closed.

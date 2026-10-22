@@ -409,8 +409,40 @@ impl AgentServiceV2 for GrpcAgentHandlerV2 {
                         );
                         None
                     }
-                    Some(grpc_v2::proxy_to_agent::Message::Configure(_)) => {
-                        // Configure is handled separately
+                    Some(grpc_v2::proxy_to_agent::Message::Configure(configure)) => {
+                        // This used to be dropped ("handled separately", which
+                        // nothing did), so a gRPC agent never saw the
+                        // `config { }` block of its KDL (#593).
+                        if !handshake_done {
+                            warn!(agent_id = %agent_id, "Received configure before handshake");
+                            continue;
+                        }
+                        let config = match serde_json::from_str(&configure.config_json) {
+                            Ok(config) => config,
+                            Err(e) => {
+                                error!(
+                                    agent_id = %agent_id,
+                                    error = %e,
+                                    "Configuration is not valid JSON; closing the stream"
+                                );
+                                break;
+                            }
+                        };
+                        let accepted = handler.on_configure(config, configure.config_version).await;
+                        if !accepted {
+                            // The protocol has no reply to a configure event.
+                            // Ending the stream is how the proxy learns of the
+                            // rejection: it marks the connection failed rather
+                            // than send requests to an agent running without
+                            // the configuration it was given.
+                            error!(
+                                agent_id = %agent_id,
+                                is_initial = configure.is_initial,
+                                "Configuration rejected; closing the stream"
+                            );
+                            break;
+                        }
+                        debug!(agent_id = %agent_id, "Configuration applied");
                         None
                     }
                     Some(grpc_v2::proxy_to_agent::Message::Guardrail(_)) => {

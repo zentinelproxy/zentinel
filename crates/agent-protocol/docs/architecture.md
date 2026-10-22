@@ -299,7 +299,7 @@ Message Types:
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌──────────────┐                                                           │
-│  │  Configure   │  ◄─── Once per connection (capability negotiation)        │
+│  │  Configure   │  ◄─── Once per connection, after the handshake (config)   │
 │  └──────────────┘                                                           │
 │                                                                             │
 │  ┌──────────────┐                                                           │

@@ -110,6 +110,12 @@ pub enum Decision {
     ///
     /// This can be used to implement CAPTCHA, multi-factor authentication,
     /// or other challenge-response mechanisms.
+    ///
+    /// The proxy cannot run a challenge itself and fails closed: the request
+    /// is not proxied. The client gets `401` with a `WWW-Authenticate`
+    /// header when `params` has `www-authenticate`, else `403`; a `body`
+    /// param (with an optional `content-type`) is sent as the response body.
+    /// See `docs/v2/protocol.md`.
     Challenge {
         /// Type of challenge (e.g., "captcha", "otp", "totp")
         challenge_type: String,
