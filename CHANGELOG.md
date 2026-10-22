@@ -302,7 +302,7 @@ decide.
   ip-reputation, bot-management, content-scanner, graphql-security,
   grpc-inspector, soap, api-deprecation, websocket-inspector, mqtt-gateway,
   transform, audit-logger, mock-server and chaos 0.5.0; image-optimization
-  and **ai-gateway** (new to the bundle) 0.3.0. `policy` and `data-masking`
+  and, new to the bundle, **ai-gateway** and **auth** 0.3.0. `policy` and `data-masking`
   stay out (no release). Binaries up to 0.6.50 keep their compiled-in lock
   and still install the old releases. (#604, #611)
 - On a platform an agent is not published for (no agent is built for

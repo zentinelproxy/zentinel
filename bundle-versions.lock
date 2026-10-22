@@ -61,9 +61,9 @@ image-optimization = "0.3.0"
 
 # Identity agents
 spiffe = "0.4.0"
+auth = "0.3.0"
 
 # Not in the bundle, because no release asset exists under the URL above:
-#   auth          0.2.0 ships only `sentinel-auth-agent-linux-amd64`
 #   policy        no release
 #   data-masking  no repository zentinelproxy/zentinel-agent-data-masking
 # Retired:
@@ -107,6 +107,7 @@ image-optimization = "zentinelproxy/zentinel-agent-image-optimization"
 
 # Identity agents
 spiffe = "zentinelproxy/zentinel-agent-spiffe"
+auth = "zentinelproxy/zentinel-agent-auth"
 
 [platforms]
 # Per-agent overrides of [bundle] platforms (none at the moment).
