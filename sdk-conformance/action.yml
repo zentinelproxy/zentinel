@@ -66,6 +66,15 @@ runs:
       with:
         workspaces: .zentinel-src
 
+    - name: Install protoc
+      if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == '' && env.ZENTINEL_BIN == ''
+      shell: bash
+      run: |
+        if ! command -v protoc >/dev/null; then
+          if command -v apt-get >/dev/null; then sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          elif command -v brew >/dev/null; then brew install protobuf
+          else echo "protoc is required to build zentinel" >&2; exit 1; fi
+        fi
     - name: Build zentinel
       if: inputs.zentinel-ref != '' && inputs.zentinel-version == '' && inputs.zentinel-url == '' && env.ZENTINEL_BIN == ''
       shell: bash
