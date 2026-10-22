@@ -134,6 +134,17 @@ for details.
   `stream`, so no agent gets less of the body at once than it asked for.
   Decisions on streamed chunks (Block, Challenge, Redirect) are answered as on
   a buffered body.
+- **A request body the agents refused could still reach the upstream whole**
+  (found while fixing #602). In buffer mode the body was forwarded chunk by
+  chunk while it was being buffered for inspection, and the agents were asked
+  only at its end; a chunked body's end arrives apart from its last bytes, so
+  the client got the agent's 403 / 429 and the upstream got the complete
+  request. The body is now held back until the agents have decided, in buffer
+  mode and for hybrid mode's buffered part. The upstream still sees the
+  request's headers (they are sent before the body is read); see the agent
+  protocol docs. Also fixed: a hybrid-mode body under the threshold whose end
+  arrived on its own was never inspected, and a streamed chunk an agent
+  dropped ended the upstream body instead of being left out.
 
 ### Changed
 

@@ -369,6 +369,17 @@ pub struct RequestContext {
     /// (request headers, request body), applied to the client's response
     /// in `response_filter` before the response phases' own (#596).
     pub(crate) agent_response_headers: Vec<zentinel_agent_protocol::HeaderOp>,
+    /// Request body held back from the upstream until the body agents
+    /// have decided on it (buffer mode, and hybrid mode's buffered part).
+    ///
+    /// Without it the body went upstream chunk by chunk while it was being
+    /// buffered for inspection, so a body the agents refused had already
+    /// been delivered -- whole, when its end arrived apart from its last
+    /// bytes, as with every chunked body.
+    pub(crate) request_body_held: Vec<u8>,
+    /// Whether the body agents have been sent the (buffered) request body,
+    /// after which the rest of the body is passed on as it comes.
+    pub(crate) request_body_decided: bool,
 
     // === Agentic protocol policy (MCP / A2A) ===
     /// Request body accumulated for MCP/A2A policy evaluation.
@@ -652,6 +663,8 @@ impl RequestContext {
             a2a_method: None,
             body_inspection_agents: Vec::new(),
             agent_response_headers: Vec::new(),
+            request_body_held: Vec::new(),
+            request_body_decided: false,
             decompression_enabled: false,
             body_content_encoding: None,
             max_decompression_ratio: 100.0,

@@ -379,6 +379,22 @@ Other params (`token`, `challenge_url`, ...) are not sent to the client;
 an agent that wants the client to see them puts them into `body`. The proxy
 logs the challenge type (and the param names, not their values) at INFO.
 
+#### What the upstream sees of a request refused on its body
+
+The proxy connects to the upstream and sends the request line and headers
+before it reads the client's body, so a request refused in the
+request-body phase has already been *started* upstream: the upstream sees
+its headers, then the connection closes without the body. In
+`request-body-mode "buffer"` (and for the part `hybrid` buffers) no byte
+of the body is forwarded until the agents have decided on it, so a refused
+body never reaches the upstream. In `stream` mode each chunk is forwarded
+once the agents have allowed it; a refused chunk is never forwarded, but
+the chunks allowed before it have been.
+
+When several body agents on one route ask for different modes, one mode
+is used for all of them, the most conservative: `buffer`, else `hybrid`
+with the largest threshold, else `stream`.
+
 #### Header changes on an allowed request
 
 `request_headers` and `response_headers` of an `Allow` decision are
