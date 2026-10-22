@@ -6,7 +6,7 @@ name = "zentinel-echo-agent"
 version = "0.1.0"
 description = "Reference echo agent that adds request metadata as response headers"
 authors = ["Zentinel Contributors"]
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/zentinelproxy/zentinel"
 
 [protocol]
