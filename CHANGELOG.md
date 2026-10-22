@@ -90,7 +90,27 @@ for details.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **`zentinel bundle install` installed agents that could not protect anything**
+  (#598). The bundle pinned waf, modsec and zentinelsec 0.3.0: waf and modsec
+  0.3.0 speak the v1 agent protocol, so the v2 handshake failed and every
+  request got a 503 (or skipped the agent under `failure-mode "open"`), and
+  zentinelsec 0.3.0 exits at startup on current CRS. The bundle now pins 0.4.0
+  of all three, built from their tags and smoke-tested behind a real Zentinel
+  before publishing. The bundle also listed agents with no downloadable
+  release (`auth`, `policy`, `ai-gateway`, `data-masking`); they are removed.
+- On a platform an agent is not published for (no agent is built for
+  `darwin-x86_64`), `bundle install` says so instead of reporting a 404.
+
+### Changed
+
+- `bundle-versions.lock` lists the platforms each agent is released for
+  (`[bundle] platforms`, per-agent `[platforms]`), and the two copies in the
+  repository must be identical. CI (`Bundle lock`) requests every asset the
+  lock points at and fails if one is missing, so the lock can no longer name a
+  release that does not exist. api.zentinelproxy.io serves `/v1/bundle/` from a
+  vendored copy of the same file.
 
 ---
 

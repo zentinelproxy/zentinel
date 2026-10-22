@@ -154,20 +154,31 @@ Agent versions are coordinated via `bundle-versions.lock`:
 
 ```toml
 [bundle]
-version = "26.01_1"
+version = "26.10_01"
+platforms = ["linux-x86_64", "linux-aarch64", "darwin-aarch64"]
 
 [agents]
-waf = "0.2.0"
-ratelimit = "0.2.0"
-denylist = "0.2.0"
+waf = "0.4.0"
+ratelimit = "0.3.0"
 
 [repositories]
 waf = "zentinelproxy/zentinel-agent-waf"
 ratelimit = "zentinelproxy/zentinel-agent-ratelimit"
-denylist = "zentinelproxy/zentinel-agent-denylist"
+
+[platforms]
+# per-agent override of [bundle] platforms, when an agent differs
 ```
 
-The lock file is embedded in the Zentinel binary at build time, ensuring reproducible installations.
+The lock file is embedded in the Zentinel binary at build time, ensuring
+reproducible installations. It is the single source of truth:
+`crates/proxy/bundle-versions.lock` is a byte-identical copy (what
+`cargo publish` packages), and api.zentinelproxy.io serves `/v1/bundle/`
+(read by `bundle update`) from a vendored copy in its `data/` directory.
+
+An agent belongs in the lock only once its release exists for every platform
+listed for it. `python3 scripts/check-bundle-lock.py` requests each asset URL
+and fails otherwise; CI runs it on every change. To bump an agent: cut its
+release, then update both copies here, then the API's copy.
 
 ## Configuration
 

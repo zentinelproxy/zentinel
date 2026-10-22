@@ -79,11 +79,15 @@ impl From<ApiBundleResponse> for BundleLock {
         let mut repositories = HashMap::new();
         let mut binary_names = HashMap::new();
         let mut download_urls = HashMap::new();
+        let mut platforms = HashMap::new();
 
         for (name, agent) in &api.agents {
             agents.insert(name.clone(), agent.version.clone());
             repositories.insert(name.clone(), agent.repository.clone());
             binary_names.insert(name.clone(), agent.binary_name.clone());
+            let mut published: Vec<String> = agent.download_urls.keys().cloned().collect();
+            published.sort();
+            platforms.insert(name.clone(), published);
 
             // Store precomputed download URLs keyed as "agent-os-arch"
             for (platform, url) in &agent.download_urls {
@@ -94,10 +98,12 @@ impl From<ApiBundleResponse> for BundleLock {
         BundleLock {
             bundle: BundleInfo {
                 version: api.bundle.version,
+                platforms: Vec::new(),
             },
             agents,
             repositories,
             binary_names,
+            platforms,
             checksums: HashMap::new(),
             precomputed_urls: download_urls,
         }
@@ -121,6 +127,11 @@ pub struct BundleLock {
     #[serde(default)]
     pub binary_names: HashMap<String, String>,
 
+    /// Per-agent platform lists (agent name -> ["linux-x86_64", ...]),
+    /// overriding `[bundle] platforms` for agents released on fewer or more.
+    #[serde(default)]
+    pub platforms: HashMap<String, Vec<String>>,
+
     /// Optional checksums for verification
     #[serde(default)]
     pub checksums: HashMap<String, String>,
@@ -136,6 +147,13 @@ pub struct BundleLock {
 pub struct BundleInfo {
     /// Bundle version (CalVer: YY.MM_PATCH)
     pub version: String,
+
+    /// Platforms every agent is released for ("linux-x86_64", ...), unless
+    /// `[platforms]` says otherwise for that agent. Empty in lock files that
+    /// predate this field, which means "unknown": the installer then tries
+    /// the download and reports what the server says.
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 /// Information about a bundled agent
@@ -155,6 +173,9 @@ pub struct AgentInfo {
 
     /// Precomputed download URLs from the API, keyed by platform (e.g., "linux-x86_64")
     pub precomputed_urls: HashMap<String, String>,
+
+    /// Platforms this release is published for; empty means unknown.
+    pub platforms: Vec<String>,
 }
 
 impl BundleLock {
@@ -291,6 +312,7 @@ impl BundleLock {
                     repository: repository.clone(),
                     binary_name,
                     precomputed_urls,
+                    platforms: self.platforms_for(name),
                 })
             })
             .collect()
@@ -312,7 +334,17 @@ impl BundleLock {
             repository: repository.clone(),
             binary_name,
             precomputed_urls,
+            platforms: self.platforms_for(name),
         })
+    }
+
+    /// Platforms an agent is published for: its `[platforms]` entry, or the
+    /// bundle-wide list.
+    fn platforms_for(&self, agent_name: &str) -> Vec<String> {
+        self.platforms
+            .get(agent_name)
+            .cloned()
+            .unwrap_or_else(|| self.bundle.platforms.clone())
     }
 
     /// Extract precomputed URLs for a specific agent from the flat map
@@ -334,6 +366,22 @@ impl BundleLock {
 }
 
 impl AgentInfo {
+    /// The release platform name for an OS and proxy-style arch
+    /// ("linux", "amd64" -> "linux-x86_64").
+    pub fn platform_key(os: &str, arch: &str) -> String {
+        let release_arch = match arch {
+            "amd64" => "x86_64",
+            "arm64" => "aarch64",
+            _ => arch,
+        };
+        format!("{}-{}", os, release_arch)
+    }
+
+    /// Whether this release is published for the platform. An agent with no
+    /// platform list (an older lock file) is assumed to be.
+    pub fn supports(&self, os: &str, arch: &str) -> bool {
+        self.platforms.is_empty() || self.platforms.contains(&Self::platform_key(os, arch))
+    }
     /// Get the download URL for this agent.
     ///
     /// Uses a precomputed URL from the API when available, otherwise constructs
@@ -343,22 +391,16 @@ impl AgentInfo {
     /// * `os` - Operating system (e.g., "linux", "darwin")
     /// * `arch` - Architecture (e.g., "amd64", "arm64")
     pub fn download_url(&self, os: &str, arch: &str) -> String {
-        let release_arch = match arch {
-            "amd64" => "x86_64",
-            "arm64" => "aarch64",
-            _ => arch,
-        };
-
         // Check for precomputed URL from API
-        let platform_key = format!("{}-{}", os, release_arch);
+        let platform_key = Self::platform_key(os, arch);
         if let Some(url) = self.precomputed_urls.get(&platform_key) {
             return url.clone();
         }
 
         // Fall back to constructed URL
         format!(
-            "https://github.com/{}/releases/download/v{}/{}-{}-{}-{}.tar.gz",
-            self.repository, self.version, self.binary_name, self.version, os, release_arch
+            "https://github.com/{}/releases/download/v{}/{}-{}-{}.tar.gz",
+            self.repository, self.version, self.binary_name, self.version, platform_key
         )
     }
 
@@ -549,6 +591,7 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             repository: "zentinelproxy/zentinel-agent-waf".to_string(),
             binary_name: "zentinel-waf-agent".to_string(),
             precomputed_urls: HashMap::new(),
+            platforms: Vec::new(),
         };
 
         let url = agent.download_url("linux", "amd64");
@@ -566,6 +609,7 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             repository: "zentinelproxy/zentinel-agent-ratelimit".to_string(),
             binary_name: "zentinel-ratelimit-agent".to_string(),
             precomputed_urls: HashMap::new(),
+            platforms: Vec::new(),
         };
 
         let url = agent.download_url("linux", "arm64");
@@ -583,6 +627,7 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             repository: "zentinelproxy/zentinel-agent-denylist".to_string(),
             binary_name: "zentinel-denylist-agent".to_string(),
             precomputed_urls: HashMap::new(),
+            platforms: Vec::new(),
         };
 
         let url = agent.download_url("darwin", "arm64");
@@ -598,6 +643,7 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             repository: "zentinelproxy/zentinel-agent-waf".to_string(),
             binary_name: "zentinel-waf-agent".to_string(),
             precomputed_urls: HashMap::new(),
+            platforms: Vec::new(),
         };
 
         let url = agent.checksum_url("linux", "amd64");
@@ -651,6 +697,65 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             lock.agents.len() >= 20,
             "bundle should have at least 20 agents"
         );
+    }
+
+    #[test]
+    fn test_platforms_default_and_override() {
+        let content = r#"
+[bundle]
+version = "26.10_01"
+platforms = ["linux-x86_64", "linux-aarch64", "darwin-aarch64"]
+
+[agents]
+waf = "0.4.0"
+odd = "0.1.0"
+
+[repositories]
+waf = "zentinelproxy/zentinel-agent-waf"
+odd = "zentinelproxy/zentinel-agent-odd"
+
+[platforms]
+odd = ["linux-x86_64"]
+"#;
+        let lock = BundleLock::from_str(content).unwrap();
+        let waf = lock.agent("waf").unwrap();
+        assert!(waf.supports("linux", "amd64"));
+        assert!(waf.supports("darwin", "arm64"));
+        assert!(!waf.supports("darwin", "amd64"));
+        let odd = lock.agent("odd").unwrap();
+        assert!(odd.supports("linux", "amd64"));
+        assert!(!odd.supports("linux", "arm64"));
+    }
+
+    #[test]
+    fn test_lock_without_platforms_supports_everything() {
+        let content = r#"
+[bundle]
+version = "26.03_01"
+
+[agents]
+waf = "0.3.0"
+
+[repositories]
+waf = "zentinelproxy/zentinel-agent-waf"
+"#;
+        let lock = BundleLock::from_str(content).unwrap();
+        assert!(lock.agent("waf").unwrap().supports("darwin", "amd64"));
+    }
+
+    #[test]
+    fn test_embedded_lock_lists_platforms() {
+        // Every entry must say which platforms its release was built for, so
+        // `scripts/check-bundle-lock.py` can prove each asset exists and the
+        // installer can refuse unpublished platforms.
+        let lock = BundleLock::embedded().unwrap();
+        for agent in lock.agents() {
+            assert!(
+                !agent.platforms.is_empty(),
+                "{} has no platform list",
+                agent.name
+            );
+        }
     }
 
     #[test]
@@ -718,6 +823,7 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             repository: "zentinelproxy/zentinel-agent-waf".to_string(),
             binary_name: "zentinel-waf-agent".to_string(),
             precomputed_urls: HashMap::new(),
+            platforms: Vec::new(),
         };
 
         let url = agent.download_url("linux", "amd64");
@@ -741,6 +847,7 @@ denylist = "zentinelproxy/zentinel-agent-denylist"
             repository: "zentinelproxy/zentinel-agent-waf".to_string(),
             binary_name: "zentinel-waf-agent".to_string(),
             precomputed_urls: precomputed,
+            platforms: Vec::new(),
         };
 
         // Should use precomputed URL

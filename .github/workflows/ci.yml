@@ -64,6 +64,20 @@ jobs:
 
           echo "All three agree on $(minor "$toolchain")"
 
+  # Every asset the bundle lock points at must exist: the lock is what
+  # `zentinel bundle install` downloads, and it named releases that were never
+  # published (#598). Also checks the root and crates/proxy copies agree.
+  # A lock change that bumps an agent therefore fails here until that agent's
+  # release is public -- merge it after the release, not before.
+  bundle-lock:
+    name: Bundle lock
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Check lock copies and release assets
+        run: python3 scripts/check-bundle-lock.py
+
   fmt:
     name: Formatting
     runs-on: ubuntu-latest

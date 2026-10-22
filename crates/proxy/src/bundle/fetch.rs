@@ -29,6 +29,14 @@ pub enum FetchError {
 
     #[error("Binary not found in archive: {0}")]
     BinaryNotFound(String),
+
+    #[error("{agent} {version} is not published for {platform} (available: {available})")]
+    UnsupportedPlatform {
+        agent: String,
+        version: String,
+        platform: String,
+        available: String,
+    },
 }
 
 /// Result of a download operation
@@ -89,6 +97,17 @@ pub async fn download_agent(
 ) -> Result<DownloadResult, FetchError> {
     let os = detect_os();
     let arch = detect_arch();
+
+    // Refuse up front rather than report a bare 404 for a platform the
+    // release was never built for.
+    if !agent.supports(os, arch) {
+        return Err(FetchError::UnsupportedPlatform {
+            agent: agent.name.clone(),
+            version: agent.version.clone(),
+            platform: AgentInfo::platform_key(os, arch),
+            available: agent.platforms.join(", "),
+        });
+    }
 
     let url = agent.download_url(os, arch);
     let checksum_url = agent.checksum_url(os, arch);

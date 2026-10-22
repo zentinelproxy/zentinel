@@ -1,25 +1,38 @@
 # Zentinel Distribution Bundle - Version Lock File
 #
-# This file pins the agent versions included in the bundle distribution.
-# The lock file is embedded in the Zentinel binary at compile time.
+# The single source of truth for `zentinel bundle`:
+#   - the binary embeds this file at compile time (`bundle install` uses it);
+#   - crates/proxy/bundle-versions.lock is a byte-identical copy, because
+#     `cargo publish` only packages files inside the crate;
+#   - api.zentinelproxy.io serves /v1/bundle/ from a vendored copy
+#     (data/bundle-versions.lock there), which `bundle update` reads.
 #
-# Source of truth for agent metadata: api.zentinelproxy.io
-# Update via PR when agents release new versions.
+# An agent is listed only if its release exists for every platform listed
+# for it. `python3 scripts/check-bundle-lock.py` (CI job "Bundle lock")
+# requests every asset URL and fails otherwise, so release the agent first,
+# then update this file in both places, then the API copy.
+#
+# Asset URL: https://github.com/<repository>/releases/download/v<version>/
+#            <binary>-<version>-<platform>.tar.gz   (+ optional .sha256)
+# <binary> is zentinel-<name>-agent unless [binary_names] says otherwise.
 # Format: CalVer for bundle, SemVer for agents
 
 [bundle]
 # Bundle version (CalVer: YY.MM_PATCH)
-version = "26.03_01"
+version = "26.10_01"
+# Platforms every agent is released for, unless [platforms] overrides it.
+# darwin-x86_64 is not built by any agent release workflow.
+platforms = ["linux-x86_64", "linux-aarch64", "darwin-aarch64"]
 
 [agents]
 # Core agents (included in default bundle install)
-waf = "0.3.0"
+waf = "0.4.0"
 ratelimit = "0.3.0"
 denylist = "0.3.0"
 
 # Security agents
-zentinelsec = "0.3.0"
-modsec = "0.3.0"
+zentinelsec = "0.4.0"
+modsec = "0.4.0"
 ip-reputation = "0.4.0"
 bot-management = "0.4.0"
 content-scanner = "0.4.0"
@@ -47,15 +60,13 @@ chaos = "0.4.0"
 image-optimization = "0.2.0"
 
 # Identity agents
-auth = "0.2.0"
 spiffe = "0.3.0"
-policy = "0.1.0"
 
-# AI agents
-ai-gateway = "0.2.0"
-
-# Privacy agents
-data-masking = "0.5.0"
+# Not in the bundle, because no release asset exists under the URL above:
+#   auth          0.2.0 ships only `sentinel-auth-agent-linux-amd64`
+#   policy        no release
+#   ai-gateway    no release
+#   data-masking  no repository zentinelproxy/zentinel-agent-data-masking
 
 [repositories]
 # Core agents
@@ -93,15 +104,10 @@ chaos = "zentinelproxy/zentinel-agent-chaos"
 image-optimization = "zentinelproxy/zentinel-agent-image-optimization"
 
 # Identity agents
-auth = "zentinelproxy/zentinel-agent-auth"
 spiffe = "zentinelproxy/zentinel-agent-spiffe"
-policy = "zentinelproxy/zentinel-agent-policy"
 
-# AI agents
-ai-gateway = "zentinelproxy/zentinel-agent-ai-gateway"
-
-# Privacy agents
-data-masking = "zentinelproxy/zentinel-agent-data-masking"
+[platforms]
+# Per-agent overrides of [bundle] platforms (none at the moment).
 
 [checksums]
 # SHA256 checksums for verification (optional, updated by release CI)
