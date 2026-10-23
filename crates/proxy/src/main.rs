@@ -814,8 +814,8 @@ fn run_server(
     // being lost.
     let mut startup_log = StartupLog::default();
 
-    // Take over SIGHUP before anything slow. Its default disposition
-    // terminates the process, and the handler proper is only installed once
+    // Take over SIGHUP, SIGUSR1 and SIGUSR2 before anything slow. Their
+    // default disposition terminates the process, and the handler proper is only installed once
     // the configuration is loaded, the proxy built and its listeners set up --
     // so a reload sent by a deploy script or config-management run right
     // after start used to kill the proxy instead.
@@ -823,10 +823,16 @@ fn run_server(
     // Registering it here queues the signal instead: the iterator holds it
     // until the signal thread starts, and the reload channel holds that until
     // the reload task runs, so an early SIGHUP is applied once the proxy is
-    // ready. SIGTERM and SIGINT keep their default disposition until then:
+    // ready. SIGUSR1 (reopen logs) and SIGUSR2 (ignored) are queued the same
+    // way, so a logrotate run that overlaps startup does not kill the proxy
+    // either. SIGTERM and SIGINT keep their default disposition until then:
     // stopping a proxy that has not started yet should stay immediate.
-    let signals = signal_hook::iterator::Signals::new([signal_hook::consts::signal::SIGHUP])
-        .context("Failed to register the SIGHUP handler")?;
+    let signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::signal::SIGHUP,
+        signal_hook::consts::signal::SIGUSR1,
+        signal_hook::consts::signal::SIGUSR2,
+    ])
+    .context("Failed to register the signal handlers")?;
 
     // Get config path with priority: CLI arg > env var > None (embedded default)
     let effective_config_path = config_path.or_else(|| std::env::var("ZENTINEL_CONFIG").ok());
@@ -892,6 +898,9 @@ fn run_server(
 
     // Get config manager for reload operations
     let config_manager = proxy.config_manager.clone();
+
+    // The log writers SIGUSR1 reopens
+    let log_manager = proxy.log_manager();
 
     // Get initial config for server setup
     let config = proxy.config_manager.current();
@@ -1303,11 +1312,18 @@ fn run_server(
     let signal_manager_clone = signal_manager.clone();
     let cert_reloader_clone = cert_reloader.clone();
     runtime.spawn(async move {
-        run_signal_handler(signal_manager_clone, config_manager, cert_reloader_clone).await;
+        run_signal_handler(
+            signal_manager_clone,
+            config_manager,
+            cert_reloader_clone,
+            log_manager,
+        )
+        .await;
     });
 
     info!("Zentinel proxy started successfully");
     info!("Configuration hot reload enabled (SIGHUP)");
+    info!("Log files are reopened on SIGUSR1");
     if auto_reload_enabled && has_config_file {
         info!("Auto-reload enabled (watching config file)");
     }
@@ -1356,6 +1372,16 @@ fn setup_signal_handlers(
                 SIGHUP => {
                     info!("Received SIGHUP, triggering configuration reload");
                     SignalType::Reload
+                }
+                SIGUSR1 => {
+                    info!("Received SIGUSR1, reopening log files");
+                    SignalType::ReopenLogs
+                }
+                SIGUSR2 => {
+                    // Registered so that it does not terminate the process (the
+                    // default disposition); Zentinel has nothing to do on it.
+                    info!("Received SIGUSR2, ignoring it");
+                    continue;
                 }
                 _ => continue,
             };
@@ -1574,6 +1600,7 @@ async fn run_signal_handler(
     signal_manager: Arc<SignalManager>,
     config_manager: Arc<zentinel_proxy::ConfigManager>,
     cert_reloader: Arc<CertificateReloader>,
+    log_manager: zentinel_proxy::SharedLogManager,
 ) {
     loop {
         // Use spawn_blocking to wait for signals without blocking the async runtime
@@ -1614,6 +1641,10 @@ async fn run_signal_handler(
                         "TLS certificates reloaded"
                     );
                 }
+            }
+            Ok(Some(SignalType::ReopenLogs)) => {
+                let reopened = log_manager.reopen();
+                info!(reopened = reopened, "Log files reopened");
             }
             Ok(Some(SignalType::Shutdown)) => {
                 info!("Processing graceful shutdown request");

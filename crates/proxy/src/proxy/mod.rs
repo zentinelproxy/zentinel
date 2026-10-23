@@ -385,6 +385,11 @@ impl ZentinelProxy {
         })
     }
 
+    /// The access, error and audit log writers, so SIGUSR1 can reopen them.
+    pub fn log_manager(&self) -> SharedLogManager {
+        Arc::clone(&self.log_manager)
+    }
+
     /// Shared HTTP cache statistics.
     ///
     /// Exposed so the standalone metrics server can include cache counters in
