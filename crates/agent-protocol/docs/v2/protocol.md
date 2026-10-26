@@ -208,10 +208,10 @@ reconnect. It must be idempotent: applying the same configuration again
 should not reset state such as rate-limit buckets.
 
 The configuration is sent only when a connection is made; there is no
-in-place reconfigure. A reload does not rebuild agents yet (#564), so a
-changed `config { }` block takes effect after a restart of the proxy. Once
-reloads rebuild changed agents, the new configuration arrives the same way,
-on the new agent's connections.
+in-place reconfigure. A reload that changes an agent, its `config { }` block
+included, rebuilds that agent before the new routes go live, so the new
+configuration arrives the same way, on the rebuilt agent's connections.
+Unchanged agents keep their connections and are not sent it again.
 
 Reverse connections (below) are registered by the agent and are sent no
 configuration.
