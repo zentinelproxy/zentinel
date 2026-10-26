@@ -8015,9 +8015,9 @@ dependencies = [
 
 [[package]]
 name = "zentinel-pingora-core"
-version = "0.9.1"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cfe64f1711fe8a69062f022de928f1ada2e20b77b2f23b876cb1b26e6d293b2"
+checksum = "bc9a08ce9bc56dfb254b838389decb6258eb6083a70396d55e325f934388fb89"
 dependencies = [
  "ahash",
  "async-trait",
