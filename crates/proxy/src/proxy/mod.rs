@@ -263,6 +263,7 @@ impl ZentinelProxy {
             upstream_pools.clone(),
             health_check_runner.clone(),
             rate_limit_manager.clone(),
+            agent_manager.clone(),
         )
         .await;
 
@@ -298,6 +299,14 @@ impl ZentinelProxy {
             config_manager.add_hook(Box::new(audit_hook)).await;
             debug!("Registered audit reload hook");
         }
+
+        // Load added and changed agents before a new configuration becomes
+        // current, so no filter in it names an agent that is not loaded.
+        config_manager
+            .add_hook(Box::new(crate::agents::AgentReloadHook::new(
+                agent_manager.clone(),
+            )))
+            .await;
 
         // Start active health checking (one probe loop per upstream)
         health_check_runner.apply(Self::health_check_upstreams(&config));
@@ -469,6 +478,7 @@ impl ZentinelProxy {
         upstream_pools: Registry<UpstreamPool>,
         health_check_runner: Arc<HealthCheckRunner>,
         rate_limit_manager: Arc<RateLimitManager>,
+        agent_manager: Arc<AgentManager>,
     ) {
         let mut reload_rx = config_manager.subscribe();
         let config_manager_clone = config_manager.clone();
@@ -542,6 +552,40 @@ impl ZentinelProxy {
                             continue;
                         }
                     };
+
+                    // From here the handler changes shared state, so it must not
+                    // interleave with a newer reload: that reload's hook loads
+                    // its agents and stores its configuration, and this event's
+                    // (older) configuration would then remove an agent the
+                    // newer one names, or replace its version of a changed one.
+                    // Not taken before `recv()` or the compile above, and never
+                    // while rolling back (`rollback` does not take the mutex,
+                    // and the branches above `continue` before this point).
+                    let reload_guard = config_manager_clone.lock_reloads().await;
+                    if !Arc::ptr_eq(&config_manager_clone.current(), &new_config) {
+                        debug!(
+                            "Configuration changed while this event was handled; \
+                             leaving it to the newer event"
+                        );
+                        continue;
+                    }
+
+                    // Every agent the new configuration names must be loaded
+                    // before its routes go live. `AgentReloadHook` loaded them
+                    // before the configuration became current; this covers what
+                    // does not pass through a hook (a rollback re-activates the
+                    // previous configuration, whose agents may have been removed
+                    // since) and is a no-op otherwise.
+                    let changes = agent_manager.reconcile(&new_config.agents).await;
+                    if changes.added + changes.replaced > 0 {
+                        info!(
+                            added = changes.added,
+                            replaced = changes.replaced,
+                            unchanged = changes.unchanged,
+                            "Agents reloaded"
+                        );
+                    }
+
                     *route_matcher.write() = new_matcher;
                     info!(
                         routes = global_route_count,
@@ -551,6 +595,15 @@ impl ZentinelProxy {
                     // Swap in the per-listener (namespace- and service-bound)
                     // route matchers
                     *listener_matchers.write() = new_listener_matchers;
+
+                    // Only now, with the routes that called them gone, take the
+                    // agents the new configuration dropped out of service; calls
+                    // in flight on them finish (`AgentManager::remove`).
+                    let removed = agent_manager.remove_unlisted(&new_config.agents).await;
+                    if removed > 0 {
+                        info!(removed, "Agents removed");
+                    }
+                    drop(reload_guard);
 
                     // Rebuild rate limiters. They were built once at startup, so a
                     // changed, added or removed limit (route filter or policy,
@@ -1812,17 +1865,33 @@ mod reload_rollback_tests {
         manager: Arc<ConfigManager>,
         routes: Arc<RwLock<RouteMatcher>>,
         limits: Arc<RateLimitManager>,
+        agents: Arc<AgentManager>,
     }
 
     impl Harness {
         /// The reload handler as `ZentinelProxy::new` sets it up, on config
         /// A, with or without the reload validators.
         async fn start(validators: bool) -> Self {
+            Self::start_with(validators, &config_a()).await
+        }
+
+        /// As [`Self::start`], on `initial_kdl`.
+        async fn start_with(validators: bool, initial_kdl: &str) -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("zentinel.kdl");
-            std::fs::write(&path, config_a()).expect("write config");
-            let initial = Config::from_kdl(&config_a()).expect("config A parses");
+            std::fs::write(&path, initial_kdl).expect("write config");
+            let initial = Config::from_kdl(initial_kdl).expect("initial config parses");
+            let agents = Arc::new(
+                AgentManager::new(initial.agents.clone())
+                    .await
+                    .expect("agent manager"),
+            );
             let manager = Arc::new(ConfigManager::new(&path, initial).await.expect("manager"));
+            manager
+                .add_hook(Box::new(crate::agents::AgentReloadHook::new(Arc::clone(
+                    &agents,
+                ))))
+                .await;
             if validators {
                 ZentinelProxy::add_reload_validators(&manager).await;
             }
@@ -1846,6 +1915,7 @@ mod reload_rollback_tests {
                 Registry::from_map(HashMap::new()),
                 Arc::new(HealthCheckRunner::new()),
                 Arc::clone(&limits),
+                Arc::clone(&agents),
             )
             .await;
             Self {
@@ -1854,6 +1924,7 @@ mod reload_rollback_tests {
                 manager,
                 routes,
                 limits,
+                agents,
             }
         }
 
@@ -1976,5 +2047,61 @@ mod reload_rollback_tests {
             1,
             "exactly one rollback"
         );
+    }
+
+    /// A top-level `agents` block with one agent, `id`, whose socket is absent.
+    fn agent(id: &str) -> String {
+        format!(
+            r#"agents {{
+                agent "{id}" {{
+                    type "custom"
+                    unix-socket path="/tmp/zentinel-no-such-{id}.sock"
+                    events "request_headers"
+                    timeout-ms 1000
+                    failure-mode "closed"
+                }}
+            }}"#
+        )
+    }
+
+    /// Wait for `cond`, which the reload handler makes true shortly after the
+    /// reload returns.
+    async fn wait_until(what: &str, mut cond: impl AsyncFnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
+            if cond().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// A reload drops agent `one` for `two`; a rollback to the config that
+    /// names `one` must find it loaded again, or its filters would run
+    /// nothing.
+    #[tokio::test]
+    async fn a_rollback_loads_the_agents_of_the_previous_config() {
+        let h = Harness::start_with(true, &kdl("a", "^/a", &agent("one"))).await;
+        assert!(h.agents.is_loaded("one").await);
+
+        h.write(&kdl("a", "^/a", &agent("two")));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("the reload applies");
+        wait_until("`two` loaded and `one` removed", async || {
+            h.agents.is_loaded("two").await && !h.agents.is_loaded("one").await
+        })
+        .await;
+
+        h.manager
+            .rollback("test".to_string())
+            .await
+            .expect("rollback");
+        wait_until("`one` loaded again", async || {
+            h.agents.is_loaded("one").await
+        })
+        .await;
     }
 }

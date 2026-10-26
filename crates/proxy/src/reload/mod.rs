@@ -404,6 +404,17 @@ impl ConfigManager {
         Ok(())
     }
 
+    /// Hold off every reload (and `apply_config`) while the guard lives.
+    ///
+    /// For the reload handler: it applies a configuration to the rest of the
+    /// proxy and must not interleave with the hooks of a newer reload, which
+    /// load and store a newer configuration. `rollback` does not take this
+    /// mutex, so never call it, or anything that reloads, while holding the
+    /// guard.
+    pub(crate) async fn lock_reloads(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.reload_mutex.lock().await
+    }
+
     /// Reload configuration
     ///
     /// Only one reload runs at a time. If a reload is already in progress

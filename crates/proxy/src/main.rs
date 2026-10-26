@@ -883,6 +883,10 @@ fn run_server(
     // Create signal manager for cross-thread communication
     let signal_manager = Arc::new(SignalManager::new());
 
+    // The one record of "a shutdown was requested". The signal thread sets it,
+    // Pingora's shutdown watcher and the drain read it.
+    let shutdown_request = zentinel_proxy::shutdown::ShutdownRequest::new();
+
     // Create runtime for async initialization and signal handling
     let runtime = tokio::runtime::Runtime::new()?;
 
@@ -921,6 +925,7 @@ fn run_server(
     setup_signal_handlers(
         signals,
         signal_manager.sender(),
+        shutdown_request.clone(),
         config.server.graceful_shutdown_timeout_secs,
     );
 
@@ -1028,6 +1033,9 @@ fn run_server(
     let mut server = Server::new_with_opt_and_conf(Some(pingora_opt), pingora_conf);
     server.bootstrap();
 
+    // Told when the listeners stop accepting on SIGTERM/SIGINT (see `run_signal_handler`)
+    let shutdown_phases = server.watch_execution_phase();
+
     // Determine keepalive request limit from listeners (use the most restrictive)
     let keepalive_request_limit = config
         .listeners
@@ -1049,9 +1057,11 @@ fn run_server(
     http_proxy.server_options = Some(server_options);
     http_proxy.handle_init_modules();
     let limits_config = config_manager.clone();
+    let connections = zentinel_common::limits::ConnectionLimiter::new();
+    let handshakes = zentinel_proxy::connection_limit::HandshakeTracker::new();
     let connection_app = zentinel_proxy::connection_limit::ConnectionLimitedApp::new(
         http_proxy,
-        zentinel_common::limits::ConnectionLimiter::new(),
+        Arc::clone(&connections),
         move |peer, local| {
             zentinel_proxy::connection_limit::ConnectionLimits::for_connection(
                 &limits_config.current(),
@@ -1059,12 +1069,27 @@ fn run_server(
                 local,
             )
         },
-    );
+    )
+    .with_handshakes(Arc::clone(&handshakes));
+    {
+        let (connections, handshakes) = (Arc::clone(&connections), Arc::clone(&handshakes));
+        shutdown_request.count_open_with(move || {
+            (
+                connections.total(),
+                handshakes.in_progress(std::time::Duration::MAX),
+            )
+        });
+    }
     for note in zentinel_proxy::connection_limit::per_client_limit_notes(&config) {
         info!("{}", note);
     }
-    let mut proxy_service = pingora_core::services::listening::Service::new(
+    // Counts TLS handshakes in progress for the drain: Pingora calls this on
+    // each accepted TLS connection before the handshake.
+    let mut listeners = pingora_core::listeners::Listeners::new();
+    listeners.set_pre_tls_callback(handshakes.clone());
+    let mut proxy_service = pingora_core::services::listening::Service::with_listeners(
         "Zentinel Proxy".to_string(),
+        listeners,
         connection_app,
     );
 
@@ -1300,10 +1325,21 @@ fn run_server(
     }
 
     // Spawn signal handler task in the runtime
+    let shutdown_timeout =
+        std::time::Duration::from_secs(config.server.graceful_shutdown_timeout_secs);
     let signal_manager_clone = signal_manager.clone();
     let cert_reloader_clone = cert_reloader.clone();
     runtime.spawn(async move {
-        run_signal_handler(signal_manager_clone, config_manager, cert_reloader_clone).await;
+        run_signal_handler(
+            signal_manager_clone,
+            config_manager,
+            cert_reloader_clone,
+            connections,
+            handshakes,
+            shutdown_phases,
+            shutdown_timeout,
+        )
+        .await;
     });
 
     info!("Zentinel proxy started successfully");
@@ -1320,8 +1356,20 @@ fn run_server(
         plan.drop_privileges()?;
     }
 
-    // Run server forever
-    server.run_forever();
+    // Run server forever. `run` returns once Pingora has shut the services
+    // down, which `run_signal_handler` normally gets to first.
+    //
+    // From here a shutdown request goes through Pingora (the listeners stop,
+    // then `run_signal_handler` drains); before it the signal thread has
+    // already ended the process. A request that lands in between is held by
+    // `shutdown_request`, and Pingora's watcher sees it as soon as it starts.
+    shutdown_request.mark_serving();
+    server.run(pingora::server::RunArgs {
+        shutdown_signal: Box::new(zentinel_proxy::shutdown::ZentinelShutdownSignals {
+            request: shutdown_request,
+        }),
+    });
+    std::process::exit(0);
 }
 
 /// Setup OS signal handlers
@@ -1332,10 +1380,12 @@ fn run_server(
 fn setup_signal_handlers(
     mut signals: signal_hook::iterator::Signals,
     signal_tx: std::sync::mpsc::Sender<SignalType>,
+    shutdown_request: Arc<zentinel_proxy::shutdown::ShutdownRequest>,
     graceful_shutdown_timeout_secs: u64,
 ) {
     use signal_hook::consts::signal::*;
     use std::thread;
+    use zentinel_proxy::shutdown::Requested;
 
     for sig in [SIGTERM, SIGINT] {
         signals
@@ -1347,11 +1397,35 @@ fn setup_signal_handlers(
         for sig in signals.forever() {
             let signal_type = match sig {
                 SIGTERM | SIGINT => {
-                    info!(
-                        "Received shutdown signal ({}), initiating graceful shutdown",
-                        if sig == SIGTERM { "SIGTERM" } else { "SIGINT" }
-                    );
-                    SignalType::Shutdown
+                    let name = if sig == SIGTERM { "SIGTERM" } else { "SIGINT" };
+                    match shutdown_request.request() {
+                        Requested::Drain => {
+                            info!(
+                                "Received shutdown signal ({}), initiating graceful shutdown",
+                                name
+                            );
+                            if !shutdown_request.is_serving() {
+                                // Still starting: no listener is bound, so
+                                // there is nothing to drain and nothing to
+                                // wait for.
+                                info!("Shutdown requested during startup, exiting");
+                                std::process::exit(0);
+                            }
+                            spawn_shutdown_watchdog(graceful_shutdown_timeout_secs);
+                            SignalType::Shutdown
+                        }
+                        Requested::Force => {
+                            let (open_connections, handshakes_in_progress) =
+                                shutdown_request.open();
+                            warn!(
+                                open_connections,
+                                handshakes_in_progress,
+                                "Received {} while draining, exiting at once",
+                                name
+                            );
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 SIGHUP => {
                     info!("Received SIGHUP, triggering configuration reload");
@@ -1364,20 +1438,22 @@ fn setup_signal_handlers(
                 // Channel closed, runtime is shutting down
                 break;
             }
-
-            // For shutdown, wait for graceful shutdown to complete before force-exiting
-            if signal_type == SignalType::Shutdown {
-                // Wait for the configured graceful shutdown timeout plus a small buffer
-                let force_exit_secs = graceful_shutdown_timeout_secs.saturating_add(5);
-                thread::sleep(std::time::Duration::from_secs(force_exit_secs));
-                // Force exit if graceful shutdown takes too long
-                error!(
-                    timeout_secs = force_exit_secs,
-                    "Graceful shutdown timeout exceeded, forcing exit"
-                );
-                std::process::exit(1);
-            }
         }
+    });
+}
+
+/// Force the process out if the graceful shutdown has not finished in the
+/// configured timeout plus a small buffer. Its own thread, so the signal
+/// thread keeps listening for a second signal.
+fn spawn_shutdown_watchdog(graceful_shutdown_timeout_secs: u64) {
+    std::thread::spawn(move || {
+        let force_exit_secs = graceful_shutdown_timeout_secs.saturating_add(5);
+        std::thread::sleep(std::time::Duration::from_secs(force_exit_secs));
+        error!(
+            timeout_secs = force_exit_secs,
+            "Graceful shutdown timeout exceeded, forcing exit"
+        );
+        std::process::exit(1);
     });
 }
 
@@ -1574,6 +1650,10 @@ async fn run_signal_handler(
     signal_manager: Arc<SignalManager>,
     config_manager: Arc<zentinel_proxy::ConfigManager>,
     cert_reloader: Arc<CertificateReloader>,
+    connections: Arc<zentinel_common::limits::ConnectionLimiter>,
+    handshakes: Arc<zentinel_proxy::connection_limit::HandshakeTracker>,
+    mut shutdown_phases: tokio::sync::broadcast::Receiver<pingora::server::ExecutionPhase>,
+    shutdown_timeout: std::time::Duration,
 ) {
     loop {
         // Use spawn_blocking to wait for signals without blocking the async runtime
@@ -1617,12 +1697,46 @@ async fn run_signal_handler(
             }
             Ok(Some(SignalType::Shutdown)) => {
                 info!("Processing graceful shutdown request");
+                // Pingora has been told too (its watcher waits on the same shutdown request):
+                // the listeners stop accepting and open connections close after
+                // their current request. Exiting here, rather than in the signal
+                // thread, is what lets those requests finish.
+                info!(
+                    timeout_secs = shutdown_timeout.as_secs(),
+                    "Shutdown initiated, draining connections..."
+                );
+                match zentinel_proxy::shutdown::drain(
+                    &connections,
+                    &handshakes,
+                    &mut shutdown_phases,
+                    shutdown_timeout,
+                )
+                .await
+                {
+                    zentinel_proxy::shutdown::Drained::Complete(took) => {
+                        info!(
+                            elapsed_ms = took.as_millis() as u64,
+                            "All connections drained, exiting"
+                        );
+                    }
+                    zentinel_proxy::shutdown::Drained::TimedOut { open } => {
+                        warn!(
+                            open_connections = open,
+                            timeout_secs = shutdown_timeout.as_secs(),
+                            "Graceful shutdown timeout reached, closing remaining connections"
+                        );
+                    }
+                    zentinel_proxy::shutdown::Drained::ListenersNotStopped { open } => {
+                        warn!(
+                            open_connections = open,
+                            timeout_secs = shutdown_timeout.as_secs(),
+                            "Graceful shutdown timeout reached before the listeners were \
+                             confirmed stopped, exiting"
+                        );
+                    }
+                }
                 // Shutdown OpenTelemetry tracer to flush pending spans
                 zentinel_proxy::otel::shutdown_tracer();
-                // Note: Connection draining is handled by Pingora's internal mechanisms
-                // We give it a moment to start draining, then the signal thread will force exit
-                info!("Shutdown initiated, draining connections...");
-                // Exit cleanly - Pingora will handle connection draining
                 std::process::exit(0);
             }
             Ok(None) => {

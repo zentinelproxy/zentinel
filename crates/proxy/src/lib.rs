@@ -78,6 +78,7 @@ pub mod reload;
 pub mod routing;
 pub mod scoped_circuit_breaker;
 pub mod shadow;
+pub mod shutdown;
 pub mod static_files;
 pub mod tls;
 pub mod tls_metrics;

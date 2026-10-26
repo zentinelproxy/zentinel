@@ -91,6 +91,16 @@ for details.
 
 ## [Unreleased]
 
+### Fixed
+- **A reload did not load added, renamed or reconfigured agents** (#564).
+  Their filters called nothing and requests passed uninspected, with the
+  reload logged as successful. A reload now loads or rebuilds every agent the
+  new configuration adds or changes (including its `config { }` block) before
+  the new routes go live, and retires agents it no longer lists once their
+  routes are gone. Unchanged agents keep their connections. A rollback loads
+  the agents of the configuration it restores. Waiting for new agents is
+  bounded by their `connect-timeout-ms` plus 5 s, as at startup. (#567)
+
 ---
 
 ## [26.10_8] - 2026-10-22

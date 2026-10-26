@@ -22,11 +22,14 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pingora_core::apps::ServerApp;
-use pingora_core::protocols::Stream;
+use pingora_core::listeners::PreTlsProcess;
+use pingora_core::protocols::l4::stream::Stream as L4Stream;
+use pingora_core::protocols::{GetSocketDigest, SocketDigest, Stream};
 use pingora_core::server::ShutdownWatch;
 use tracing::warn;
 
@@ -145,6 +148,68 @@ pub fn per_client_limit_notes(config: &Config) -> Vec<String> {
         .collect()
 }
 
+/// TLS connections that have been accepted but have not finished their
+/// handshake.
+///
+/// [`ConnectionLimitedApp`] counts a connection only once its handshake is
+/// done, because that is when Pingora hands it to `process_new`. For
+/// `max-connections-per-client` that is the right moment, and this does not
+/// change it. A graceful shutdown needs the earlier moment too: a handshake
+/// that straddles the signal turns into a request, and ending the process
+/// resets it. So the tracker is only read by the drain, and takes no part in
+/// any limit.
+///
+/// A connection is entered by Pingora's pre-TLS hook, which runs on the raw
+/// TCP stream before the handshake (plain HTTP listeners have no handshake and
+/// do not call it), and removed when the handshaken connection reaches
+/// `process_new`. A handshake that fails is not reported to anyone, so each
+/// entry holds only a weak reference to the connection's socket digest: when
+/// Pingora drops the failed connection the entry dies with it.
+#[derive(Default)]
+pub struct HandshakeTracker {
+    pending: parking_lot::Mutex<Vec<(Weak<SocketDigest>, Instant)>>,
+}
+
+impl HandshakeTracker {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Handshakes that began less than `within` ago and have neither finished
+    /// nor failed.
+    pub fn in_progress(&self, within: Duration) -> usize {
+        let mut pending = self.pending.lock();
+        pending.retain(|(digest, _)| digest.strong_count() > 0);
+        pending
+            .iter()
+            .filter(|(_, began)| began.elapsed() < within)
+            .count()
+    }
+
+    fn began(&self, digest: &Arc<SocketDigest>) {
+        let mut pending = self.pending.lock();
+        pending.retain(|(digest, _)| digest.strong_count() > 0);
+        pending.push((Arc::downgrade(digest), Instant::now()));
+    }
+
+    fn finished(&self, digest: &Arc<SocketDigest>) {
+        let target = Arc::downgrade(digest);
+        self.pending
+            .lock()
+            .retain(|(entry, _)| !entry.ptr_eq(&target) && entry.strong_count() > 0);
+    }
+}
+
+#[async_trait]
+impl PreTlsProcess for HandshakeTracker {
+    async fn process(&self, stream: &mut L4Stream) -> pingora_core::Result<()> {
+        if let Some(digest) = stream.get_socket_digest() {
+            self.began(&digest);
+        }
+        Ok(())
+    }
+}
+
 type LimitsSource =
     Arc<dyn Fn(Option<IpAddr>, Option<SocketAddr>) -> ConnectionLimits + Send + Sync>;
 
@@ -159,6 +224,7 @@ pub struct ConnectionLimitedApp<A> {
     /// connections already open.
     namespaces: parking_lot::Mutex<HashMap<String, Arc<ConnectionLimiter>>>,
     limits: LimitsSource,
+    handshakes: Option<Arc<HandshakeTracker>>,
 }
 
 /// The slots one connection holds: the global one, and its namespace's and
@@ -178,7 +244,15 @@ impl<A> ConnectionLimitedApp<A> {
             limiter,
             namespaces: parking_lot::Mutex::new(HashMap::new()),
             limits: Arc::new(limits),
+            handshakes: None,
         }
+    }
+
+    /// Tell `tracker` when a connection's handshake is over, so it stops
+    /// being counted as one in progress.
+    pub fn with_handshakes(mut self, tracker: Arc<HandshakeTracker>) -> Self {
+        self.handshakes = Some(tracker);
+        self
     }
 
     /// Connections open in `namespace` (on listeners bound to it), or in a
@@ -254,7 +328,13 @@ where
     ) -> Option<Stream> {
         // Dropping the stream closes the connection. Nothing has been read
         // from it, so there is no request to answer with a status code.
-        let _permits = self.admit(peer_ip(&stream), local_addr(&stream))?;
+        let permits = self.admit(peer_ip(&stream), local_addr(&stream));
+        // The connection now holds its slot (or has been refused), so it is
+        // no longer in between; at no point is it in neither count.
+        if let (Some(tracker), Some(digest)) = (&self.handshakes, stream.get_socket_digest()) {
+            tracker.finished(&digest);
+        }
+        let _permits = permits?;
         self.inner.process_new(stream, shutdown).await
     }
 

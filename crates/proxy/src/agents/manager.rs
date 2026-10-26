@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::reload::ReloadHook;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::future::join_all;
 use pingora_timeout::timeout;
@@ -18,12 +19,53 @@ use zentinel_common::{
     types::CircuitBreakerConfig,
     CircuitBreaker,
 };
-use zentinel_config::{AgentConfig, BodyStreamingMode, FailureMode};
+use zentinel_config::{AgentConfig, BodyStreamingMode, Config, FailureMode};
 
 use super::agent_v2::AgentV2;
 use super::context::AgentCallContext;
 use super::decision::AgentDecision;
 use super::metrics::AgentMetrics;
+
+/// Loads the agents of a configuration before it becomes current.
+///
+/// Register it on the [`ConfigManager`](crate::reload::ConfigManager): its
+/// `pre_reload` hook runs ahead of the swap. Requests read `current()` to find
+/// the agent a filter names, and the config manager announces a reload only
+/// after it has stored the new config, so loading the agents from the reload
+/// handler alone leaves a window in which `current()` names agents that are not
+/// loaded yet (a fail-closed filter answers 503 meanwhile). Removing agents,
+/// and loading those of a rollback, stay with the reload handler.
+pub struct AgentReloadHook {
+    manager: Arc<AgentManager>,
+}
+
+impl AgentReloadHook {
+    pub fn new(manager: Arc<AgentManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl ReloadHook for AgentReloadHook {
+    async fn pre_reload(&self, _old: &Config, new: &Config) -> ZentinelResult<()> {
+        let changes = self.manager.reconcile(&new.agents).await;
+        info!(
+            added = changes.added,
+            replaced = changes.replaced,
+            unchanged = changes.unchanged,
+            "Agents loaded for the new configuration"
+        );
+        Ok(())
+    }
+
+    async fn post_reload(&self, _old: &Config, _new: &Config) {}
+
+    async fn on_failure(&self, _config: &Config, _error: &ZentinelError) {}
+
+    fn name(&self) -> &str {
+        "agents"
+    }
+}
 
 /// Agent manager handling all external agents.
 ///
@@ -38,6 +80,32 @@ pub struct AgentManager {
     metrics: Arc<AgentMetrics>,
     /// Per-agent semaphores for queue isolation (prevents noisy neighbor problem)
     agent_semaphores: Arc<RwLock<HashMap<String, Arc<Semaphore>>>>,
+}
+
+/// What [`AgentManager::reconcile`] did, for the reload log line.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AgentReconcile {
+    /// Agents in the new config that were not loaded.
+    pub added: usize,
+    /// Agents whose config changed, rebuilt with a new connection pool.
+    pub replaced: usize,
+    /// Agents whose config is the same, kept with their connections.
+    pub unchanged: usize,
+}
+
+/// Two agent configs are the same when they serialize to the same value.
+/// `AgentConfig` holds types without `PartialEq`, and a config that fails to
+/// serialize is never "the same": the agent is rebuilt.
+///
+/// This includes the `config { }` block, which is delivered on every new
+/// connection (#603): changing it rebuilds the agent, so its new connections
+/// get the new block. It compares the settings, including file paths, not the
+/// contents of the files they name.
+fn same_agent_config(a: &AgentConfig, b: &AgentConfig) -> bool {
+    match (serde_json::to_value(a), serde_json::to_value(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// The proxy-side circuit breaker for one agent.
@@ -274,6 +342,148 @@ impl AgentManager {
             metrics: Arc::new(AgentMetrics::default()),
             agent_semaphores: Arc::new(RwLock::new(semaphores)),
         })
+    }
+
+    /// Load the agents of a reloaded config that are not loaded yet, and
+    /// rebuild the ones whose config changed.
+    ///
+    /// The manager was built once at startup and never again. A reload that
+    /// added an agent, or renamed one (a route's filter then names an agent
+    /// the manager does not have), left the new filters naming an agent that
+    /// is not loaded, which is a failed call (#571). The log said the reload
+    /// succeeded.
+    ///
+    /// An agent whose config is unchanged is kept, with its connections and
+    /// circuit breaker: reloading an unrelated part of the config must not
+    /// drop a working agent. A replaced agent is retired, so the calls in
+    /// flight on it finish (#570).
+    ///
+    /// Changed and added agents connect together, bounded as at startup
+    /// (#599): the reload waits for them at most the longest
+    /// [`AgentV2::startup_wait`]. One that has not connected by then is loaded
+    /// anyway, its connection attempt carries on in the background, and its
+    /// filters follow their failure mode until it does. Nothing is locked
+    /// while it connects.
+    ///
+    /// Agents missing from `agents` stay loaded: the routes of the previous
+    /// config may still be serving, and they call those agents. Drop them
+    /// with [`Self::remove_unlisted`] once the new routes are live.
+    pub async fn reconcile(&self, agents: &[AgentConfig]) -> AgentReconcile {
+        let mut changes = AgentReconcile::default();
+
+        // Decide under the read lock; build and connect outside any lock.
+        let mut build: Vec<&AgentConfig> = Vec::new();
+        {
+            let loaded = self.agents.read().await;
+            for config in agents {
+                match loaded.get(&config.id) {
+                    Some(old) if same_agent_config(old.config(), config) => changes.unchanged += 1,
+                    Some(_) => {
+                        changes.replaced += 1;
+                        build.push(config);
+                    }
+                    None => {
+                        changes.added += 1;
+                        build.push(config);
+                    }
+                }
+            }
+        }
+        if build.is_empty() {
+            return changes;
+        }
+
+        let built: Vec<(Arc<AgentV2>, Arc<Semaphore>)> = build
+            .into_iter()
+            .map(|config| {
+                let circuit_breaker = Arc::new(agent_circuit_breaker(config));
+                (
+                    Arc::new(AgentV2::new(config.clone(), circuit_breaker)),
+                    Arc::new(Semaphore::new(config.max_concurrent_calls)),
+                )
+            })
+            .collect();
+
+        let wait = built
+            .iter()
+            .map(|(agent, _)| agent.startup_wait())
+            .max()
+            .unwrap_or_default();
+        let connecting: Vec<_> = built
+            .iter()
+            .map(|(agent, _)| {
+                let agent = Arc::clone(agent);
+                tokio::spawn(async move {
+                    if let Err(e) = agent.initialize().await {
+                        error!(
+                            agent_id = %agent.id(),
+                            error = %e,
+                            "Failed to initialize agent after reload"
+                        );
+                    }
+                })
+            })
+            .collect();
+        // The tasks outlive the wait: dropping a join handle detaches it.
+        match timeout(wait, join_all(connecting)).await {
+            Ok(results) => {
+                for e in results.into_iter().filter_map(Result::err) {
+                    error!(error = %e, "Agent initialization task failed");
+                }
+            }
+            Err(_) => warn!(
+                waited_ms = wait.as_millis(),
+                "Not waiting any longer for reloaded agents to connect; their filters \
+                 follow their failure mode until they do"
+            ),
+        }
+
+        let mut replaced_agents = Vec::new();
+        {
+            // Lock order: agents, then semaphores.
+            let mut loaded = self.agents.write().await;
+            let mut semaphores = self.agent_semaphores.write().await;
+            for (agent, semaphore) in built {
+                // A replaced agent gets a fresh semaphore while calls in
+                // flight hold permits on the old one, so for a short time up
+                // to twice `max_concurrent_calls` may run.
+                let id = agent.id().to_string();
+                semaphores.insert(id.clone(), semaphore);
+                if let Some(old) = loaded.insert(id, agent) {
+                    replaced_agents.push(old);
+                }
+            }
+        }
+        for old in replaced_agents {
+            old.retire();
+        }
+
+        changes
+    }
+
+    /// Whether an agent with this id is loaded.
+    pub async fn is_loaded(&self, id: &str) -> bool {
+        self.agents.read().await.contains_key(id)
+    }
+
+    /// Take out of service the agents that `agents`, the config now in
+    /// force, no longer lists. Returns how many.
+    pub async fn remove_unlisted(&self, agents: &[AgentConfig]) -> usize {
+        let gone: Vec<String> = self
+            .agents
+            .read()
+            .await
+            .keys()
+            .filter(|id| !agents.iter().any(|a| &a.id == *id))
+            .cloned()
+            .collect();
+        let mut removed = 0;
+        for id in &gone {
+            if self.remove(id).await {
+                removed += 1;
+            }
+        }
+        removed
     }
 
     /// Check if any of the given route agents handle a specific event type.
@@ -2277,5 +2487,119 @@ mod tests {
             assert!(Instant::now() < deadline, "pool never closed");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    fn agent_named(id: &str) -> AgentConfig {
+        let mut config = agent_from_kdl("");
+        config.id = id.to_string();
+        config.config = None;
+        config
+    }
+
+    /// Reload brings the loaded agents in line with the new config: an added
+    /// agent is loaded, one whose config changed is rebuilt, an unchanged
+    /// one is the very same agent, and one the config dropped is removed.
+    #[tokio::test]
+    async fn reconcile_loads_rebuilds_keeps_and_removes_agents() {
+        let manager = AgentManager::new(vec![agent_named("a"), agent_named("b")])
+            .await
+            .expect("manager");
+        let loaded = |id: &str| manager.agents.try_read().unwrap().get(id).cloned();
+        let (a, b) = (loaded("a").unwrap(), loaded("b").unwrap());
+
+        let mut b_changed = agent_named("b");
+        b_changed.timeout_ms += 1;
+        let next = [agent_named("a"), b_changed, agent_named("c")];
+
+        let changes = manager.reconcile(&next).await;
+        assert_eq!(
+            changes,
+            AgentReconcile {
+                added: 1,
+                replaced: 1,
+                unchanged: 1
+            }
+        );
+        assert!(Arc::ptr_eq(&a, &loaded("a").unwrap()), "unchanged: kept");
+        assert!(!Arc::ptr_eq(&b, &loaded("b").unwrap()), "changed: rebuilt");
+        assert!(loaded("c").is_some(), "added: loaded");
+
+        // An agent the new config drops stays loaded until the caller has
+        // swapped the routes that still call it.
+        let only_c = vec![agent_named("c")];
+        assert_eq!(
+            manager.reconcile(&only_c).await,
+            AgentReconcile {
+                unchanged: 1,
+                ..Default::default()
+            }
+        );
+        assert!(loaded("a").is_some());
+        assert_eq!(manager.remove_unlisted(&only_c).await, 2);
+        assert!(loaded("a").is_none() && loaded("b").is_none());
+        assert!(loaded("c").is_some());
+        assert!(manager.agent_semaphores.read().await.contains_key("c"));
+        assert!(!manager.agent_semaphores.read().await.contains_key("a"));
+    }
+
+    /// The `config { }` block is delivered when a connection is made (#603),
+    /// so a reload that changes only that block must rebuild the agent: a
+    /// kept agent would go on handing its connections the old block.
+    #[tokio::test]
+    async fn a_reload_that_changes_only_the_config_block_rebuilds_the_agent() {
+        let with_block = |value: serde_json::Value| {
+            let mut config = agent_named("a");
+            config.config = Some(value);
+            config
+        };
+        let manager = AgentManager::new(vec![with_block(serde_json::json!({"level": 1}))])
+            .await
+            .expect("manager");
+        let before = manager.agents.read().await.get("a").cloned().unwrap();
+
+        let same = [with_block(serde_json::json!({"level": 1}))];
+        assert_eq!(manager.reconcile(&same).await.unchanged, 1);
+
+        let changed = [with_block(serde_json::json!({"level": 2}))];
+        assert_eq!(manager.reconcile(&changed).await.replaced, 1);
+        let after = manager.agents.read().await.get("a").cloned().unwrap();
+        assert!(!Arc::ptr_eq(&before, &after), "the agent was rebuilt");
+        assert_eq!(
+            after.config().config,
+            Some(serde_json::json!({"level": 2})),
+            "and carries the new block"
+        );
+    }
+
+    /// A reload that adds an agent which accepts the connection and never
+    /// answers must not hold the reload (#599): the agent is loaded, its
+    /// connection attempt is bounded by `connect-timeout-ms`, and its
+    /// filters follow their failure mode meanwhile.
+    #[tokio::test]
+    async fn a_silent_agent_added_by_a_reload_does_not_hold_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("silent.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let mut silent = agent_named("silent");
+        silent.transport = zentinel_config::AgentTransport::UnixSocket { path: socket };
+        silent.connect_timeout_ms = Some(300);
+        let manager = AgentManager::new(Vec::new()).await.expect("manager");
+
+        let started = Instant::now();
+        let changes = manager.reconcile(&[silent]).await;
+        assert_eq!(changes.added, 1);
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the reload waited {:?} for a silent agent",
+            started.elapsed()
+        );
+        assert!(manager.is_loaded("silent").await);
     }
 }

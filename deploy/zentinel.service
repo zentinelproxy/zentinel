@@ -10,11 +10,14 @@ StartLimitBurst=3
 Type=simple
 ExecStart=/usr/local/bin/zentinel --config /etc/zentinel/zentinel.kdl
 ExecReload=/bin/kill -HUP $MAINPID
-ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=10
-TimeoutStopSec=30
+# Longer than graceful-shutdown-timeout-secs (default 30): the proxy waits that
+# long for open connections to finish, and systemd must not kill it first.
+TimeoutStopSec=35
+# No ExecStop: systemd sends KillSignal once. An `ExecStop=kill -TERM` would make
+# it two SIGTERMs, and the second one ends the proxy's drain.
 KillMode=mixed
 KillSignal=SIGTERM
 

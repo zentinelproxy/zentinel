@@ -27,7 +27,7 @@ Global server configuration.
 |----------|------|---------|-------------|
 | `worker-threads` | `u32` | `0` | Number of worker threads (0 = auto-detect CPU cores) |
 | `max-connections` | `u32` | `10000` | Maximum total connections |
-| `graceful-shutdown-timeout-secs` | `u64` | `30` | Graceful shutdown timeout in seconds |
+| `graceful-shutdown-timeout-secs` | `u64` | `30` | On SIGTERM/SIGINT, how long to wait for open connections to close before exiting (seconds). The process exits earlier once none are left. A second SIGTERM/SIGINT while it waits ends the process at once |
 | `daemon` | `bool` | `false` | Run as daemon, as with `-d`. The configuration is checked before the fork, so a broken one fails in the foreground |
 | `pid-file` | `string` | `/tmp/pingora.pid` | Path to the PID file a daemon writes (an existing one is renamed to `<pid-file>.old`) |
 | `user` | `string` | - | User a daemon switches to once the configuration, TLS keys and log files are loaded, before listeners are bound. Ignored in the foreground |
