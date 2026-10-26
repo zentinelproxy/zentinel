@@ -46,7 +46,7 @@ pub use zentinel_config::agents::DEFAULT_AGENT_MAX_BODY_BYTES;
 pub use agent_v2::AgentV2;
 pub use context::AgentCallContext;
 pub use decision::{AgentAction, AgentDecision};
-pub use manager::{AgentManager, BodyAgent, FilterAgent};
+pub use manager::{AgentManager, AgentReloadHook, BodyAgent, FilterAgent};
 pub use metrics::AgentMetrics;
 
 #[cfg(test)]

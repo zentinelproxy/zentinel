@@ -99,8 +99,10 @@ curl -fsSL https://get.zentinelproxy.io | sh
 # Install and start as a systemd service (Linux, root or sudo)
 curl -fsSL https://get.zentinelproxy.io | sh -s -- --enable-service
 
-# From crates.io (the crate is zentinel-proxy, the binary is zentinel)
-cargo install zentinel-proxy
+# From crates.io (the crate is zentinel-proxy, the binary is zentinel).
+# --locked builds with the tested dependency versions; without it a fresh
+# resolve can pick tokio 1.54, which the current Pingora fork cannot run on (#624).
+cargo install --locked zentinel-proxy
 
 # Docker
 docker run -p 8080:8080 -v $(pwd)/zentinel.kdl:/etc/zentinel/zentinel.kdl \

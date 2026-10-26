@@ -30,7 +30,7 @@ waf = "0.4.1"
 denylist = "0.4.0"
 
 # Security agents
-zentinelsec = "0.4.0"
+zentinelsec = "0.4.1"
 modsec = "0.4.1"
 ip-reputation = "0.5.0"
 bot-management = "0.5.0"

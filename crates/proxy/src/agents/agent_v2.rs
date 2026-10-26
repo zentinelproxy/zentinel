@@ -127,6 +127,11 @@ impl AgentV2 {
         self.connect_timeout + MIN_CONFIGURE_WAIT
     }
 
+    /// The configuration this agent was built from.
+    pub fn config(&self) -> &AgentConfig {
+        &self.config
+    }
+
     /// Get the agent ID.
     pub fn id(&self) -> &str {
         &self.config.id
