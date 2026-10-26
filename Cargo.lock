@@ -342,9 +342,9 @@ dependencies = [
 
 [[package]]
 name = "async-memcached"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6046f7e0e2d5981b9fe5e40dec6584126214b99200bd4cda3c6eb988b1824e16"
+checksum = "c1b80b3085d43b4736615d4645d43fe0f8f093cb8ab3aea852baff6d5493821d"
 dependencies = [
  "async-stream",
  "btoi",
