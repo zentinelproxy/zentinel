@@ -1385,9 +1385,19 @@ fn run_server(
 
 /// Setup OS signal handlers
 ///
-/// Adds SIGTERM and SIGINT to `signals` (registered for SIGHUP at the start of
-/// `run_server`) and forwards all three to the async runtime via the signal
-/// manager. A SIGHUP that arrived during startup is delivered now.
+/// Adds SIGTERM and SIGINT to `signals` (registered for SIGHUP, SIGUSR1 and
+/// SIGUSR2 at the start of `run_server`) and forwards them to the async
+/// runtime via the signal manager. What each one does:
+///
+/// - SIGTERM, SIGINT: graceful shutdown (see `zentinel_proxy::shutdown`); a
+///   second one while draining ends the process at once.
+/// - SIGHUP: reload the configuration.
+/// - SIGUSR1: reopen the access, error and audit log files, for logrotate's
+///   `postrotate`.
+/// - SIGUSR2: ignored. It is registered only so that it does not terminate the
+///   process, which is its default disposition.
+///
+/// A SIGHUP or SIGUSR1 that arrived during startup is delivered now.
 fn setup_signal_handlers(
     mut signals: signal_hook::iterator::Signals,
     signal_tx: std::sync::mpsc::Sender<SignalType>,
