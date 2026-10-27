@@ -11,7 +11,10 @@
 //! them. [`drain`] is the part that watches the connections, so the process
 //! can end as soon as they are gone, and not before. It ends the process
 //! itself, within the timeout, so Pingora's own sleep (300 s by default, which
-//! `-u` upgrades still use for the old process) never gets to run out.
+//! `-u` upgrades still use for the old process) never gets to run out. A
+//! timeout above 300 s would let it, and cut the drain short, so
+//! [`pingora_grace_period_seconds`] stretches the sleep then. It does so from
+//! 291 s, to keep the watchdog ahead of it with a margin.
 //!
 //! # Where a shutdown request comes from
 //!
@@ -52,6 +55,40 @@ use tokio::time::sleep;
 use zentinel_common::limits::ConnectionLimiter;
 
 use crate::connection_limit::HandshakeTracker;
+
+/// How long after `graceful-shutdown-timeout-secs` the watchdog in `main.rs`
+/// forces the process out if the drain itself has hung.
+pub const FORCE_EXIT_MARGIN_SECS: u64 = 5;
+
+/// How long Pingora sleeps after a graceful shutdown starts when
+/// `grace_period_seconds` is not set (`EXIT_TIMEOUT` in
+/// `zentinel-pingora-core`'s `server/mod.rs`).
+const PINGORA_DEFAULT_GRACE_SECS: u64 = 300;
+
+/// The `grace_period_seconds` to give Pingora for a drain of
+/// `graceful_shutdown_timeout_secs`, or `None` to leave its default.
+///
+/// Pingora's `run()` sleeps for this long and then returns, which ends the
+/// process with status 0. The drain ends the process at the timeout, and the
+/// watchdog [`FORCE_EXIT_MARGIN_SECS`] after that, so the sleep has to outlast
+/// both: with the default 300 s it does for any timeout up to 290 s. Above
+/// 300 s `run()` would return first and cut the drain short; from 291 s to
+/// 300 s the drain still ends first, but the watchdog would not be ahead of
+/// `run()`. One margin more than the watchdog's keeps the watchdog's status
+/// (1) from racing `run()`'s.
+pub fn pingora_grace_period_seconds(graceful_shutdown_timeout_secs: u64) -> Option<u64> {
+    let needed = graceful_shutdown_timeout_secs.saturating_add(2 * FORCE_EXIT_MARGIN_SECS);
+    (needed > PINGORA_DEFAULT_GRACE_SECS).then_some(needed)
+}
+
+/// Give Pingora the shutdown settings for `graceful_shutdown_timeout_secs`.
+pub fn configure_pingora_shutdown(
+    conf: &mut pingora_core::server::configuration::ServerConf,
+    graceful_shutdown_timeout_secs: u64,
+) {
+    conf.graceful_shutdown_timeout_seconds = Some(graceful_shutdown_timeout_secs);
+    conf.grace_period_seconds = pingora_grace_period_seconds(graceful_shutdown_timeout_secs);
+}
 
 /// How often the open connections are counted while draining.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -247,6 +284,42 @@ pub async fn drain(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pingora_keeps_its_default_sleep_for_timeouts_it_already_outlasts() {
+        for timeout in [1, 30, 60, 290] {
+            assert_eq!(pingora_grace_period_seconds(timeout), None, "{timeout}");
+        }
+    }
+
+    #[test]
+    fn pingora_sleeps_past_the_watchdog_for_longer_timeouts() {
+        for timeout in [291, 300, 301, 600, 86_400] {
+            let grace = pingora_grace_period_seconds(timeout).unwrap();
+            assert!(
+                grace > timeout + FORCE_EXIT_MARGIN_SECS && grace > PINGORA_DEFAULT_GRACE_SECS,
+                "{timeout}: {grace}"
+            );
+        }
+        assert_eq!(pingora_grace_period_seconds(600), Some(610));
+        assert_eq!(pingora_grace_period_seconds(u64::MAX), Some(u64::MAX));
+    }
+
+    #[test]
+    fn the_server_conf_is_built_from_the_configured_timeout() {
+        use pingora_core::server::configuration::ServerConf;
+        let built = |timeout| {
+            let mut conf = ServerConf::default();
+            configure_pingora_shutdown(&mut conf, timeout);
+            (
+                conf.graceful_shutdown_timeout_seconds,
+                conf.grace_period_seconds,
+            )
+        };
+        // The default leaves Pingora's own sleep alone.
+        assert_eq!(built(30), (Some(30), None));
+        assert_eq!(built(600), (Some(600), Some(610)));
+    }
 
     fn announced(phase: ExecutionPhase) -> broadcast::Receiver<ExecutionPhase> {
         let (tx, rx) = broadcast::channel(8);

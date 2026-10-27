@@ -994,8 +994,10 @@ fn run_server(
     pingora_conf.upstream_keepalive_pool_size = 256; // Increase from default 128
 
     // Wire server config → Pingora ServerConf
-    pingora_conf.graceful_shutdown_timeout_seconds =
-        Some(config.server.graceful_shutdown_timeout_secs);
+    zentinel_proxy::shutdown::configure_pingora_shutdown(
+        &mut pingora_conf,
+        config.server.graceful_shutdown_timeout_secs,
+    );
     if let Some(ref pid_path) = config.server.pid_file {
         pingora_conf.pid_file = pid_path.to_string_lossy().to_string();
     }
@@ -1478,7 +1480,8 @@ fn setup_signal_handlers(
 /// thread keeps listening for a second signal.
 fn spawn_shutdown_watchdog(graceful_shutdown_timeout_secs: u64) {
     std::thread::spawn(move || {
-        let force_exit_secs = graceful_shutdown_timeout_secs.saturating_add(5);
+        let force_exit_secs = graceful_shutdown_timeout_secs
+            .saturating_add(zentinel_proxy::shutdown::FORCE_EXIT_MARGIN_SECS);
         std::thread::sleep(std::time::Duration::from_secs(force_exit_secs));
         error!(
             timeout_secs = force_exit_secs,
