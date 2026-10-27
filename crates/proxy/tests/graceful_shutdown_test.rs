@@ -573,6 +573,139 @@ fn two_sigints_exit_at_once() {
     second_signal_forces_exit(libc::SIGINT, libc::SIGINT, Duration::from_millis(1500));
 }
 
+/// A config whose access and error logs buffer 1 MiB, so nothing reaches the
+/// files until the process flushes them. `/dead` is routed to a port nobody
+/// listens on, which is what puts a line in the error log.
+fn write_buffered_log_config(
+    dir: &Path,
+    proxy: u16,
+    backend: u16,
+    dead: u16,
+    access: &Path,
+    error: &Path,
+) -> std::path::PathBuf {
+    let config = dir.join("zentinel.kdl");
+    std::fs::write(
+        &config,
+        format!(
+            r#"
+system {{
+    worker-threads 1
+    graceful-shutdown-timeout-secs 20
+}}
+listeners {{
+    listener "http" {{
+        address "127.0.0.1:{proxy}"
+        protocol "http"
+    }}
+}}
+routes {{
+    route "dead" {{
+        matches {{ path-prefix "/dead" }}
+        upstream "dead"
+    }}
+    route "served" {{
+        matches {{ path-prefix "/served" }}
+        upstream "backend"
+    }}
+}}
+upstreams {{
+    upstream "backend" {{
+        target "127.0.0.1:{backend}"
+    }}
+    upstream "dead" {{
+        target "127.0.0.1:{dead}"
+    }}
+}}
+observability {{
+    metrics {{ enabled #false }}
+    logging {{
+        access-log {{
+            enabled #true
+            file "{access}"
+            format "json"
+            buffer-size 1048576
+        }}
+        error-log {{
+            enabled #true
+            file "{error}"
+            buffer-size 1048576
+        }}
+    }}
+}}
+"#,
+            access = access.display(),
+            error = error.display(),
+        ),
+    )
+    .unwrap();
+    config
+}
+
+/// The access and error lines of requests served before the signal are still
+/// buffered when the signal arrives (1 MiB buffers, nothing written yet). The
+/// drain ends in `exit(0)`, which runs no destructors, so the lines are in the
+/// files only if the process flushed them first.
+fn buffered_logs_are_written_before_exit(sig: libc::c_int) {
+    let backend = slow_backend(Duration::ZERO);
+    let dead = free_port();
+    let proxy_port = free_port();
+    let dir = tempfile::tempdir().unwrap();
+    let access = dir.path().join("access.log");
+    let error = dir.path().join("error.log");
+    let mut proxy = Proxy::start(
+        &write_buffered_log_config(dir.path(), proxy_port, backend, dead, &access, &error),
+        proxy_port,
+    );
+
+    for path in ["/served-before-the-signal", "/dead/unreachable"] {
+        let mut stream = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        assert!(response.starts_with("HTTP/1.1 "), "{path}: {response:?}");
+    }
+    // The lines are only in the buffers: if they were written through, this
+    // test would pass whether or not the exit path flushes.
+    assert_eq!(std::fs::read_to_string(&access).unwrap(), "");
+    assert_eq!(std::fs::read_to_string(&error).unwrap(), "");
+
+    proxy.signal(sig);
+    let (status, _) = proxy.wait_exit(Duration::from_secs(15));
+    assert!(status.success(), "{status:?}");
+
+    let access_log = std::fs::read_to_string(&access).unwrap();
+    assert!(
+        access_log.contains("/served-before-the-signal")
+            && access_log.contains("/dead/unreachable"),
+        "the access log lost its buffered lines at exit: {access_log:?}; log:\n{}",
+        proxy.log.join("\n")
+    );
+    let error_log = std::fs::read_to_string(&error).unwrap();
+    assert!(
+        error_log.contains("Failed to connect to upstream peer"),
+        "the error log lost its buffered line at exit: {error_log:?}; log:\n{}",
+        proxy.log.join("\n")
+    );
+}
+
+#[test]
+fn sigterm_writes_the_buffered_logs_before_exiting() {
+    buffered_logs_are_written_before_exit(libc::SIGTERM);
+}
+
+#[test]
+fn sigint_writes_the_buffered_logs_before_exiting() {
+    buffered_logs_are_written_before_exit(libc::SIGINT);
+}
+
 /// A TLS listener, with the test CA's server certificate for `localhost`.
 fn write_tls_config(dir: &Path, proxy: u16, backend: u16, timeout_secs: u64) -> std::path::PathBuf {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/tls");

@@ -1762,6 +1762,12 @@ async fn run_signal_handler(
                         );
                     }
                 }
+                // `exit` does not run destructors, so the access, error and
+                // audit lines still held in the writers' buffers (up to
+                // `buffer-size` bytes each) would be lost. This is the
+                // graceful path only: a second signal and the watchdog end
+                // the process at once, without waiting on a log lock.
+                log_manager.flush();
                 // Shutdown OpenTelemetry tracer to flush pending spans
                 zentinel_proxy::otel::shutdown_tracer();
                 std::process::exit(0);
