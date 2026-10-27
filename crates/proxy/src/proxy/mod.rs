@@ -2054,18 +2054,21 @@ mod reload_rollback_tests {
         );
     }
 
-    /// A top-level `agents` block with one agent, `id`, whose socket is absent.
-    fn agent(id: &str) -> String {
+    /// A top-level `agents` block with one agent, `id`, whose socket, under
+    /// `dir`, is absent.
+    fn agent(dir: &std::path::Path, id: &str) -> String {
+        let socket = dir.join(format!("{id}.sock"));
         format!(
             r#"agents {{
                 agent "{id}" {{
                     type "custom"
-                    unix-socket path="/tmp/zentinel-no-such-{id}.sock"
+                    unix-socket path="{socket}"
                     events "request_headers"
                     timeout-ms 1000
                     failure-mode "closed"
                 }}
-            }}"#
+            }}"#,
+            socket = socket.display()
         )
     }
 
@@ -2087,10 +2090,12 @@ mod reload_rollback_tests {
     /// nothing.
     #[tokio::test]
     async fn a_rollback_loads_the_agents_of_the_previous_config() {
-        let h = Harness::start_with(true, &kdl("a", "^/a", &agent("one"))).await;
+        let sockets = tempfile::tempdir().expect("tempdir");
+        let dir = sockets.path();
+        let h = Harness::start_with(true, &kdl("a", "^/a", &agent(dir, "one"))).await;
         assert!(h.agents.is_loaded("one").await);
 
-        h.write(&kdl("a", "^/a", &agent("two")));
+        h.write(&kdl("a", "^/a", &agent(dir, "two")));
         h.manager
             .reload(ReloadTrigger::Manual)
             .await
