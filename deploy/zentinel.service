@@ -14,8 +14,11 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=10
 # Longer than graceful-shutdown-timeout-secs (default 30): the proxy waits that
-# long for open connections to finish, and systemd must not kill it first.
-TimeoutStopSec=35
+# long for open connections to finish, and systemd must not kill it first. Its
+# own watchdog forces an exit 5 s after the timeout (35 s by default), so keep
+# this at least 10 s above the timeout; if the two were equal, systemd's SIGKILL
+# would race the watchdog's logged exit.
+TimeoutStopSec=40
 # No ExecStop: systemd sends KillSignal once. An `ExecStop=kill -TERM` would make
 # it two SIGTERMs, and the second one ends the proxy's drain.
 KillMode=mixed

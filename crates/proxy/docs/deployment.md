@@ -54,8 +54,9 @@ sudo systemctl enable --now zentinel
 sudo systemctl reload zentinel
 
 # Restart (stops accepting, waits up to graceful-shutdown-timeout-secs for open
-# connections to finish, then starts again; keep systemd's TimeoutStopSec above
-# that timeout). A second SIGTERM/SIGINT while it waits ends the process at once.
+# connections to finish, then starts again). Keep systemd's TimeoutStopSec at
+# least 10 s above that timeout: the proxy forces its own exit 5 s after it.
+# A second SIGTERM/SIGINT while it waits ends the process at once.
 sudo systemctl restart zentinel
 
 # Stop and disable. The unit has no ExecStop: systemd sends KillSignal=SIGTERM
