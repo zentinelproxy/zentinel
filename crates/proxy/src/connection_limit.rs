@@ -164,10 +164,28 @@ pub fn per_client_limit_notes(config: &Config) -> Vec<String> {
 /// do not call it), and removed when the handshaken connection reaches
 /// `process_new`. A handshake that fails is not reported to anyone, so each
 /// entry holds only a weak reference to the connection's socket digest: when
-/// Pingora drops the failed connection the entry dies with it.
+/// Pingora drops the failed connection the entry no longer counts.
+///
+/// Entries are keyed by the address of the digest, so `began` and `finished`
+/// are O(1) on the accept path. The address cannot be reused while an entry
+/// exists: a `Weak` keeps the allocation reserved even after the last `Arc`
+/// is gone. Entries of failed handshakes are swept when the map has doubled
+/// since the last sweep, which keeps the cost per accept constant on average
+/// and the dead entries within twice the live count at the last sweep (at
+/// least 64).
 #[derive(Default)]
 pub struct HandshakeTracker {
-    pending: parking_lot::Mutex<Vec<(Weak<SocketDigest>, Instant)>>,
+    pending: parking_lot::Mutex<Pending>,
+}
+
+/// Below this many entries a sweep is not worth its cost.
+const MIN_SWEEP_AT: usize = 64;
+
+#[derive(Default)]
+struct Pending {
+    entries: HashMap<usize, (Weak<SocketDigest>, Instant)>,
+    /// The size at which the next `began` sweeps out dead entries first.
+    sweep_at: usize,
 }
 
 impl HandshakeTracker {
@@ -178,25 +196,44 @@ impl HandshakeTracker {
     /// Handshakes that began less than `within` ago and have neither finished
     /// nor failed.
     pub fn in_progress(&self, within: Duration) -> usize {
+        // Only the drain calls this, every poll interval, so it may walk
+        // every entry.
         let mut pending = self.pending.lock();
-        pending.retain(|(digest, _)| digest.strong_count() > 0);
         pending
-            .iter()
+            .entries
+            .retain(|_, (digest, _)| digest.strong_count() > 0);
+        pending
+            .entries
+            .values()
             .filter(|(_, began)| began.elapsed() < within)
             .count()
     }
 
     fn began(&self, digest: &Arc<SocketDigest>) {
         let mut pending = self.pending.lock();
-        pending.retain(|(digest, _)| digest.strong_count() > 0);
-        pending.push((Arc::downgrade(digest), Instant::now()));
+        if pending.entries.len() >= pending.sweep_at.max(MIN_SWEEP_AT) {
+            pending
+                .entries
+                .retain(|_, (digest, _)| digest.strong_count() > 0);
+            pending.sweep_at = pending.entries.len().saturating_mul(2).max(MIN_SWEEP_AT);
+        }
+        pending.entries.insert(
+            Arc::as_ptr(digest) as usize,
+            (Arc::downgrade(digest), Instant::now()),
+        );
     }
 
     fn finished(&self, digest: &Arc<SocketDigest>) {
-        let target = Arc::downgrade(digest);
         self.pending
             .lock()
-            .retain(|(entry, _)| !entry.ptr_eq(&target) && entry.strong_count() > 0);
+            .entries
+            .remove(&(Arc::as_ptr(digest) as usize));
+    }
+
+    /// Entries held, live or not, for the tests.
+    #[cfg(test)]
+    fn entries(&self) -> usize {
+        self.pending.lock().entries.len()
     }
 }
 
@@ -637,5 +674,144 @@ mod tests {
         let notes = per_client_limit_notes(&config);
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].contains("'direct'") && notes[0].contains("trusted-proxies"));
+    }
+
+    fn digest() -> Arc<SocketDigest> {
+        Arc::new(SocketDigest::from_raw_fd(-1))
+    }
+
+    #[test]
+    fn handshakes_are_counted_from_began_until_finished() {
+        let tracker = HandshakeTracker::default();
+        let (a, b) = (digest(), digest());
+        let wait = Duration::from_secs(60);
+        assert_eq!(tracker.in_progress(wait), 0);
+        tracker.began(&a);
+        tracker.began(&b);
+        assert_eq!(tracker.in_progress(wait), 2);
+        tracker.finished(&a);
+        assert_eq!(tracker.in_progress(wait), 1);
+        // A second `finished`, or one for a connection never entered, changes
+        // nothing.
+        tracker.finished(&a);
+        tracker.finished(&digest());
+        assert_eq!(tracker.in_progress(wait), 1);
+        tracker.finished(&b);
+        assert_eq!(tracker.in_progress(wait), 0);
+    }
+
+    #[test]
+    fn a_handshake_that_fails_stops_counting_when_its_connection_is_dropped() {
+        let tracker = HandshakeTracker::default();
+        let wait = Duration::from_secs(60);
+        let (kept, failed) = (digest(), digest());
+        tracker.began(&kept);
+        tracker.began(&failed);
+        assert_eq!(tracker.in_progress(wait), 2);
+        drop(failed);
+        assert_eq!(tracker.in_progress(wait), 1);
+        tracker.finished(&kept);
+        assert_eq!(tracker.in_progress(wait), 0);
+    }
+
+    #[test]
+    fn a_handshake_older_than_the_wait_is_not_counted() {
+        let tracker = HandshakeTracker::default();
+        let d = digest();
+        tracker.began(&d);
+        assert_eq!(tracker.in_progress(Duration::ZERO), 0);
+        assert_eq!(tracker.in_progress(Duration::from_secs(60)), 1);
+    }
+
+    /// Many connections entering and leaving, interleaved, keep the count
+    /// exact; those that fail are dropped without `finished`.
+    #[test]
+    fn the_count_stays_exact_over_many_interleaved_handshakes() {
+        let tracker = HandshakeTracker::default();
+        let wait = Duration::from_secs(60);
+        let mut open: std::collections::VecDeque<Arc<SocketDigest>> = Default::default();
+        // Connections whose handshake finished stay alive, so only `finished`
+        // can take them out of the count.
+        let mut finished_alive = Vec::new();
+        let mut expected = 0usize;
+        for i in 0..20_000usize {
+            let d = digest();
+            tracker.began(&d);
+            open.push_back(d);
+            expected += 1;
+            // Finish the oldest two of every three, fail (drop) every third
+            // one, so entries leave in each of the two ways and out of order.
+            if i % 3 == 2 {
+                let first = open.pop_front().unwrap();
+                tracker.finished(&first);
+                finished_alive.push(first);
+                let second = open.pop_front().unwrap();
+                drop(second);
+                expected -= 2;
+            }
+            if i % 997 == 0 {
+                assert_eq!(tracker.in_progress(wait), expected, "at {i}");
+            }
+        }
+        assert_eq!(tracker.in_progress(wait), expected);
+        for d in open.drain(..) {
+            tracker.finished(&d);
+        }
+        assert_eq!(tracker.in_progress(wait), 0);
+        assert_eq!(tracker.entries(), 0);
+    }
+
+    /// Handshakes that fail are never reported, so nothing but the sweep in
+    /// `began` removes them: the map must not grow without bound when
+    /// nothing reads it.
+    #[test]
+    fn failed_handshakes_are_swept_without_the_drain_reading_them() {
+        let tracker = HandshakeTracker::default();
+        let live: Vec<_> = (0..10).map(|_| digest()).collect();
+        for d in &live {
+            tracker.began(d);
+        }
+        for _ in 0..50_000 {
+            let failed = digest();
+            tracker.began(&failed);
+            drop(failed);
+        }
+        assert!(
+            tracker.entries() <= 2 * live.len() + 2 * MIN_SWEEP_AT,
+            "{} entries held",
+            tracker.entries()
+        );
+        assert_eq!(tracker.in_progress(Duration::from_secs(60)), live.len());
+    }
+
+    /// The tracker takes no part in any limit: a refused connection is
+    /// taken out of the handshake count as well.
+    #[tokio::test]
+    async fn a_refused_connection_leaves_the_handshake_count() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (started_tx, _started_rx) = mpsc::unbounded_channel();
+        let tracker = HandshakeTracker::new();
+        let app = Arc::new(
+            ConnectionLimitedApp::new(
+                HoldingApp {
+                    started: started_tx,
+                },
+                ConnectionLimiter::new(),
+                |_, _| ConnectionLimits {
+                    max_total: Some(0),
+                    ..Default::default()
+                },
+            )
+            .with_handshakes(Arc::clone(&tracker)),
+        );
+        let (_tx, shutdown) = tokio::sync::watch::channel(false);
+        let (stream, _client) = accepted(&listener).await;
+        // Held here, so the entry is live unless `process_new` removes it.
+        let digest = stream.get_socket_digest().unwrap();
+        tracker.began(&digest);
+        assert_eq!(tracker.in_progress(Duration::from_secs(60)), 1);
+        assert!(app.process_new(stream, &shutdown).await.is_none());
+        assert_eq!(tracker.in_progress(Duration::from_secs(60)), 0);
+        drop(digest);
     }
 }
