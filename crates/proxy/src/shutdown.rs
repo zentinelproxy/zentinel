@@ -25,6 +25,15 @@
 //! that sends SIGTERM twice (`ExecStop=kill -TERM` plus `KillSignal`) cuts its
 //! own drain short.
 //!
+//! # The other signals
+//!
+//! SIGTERM and SIGINT are the only ones that shut the proxy down. They share
+//! the signal thread with SIGHUP (reload the configuration), SIGUSR1 (reopen
+//! the log files) and SIGUSR2 (ignored; registered only so that its default
+//! disposition, terminating the process, does not apply). While a drain runs
+//! they are not acted on: the task that reloads and reopens is the one waiting
+//! for the drain, so they neither cut it short nor extend it.
+//!
 //! # Not covered yet
 //!
 //! The SIGQUIT hand-over (#126: Pingora's grace period and

@@ -708,7 +708,7 @@ Configuration hot reload with graceful transition.
 
 **Sub-modules:**
 - `coordinator` - Graceful reload coordination
-- `signals` - OS signal handling (SIGHUP, SIGTERM)
+- `signals` - OS signal handling (SIGHUP reload, SIGUSR1 reopen log files, SIGTERM/SIGINT shutdown; SIGUSR2 is ignored), in the foreground and in daemon mode
 - `validators` - Configuration validators
 
 **Key Struct:** `ConfigManager`

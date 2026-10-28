@@ -1,7 +1,7 @@
 //! Signal handling for configuration reload and shutdown.
 //!
 //! Bridges OS signals with the async runtime for graceful handling of
-//! SIGHUP (reload) and SIGTERM/SIGINT (shutdown).
+//! SIGHUP (reload), SIGUSR1 (reopen logs) and SIGTERM/SIGINT (shutdown).
 
 use std::sync::{mpsc, Arc, Mutex};
 use tracing::{debug, trace};
@@ -13,6 +13,8 @@ pub enum SignalType {
     Reload,
     /// Graceful shutdown (SIGTERM/SIGINT)
     Shutdown,
+    /// Reopen the log files (SIGUSR1)
+    ReopenLogs,
 }
 
 /// Signal manager for handling OS signals with async integration

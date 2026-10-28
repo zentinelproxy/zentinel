@@ -814,8 +814,8 @@ fn run_server(
     // being lost.
     let mut startup_log = StartupLog::default();
 
-    // Take over SIGHUP before anything slow. Its default disposition
-    // terminates the process, and the handler proper is only installed once
+    // Take over SIGHUP, SIGUSR1 and SIGUSR2 before anything slow. Their
+    // default disposition terminates the process, and the handler proper is only installed once
     // the configuration is loaded, the proxy built and its listeners set up --
     // so a reload sent by a deploy script or config-management run right
     // after start used to kill the proxy instead.
@@ -823,10 +823,16 @@ fn run_server(
     // Registering it here queues the signal instead: the iterator holds it
     // until the signal thread starts, and the reload channel holds that until
     // the reload task runs, so an early SIGHUP is applied once the proxy is
-    // ready. SIGTERM and SIGINT keep their default disposition until then:
+    // ready. SIGUSR1 (reopen logs) and SIGUSR2 (ignored) are queued the same
+    // way, so a logrotate run that overlaps startup does not kill the proxy
+    // either. SIGTERM and SIGINT keep their default disposition until then:
     // stopping a proxy that has not started yet should stay immediate.
-    let signals = signal_hook::iterator::Signals::new([signal_hook::consts::signal::SIGHUP])
-        .context("Failed to register the SIGHUP handler")?;
+    let signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::signal::SIGHUP,
+        signal_hook::consts::signal::SIGUSR1,
+        signal_hook::consts::signal::SIGUSR2,
+    ])
+    .context("Failed to register the signal handlers")?;
 
     // Get config path with priority: CLI arg > env var > None (embedded default)
     let effective_config_path = config_path.or_else(|| std::env::var("ZENTINEL_CONFIG").ok());
@@ -896,6 +902,9 @@ fn run_server(
 
     // Get config manager for reload operations
     let config_manager = proxy.config_manager.clone();
+
+    // The log writers SIGUSR1 reopens
+    let log_manager = proxy.log_manager();
 
     // Get initial config for server setup
     let config = proxy.config_manager.current();
@@ -1338,12 +1347,14 @@ fn run_server(
             handshakes,
             shutdown_phases,
             shutdown_timeout,
+            log_manager,
         )
         .await;
     });
 
     info!("Zentinel proxy started successfully");
     info!("Configuration hot reload enabled (SIGHUP)");
+    info!("Log files are reopened on SIGUSR1");
     if auto_reload_enabled && has_config_file {
         info!("Auto-reload enabled (watching config file)");
     }
@@ -1374,9 +1385,19 @@ fn run_server(
 
 /// Setup OS signal handlers
 ///
-/// Adds SIGTERM and SIGINT to `signals` (registered for SIGHUP at the start of
-/// `run_server`) and forwards all three to the async runtime via the signal
-/// manager. A SIGHUP that arrived during startup is delivered now.
+/// Adds SIGTERM and SIGINT to `signals` (registered for SIGHUP, SIGUSR1 and
+/// SIGUSR2 at the start of `run_server`) and forwards them to the async
+/// runtime via the signal manager. What each one does:
+///
+/// - SIGTERM, SIGINT: graceful shutdown (see `zentinel_proxy::shutdown`); a
+///   second one while draining ends the process at once.
+/// - SIGHUP: reload the configuration.
+/// - SIGUSR1: reopen the access, error and audit log files, for logrotate's
+///   `postrotate`.
+/// - SIGUSR2: ignored. It is registered only so that it does not terminate the
+///   process, which is its default disposition.
+///
+/// A SIGHUP or SIGUSR1 that arrived during startup is delivered now.
 fn setup_signal_handlers(
     mut signals: signal_hook::iterator::Signals,
     signal_tx: std::sync::mpsc::Sender<SignalType>,
@@ -1430,6 +1451,16 @@ fn setup_signal_handlers(
                 SIGHUP => {
                     info!("Received SIGHUP, triggering configuration reload");
                     SignalType::Reload
+                }
+                SIGUSR1 => {
+                    info!("Received SIGUSR1, reopening log files");
+                    SignalType::ReopenLogs
+                }
+                SIGUSR2 => {
+                    // Registered so that it does not terminate the process (the
+                    // default disposition); Zentinel has nothing to do on it.
+                    info!("Received SIGUSR2, ignoring it");
+                    continue;
                 }
                 _ => continue,
             };
@@ -1646,6 +1677,7 @@ async fn interval_fallback(
 /// Async signal handler task
 ///
 /// Receives signals from the signal manager and performs the appropriate action.
+#[allow(clippy::too_many_arguments)]
 async fn run_signal_handler(
     signal_manager: Arc<SignalManager>,
     config_manager: Arc<zentinel_proxy::ConfigManager>,
@@ -1654,6 +1686,7 @@ async fn run_signal_handler(
     handshakes: Arc<zentinel_proxy::connection_limit::HandshakeTracker>,
     mut shutdown_phases: tokio::sync::broadcast::Receiver<pingora::server::ExecutionPhase>,
     shutdown_timeout: std::time::Duration,
+    log_manager: zentinel_proxy::SharedLogManager,
 ) {
     loop {
         // Use spawn_blocking to wait for signals without blocking the async runtime
@@ -1695,6 +1728,10 @@ async fn run_signal_handler(
                     );
                 }
             }
+            Ok(Some(SignalType::ReopenLogs)) => {
+                let reopened = log_manager.reopen();
+                info!(reopened = reopened, "Log files reopened");
+            }
             Ok(Some(SignalType::Shutdown)) => {
                 info!("Processing graceful shutdown request");
                 // Pingora has been told too (its watcher waits on the same shutdown request):
@@ -1735,6 +1772,12 @@ async fn run_signal_handler(
                         );
                     }
                 }
+                // `exit` does not run destructors, so the access, error and
+                // audit lines still held in the writers' buffers (up to
+                // `buffer-size` bytes each) would be lost. This is the
+                // graceful path only: a second signal and the watchdog end
+                // the process at once, without waiting on a log lock.
+                log_manager.flush();
                 // Shutdown OpenTelemetry tracer to flush pending spans
                 zentinel_proxy::otel::shutdown_tracer();
                 std::process::exit(0);
