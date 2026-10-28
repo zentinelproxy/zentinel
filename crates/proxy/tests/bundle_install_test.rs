@@ -32,12 +32,38 @@ use zentinel_agent_protocol::v2::uds_server::UdsAgentServerV2;
 use zentinel_agent_protocol::v2::AgentCapabilities;
 use zentinel_agent_protocol::{AgentResponse, EventType, RequestHeadersEvent};
 
-/// The embedded lock's waf and zentinelsec versions and gRPC port. After a
-/// lock bump the fake server answers 404 and the install step fails, naming
-/// the URL it asked for.
-const WAF: &str = "0.4.0";
-const ZENTINELSEC: &str = "0.4.0";
-const ZENTINELSEC_PORT: u16 = 50151;
+/// The waf and zentinelsec releases `bundle install` asks for, and
+/// zentinelsec's gRPC port, as the embedded lock pins them.
+///
+/// Read from `crates/proxy/bundle-versions.lock` (CI keeps it byte-identical
+/// to the root copy the binary embeds) rather than written down here: with
+/// hard-coded versions every lock bump made the fake server answer 404 and
+/// this test fail on `main` (it did after #612 and #622).
+struct Pins {
+    waf: String,
+    zentinelsec: String,
+    zentinelsec_port: u16,
+}
+
+static PINS: std::sync::LazyLock<Pins> = std::sync::LazyLock::new(|| {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/bundle-versions.lock");
+    let text = std::fs::read_to_string(path).expect("read bundle-versions.lock");
+    let lock: toml::Table = text.parse().expect("parse bundle-versions.lock");
+    let agent = |name: &str| {
+        lock["agents"][name]
+            .as_str()
+            .unwrap_or_else(|| panic!("[agents] {name} in bundle-versions.lock"))
+            .to_string()
+    };
+    let port = lock["grpc_ports"]["zentinelsec"]
+        .as_integer()
+        .expect("[grpc_ports] zentinelsec in bundle-versions.lock");
+    Pins {
+        waf: agent("waf"),
+        zentinelsec: agent("zentinelsec"),
+        zentinelsec_port: u16::try_from(port).expect("port fits in u16"),
+    }
+});
 
 fn platform() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -107,7 +133,10 @@ fn serve(files: HashMap<String, Vec<u8>>) -> u16 {
 fn release_files(platform: &str) -> HashMap<String, Vec<u8>> {
     use sha2::{Digest, Sha256};
     let mut files = HashMap::new();
-    for (agent, version) in [("waf", WAF), ("zentinelsec", ZENTINELSEC)] {
+    for (agent, version) in [
+        ("waf", PINS.waf.as_str()),
+        ("zentinelsec", PINS.zentinelsec.as_str()),
+    ] {
         let binary = format!("zentinel-{agent}-agent");
         let archive = tarball(&binary, &fake_agent(&binary, version));
         let path = format!(
@@ -268,7 +297,7 @@ fn bundle_install_wires_agents_the_way_they_are_started() {
         exec_start(&sec_unit)[1..],
         [
             "--grpc-address".to_string(),
-            format!("127.0.0.1:{ZENTINELSEC_PORT}")
+            format!("127.0.0.1:{}", PINS.zentinelsec_port)
         ]
     );
     // A non-root install gets user units: no user switch, home visible.
@@ -283,7 +312,8 @@ fn bundle_install_wires_agents_the_way_they_are_started() {
     );
     assert!(
         kdl.contains(&format!(
-            "grpc address=\"http://127.0.0.1:{ZENTINELSEC_PORT}\""
+            "grpc address=\"http://127.0.0.1:{}\"",
+            PINS.zentinelsec_port
         )),
         "{kdl}"
     );
