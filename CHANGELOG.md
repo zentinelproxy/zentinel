@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_9](#26109---2026-10-28) | 0.6.52 | 2026-10-28 | **A reload loads added, renamed and reconfigured agents** (their filters used to call nothing); **SIGTERM/SIGINT drain open connections** before exiting; **SIGUSR1 reopens the log files** and SIGUSR2 no longer kills the proxy (**read the upgrade notes**); `cargo install` builds work with tokio 1.54; bundle `26.10_03` pins zentinelsec 0.4.1 |
 | [26.10_8](#26108---2026-10-22) | 0.6.51 | 2026-10-22 | **Agents get their `config { }` block and are acted on in every phase** (config delivered on every connection, response-phase blocks enforced, Challenge fails closed, request bodies reach subscribed agents and are held back until allowed; **read the upgrade notes**); a silent agent no longer holds up startup; daemon mode works; **every bundled agent is rebuilt from its tag and smoke-tested** (most published agents could not complete a v2 handshake over a socket) |
 | [26.10_7](#26107---2026-10-20) | 0.6.50 | 2026-10-20 | **Namespaces and services served end to end** (namespace routes without a listener of their own are now live on the global listeners; **read the upgrade notes**); error pages replace the proxy's own refusals; agent filter body settings apply; host-name targets fall back across addresses without blocking DNS |
 | [26.10_6](#26106---2026-10-20) | 0.6.49 | 2026-10-20 | Concurrency and connection limits enforced (**`max-connections-per-client` from old starter configs now applies; read the upgrade notes**); custom error pages work; directory configs load from the CLI; Redis/memcached rate limiting actually used; hostname targets health-checked |
@@ -91,6 +92,42 @@ for details.
 
 ## [Unreleased]
 
+---
+
+## [26.10_9] - 2026-10-28
+
+**Crate version:** 0.6.52
+
+A configuration reload now loads the agents it adds, renames or reconfigures,
+instead of leaving their filters calling nothing. Stopping the proxy with
+SIGTERM or SIGINT lets the requests in flight finish, and logrotate's
+`kill -USR1` reopens the log files instead of killing the proxy. A fresh
+`cargo install zentinel-proxy` works again on tokio 1.54. **Read the upgrade
+notes:** the shipped systemd unit and the log file mode changed.
+
+### Upgrade notes
+- **SIGTERM and SIGINT drain before exiting.** The proxy stops accepting,
+  waits up to `graceful-shutdown-timeout-secs` (default 30) for open
+  connections and TLS handshakes to finish, then exits 0. A **second**
+  SIGTERM or SIGINT while draining exits at once with status **1**. A signal
+  that arrives while the proxy is still starting stops it without ever
+  accepting a connection. Before, the proxy logged "draining connections" and
+  exited at once, cutting off requests in flight. (#565, #568)
+- **`deploy/zentinel.service` no longer has `ExecStop=`** and its
+  `TimeoutStopSec` is 35. systemd then sends SIGTERM once; with the old
+  `ExecStop=/bin/kill -TERM $MAINPID` it sent two, and the second would now
+  end the drain at once. **If you copied the unit, remove `ExecStop` and keep
+  `TimeoutStopSec` above `graceful-shutdown-timeout-secs`.** (#568)
+- **SIGUSR1 reopens the access, error and audit log files;** SIGUSR2 is
+  ignored. Both used to terminate the proxy, so the documented logrotate
+  `postrotate` `kill -USR1` stopped it. (#566, #569)
+- **Log files the proxy creates are mode `0640`** (before: `0666` minus the
+  umask, usually `0644`). Existing files keep their mode. With logrotate,
+  `create 0640 zentinel zentinel` matches. (#569)
+- **A reload now rebuilds an agent whose settings or `config { }` block
+  changed**, so its connections are reopened and the new block delivered;
+  unchanged agents keep their connections. See Fixed. (#567)
+
 ### Fixed
 - **A reload did not load added, renamed or reconfigured agents** (#564).
   Their filters called nothing and requests passed uninspected, with the
@@ -100,6 +137,26 @@ for details.
   routes are gone. Unchanged agents keep their connections. A rollback loads
   the agents of the configuration it restores. Waiting for new agents is
   bounded by their `connect-timeout-ms` plus 5 s, as at startup. (#567)
+- **SIGTERM and SIGINT cut off requests in flight** (#565): see the upgrade
+  notes. Buffered access, error and audit lines are written out before the
+  graceful exit. (#568, #569)
+- **SIGUSR1 and SIGUSR2 terminated the proxy** (#566): see the upgrade
+  notes. (#569)
+- **`cargo install zentinel-proxy` built a proxy that panicked on every
+  connection** once tokio 1.54 (released 2026-10-19) was resolved: tokio now
+  rejects the zero-capacity buffered stream `zentinel-pingora-core` 0.9.1
+  created for every socket. `zentinel-pingora-core` **0.9.2** carries the
+  upstream Pingora fix (cloudflare/pingora@5b30d71). Release binaries and
+  images were not affected (they build from `Cargo.lock`). To install an
+  older version from crates.io, use `cargo install --locked`. (#624, #627)
+
+### Changed
+- The bundle lock is at `26.10_03` and pins **zentinelsec 0.4.1**, which is
+  built on agent protocol 0.6.51 so it receives its `config { }` block, and
+  configures idempotently. (#622)
+- Dependencies: tokio 1.54, jsonschema 0.60, html-escape 0.3,
+  async-memcached 0.9, parking_lot 0.13, uuid 1.29, redis 1.8 and the
+  rust-minor groups. (#627, #629)
 
 ---
 

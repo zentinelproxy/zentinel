@@ -19,7 +19,7 @@
 
 [bundle]
 # Bundle version (CalVer: YY.MM_PATCH)
-version = "26.10_02"
+version = "26.10_03"
 # Platforms every agent is released for, unless [platforms] overrides it.
 # darwin-x86_64 is not built by any agent release workflow.
 platforms = ["linux-x86_64", "linux-aarch64", "darwin-aarch64"]
