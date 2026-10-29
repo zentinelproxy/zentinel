@@ -92,6 +92,18 @@ for details.
 
 ## [Unreleased]
 
+### Fixed
+- **`bundle install` no longer writes `failure-mode "open"` on the agents in
+  `agents.kdl`** (#623). On an `agent` block that setting covers only
+  WebSocket frames: requests follow the agent filter's `failure-mode` (then
+  the route's) and are refused when neither is set, so the generated line
+  said the opposite of what happened, and `zentinel test --strict` rejected
+  the file as soon as a filter named the agent. The file's header now shows
+  the filter with a `failure-mode` and says what each value does. Nothing
+  behaves differently: the generated agents do not subscribe to WebSocket
+  frames, so the line never took effect. Rerun `zentinel bundle install` to
+  regenerate the file.
+
 ---
 
 ## [26.10_9] - 2026-10-28
