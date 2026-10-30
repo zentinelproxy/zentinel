@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_10](#261010---2026-10-30) | 0.6.53 | 2026-10-30 | **A `graceful-shutdown-timeout-secs` above 300 s is no longer cut short** by Pingora's 300 s grace period; the shipped systemd unit has `TimeoutStopSec=40` (**read the upgrade notes**); `bundle install` no longer writes a `failure-mode` on the generated agents that `--strict` rejects; TLS accepts no longer scan every pending handshake |
 | [26.10_9](#26109---2026-10-28) | 0.6.52 | 2026-10-28 | **A reload loads added, renamed and reconfigured agents** (their filters used to call nothing); **SIGTERM/SIGINT drain open connections** before exiting; **SIGUSR1 reopens the log files** and SIGUSR2 no longer kills the proxy (**read the upgrade notes**); `cargo install` builds work with tokio 1.54; bundle `26.10_03` pins zentinelsec 0.4.1 |
 | [26.10_8](#26108---2026-10-22) | 0.6.51 | 2026-10-22 | **Agents get their `config { }` block and are acted on in every phase** (config delivered on every connection, response-phase blocks enforced, Challenge fails closed, request bodies reach subscribed agents and are held back until allowed; **read the upgrade notes**); a silent agent no longer holds up startup; daemon mode works; **every bundled agent is rebuilt from its tag and smoke-tested** (most published agents could not complete a v2 handshake over a socket) |
 | [26.10_7](#26107---2026-10-20) | 0.6.50 | 2026-10-20 | **Namespaces and services served end to end** (namespace routes without a listener of their own are now live on the global listeners; **read the upgrade notes**); error pages replace the proxy's own refusals; agent filter body settings apply; host-name targets fall back across addresses without blocking DNS |
@@ -91,6 +92,18 @@ for details.
 ---
 
 ## [Unreleased]
+
+---
+
+## [26.10_10] - 2026-10-30
+
+**Crate version:** 0.6.53
+
+A shutdown drain configured for more than 300 s now gets its full time:
+Pingora's own 300 s grace period used to end the process first, with status
+0 and requests still in flight. `zentinel bundle install` writes an
+`agents.kdl` that `zentinel test --strict` accepts. **Read the upgrade
+notes:** the shipped systemd unit's stop timeout changed.
 
 ### Upgrade notes
 - **`deploy/zentinel.service` now has `TimeoutStopSec=40`** (was 35). The
