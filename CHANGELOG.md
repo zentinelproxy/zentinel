@@ -92,7 +92,22 @@ for details.
 
 ## [Unreleased]
 
+### Upgrade notes
+- **`deploy/zentinel.service` now has `TimeoutStopSec=40`** (was 35). The
+  proxy forces its own exit 5 s after `graceful-shutdown-timeout-secs`, so a
+  stop timeout equal to that let systemd's SIGKILL race the proxy's logged
+  exit. **If you copied the unit, keep `TimeoutStopSec` at least 10 s above
+  `graceful-shutdown-timeout-secs`.** (#632, #634)
+
 ### Fixed
+- **A `graceful-shutdown-timeout-secs` above 300 was cut short at 300 s**
+  (#632). Pingora's own grace period (300 s unless set) ended the process
+  with status 0 while the drain was still waiting, closing requests in flight
+  with no response and nothing logged. For timeouts above 290 s the grace
+  period is now set to the timeout plus 10 s, so the drain, and the watchdog
+  after it, always end first. Shorter timeouts, including the default 30 s,
+  are unchanged. This also lengthens the old process's wait in a `-u`
+  upgrade for those timeouts. (#634)
 - **`bundle install` no longer writes `failure-mode "open"` on the agents in
   `agents.kdl`** (#623). On an `agent` block that setting covers only
   WebSocket frames: requests follow the agent filter's `failure-mode` (then
@@ -103,6 +118,11 @@ for details.
   behaves differently: the generated agents do not subscribe to WebSocket
   frames, so the line never took effect. Rerun `zentinel bundle install` to
   regenerate the file.
+
+### Changed
+- **TLS accepts no longer scan every pending handshake.** The shutdown
+  drain's handshake tracker is now a map, so each accept costs the same
+  however many handshakes are in progress. (#634)
 
 ---
 
