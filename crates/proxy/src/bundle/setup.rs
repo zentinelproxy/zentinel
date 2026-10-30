@@ -208,8 +208,12 @@ pub fn generate_agents_kdl(agents: &[AgentInfo], paths: &InstallPaths, bundle: &
          //\n\
          // and send a route's traffic through an agent with a filter:\n\
          //\n\
-         //     filters {{ filter \"waf\" {{ type \"agent\"; agent \"waf\"; }} }}\n\
+         //     filters {{ filter \"waf\" {{ type \"agent\"; agent \"waf\"; failure-mode \"closed\"; }} }}\n\
          //     routes {{ route \"app\" {{ filters \"waf\"; ... }} }}\n\
+         //\n\
+         // The filter's `failure-mode` decides what happens to a request when the\n\
+         // agent is not running or does not answer in time: \"closed\" (the default)\n\
+         // refuses it with 503, \"open\" lets it through uninspected.\n\
          //\n\
          // `events` defaults to request headers only: add \"request_body\" (and the\n\
          // response events) for agents that inspect bodies.\n\
@@ -234,7 +238,7 @@ pub fn generate_agents_kdl(agents: &[AgentInfo], paths: &InstallPaths, bundle: &
             ));
         }
         out.push_str(&format!(
-            "    agent \"{}\" {{\n        {}\n        failure-mode \"open\"\n    }}\n",
+            "    agent \"{}\" {{\n        {}\n    }}\n",
             kdl_escape(&agent.name),
             endpoint.kdl()
         ));
@@ -494,6 +498,28 @@ mod tests {
                 (want, got) => panic!("{}: {want:?} written as {got:?}", agent.name),
             }
         }
+    }
+
+    /// #623: nothing in the generated file, nor in the filter its header
+    /// shows, is ignored, so `zentinel test --strict` accepts both. The
+    /// agent entries used to carry `failure-mode "open"`, which only covers
+    /// WebSocket frames.
+    #[test]
+    fn generated_kdl_and_its_filter_example_have_no_ignored_settings() {
+        use zentinel_config::validate::{unknown_keys::check_unknown_keys, ValidationResult};
+
+        let lock = BundleLock::embedded().unwrap();
+        let kdl = generate_agents_kdl(&lock.agents(), &paths(false), &lock.bundle.version);
+        let example = kdl
+            .lines()
+            .find_map(|l| l.strip_prefix("//     filters "))
+            .map(|rest| format!("filters {rest}"))
+            .unwrap_or_else(|| panic!("no filter example in\n{kdl}"));
+        let mut result = ValidationResult::new();
+        check_unknown_keys(&format!("{kdl}\n{example}\n"), &mut result);
+        let warnings: Vec<_> = result.warnings.iter().map(|w| &w.message).collect();
+        assert!(warnings.is_empty(), "{warnings:#?}\n{kdl}");
+        assert!(!kdl.contains("failure-mode \"open\""), "{kdl}");
     }
 
     #[test]

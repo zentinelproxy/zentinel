@@ -4,9 +4,10 @@
 //! an agent, or changed an agent's id, the route's filter named an agent the
 //! manager did not have. Nothing was left to run, the request was allowed
 //! (whatever the filter's `failure-mode`), and the log said the reload
-//! succeeded. This runs the real binary with a small blocking agent on a Unix
-//! socket and checks over HTTP, before and after a SIGHUP, that a POST the
-//! agent blocks is still blocked.
+//! succeeded. This runs the real binary with small blocking agents on Unix
+//! sockets and checks over HTTP, before and after a SIGHUP, that a POST the
+//! agent blocks is still blocked. Each agent blocks with a status of its own,
+//! so the test can tell which agent answered, and that the reload took effect.
 
 #![cfg(unix)]
 
@@ -25,8 +26,17 @@ use zentinel_agent_protocol::{AgentResponse, RequestHeadersEvent};
 /// at a time.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// An agent that blocks every request carrying `x-block`, with a 403.
-struct BlockingAgent;
+/// The status the agent behind the first config blocks with.
+const FIRST_AGENT_STATUS: u16 = 403;
+
+/// The status of the agent a reload switches to (451, Unavailable For Legal
+/// Reasons), so a response says which of the two agents it came from.
+const SECOND_AGENT_STATUS: u16 = 451;
+
+/// An agent that blocks every request carrying `x-block`, with `status`.
+struct BlockingAgent {
+    status: u16,
+}
 
 #[async_trait::async_trait]
 impl AgentHandlerV2 for BlockingAgent {
@@ -36,15 +46,16 @@ impl AgentHandlerV2 for BlockingAgent {
 
     async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
         if event.headers.contains_key("x-block") {
-            AgentResponse::block(403, Some("blocked by agent".to_string()))
+            AgentResponse::block(self.status, Some("blocked by agent".to_string()))
         } else {
             AgentResponse::default_allow()
         }
     }
 }
 
-/// Run the blocking agent on `socket` from its own thread and runtime.
-fn spawn_agent(socket: &Path) {
+/// Run a blocking agent that answers with `status` on `socket` from its own
+/// thread and runtime.
+fn spawn_agent(socket: &Path, status: u16) {
     let socket = socket.to_path_buf();
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_multi_thread()
@@ -53,9 +64,10 @@ fn spawn_agent(socket: &Path) {
             .build()
             .unwrap()
             .block_on(async move {
-                let _ = UdsAgentServerV2::new("blocking", socket, Box::new(BlockingAgent))
-                    .run()
-                    .await;
+                let _ =
+                    UdsAgentServerV2::new("blocking", socket, Box::new(BlockingAgent { status }))
+                        .run()
+                        .await;
             });
     });
 }
@@ -243,7 +255,7 @@ fn reload_that_adds_an_agent_inspects_requests() {
 
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("agent.sock");
-    spawn_agent(&socket);
+    spawn_agent(&socket, FIRST_AGENT_STATUS);
     wait_for("the agent socket", || socket.exists());
 
     let path = dir.path().join("zentinel.kdl");
@@ -259,7 +271,7 @@ fn reload_that_adds_an_agent_inspects_requests() {
         &proxy,
         &path,
         &config(listen, backend, &socket, Some("inspect-agent")),
-        || post(listen, true) == 403,
+        || post(listen, true) == FIRST_AGENT_STATUS,
     );
     assert_eq!(post(listen, false), 200);
 }
@@ -273,30 +285,62 @@ fn reload_that_renames_an_agent_keeps_inspecting_requests() {
     let backend = backend(ports.pop().unwrap());
     let listen = ports.pop().unwrap().local_addr().unwrap().port();
 
+    // Two agents, each blocking with a status of its own. The reload swaps the
+    // config from one to the other, so a 451 can only come from the agent the
+    // reload loaded: if the old agent kept answering, the POST would stay 403.
     let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("agent.sock");
-    spawn_agent(&socket);
-    wait_for("the agent socket", || socket.exists());
+    let first_socket = dir.path().join("first.sock");
+    let second_socket = dir.path().join("second.sock");
+    spawn_agent(&first_socket, FIRST_AGENT_STATUS);
+    spawn_agent(&second_socket, SECOND_AGENT_STATUS);
+    wait_for("the agent sockets", || {
+        first_socket.exists() && second_socket.exists()
+    });
 
     let path = dir.path().join("zentinel.kdl");
-    std::fs::write(&path, config(listen, backend, &socket, Some("first"))).unwrap();
+    std::fs::write(&path, config(listen, backend, &first_socket, Some("first"))).unwrap();
     let proxy = start(&path, listen);
 
-    wait_for("the agent to answer", || post(listen, true) == 403);
+    wait_for("the first agent to answer", || {
+        post(listen, true) == FIRST_AGENT_STATUS
+    });
 
-    // The agent, its filter and the route's reference all change id. The
-    // route is rebuilt on reload, so it now names an agent the manager had
-    // never loaded: it must be loaded, and the POST still blocked, with no
-    // request in between let through.
-    std::fs::write(&path, config(listen, backend, &socket, Some("second"))).unwrap();
+    // The agent, its filter and the route's reference all change id, and the
+    // agent moves to the second socket. The route is rebuilt on reload, so it
+    // now names an agent the manager had never loaded: it must be loaded, and
+    // the POST blocked all along, with no request in between let through.
+    std::fs::write(
+        &path,
+        config(listen, backend, &second_socket, Some("second")),
+    )
+    .unwrap();
     proxy.sighup();
 
     // No pause between the requests: the window is the time between the new
     // config becoming current and the agents it names being loaded, which a
-    // slow poll steps over.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // slow poll steps over. Until the second agent answers, only the first
+    // may; once it has, the first must never answer again.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut applied = false;
     while Instant::now() < deadline {
-        assert_eq!(post(listen, true), 403, "a blocked POST was let through");
+        let status = post(listen, true);
+        if status == SECOND_AGENT_STATUS {
+            applied = true;
+            break;
+        }
+        assert_eq!(status, FIRST_AGENT_STATUS, "a blocked POST was let through");
+    }
+    assert!(
+        applied,
+        "the reload was not applied: the first agent still answers"
+    );
+    let settled = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < settled {
+        assert_eq!(
+            post(listen, true),
+            SECOND_AGENT_STATUS,
+            "the reloaded config stopped being served"
+        );
     }
     assert_eq!(post(listen, false), 200);
 }
