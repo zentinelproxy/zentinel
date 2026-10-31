@@ -478,7 +478,7 @@ filters {
     // Compression filter
     filter "compress" {
         type "compress"
-        algorithms "gzip" "brotli"
+        algorithms "gzip" "zstd"
         min-size 1024
         level 6
     }

@@ -6,11 +6,12 @@
 use std::sync::Arc;
 
 use pingora::http::ResponseHeader;
+use pingora_core::protocols::http::compression::{Algorithm, ResponseCompressionCtx};
 use pingora_proxy::Session;
 use tracing::{debug, trace};
 use zentinel_config::{
-    CompressFilter, Config, CorsFilter, Filter, FilterPhase, HeadersFilter, LogFilter,
-    PathModifier, RedirectFilter, TimeoutFilter, UrlRewriteFilter,
+    CompressFilter, CompressionAlgorithm, Config, CorsFilter, Filter, FilterPhase, HeadersFilter,
+    LogFilter, PathModifier, RedirectFilter, TimeoutFilter, UrlRewriteFilter,
 };
 
 use super::context::RequestContext;
@@ -83,7 +84,11 @@ pub fn apply_request_headers_filters(
     }
 }
 
-/// Apply response-phase filters (Headers, CORS, Compress setup, Log).
+/// Apply response-phase filters (Headers, CORS, Log).
+///
+/// The compress filter is not applied here: by the time this runs, Pingora's
+/// compression module has already decided on the response header. It is set
+/// up by [`prepare_compression`] and [`finalize_compression`] instead.
 pub fn apply_response_filters(
     upstream_response: &mut ResponseHeader,
     ctx: &mut RequestContext,
@@ -108,9 +113,6 @@ pub fn apply_response_filters(
             }
             Filter::Cors(cors) => {
                 apply_cors_response_headers(upstream_response, ctx, cors);
-            }
-            Filter::Compress(compress) => {
-                apply_compress_setup(upstream_response, ctx, compress);
             }
             Filter::Log(log) if log.log_response => {
                 emit_response_log(ctx, log, upstream_response.status.as_u16());
@@ -469,32 +471,213 @@ fn is_origin_allowed(origin: &str, allowed: &[String]) -> bool {
 // Compress Filter
 // =============================================================================
 
-/// Set up compression by modifying response headers.
+/// The route's compress filter, if it has one (the first, if several).
+fn route_compress_filter<'a>(
+    ctx: &RequestContext,
+    config: &'a Config,
+) -> Option<&'a CompressFilter> {
+    let route_config = ctx.route_config.as_ref()?;
+    route_config.filters.iter().find_map(|filter_id| {
+        match config.filters.get(filter_id).map(|fc| &fc.filter) {
+            Some(Filter::Compress(compress)) => Some(compress),
+            _ => None,
+        }
+    })
+}
+
+/// Pick the content coding for a response: the first of the filter's
+/// `algorithms` (in configured order) that the proxy can produce and the
+/// client accepts.
 ///
-/// We remove Content-Length (since compressed size differs) and add
-/// Content-Encoding if the client supports it and the response is compressible.
-fn apply_compress_setup(
-    resp: &mut ResponseHeader,
+/// A coding is accepted when the client lists it, or `*`, with a q-value above
+/// zero (RFC 9110 section 12.5.3). Without an `Accept-Encoding` header nothing
+/// is chosen: the response is sent as it is.
+pub(crate) fn negotiate_compression(
+    accept_encoding: Option<&str>,
+    configured: &[CompressionAlgorithm],
+) -> Option<CompressionAlgorithm> {
+    let accept_encoding = accept_encoding?;
+
+    let mut accepted: Vec<(String, f32)> = Vec::new();
+    for item in accept_encoding.split(',') {
+        let mut parts = item.split(';');
+        let coding = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+        if coding.is_empty() {
+            continue;
+        }
+        let mut q = 1.0f32;
+        for param in parts {
+            if let Some((name, value)) = param.split_once('=') {
+                if name.trim().eq_ignore_ascii_case("q") {
+                    // An unparseable weight excludes the coding rather than
+                    // guessing that the client wanted it.
+                    q = value.trim().parse().unwrap_or(0.0);
+                }
+            }
+        }
+        accepted.push((coding, q));
+    }
+
+    let weight = |coding: &str| {
+        accepted
+            .iter()
+            .find(|(c, _)| c == coding)
+            .or_else(|| accepted.iter().find(|(c, _)| c == "*"))
+            .map(|(_, q)| *q)
+    };
+
+    configured
+        .iter()
+        .copied()
+        .filter(|algorithm| pingora_algorithm(*algorithm).is_some())
+        .find(|algorithm| weight(algorithm.content_coding()).is_some_and(|q| q > 0.0))
+}
+
+/// The Pingora compression module's name for an algorithm it can produce.
+fn pingora_algorithm(algorithm: CompressionAlgorithm) -> Option<Algorithm> {
+    match algorithm {
+        CompressionAlgorithm::Gzip => Some(Algorithm::Gzip),
+        CompressionAlgorithm::Zstd => Some(Algorithm::Zstd),
+        // Pingora's Brotli encoder only flushes at the end of the body and
+        // never finishes the stream, so decoders reject what it produces.
+        // Skipped until that is fixed; config checking warns about it.
+        CompressionAlgorithm::Brotli => None,
+        // Rejected at config load.
+        CompressionAlgorithm::Deflate => None,
+    }
+}
+
+/// Configure Pingora's compression module for this request's compress filter.
+///
+/// Runs in `upstream_request_filter`, just before Pingora feeds the upstream
+/// request into its compression module. Left alone, that module compresses
+/// with whichever of gzip, Brotli and zstd the client lists first, whatever
+/// the filter's `algorithms` say. So the negotiated algorithm is the only one
+/// given a compression level, and it is fed to the module ahead of the
+/// client's own list; the module compresses with the first entry. The client's
+/// list follows, so a response the upstream already encoded in a coding the
+/// client accepts is still passed through untouched.
+pub(crate) fn prepare_compression(
+    session: &mut Session,
     ctx: &mut RequestContext,
-    compress: &CompressFilter,
+    config: &Config,
 ) {
-    // Check if response content type is compressible
+    ctx.compress_algorithm = None;
+
+    let Some(compress) = route_compress_filter(ctx, config) else {
+        return;
+    };
+    // On a retry the module may already have seen a response header; it
+    // panics if it is reconfigured after that.
+    if !session.upstream_compression.is_header_phase() {
+        return;
+    }
+
+    let accept_encoding = session
+        .req_header()
+        .headers
+        .get(http::header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let chosen = negotiate_compression(accept_encoding.as_deref(), &compress.algorithms);
+
+    let configured = match chosen {
+        Some(c) => configure_compression(&mut session.upstream_compression, c, compress.level),
+        None => {
+            session.upstream_compression.adjust_level(0);
+            false
+        }
+    };
+    let Some(chosen) = chosen.filter(|_| configured) else {
+        trace!(
+            correlation_id = %ctx.trace_id,
+            accept_encoding = ?accept_encoding,
+            "Compress filter: client accepts none of the configured algorithms"
+        );
+        return;
+    };
+    ctx.compress_algorithm = Some(chosen);
+
+    trace!(
+        correlation_id = %ctx.trace_id,
+        algorithm = chosen.content_coding(),
+        level = compress.level,
+        "Compress filter: algorithm negotiated"
+    );
+}
+
+/// Make `chosen` the only algorithm the compression module will produce, and
+/// put it first in the module's accepted list. Returns whether compression is
+/// set up; the module is left switched off otherwise.
+///
+/// The module must still be in its header phase.
+fn configure_compression(
+    module: &mut ResponseCompressionCtx,
+    chosen: CompressionAlgorithm,
+    level: u8,
+) -> bool {
+    module.adjust_level(0);
+    let Some(algorithm) = pingora_algorithm(chosen) else {
+        return false;
+    };
+    let mut preferred = match pingora::http::RequestHeader::build("GET", b"/", None) {
+        Ok(req) => req,
+        Err(_) => return false,
+    };
+    if preferred
+        .insert_header(http::header::ACCEPT_ENCODING, chosen.content_coding())
+        .is_err()
+    {
+        return false;
+    }
+    module.adjust_algorithm_level(algorithm, u32::from(level));
+    module.request_filter(&preferred);
+    true
+}
+
+/// Apply the compress filter's `content-types` and `min-size` to the upstream
+/// response, before Pingora's compression module sees it.
+///
+/// Runs in `upstream_response_filter`. A response the filter does not cover
+/// switches the module off for this request.
+pub(crate) fn finalize_compression(
+    session: &mut Session,
+    resp: &ResponseHeader,
+    ctx: &mut RequestContext,
+    config: &Config,
+) {
+    if ctx.compress_algorithm.is_none() || resp.status.is_informational() {
+        return;
+    }
+    if !session.upstream_compression.is_header_phase() {
+        return;
+    }
+    let eligible = route_compress_filter(ctx, config)
+        .is_some_and(|compress| compress_eligible(resp, compress));
+    ctx.compress_enabled = eligible;
+    if !eligible {
+        session.upstream_compression.adjust_level(0);
+    }
+}
+
+/// Whether the compress filter covers this response: a listed content type,
+/// at least `min-size` bytes when the length is known, and not already encoded.
+fn compress_eligible(resp: &ResponseHeader, compress: &CompressFilter) -> bool {
     let content_type = resp
         .headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let is_compressible = compress.content_types.iter().any(|ct| {
-        // Match on the MIME type prefix (ignore charset/params)
-        content_type.starts_with(ct.as_str())
-    });
-
+    // Match on the MIME type prefix (ignore charset/params)
+    let is_compressible = compress
+        .content_types
+        .iter()
+        .any(|ct| content_type.starts_with(ct.as_str()));
     if !is_compressible {
-        return;
+        return false;
     }
 
-    // Check Content-Length against min_size (if present)
     if let Some(cl) = resp
         .headers
         .get("content-length")
@@ -502,24 +685,11 @@ fn apply_compress_setup(
         .and_then(|v| v.parse::<usize>().ok())
     {
         if cl < compress.min_size {
-            return;
+            return false;
         }
     }
 
-    // Check if response is already encoded
-    if resp.headers.get("content-encoding").is_some() {
-        return;
-    }
-
-    // Mark that compression should be applied (Pingora handles actual compression
-    // via its built-in compression module when downstream_compression is enabled)
-    ctx.compress_enabled = true;
-
-    trace!(
-        correlation_id = %ctx.trace_id,
-        content_type = %content_type,
-        "Compression eligible, delegating to Pingora compression module"
-    );
+    resp.headers.get("content-encoding").is_none()
 }
 
 // =============================================================================
@@ -888,101 +1058,225 @@ mod tests {
     // Compress filter tests
     // =========================================================================
 
-    #[test]
-    fn compress_enables_for_compressible_content() {
-        let compress = CompressFilter {
-            algorithms: vec![],
+    fn compress_filter(content_types: &[&str]) -> CompressFilter {
+        CompressFilter {
+            algorithms: vec![CompressionAlgorithm::Gzip],
             min_size: 1024,
-            content_types: vec!["text/".to_string()],
+            content_types: content_types.iter().map(|s| s.to_string()).collect(),
             level: 6,
-        };
+        }
+    }
 
-        let (config, route) = test_config_with_filter("gz", Filter::Compress(compress));
-        let mut ctx = new_ctx_with_route(&route);
-
+    #[test]
+    fn compress_eligible_for_compressible_content() {
         let mut resp = ResponseHeader::build(200, None).unwrap();
         resp.insert_header("Content-Type", "text/html; charset=utf-8")
             .unwrap();
         resp.insert_header("Content-Length", "5000").unwrap();
 
-        apply_response_filters(&mut resp, &mut ctx, &config);
-
         assert!(
-            ctx.compress_enabled,
-            "Should enable compression for text/html > 1024 bytes"
+            compress_eligible(&resp, &compress_filter(&["text/"])),
+            "Should compress text/html > 1024 bytes"
         );
     }
 
     #[test]
     fn compress_skips_small_responses() {
-        let compress = CompressFilter {
-            algorithms: vec![],
-            min_size: 1024,
-            content_types: vec!["text/".to_string()],
-            level: 6,
-        };
-
-        let (config, route) = test_config_with_filter("gz", Filter::Compress(compress));
-        let mut ctx = new_ctx_with_route(&route);
-
         let mut resp = ResponseHeader::build(200, None).unwrap();
         resp.insert_header("Content-Type", "text/html").unwrap();
         resp.insert_header("Content-Length", "100").unwrap();
 
-        apply_response_filters(&mut resp, &mut ctx, &config);
-
         assert!(
-            !ctx.compress_enabled,
+            !compress_eligible(&resp, &compress_filter(&["text/"])),
             "Should skip compression for responses smaller than min_size"
         );
     }
 
     #[test]
     fn compress_skips_non_compressible_types() {
-        let compress = CompressFilter {
-            algorithms: vec![],
-            min_size: 1024,
-            content_types: vec!["text/".to_string(), "application/json".to_string()],
-            level: 6,
-        };
-
-        let (config, route) = test_config_with_filter("gz", Filter::Compress(compress));
-        let mut ctx = new_ctx_with_route(&route);
-
         let mut resp = ResponseHeader::build(200, None).unwrap();
         resp.insert_header("Content-Type", "image/png").unwrap();
         resp.insert_header("Content-Length", "50000").unwrap();
 
-        apply_response_filters(&mut resp, &mut ctx, &config);
-
         assert!(
-            !ctx.compress_enabled,
+            !compress_eligible(&resp, &compress_filter(&["text/", "application/json"])),
             "Should skip compression for non-compressible content types"
         );
     }
 
     #[test]
     fn compress_skips_already_encoded() {
-        let compress = CompressFilter {
-            algorithms: vec![],
-            min_size: 1024,
-            content_types: vec!["text/".to_string()],
-            level: 6,
-        };
-
-        let (config, route) = test_config_with_filter("gz", Filter::Compress(compress));
-        let mut ctx = new_ctx_with_route(&route);
-
         let mut resp = ResponseHeader::build(200, None).unwrap();
         resp.insert_header("Content-Type", "text/html").unwrap();
         resp.insert_header("Content-Length", "5000").unwrap();
         resp.insert_header("Content-Encoding", "gzip").unwrap();
 
-        apply_response_filters(&mut resp, &mut ctx, &config);
-
         assert!(
-            !ctx.compress_enabled,
+            !compress_eligible(&resp, &compress_filter(&["text/"])),
             "Should skip compression for already-encoded responses"
+        );
+    }
+
+    use CompressionAlgorithm::{Brotli, Gzip, Zstd};
+
+    #[test]
+    fn negotiation_only_uses_configured_algorithms() {
+        // #591: a gzip-only filter against a client that prefers br.
+        assert_eq!(negotiate_compression(Some("br, gzip"), &[Gzip]), Some(Gzip));
+        assert_eq!(
+            negotiate_compression(Some("br;q=1.0, gzip;q=0.5"), &[Gzip]),
+            Some(Gzip)
+        );
+        // A client that accepts only br gets nothing from a gzip-only filter.
+        assert_eq!(negotiate_compression(Some("br, zstd"), &[Gzip]), None);
+    }
+
+    #[test]
+    fn negotiation_follows_configured_order() {
+        assert_eq!(
+            negotiate_compression(Some("gzip, br, zstd"), &[Zstd, Gzip]),
+            Some(Zstd)
+        );
+        assert_eq!(
+            negotiate_compression(Some("zstd, gzip"), &[Gzip, Zstd]),
+            Some(Gzip)
+        );
+        assert_eq!(
+            negotiate_compression(Some("gzip"), &[Zstd, Gzip]),
+            Some(Gzip)
+        );
+    }
+
+    #[test]
+    fn negotiation_skips_brotli() {
+        // Pingora's Brotli encoder does not finish its stream, so br is never
+        // chosen; the next configured coding the client accepts is.
+        assert_eq!(
+            negotiate_compression(Some("gzip, br"), &[Brotli, Gzip]),
+            Some(Gzip)
+        );
+        assert_eq!(negotiate_compression(Some("br"), &[Brotli, Gzip]), None);
+    }
+
+    #[test]
+    fn negotiation_respects_q_values_and_wildcard() {
+        // q=0 refuses a coding (RFC 9110 section 12.5.3).
+        assert_eq!(
+            negotiate_compression(Some("zstd;q=0, gzip"), &[Zstd, Gzip]),
+            Some(Gzip)
+        );
+        assert_eq!(negotiate_compression(Some("gzip;q=0"), &[Gzip]), None);
+        // `*` covers codings not listed, but not ones refused explicitly.
+        assert_eq!(negotiate_compression(Some("*"), &[Zstd, Gzip]), Some(Zstd));
+        assert_eq!(
+            negotiate_compression(Some("zstd;q=0, *"), &[Zstd, Gzip]),
+            Some(Gzip)
+        );
+        assert_eq!(negotiate_compression(Some("*;q=0"), &[Gzip]), None);
+        // Case-insensitive coding names, odd whitespace.
+        assert_eq!(
+            negotiate_compression(Some(" GZIP ; Q=0.8 "), &[Gzip]),
+            Some(Gzip)
+        );
+    }
+
+    #[test]
+    fn negotiation_without_accept_encoding_compresses_nothing() {
+        assert_eq!(negotiate_compression(None, &[Gzip, Brotli]), None);
+        assert_eq!(negotiate_compression(Some(""), &[Gzip, Brotli]), None);
+        assert_eq!(
+            negotiate_compression(Some("identity"), &[Gzip, Brotli]),
+            None
+        );
+    }
+
+    /// Drive Pingora's compression module the way the proxy does for one
+    /// request, and return the response's `Content-Encoding`.
+    fn encoding_produced(
+        configured: &[CompressionAlgorithm],
+        accept_encoding: &str,
+        upstream_encoding: Option<&str>,
+    ) -> Option<String> {
+        // As Pingora creates it for every session: switched off.
+        let mut module = ResponseCompressionCtx::new(0, false, false);
+
+        // upstream_request_filter: prepare_compression.
+        if let Some(chosen) = negotiate_compression(Some(accept_encoding), configured) {
+            assert!(configure_compression(&mut module, chosen, 6));
+        }
+
+        // Pingora then feeds the upstream request (carrying the client's
+        // Accept-Encoding) into the module.
+        let mut req = pingora::http::RequestHeader::build("GET", b"/", None).unwrap();
+        req.insert_header("Accept-Encoding", accept_encoding)
+            .unwrap();
+        module.request_filter(&req);
+
+        let mut resp = ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("Content-Type", "text/html").unwrap();
+        resp.insert_header("Content-Length", "5000").unwrap();
+        if let Some(ce) = upstream_encoding {
+            resp.insert_header("Content-Encoding", ce).unwrap();
+        }
+        module.response_header_filter(&mut resp, false);
+        resp.headers
+            .get("content-encoding")
+            .map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn module_produces_only_configured_algorithm() {
+        // #591: gzip only, client prefers br. Before the fix the module
+        // compressed with br, the client's first choice.
+        assert_eq!(
+            encoding_produced(&[Gzip], "br, gzip", None).as_deref(),
+            Some("gzip")
+        );
+        assert_eq!(
+            encoding_produced(&[Gzip], "zstd, br, gzip", None).as_deref(),
+            Some("gzip")
+        );
+        // Client accepts none of the configured ones: sent uncompressed.
+        assert_eq!(encoding_produced(&[Gzip], "br", None), None);
+    }
+
+    #[test]
+    fn module_follows_configured_order() {
+        assert_eq!(
+            encoding_produced(&[Zstd, Gzip], "gzip, zstd", None).as_deref(),
+            Some("zstd")
+        );
+        assert_eq!(
+            encoding_produced(&[Gzip, Zstd], "zstd, gzip", None).as_deref(),
+            Some("gzip")
+        );
+        // br listed first is skipped, not produced.
+        assert_eq!(
+            encoding_produced(&[Brotli, Gzip], "br, gzip", None).as_deref(),
+            Some("gzip")
+        );
+    }
+
+    #[test]
+    fn module_default_algorithms() {
+        // The default is gzip.
+        let default = CompressFilter::default().algorithms;
+        assert_eq!(default, vec![Gzip]);
+        assert_eq!(
+            encoding_produced(&default, "br, zstd, deflate, gzip", None).as_deref(),
+            Some("gzip")
+        );
+        assert_eq!(encoding_produced(&default, "br", None), None);
+        assert_eq!(encoding_produced(&default, "zstd", None), None);
+    }
+
+    #[test]
+    fn module_passes_through_upstream_encoding_the_client_accepts() {
+        // The filter decides what the proxy produces; it does not transcode a
+        // response the upstream already encoded in a coding the client takes.
+        assert_eq!(
+            encoding_produced(&[Gzip], "br, gzip", Some("br")).as_deref(),
+            Some("br")
         );
     }
 

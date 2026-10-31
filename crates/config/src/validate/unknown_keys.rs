@@ -462,8 +462,9 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
         keys: crate::kdl::RECOGNIZED_GLOBAL_LIMIT_KEYS,
     },
     // A filter's settings depend on its `type` child, not on its own argument,
-    // which is just the filter's id. Only rate-limit filters are described
-    // here; a filter of any other type matches nothing and is left unchecked.
+    // which is just the filter's id. Only rate-limit and compress filters are
+    // described here; a filter of any other type matches nothing and is left
+    // unchecked.
     ClosedBlock {
         name: "filter",
         nesting: Nesting::InWithChild {
@@ -472,6 +473,15 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
             value: "rate-limit",
         },
         keys: crate::kdl::filters::RECOGNIZED_RATE_LIMIT_FILTER_KEYS,
+    },
+    ClosedBlock {
+        name: "filter",
+        nesting: Nesting::InWithChild {
+            parent: "filters",
+            child: "type",
+            value: "compress",
+        },
+        keys: crate::kdl::filters::RECOGNIZED_COMPRESS_FILTER_KEYS,
     },
     ClosedBlock {
         name: "observability",
@@ -2253,6 +2263,38 @@ mod tests {
         let warnings = warnings_for(typo);
         assert!(
             warnings.iter().any(|w| w.contains("'max-rp'")),
+            "{warnings:?}"
+        );
+    }
+
+    /// #591: a compress filter's settings are checked too, so a misspelt
+    /// `content-types` no longer silently leaves the default list in place.
+    #[test]
+    fn a_compress_filter_is_checked_by_its_type_child() {
+        let valid = r#"
+            filters {
+                filter "c" {
+                    type "compress"
+                    algorithms "br" "gzip"
+                    min-size 1024
+                    level 6
+                    content-types "text/html" "application/json"
+                }
+            }
+        "#;
+        assert!(warnings_for(valid).is_empty(), "{:?}", warnings_for(valid));
+
+        let typo = r#"
+            filters {
+                filter "c" {
+                    type "compress"
+                    content-type "text/html"
+                }
+            }
+        "#;
+        let warnings = warnings_for(typo);
+        assert!(
+            warnings.iter().any(|w| w.contains("'content-type'")),
             "{warnings:?}"
         );
     }

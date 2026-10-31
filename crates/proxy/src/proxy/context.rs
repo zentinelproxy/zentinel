@@ -605,7 +605,9 @@ pub struct RequestContext {
     pub(crate) filter_upstream_timeout_secs: Option<u64>,
     /// CORS origin matched by a CORS filter (for response headers)
     pub(crate) cors_origin: Option<String>,
-    /// Whether response compression is enabled by a Compress filter
+    /// The algorithm a Compress filter negotiated with the client
+    pub(crate) compress_algorithm: Option<zentinel_config::CompressionAlgorithm>,
+    /// Whether a Compress filter covers the upstream response (type, size)
     pub(crate) compress_enabled: bool,
 
     // === Response-Phase Agent Processing ===
@@ -743,6 +745,7 @@ impl RequestContext {
             filter_connect_timeout_secs: None,
             filter_upstream_timeout_secs: None,
             cors_origin: None,
+            compress_algorithm: None,
             compress_enabled: false,
             route_agents: Vec::new(),
             response_agent_processing_enabled: false,

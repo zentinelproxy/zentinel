@@ -484,34 +484,84 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
     }))
 }
 
+/// Settings a `compress` filter reads; anything else is reported by `lint`.
+pub(crate) const RECOGNIZED_COMPRESS_FILTER_KEYS: &[&str] =
+    &["type", "algorithms", "min-size", "level", "content-types"];
+
+/// Every string argument of the child `name`, each also split on commas.
+///
+/// Both `algorithms "gzip" "br"` (the documented form) and the older
+/// `algorithms "gzip,br"` are accepted. Only the first argument used to be
+/// read, so the documented form silently dropped all but one entry.
+fn get_string_list(node: &kdl::KdlNode, name: &str) -> Option<Vec<String>> {
+    let child = node.children()?.get(name)?;
+    Some(
+        child
+            .entries()
+            .iter()
+            .filter(|e| e.name().is_none())
+            .filter_map(|e| e.value().as_string())
+            .flat_map(|s| s.split(','))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    )
+}
+
+fn parse_compression_algorithm(name: &str) -> Result<CompressionAlgorithm> {
+    match name.to_ascii_lowercase().as_str() {
+        "gzip" => Ok(CompressionAlgorithm::Gzip),
+        "br" | "brotli" => Ok(CompressionAlgorithm::Brotli),
+        "zstd" => Ok(CompressionAlgorithm::Zstd),
+        // Rejected by `CompressFilter::validate` with an explanation.
+        "deflate" => Ok(CompressionAlgorithm::Deflate),
+        other => Err(anyhow::anyhow!(
+            "compress filter: unknown algorithm '{}'. Valid algorithms: gzip, br (or brotli), zstd",
+            other
+        )),
+    }
+}
+
 fn parse_compress_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let algorithms_str =
-        get_string_entry(node, "algorithms").unwrap_or_else(|| "gzip,br".to_string());
-    let algorithms: Vec<CompressionAlgorithm> = algorithms_str
-        .split(',')
-        .filter_map(|s| match s.trim() {
-            "gzip" => Some(CompressionAlgorithm::Gzip),
-            "br" | "brotli" => Some(CompressionAlgorithm::Brotli),
-            "deflate" => Some(CompressionAlgorithm::Deflate),
-            "zstd" => Some(CompressionAlgorithm::Zstd),
-            _ => None,
-        })
-        .collect();
+    let algorithms = match get_string_list(node, "algorithms") {
+        None => vec![CompressionAlgorithm::Gzip],
+        Some(names) => {
+            let mut algorithms = Vec::new();
+            for name in names {
+                let algorithm = parse_compression_algorithm(&name)?;
+                if !algorithms.contains(&algorithm) {
+                    algorithms.push(algorithm);
+                }
+            }
+            algorithms
+        }
+    };
 
     let min_size = get_int_entry(node, "min-size")
         .map(|v| v as usize)
         .unwrap_or(1024);
 
-    Ok(Filter::Compress(CompressFilter {
-        algorithms,
-        min_size,
-        content_types: vec![
+    let content_types = get_string_list(node, "content-types").unwrap_or_else(|| {
+        vec![
             "text/html".into(),
             "text/css".into(),
             "application/json".into(),
             "application/javascript".into(),
-        ],
-        level: get_int_entry(node, "level").map(|v| v as u8).unwrap_or(6),
+        ]
+    });
+
+    let level = match get_int_entry(node, "level") {
+        None => 6,
+        // Out-of-range values are kept out of range so that validation
+        // reports them instead of a wrapped `u8`.
+        Some(v) => u8::try_from(v).unwrap_or(u8::MAX),
+    };
+
+    Ok(Filter::Compress(CompressFilter {
+        algorithms,
+        min_size,
+        content_types,
+        level,
     }))
 }
 
@@ -791,6 +841,111 @@ mod tests {
                 assert_eq!(rl.max_keys, crate::filters::default_max_keys());
             }
             other => panic!("expected rate-limit filter, got {other:?}"),
+        }
+    }
+
+    /// #591: the compress filter's settings are read back as written.
+    mod compress {
+        use super::*;
+
+        fn compress(body: &str) -> Result<CompressFilter> {
+            let kdl = format!("filter \"c\" {{\n  type \"compress\"\n{body}\n}}\n");
+            let doc: kdl::KdlDocument = kdl.parse().expect("kdl parses");
+            match parse_single_filter_definition(doc.nodes().first().expect("filter node"))? {
+                Filter::Compress(c) => Ok(c),
+                other => panic!("expected a compress filter, got {other:?}"),
+            }
+        }
+
+        fn config_with(body: &str) -> crate::Config {
+            let kdl = format!(
+                r#"
+                schema-version "1.0"
+                system {{ worker-threads 0 }}
+                listeners {{ listener "http" {{ address "127.0.0.1:8080" }} }}
+                filters {{
+                    filter "c" {{
+                        type "compress"
+                        {body}
+                    }}
+                }}
+                routes {{
+                    route "r" {{
+                        matches {{ path-prefix "/" }}
+                        upstream "backend"
+                        filters "c"
+                    }}
+                }}
+                upstreams {{ upstream "backend" {{ target "127.0.0.1:3000" }} }}
+                "#
+            );
+            crate::Config::from_kdl(&kdl).expect("config parses")
+        }
+
+        use CompressionAlgorithm::{Brotli, Gzip, Zstd};
+
+        #[test]
+        fn documented_multi_argument_form_keeps_every_algorithm() {
+            // Only the first argument used to be read: this came back as [Brotli].
+            let c = compress(r#"algorithms "brotli" "gzip" "zstd""#).unwrap();
+            assert_eq!(c.algorithms, vec![Brotli, Gzip, Zstd]);
+        }
+
+        #[test]
+        fn comma_separated_form_still_works() {
+            let c = compress(r#"algorithms "zstd,br""#).unwrap();
+            assert_eq!(c.algorithms, vec![Zstd, Brotli]);
+        }
+
+        #[test]
+        fn default_is_gzip() {
+            let c = compress("").unwrap();
+            assert_eq!(c.algorithms, vec![Gzip]);
+            assert_eq!(c.algorithms, CompressFilter::default().algorithms);
+            assert_eq!(c.level, 6);
+            assert_eq!(c.min_size, 1024);
+        }
+
+        #[test]
+        fn unknown_algorithm_is_an_error() {
+            // Used to be dropped silently.
+            let err = compress(r#"algorithms "gzip" "lzma""#).unwrap_err();
+            assert!(err.to_string().contains("lzma"), "{err}");
+        }
+
+        #[test]
+        fn content_types_and_level_are_read() {
+            // content-types used to be replaced by a fixed list.
+            let c = compress(
+                r#"content-types "text/plain" "application/xml"
+                   level 3
+                   min-size 10"#,
+            )
+            .unwrap();
+            assert_eq!(c.content_types, vec!["text/plain", "application/xml"]);
+            assert_eq!(c.level, 3);
+            assert_eq!(c.min_size, 10);
+        }
+
+        #[test]
+        fn deflate_is_rejected_at_load() {
+            let config = config_with(r#"algorithms "gzip" "deflate""#);
+            let err = config.validate().expect_err("deflate must not load");
+            assert!(err.to_string().contains("deflate"), "{err}");
+        }
+
+        #[test]
+        fn out_of_range_level_is_rejected_at_load() {
+            for level in ["0", "10", "300"] {
+                let config = config_with(&format!("level {level}"));
+                assert!(config.validate().is_err(), "level {level} must not load");
+            }
+        }
+
+        #[test]
+        fn supported_algorithms_load() {
+            let config = config_with(r#"algorithms "zstd" "br" "gzip""#);
+            config.validate().expect("supported algorithms load");
         }
     }
 }

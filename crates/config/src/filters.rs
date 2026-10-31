@@ -186,9 +186,7 @@ impl Filter {
             Filter::RateLimit(r) if r.max_rps == 0 => {
                 return Err("rate-limit max-rps must be > 0".into());
             }
-            Filter::Compress(c) if c.algorithms.is_empty() => {
-                return Err("compress filter requires at least one algorithm".into());
-            }
+            Filter::Compress(c) => c.validate()?,
             Filter::Geo(g) => {
                 if g.database_path.is_empty() {
                     return Err("geo filter requires 'database-path'".into());
@@ -542,8 +540,37 @@ impl Default for CompressFilter {
     }
 }
 
+impl CompressFilter {
+    /// Check that the proxy can do what this filter asks for.
+    ///
+    /// The proxy compresses with gzip, Brotli and zstd. It cannot produce
+    /// `deflate`, so a filter that lists it is rejected rather than having the
+    /// entry silently skipped.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.algorithms.is_empty() {
+            return Err("compress filter requires at least one algorithm".into());
+        }
+        if self.algorithms.contains(&CompressionAlgorithm::Deflate) {
+            return Err(
+                "compress filter: algorithm 'deflate' is not supported; the proxy can produce \
+                 gzip, br (brotli) and zstd. gzip uses the same DEFLATE compression and every \
+                 client that accepts deflate also accepts gzip."
+                    .into(),
+            );
+        }
+        if !(1..=9).contains(&self.level) {
+            return Err(format!(
+                "compress filter: level {} is out of range (1-9)",
+                self.level
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// gzip only: Brotli is not produced yet (see `CompressionAlgorithm::Brotli`).
 fn default_algorithms() -> Vec<CompressionAlgorithm> {
-    vec![CompressionAlgorithm::Gzip, CompressionAlgorithm::Brotli]
+    vec![CompressionAlgorithm::Gzip]
 }
 
 fn default_min_size() -> usize {
@@ -572,9 +599,27 @@ fn default_compression_level() -> u8 {
 #[serde(rename_all = "lowercase")]
 pub enum CompressionAlgorithm {
     Gzip,
+    /// Accepted but not produced: Pingora's Brotli encoder never finishes
+    /// its stream (it flushes instead of closing it), so its output is
+    /// rejected by decoders. The proxy skips it and uses the next listed
+    /// algorithm; configuration checking warns about it.
     Brotli,
+    /// Parsed so that a config naming it gets a clear error; the proxy cannot
+    /// produce it and [`CompressFilter::validate`] rejects it.
     Deflate,
     Zstd,
+}
+
+impl CompressionAlgorithm {
+    /// The content coding token for this algorithm (RFC 9110 section 8.4.1).
+    pub fn content_coding(&self) -> &'static str {
+        match self {
+            CompressionAlgorithm::Gzip => "gzip",
+            CompressionAlgorithm::Brotli => "br",
+            CompressionAlgorithm::Deflate => "deflate",
+            CompressionAlgorithm::Zstd => "zstd",
+        }
+    }
 }
 
 // =============================================================================

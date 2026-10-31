@@ -114,6 +114,23 @@ for details.
   responder is found through the issuer certificate, so `cert-file` must
   contain the chain (leaf, then intermediate); a leaf-only file is warned
   about and served unstapled. (#590)
+- **A `compress` filter that lists `deflate`, or sets a `level` outside 1-9,
+  no longer loads.** The proxy cannot produce deflate; the entry used to be
+  skipped without a word. Use `gzip` (the same DEFLATE compression; every
+  client that accepts deflate accepts gzip). An unknown algorithm name is now
+  an error too, where it was dropped. (#591)
+- **`algorithms` and `content-types` on a `compress` filter now take effect,
+  so responses may be encoded differently.** `algorithms "br" "gzip" "zstd"`,
+  the documented form, used to keep only its first entry, and
+  `content-types` was replaced by a fixed list of four types. Check both
+  against what you want compressed. (#591)
+- **The `compress` filter does not produce Brotli, and its default is now
+  `gzip` alone** (was gzip, br). Pingora's Brotli encoder flushes at the end
+  of the body instead of finishing the stream, so its output cannot be
+  decoded. `br`/`brotli` in `algorithms` is still accepted, skipped in favour
+  of the next listed algorithm the client accepts, and reported by
+  `zentinel test`/`lint` as a warning. Use `zstd` alongside `gzip` for a
+  stronger coding. (#591)
 
 ### Added
 - **`h2c #true` on an upstream: HTTP/2 over cleartext TCP** with prior
@@ -145,6 +162,18 @@ for details.
   in the new `zentinel_tls_ocsp_fetch_total{listener,result}`;
   `zentinel_tls_ocsp_stapled_certificates{listener}` shows how many
   certificates currently carry a staple.
+- **A `compress` filter broke every response it applied to** (since
+  26.02_10): compression was switched on after Pingora's compression module
+  had already passed over the response header, and the module panicked on the
+  first body chunk, so clients got an empty reply or a truncated body. The
+  filter now configures the module before the response header reaches it.
+  (#591)
+- **The `compress` filter's `algorithms` list is applied**: only the listed
+  algorithms are produced (gzip and zstd), in the listed order of preference
+  among those the client accepts (q=0 refusals respected), and the filter's
+  `level` is used instead of a fixed 6. A response the upstream already encoded in a coding
+  the client accepts is passed through as before. `zentinel lint` now checks
+  a compress filter's keys. (#591)
 - **`max-h2-streams` was never applied** to upstream HTTP/2 connections, so
   every one carried a single stream (Pingora's default) and concurrent
   requests each opened a connection of their own. It now reaches the

@@ -788,6 +788,11 @@ fn validate_filters(config: &Config, agent_ids: &HashSet<&str>, errors: &mut Vec
 
     for (filter_id, filter_config) in &config.filters {
         trace!(filter_id = %filter_id, "Validating filter");
+        if let Filter::Compress(compress) = &filter_config.filter {
+            if let Err(e) = compress.validate() {
+                errors.push(format!("Filter '{}': {}", filter_id, e));
+            }
+        }
         if let Filter::Agent(agent_filter) = &filter_config.filter {
             if !agent_ids.contains(agent_filter.agent.as_str()) {
                 warn!(
@@ -1250,6 +1255,29 @@ fn validate_implementation_status(
     // ========================================================================
     // Warnings: Convenience features that are configured but not yet wired
     // ========================================================================
+
+    // Compress filter: Brotli is parsed but not produced (#591). Pingora's
+    // Brotli encoder flushes instead of finishing its stream, so what it
+    // sends cannot be decoded; the proxy skips Brotli instead.
+    let mut compress_ids: Vec<&String> = config
+        .filters
+        .iter()
+        .filter(|(_, fc)| {
+            matches!(&fc.filter, Filter::Compress(c)
+                if c.algorithms.contains(&crate::filters::CompressionAlgorithm::Brotli))
+        })
+        .map(|(id, _)| id)
+        .collect();
+    compress_ids.sort();
+    for id in compress_ids {
+        warnings.push(format!(
+            "Compress filter '{}' lists br (brotli), which the proxy does not produce yet: \
+             the encoder it uses does not finish the Brotli stream, so clients could not \
+             decode it. The filter uses the next algorithm in its list that the client \
+             accepts instead (gzip or zstd).",
+            id
+        ));
+    }
 
     // Listener settings: max_concurrent_streams not yet wired to H2
     for listener in &config.listeners {
@@ -2190,6 +2218,35 @@ mod tests {
         assert!(
             !warnings.iter().any(|w| w.contains("compress")),
             "Compress filter is wired and should not produce warnings"
+        );
+    }
+
+    #[test]
+    fn compress_filter_listing_brotli_is_warned_about() {
+        use crate::filters::{CompressFilter, CompressionAlgorithm, FilterConfig};
+
+        let mut config = Config::default_for_testing();
+        let compress = CompressFilter {
+            algorithms: vec![CompressionAlgorithm::Brotli, CompressionAlgorithm::Gzip],
+            min_size: 1024,
+            content_types: vec!["text/html".to_string()],
+            level: 6,
+        };
+        config.filters.insert(
+            "squeeze".to_string(),
+            FilterConfig::new("squeeze", Filter::Compress(compress)),
+        );
+
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        validate_implementation_status(&config, &mut errors, &mut warnings);
+
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("'squeeze'") && w.contains("brotli")),
+            "{warnings:?}"
         );
     }
 
