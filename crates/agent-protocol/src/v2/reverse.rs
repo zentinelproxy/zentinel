@@ -625,6 +625,16 @@ impl ReverseConnectionClient {
             .await
     }
 
+    /// Send a WebSocket frame event.
+    pub async fn send_websocket_frame(
+        &self,
+        correlation_id: &str,
+        event: &crate::WebSocketFrameEvent,
+    ) -> Result<AgentResponse, AgentProtocolError> {
+        self.send_event(MessageType::WebSocketFrame, correlation_id, event)
+            .await
+    }
+
     /// Send an event and wait for response.
     async fn send_event<T: serde::Serialize>(
         &self,

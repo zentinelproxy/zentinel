@@ -61,7 +61,6 @@ agents {
         }
         events "request-headers" "request-body"
         timeout-ms 50
-        failure-mode "open"
         max-request-body-bytes 1048576
 
         circuit-breaker {
@@ -291,8 +290,14 @@ follows the **filter's** `failure-mode`, else the route's `policies
 headers and body, response headers and body. On the request side a
 fail-closed failure answers 503 (504 for a timeout, 413 for a body over the
 limit); on response headers the upstream response is replaced by that
-refusal; on the response body the response is aborted as above. The
-agent's own `failure-mode` applies only to WebSocket frames.
+refusal; on the response body the response is aborted as above. WebSocket
+frames follow the same rule: only the route's agents see them, and a
+fail-closed failure closes the connection with 1011 (#586).
+
+The agent's own `failure-mode` (`agents { agent "x" { failure-mode ... } }`)
+is **deprecated and has no effect**. `zentinel test` and the startup log
+report it, naming the filters (and their routes) where the value belongs.
+It will be removed in a later release.
 
 ### Circuit Breaker
 
@@ -541,7 +546,6 @@ agents {
         }
         events "request-headers" "request-body"
         timeout-ms 50
-        failure-mode "open"
 
         body-handling {
             mode "buffer"

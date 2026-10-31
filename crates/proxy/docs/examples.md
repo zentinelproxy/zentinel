@@ -322,7 +322,6 @@ agents {
         }
         events "request-headers" "request-body"
         timeout-ms 50
-        failure-mode "open"
 
         body-handling {
             mode "buffer"
@@ -386,7 +385,6 @@ agents {
         }
         events "request-headers"
         timeout-ms 100
-        failure-mode "closed"
         circuit-breaker {
             failure-threshold 5
             recovery-timeout-secs 30

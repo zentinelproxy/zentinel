@@ -473,7 +473,7 @@ Reusable filter definitions.
 | `agent` | `string` | **required** | Agent ID reference |
 | `phase` | `string` | `"request"` | Execution phase |
 | `timeout-ms` | `u64` | - | Timeout override for every call this filter's agent gets on the route (request and response headers and bodies); can only shorten the agent's `timeout-ms` |
-| `failure-mode` | `string` | - | What a failed call to the agent means on routes using the filter: `open` continues, `closed` refuses (503; on a response body, the response is aborted). Unset uses the route's `policies { failure-mode }`. Applies to every request and response path, and overrides the agent's own `failure-mode` |
+| `failure-mode` | `string` | - | What a failed call to the agent means on routes using the filter: `open` continues, `closed` refuses (503; on a response body, the response is aborted). Unset uses the route's `policies { failure-mode }`. Applies to every request and response path and to WebSocket frames |
 | `inspect-body` | `bool` | - | `#false` sends this agent no request body on routes using the filter; unset or `#true` leaves it to the agent's `events` |
 | `max-body-bytes` | `u64` | - | Lowers the agent's `max-request-body-bytes` for routes using the filter; cannot raise it |
 
@@ -493,7 +493,7 @@ External processing agent configuration.
 | `events` | `[string]` | **required** | Events to handle |
 | `timeout-ms` | `u64` | `1000` | Call timeout (must be > 0) |
 | `connect-timeout-ms` | `u64` | `5000` | Longest a new connection waits for the agent to accept it and answer the handshake (must be > 0). An agent that does not answer is not used and is reconnected in the background; its filters follow their `failure-mode` |
-| `failure-mode` | `string` | `"open"` | Failure mode for WebSocket frames (`open` allows on agent failure, `closed` closes the connection). On routes, a failed call follows the agent filter's `failure-mode`, else the route's |
+| `failure-mode` | `string` | - | **Deprecated, no effect** (#586). A failed call follows the agent filter's `failure-mode`, else the route's `policies { failure-mode }`, on every path including WebSocket frames. Reported by `zentinel test`; will be removed in a later release |
 | `circuit-breaker` | `CircuitBreakerConfig` | - | Circuit breaker |
 | `max-request-body-bytes` | `u64` | `1048576` (1 MiB) | Max request body inspected by this agent. Larger bodies follow the filter's `failure-mode`: `closed` blocks with 413, `open` skips this agent with a warning and metric |
 | `max-response-body-bytes` | `u64` | `1048576` (1 MiB) | Max response body inspected by this agent (same failure-mode semantics) |

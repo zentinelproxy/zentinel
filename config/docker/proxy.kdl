@@ -165,9 +165,6 @@ agents {
         unix-socket path="/var/run/zentinel/echo.sock"
         events "request_headers" "response_headers"
         timeout-ms 500
-        // Fail open: this is a demonstration agent on a test stack, and a
-        // request should not be refused because it is not running.
-        failure-mode "open"
     }
 }
 
@@ -176,6 +173,8 @@ filters {
         type "agent"
         agent "echo"
         timeout-ms 500
+        // Fail open: this is a demonstration agent on a test stack, and a
+        // request should not be refused because it is not running.
         failure-mode "open"
     }
 

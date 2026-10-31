@@ -374,7 +374,6 @@ agents {
         }
         events "request-headers"
         timeout-ms 100
-        failure-mode "closed"
         circuit-breaker {
             failure-threshold 5
             recovery-timeout-secs 30

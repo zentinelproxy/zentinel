@@ -12,7 +12,8 @@ use zentinel_agent_protocol::{WebSocketDecision, WebSocketFrameEvent};
 use zentinel_common::observability::RequestMetrics;
 
 use super::codec::WebSocketFrame;
-use crate::agents::AgentManager;
+use crate::agents::{AgentManager, FilterAgent};
+use zentinel_config::FailureMode;
 
 /// Result of inspecting a WebSocket frame
 #[derive(Debug, Clone)]
@@ -52,8 +53,9 @@ pub struct WebSocketInspector {
     client_frame_index: AtomicU64,
     /// Frame index counter for server -> client direction
     server_frame_index: AtomicU64,
-    /// Timeout for agent calls in milliseconds
-    timeout_ms: u64,
+    /// The route's agent filters: which agents see the frames, and each
+    /// one's failure mode and timeout (#586)
+    route_agents: Vec<FilterAgent>,
     /// Metrics collector
     metrics: Option<Arc<RequestMetrics>>,
 }
@@ -65,14 +67,14 @@ impl WebSocketInspector {
         route_id: String,
         correlation_id: String,
         client_ip: String,
-        timeout_ms: u64,
+        route_agents: Vec<FilterAgent>,
     ) -> Self {
         Self::with_metrics(
             agent_manager,
             route_id,
             correlation_id,
             client_ip,
-            timeout_ms,
+            route_agents,
             None,
         )
     }
@@ -83,7 +85,7 @@ impl WebSocketInspector {
         route_id: String,
         correlation_id: String,
         client_ip: String,
-        timeout_ms: u64,
+        route_agents: Vec<FilterAgent>,
         metrics: Option<Arc<RequestMetrics>>,
     ) -> Self {
         debug!(
@@ -104,7 +106,7 @@ impl WebSocketInspector {
             client_ip,
             client_frame_index: AtomicU64::new(0),
             server_frame_index: AtomicU64::new(0),
-            timeout_ms,
+            route_agents,
             metrics,
         }
     }
@@ -169,15 +171,15 @@ impl WebSocketInspector {
             client_ip: self.client_ip.clone(),
         };
 
-        // Send to agent manager for processing
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_millis(self.timeout_ms),
-            self.agent_manager
-                .process_websocket_frame(&self.route_id, event),
-        )
-        .await
+        // Send to agent manager for processing. Each agent call is bounded
+        // by its filter's timeout and answered by its filter's failure mode
+        // there; there is no second, fail-open timeout here (#586).
+        let result = match self
+            .agent_manager
+            .process_websocket_frame(&self.route_id, event, &self.route_agents)
+            .await
         {
-            Ok(Ok(response)) => {
+            Ok(response) => {
                 if let Some(ws_decision) = response.websocket_decision {
                     let result = InspectionResult::from(ws_decision);
                     trace!(
@@ -192,23 +194,27 @@ impl WebSocketInspector {
                     InspectionResult::Allow
                 }
             }
-            Ok(Err(e)) => {
+            Err(e) => {
+                // Not an agent's answer: an internal error. Closed if any
+                // of the route's filters is.
+                let closed = self
+                    .route_agents
+                    .iter()
+                    .any(|filter| filter.failure_mode == FailureMode::Closed);
                 warn!(
                     correlation_id = %self.correlation_id,
                     error = %e,
-                    "Agent error during frame inspection, allowing frame"
+                    fail_closed = closed,
+                    "Error during frame inspection"
                 );
-                // Fail-open: allow frame on agent error
-                InspectionResult::Allow
-            }
-            Err(_) => {
-                warn!(
-                    correlation_id = %self.correlation_id,
-                    timeout_ms = self.timeout_ms,
-                    "Agent timeout during frame inspection, allowing frame"
-                );
-                // Fail-open: allow frame on timeout
-                InspectionResult::Allow
+                if closed {
+                    InspectionResult::Close {
+                        code: 1011,
+                        reason: "Agent error".to_string(),
+                    }
+                } else {
+                    InspectionResult::Allow
+                }
             }
         };
 
@@ -240,27 +246,16 @@ impl WebSocketInspector {
 }
 
 /// Builder for WebSocketInspector
+#[derive(Default)]
 pub struct WebSocketInspectorBuilder {
     agent_manager: Option<Arc<AgentManager>>,
     route_id: Option<String>,
     correlation_id: Option<String>,
     client_ip: Option<String>,
-    timeout_ms: u64,
+    route_agents: Vec<FilterAgent>,
     metrics: Option<Arc<RequestMetrics>>,
 }
 
-impl Default for WebSocketInspectorBuilder {
-    fn default() -> Self {
-        Self {
-            agent_manager: None,
-            route_id: None,
-            correlation_id: None,
-            client_ip: None,
-            timeout_ms: 100, // 100ms default timeout
-            metrics: None,
-        }
-    }
-}
 
 impl WebSocketInspectorBuilder {
     /// Create a new builder
@@ -292,9 +287,9 @@ impl WebSocketInspectorBuilder {
         self
     }
 
-    /// Set the timeout in milliseconds
-    pub fn timeout_ms(mut self, ms: u64) -> Self {
-        self.timeout_ms = ms;
+    /// Set the route's agent filters
+    pub fn route_agents(mut self, route_agents: Vec<FilterAgent>) -> Self {
+        self.route_agents = route_agents;
         self
     }
 
@@ -311,7 +306,7 @@ impl WebSocketInspectorBuilder {
             self.route_id?,
             self.correlation_id?,
             self.client_ip?,
-            self.timeout_ms,
+            self.route_agents,
             self.metrics,
         ))
     }

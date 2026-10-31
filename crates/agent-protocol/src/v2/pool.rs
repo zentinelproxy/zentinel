@@ -26,7 +26,7 @@ use crate::v2::uds::{AgentClientV2Uds, DEFAULT_CONNECT_TIMEOUT};
 use crate::v2::AgentCapabilities;
 use crate::{
     AgentProtocolError, AgentResponse, GuardrailInspectEvent, RequestBodyChunkEvent,
-    RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent,
+    RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketFrameEvent,
 };
 
 /// Channel buffer size for all transports.
@@ -357,6 +357,26 @@ impl V2Transport {
             }
             V2Transport::Reverse(client) => {
                 client.send_response_body_chunk(correlation_id, event).await
+            }
+        }
+    }
+
+    /// Send a WebSocket frame event.
+    ///
+    /// Not over gRPC: its `AgentResponse` has no WebSocket decision, so an
+    /// agent's answer to a frame could not be carried back.
+    pub async fn send_websocket_frame(
+        &self,
+        correlation_id: &str,
+        event: &WebSocketFrameEvent,
+    ) -> Result<AgentResponse, AgentProtocolError> {
+        match self {
+            V2Transport::Grpc(_client) => Err(AgentProtocolError::InvalidMessage(
+                "WebSocketFrame events are not yet supported via gRPC".to_string(),
+            )),
+            V2Transport::Uds(client) => client.send_websocket_frame(correlation_id, event).await,
+            V2Transport::Reverse(client) => {
+                client.send_websocket_frame(correlation_id, event).await
             }
         }
     }
@@ -1608,6 +1628,61 @@ impl AgentPool {
         let result = conn
             .client
             .send_response_body_chunk(correlation_id, event)
+            .await;
+
+        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        conn.request_count.fetch_add(1, Ordering::Relaxed);
+
+        match &result {
+            Ok(_) => {
+                conn.consecutive_errors.store(0, Ordering::Relaxed);
+            }
+            Err(_) => {
+                conn.error_count.fetch_add(1, Ordering::Relaxed);
+                let consecutive = conn.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
+                self.total_errors.fetch_add(1, Ordering::Relaxed);
+                if consecutive >= 3 {
+                    conn.healthy_cached.store(false, Ordering::Release);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Send a WebSocket frame to an agent.
+    ///
+    /// Frames of one connection are sent one at a time, in order; the agent
+    /// answers each with a WebSocket decision.
+    pub async fn send_websocket_frame(
+        &self,
+        agent_id: &str,
+        correlation_id: &str,
+        event: &WebSocketFrameEvent,
+    ) -> Result<AgentResponse, AgentProtocolError> {
+        self.total_requests.fetch_add(1, Ordering::Relaxed);
+
+        let conn = self.select_connection(agent_id)?;
+
+        match self.check_flow_control(&conn, agent_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                // FailOpen mode: skip agent, allow the frame
+                return Ok(AgentResponse::websocket_allow());
+            }
+            Err(e) => return Err(e),
+        }
+
+        let _permit = conn.concurrency_limiter.acquire().await.map_err(|_| {
+            AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
+        })?;
+
+        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        conn.touch();
+
+        let result = conn
+            .client
+            .send_websocket_frame(correlation_id, event)
             .await;
 
         conn.in_flight.fetch_sub(1, Ordering::Relaxed);

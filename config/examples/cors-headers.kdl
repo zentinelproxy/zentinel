@@ -45,7 +45,6 @@ agents {
         grpc address="http://localhost:50051"
         events "request_headers"
         timeout-ms 100
-        failure-mode "closed"
     }
 }
 

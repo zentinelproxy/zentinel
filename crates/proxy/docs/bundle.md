@@ -264,20 +264,19 @@ agents {
     //   /usr/local/bin/zentinel-waf-agent --socket /run/zentinel-agents/waf.sock
     agent "waf" {
         unix-socket "/run/zentinel-agents/waf.sock"
-        failure-mode "open"
     }
 
     // zentinelsec 0.4.0, started as:
     //   /usr/local/bin/zentinel-zentinelsec-agent --grpc-address 127.0.0.1:50151
     agent "zentinelsec" {
         grpc address="http://127.0.0.1:50151"
-        failure-mode "open"
     }
 }
 ```
 
 The file is regenerated on every install; to customise it (timeouts,
-`events`, `failure-mode "closed"`), copy it. `events` defaults to request
+`events`), copy it. What a failed call means is set on the filter
+(`failure-mode`), not the agent. `events` defaults to request
 headers: add `"request_body"` and the response events for agents that inspect
 bodies. Agents only see traffic that a route sends through them:
 
