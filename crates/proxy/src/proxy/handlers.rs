@@ -820,6 +820,9 @@ impl ZentinelProxy {
         // An agent's own body is sent as it is; without one, the route's
         // error page for the status applies (#557).
         ctx.agent_block = Some(block);
+        // Keeps the abandoned upstream request out of the target's failure
+        // accounting (#610).
+        ctx.request_refused_by_agent = true;
         Err(Error::explain(ErrorType::HTTPStatus(status), message))
     }
 
