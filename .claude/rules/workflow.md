@@ -8,7 +8,7 @@ Commands, processes, and common tasks for working with Zentinel.
 
 ### Prerequisites
 
-- Rust 1.96.0+ (see `rust-toolchain.toml`)
+- Rust 1.99+ (see `rust-toolchain.toml`)
 - mise (task runner)
 - Docker (for integration tests)
 
