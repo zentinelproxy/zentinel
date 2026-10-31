@@ -395,6 +395,13 @@ pub struct RequestContext {
     /// Whether the body agents have been sent the (buffered) request body,
     /// after which the rest of the body is passed on as it comes.
     pub(crate) request_body_decided: bool,
+    /// The body agents decided on the whole request body in
+    /// `request_filter`, before the upstream was contacted
+    /// (`request-body-mode "inspect-first"`, #608).
+    pub(crate) request_body_inspected_first: bool,
+    /// Request-header changes from that decision, applied to the upstream
+    /// request in `request_filter`.
+    pub(crate) body_phase_request_headers: Vec<zentinel_agent_protocol::HeaderOp>,
 
     // === Agentic protocol policy (MCP / A2A) ===
     /// Request body accumulated for MCP/A2A policy evaluation.
@@ -691,6 +698,8 @@ impl RequestContext {
             agent_response_headers: Vec::new(),
             request_body_held: Vec::new(),
             request_body_decided: false,
+            request_body_inspected_first: false,
+            body_phase_request_headers: Vec::new(),
             decompression_enabled: false,
             body_content_encoding: None,
             max_decompression_ratio: 100.0,

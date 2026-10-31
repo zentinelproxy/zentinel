@@ -1819,6 +1819,11 @@ pub fn most_conservative_body_mode(modes: &[BodyStreamingMode]) -> BodyStreaming
     for mode in modes {
         result = Some(match (result, *mode) {
             (None, mode) => mode,
+            // The whole body before the upstream is contacted: what every
+            // other mode gives an agent, and more (#608).
+            (Some(BodyStreamingMode::InspectFirst), _) | (_, BodyStreamingMode::InspectFirst) => {
+                BodyStreamingMode::InspectFirst
+            }
             (Some(BodyStreamingMode::Buffer), _) | (_, BodyStreamingMode::Buffer) => {
                 BodyStreamingMode::Buffer
             }
@@ -1863,6 +1868,22 @@ mod body_mode_tests {
         assert_eq!(most_conservative_body_mode(&[Stream]), Stream);
         assert_eq!(most_conservative_body_mode(&[hybrid(8)]), hybrid(8));
         assert_eq!(most_conservative_body_mode(&[Buffer]), Buffer);
+    }
+
+    /// #608: inspect-first gives every agent what buffer mode would, and
+    /// more, so one agent asking for it decides the route's mode.
+    #[test]
+    fn inspect_first_wins_over_everything() {
+        use zentinel_config::BodyStreamingMode::InspectFirst;
+        assert_eq!(most_conservative_body_mode(&[InspectFirst]), InspectFirst);
+        assert_eq!(
+            most_conservative_body_mode(&[Stream, Buffer, InspectFirst, hybrid(8)]),
+            InspectFirst
+        );
+        assert_eq!(
+            most_conservative_body_mode(&[InspectFirst, Buffer]),
+            InspectFirst
+        );
     }
 
     #[test]

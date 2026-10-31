@@ -848,6 +848,14 @@ impl ZentinelProxy {
         if decision.request_headers.is_empty() {
             return;
         }
+        // Inspected before the upstream was contacted (#608): the upstream
+        // request's headers are not sent yet, so these apply.
+        if ctx.request_body_inspected_first {
+            ctx.body_phase_request_headers
+                .append(&mut decision.request_headers);
+            decision.request_headers_from.clear();
+            return;
+        }
         let names: Vec<&str> = decision
             .request_headers
             .iter()

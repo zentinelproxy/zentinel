@@ -615,6 +615,14 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
             "response-body-mode" => {
                 if let Some(mode) = get_first_arg_string(child) {
                     response_body_mode = parse_body_streaming_mode(&mode, &id)?;
+                    if response_body_mode == BodyStreamingMode::InspectFirst {
+                        return Err(anyhow::anyhow!(
+                            "Agent '{}': 'inspect-first' is a request-body-mode only; a \
+                             response body comes from the upstream. Valid response modes: \
+                             buffer, stream, hybrid, hybrid:<bytes>",
+                            id
+                        ));
+                    }
                 }
             }
             "chunk-timeout-ms" => {
@@ -681,6 +689,7 @@ fn parse_body_streaming_mode(mode: &str, agent_id: &str) -> Result<BodyStreaming
     match mode {
         "buffer" => Ok(BodyStreamingMode::Buffer),
         "stream" => Ok(BodyStreamingMode::Stream),
+        "inspect-first" => Ok(BodyStreamingMode::InspectFirst),
         _ if mode.starts_with("hybrid:") => {
             // Parse "hybrid:1024" format - safe to unwrap since we checked starts_with
             let threshold_str = mode.strip_prefix("hybrid:")
@@ -703,7 +712,7 @@ fn parse_body_streaming_mode(mode: &str, agent_id: &str) -> Result<BodyStreaming
             })
         }
         other => Err(anyhow::anyhow!(
-            "Agent '{}': unknown body streaming mode '{}'. Valid modes: buffer, stream, hybrid, hybrid:<bytes>",
+            "Agent '{}': unknown body streaming mode '{}'. Valid modes: buffer, stream, hybrid, hybrid:<bytes>, inspect-first",
             agent_id,
             other
         )),
@@ -3847,6 +3856,53 @@ routes {
         assert_eq!(
             error_log.file,
             std::path::PathBuf::from("/var/log/zentinel/error.log")
+        );
+    }
+}
+
+#[cfg(test)]
+mod inspect_first_tests {
+    use crate::BodyStreamingMode;
+
+    fn agent(modes: &str) -> anyhow::Result<crate::Config> {
+        crate::Config::from_kdl(&format!(
+            r#"
+            system {{ worker-threads 1 }}
+            listeners {{ listener "l" {{ address "127.0.0.1:8080" }} }}
+            upstreams {{ upstream "u" {{ target "127.0.0.1:9000" }} }}
+            routes {{ route "r" {{ matches {{ path-prefix "/" }}
+                                 upstream "u" }} }}
+            agents {{
+                agent "a" type="custom" {{
+                    unix-socket "/tmp/a.sock"
+                    {modes}
+                }}
+            }}
+            "#
+        ))
+    }
+
+    /// #608: read back from the parsed configuration, not just accepted.
+    #[test]
+    fn inspect_first_is_a_request_body_mode() {
+        let config = agent(r#"request-body-mode "inspect-first""#).expect("parses");
+        assert_eq!(
+            config.agents[0].request_body_mode,
+            BodyStreamingMode::InspectFirst
+        );
+        assert_eq!(
+            config.agents[0].response_body_mode,
+            BodyStreamingMode::Buffer
+        );
+    }
+
+    #[test]
+    fn inspect_first_is_not_a_response_body_mode() {
+        let err = agent(r#"response-body-mode "inspect-first""#)
+            .expect_err("a response body comes from the upstream");
+        assert!(
+            format!("{err:#}").contains("request-body-mode only"),
+            "{err:#}"
         );
     }
 }
