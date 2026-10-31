@@ -143,6 +143,14 @@ for details.
   requests are now left out of the target's circuit breaker and
   load-balancer accounting entirely; genuine upstream failures still count.
   (#610)
+- **An agent's `Redirect` or `Challenge` in a response phase is acted on.**
+  Since 26.10_9 a `Block` on response headers or the response body was
+  enforced (#584), but a `Redirect` or `Challenge` there was dropped and the
+  upstream response sent. Both are now answered as in the request phases (a
+  redirect with its `Location`, a challenge as 403, or 401 with
+  `WWW-Authenticate`), replacing the upstream response while its header is
+  unsent and aborting it after, as a block does. Logged and audited with the
+  decision type as `action`. (#588)
 
 ---
 

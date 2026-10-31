@@ -1,4 +1,5 @@
-//! An agent's decision in the response phase is acted on (#584).
+//! An agent's decision in the response phase is acted on (#584): a block,
+//! and a redirect or a challenge (#588).
 //!
 //! On the response side the proxy used to apply only the header and body
 //! changes an agent returned and ignore its decision: a block on response
@@ -31,6 +32,24 @@ const MARKER: &str = "UPSTREAM-MARKER-584";
 const TRIGGER: &str = "SECRET-TRIGGER";
 /// In the chunk after the trigger.
 const AFTER: &str = "AFTER-THE-BLOCK";
+/// In place of [`TRIGGER`] in `/…/leak-redirect` and `/…/cl-redirect`; the
+/// agent redirects a body containing it.
+const REDIRECT_TRIGGER: &str = "REDIRECT-TRIGGER";
+/// Likewise for a challenge.
+const CHALLENGE_TRIGGER: &str = "CHALLENGE-TRIGGER";
+/// Where the agent redirects to.
+const REDIRECT_TO: &str = "https://example.com/moved";
+
+/// The trigger a backend path asks for.
+fn trigger_for(request_line: &str) -> &'static str {
+    if request_line.contains("redirect") {
+        REDIRECT_TRIGGER
+    } else if request_line.contains("challenge") {
+        CHALLENGE_TRIGGER
+    } else {
+        TRIGGER
+    }
+}
 
 /// Two free ports from a small fixed range, so the test stays clear of
 /// ports other local services are likely to use.
@@ -53,6 +72,11 @@ fn free_ports(range: std::ops::Range<u16>) -> (u16, u16) {
 ///   [`TRIGGER`] and the third [`AFTER`]; `/…/chunked` the same without
 ///   the trigger;
 /// - `/…/cl-leak`: [`TRIGGER`] and [`AFTER`] in a Content-Length body;
+/// - `/…/leak-redirect`, `/…/leak-challenge`, `/…/cl-redirect`,
+///   `/…/cl-challenge`: the same with [`REDIRECT_TRIGGER`] or
+///   [`CHALLENGE_TRIGGER`] in place of [`TRIGGER`];
+/// - `/…/hdr-redirect`, `/…/hdr-challenge`, `/…/hdr-auth`: an
+///   `X-Test-Verdict` the agent redirects or challenges on;
 /// - anything else: a plain 200.
 fn spawn_backend(port: u16) {
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
@@ -71,7 +95,7 @@ fn spawn_backend(port: u16) {
                 }
                 if request_line.contains("/leak") || request_line.contains("/chunked") {
                     let second = if request_line.contains("/leak") {
-                        TRIGGER
+                        trigger_for(&request_line)
                     } else {
                         "harmless"
                     };
@@ -90,8 +114,8 @@ fn spawn_backend(port: u16) {
                     let _ = stream.write_all(b"0\r\n\r\n");
                     return;
                 }
-                if request_line.contains("/cl-leak") {
-                    let body = format!("{MARKER} {TRIGGER} {AFTER}\n");
+                if request_line.contains("/cl-") {
+                    let body = format!("{MARKER} {} {AFTER}\n", trigger_for(&request_line));
                     let _ = write!(
                         stream,
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -103,6 +127,12 @@ fn spawn_backend(port: u16) {
                     "X-Test-Verdict: block\r\n"
                 } else if request_line.contains("/bare") {
                     "X-Test-Verdict: bare\r\n"
+                } else if request_line.contains("/hdr-redirect") {
+                    "X-Test-Verdict: redirect\r\n"
+                } else if request_line.contains("/hdr-challenge") {
+                    "X-Test-Verdict: challenge\r\n"
+                } else if request_line.contains("/hdr-auth") {
+                    "X-Test-Verdict: auth\r\n"
                 } else {
                     ""
                 };
@@ -234,6 +264,9 @@ impl AgentHandlerV2 for ResponseBlocker {
                 response
             }
             Some("bare") => AgentResponse::block(403, None),
+            Some("redirect") => AgentResponse::redirect(REDIRECT_TO.to_string(), 307),
+            Some("challenge") => challenge(&[]),
+            Some("auth") => challenge(&[("www-authenticate", "Basic realm=\"584\"")]),
             _ => AgentResponse::default_allow(),
         }
     }
@@ -243,12 +276,30 @@ impl AgentHandlerV2 for ResponseBlocker {
         let data = base64::engine::general_purpose::STANDARD
             .decode(&event.data)
             .unwrap_or_default();
-        if String::from_utf8_lossy(&data).contains(TRIGGER) {
+        let data = String::from_utf8_lossy(&data);
+        if data.contains(REDIRECT_TRIGGER) {
+            AgentResponse::redirect(REDIRECT_TO.to_string(), 307)
+        } else if data.contains(CHALLENGE_TRIGGER) {
+            challenge(&[])
+        } else if data.contains(TRIGGER) {
             AgentResponse::block(403, Some("agent body says no".to_string()))
         } else {
             AgentResponse::default_allow()
         }
     }
+}
+
+/// A challenge decision with `params`.
+fn challenge(params: &[(&str, &str)]) -> AgentResponse {
+    let mut response = AgentResponse::default_allow();
+    response.decision = Decision::Challenge {
+        challenge_type: "captcha".to_string(),
+        params: params
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    };
+    response
 }
 
 fn config(port: u16, backend: u16, socket: &std::path::Path, dead: &std::path::Path) -> String {
@@ -565,4 +616,84 @@ fn a_response_body_over_the_agents_limit_follows_the_filter() {
     assert!(body.contains(MARKER), "{resp:?}");
     assert!(body.contains("harmless"), "{resp:?}");
     assert!(body.contains(AFTER), "{resp:?}");
+}
+
+/// #588: a redirect or a challenge on response headers replaces the
+/// upstream response, as a block does, with the response the request phases
+/// give it: the redirect with its `Location`, a challenge as 403, or 401
+/// with `WWW-Authenticate`. They used to be ignored and the upstream
+/// response sent.
+#[test]
+fn a_redirect_or_challenge_on_response_headers_replaces_the_upstream_response() {
+    let setup = setup(19880..19886);
+    let port = setup.port;
+
+    let resp = get(port, "/open/hdr-redirect");
+    assert_eq!(resp.status, 307, "{resp:?}");
+    assert_eq!(resp.header("location"), Some(REDIRECT_TO), "{resp:?}");
+    assert_eq!(resp.header("x-test-verdict"), None, "{resp:?}");
+    assert!(!resp.body().contains(MARKER), "{resp:?}");
+    assert!(resp.complete(), "{resp:?}");
+
+    let resp = get(port, "/open/hdr-challenge");
+    assert_eq!(resp.status, 403, "{resp:?}");
+    assert_eq!(resp.header("x-test-verdict"), None, "{resp:?}");
+    assert!(!resp.body().contains(MARKER), "{resp:?}");
+
+    // The route's page for the status, as for a block without a body.
+    let resp = get(port, "/paged/hdr-challenge");
+    assert_eq!(resp.status, 403, "{resp:?}");
+    let page: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+    assert_eq!(page["message"], "Custom 403 page");
+
+    let resp = get(port, "/open/hdr-auth");
+    assert_eq!(resp.status, 401, "{resp:?}");
+    assert_eq!(
+        resp.header("www-authenticate"),
+        Some("Basic realm=\"584\""),
+        "{resp:?}"
+    );
+    assert!(!resp.body().contains(MARKER), "{resp:?}");
+}
+
+/// #588: a redirect or a challenge on the response body is handled as a
+/// block there: after the status has gone out the response is aborted, with
+/// none of the body; before, the redirect or challenge replaces it.
+#[test]
+fn a_redirect_or_challenge_on_the_response_body_is_handled_like_a_block() {
+    let setup = setup(19886..19892);
+    let port = setup.port;
+
+    for (kind, trigger) in [
+        ("redirect", REDIRECT_TRIGGER),
+        ("challenge", CHALLENGE_TRIGGER),
+    ] {
+        let path = format!("/open/leak-{kind}");
+        let resp = get(port, &path);
+        let body = resp.body();
+        assert_eq!(resp.status, 200, "{path}: {resp:?}");
+        assert!(!body.contains(MARKER), "{path}: {resp:?}");
+        assert!(!body.contains(trigger), "{path}: {resp:?}");
+        assert!(!body.contains(AFTER), "{path}: {resp:?}");
+        assert!(
+            !resp.complete(),
+            "{path}: the abort must be detectable: {resp:?}"
+        );
+
+        // Decided before the header went out: replaced, or aborted should
+        // the body have come in separately.
+        let path = format!("/open/cl-{kind}");
+        let resp = get(port, &path);
+        let body = resp.body();
+        assert!(!body.contains(MARKER), "{path}: {resp:?}");
+        assert!(!body.contains(trigger), "{path}: {resp:?}");
+        if resp.status == 200 {
+            assert!(!resp.complete(), "{path}: {resp:?}");
+        } else if kind == "redirect" {
+            assert_eq!(resp.status, 307, "{path}: {resp:?}");
+            assert_eq!(resp.header("location"), Some(REDIRECT_TO), "{path}");
+        } else {
+            assert_eq!(resp.status, 403, "{path}: {resp:?}");
+        }
+    }
 }
