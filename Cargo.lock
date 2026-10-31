@@ -8132,6 +8132,7 @@ dependencies = [
  "flate2",
  "futures",
  "futures-util",
+ "h2",
  "hex",
  "hickory-resolver",
  "hmac",

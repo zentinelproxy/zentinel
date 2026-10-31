@@ -300,6 +300,12 @@ pub struct HttpVersionConfig {
     /// Maximum concurrent H2 streams per connection
     #[serde(default = "default_max_h2_streams")]
     pub max_h2_streams: usize,
+
+    /// Speak HTTP/2 over cleartext TCP with prior knowledge (`h2c #true` on
+    /// the upstream). Only for upstreams without `tls`; there is no
+    /// negotiation and no fallback to HTTP/1.1.
+    #[serde(default)]
+    pub h2c: bool,
 }
 
 impl Default for HttpVersionConfig {
@@ -309,6 +315,7 @@ impl Default for HttpVersionConfig {
             max_version: default_max_http_version(),
             h2_ping_interval_secs: 0,
             max_h2_streams: default_max_h2_streams(),
+            h2c: false,
         }
     }
 }

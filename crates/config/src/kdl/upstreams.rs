@@ -32,6 +32,7 @@ pub(crate) const RECOGNIZED_UPSTREAM_KEYS: &[&str] = &[
     "load-balancing",
     "health-check",
     "http-version",
+    "h2c",
     "connection-pool",
     "timeouts",
     "tls",
@@ -252,20 +253,23 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
         }
 
         // Parse HTTP version configuration
-        let http_version = child
-            .children()
-            .and_then(|c| {
-                c.nodes()
-                    .iter()
-                    .find(|n| n.name().value() == "http-version")
-            })
+        let http_version_node = child.children().and_then(|c| {
+            c.nodes()
+                .iter()
+                .find(|n| n.name().value() == "http-version")
+        });
+        let http_version = http_version_node
             .map(parse_http_version)
             .unwrap_or_default();
+
+        let mut http_version = http_version;
+        http_version.h2c = parse_h2c(child, &id)?;
 
         if http_version.max_version >= 2 {
             trace!(
                 upstream_id = %id,
                 max_version = http_version.max_version,
+                h2c = http_version.h2c,
                 "HTTP/2 enabled for upstream"
             );
         }
@@ -300,6 +304,8 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
                 "Parsed TLS configuration"
             );
         }
+
+        check_http_version_transport(&id, &http_version, tls.is_some(), http_version_node)?;
 
         let circuit_breaker = child
             .children()
@@ -611,7 +617,76 @@ fn parse_http_version(node: &kdl::KdlNode) -> HttpVersionConfig {
         max_version,
         h2_ping_interval_secs,
         max_h2_streams,
+        // Set by `parse_upstream` from the upstream's own `h2c` node.
+        h2c: false,
     }
+}
+
+/// Read an upstream's `h2c` setting: absent is `false`, anything but a
+/// boolean is an error rather than a silent `false`.
+fn parse_h2c(upstream: &kdl::KdlNode, id: &str) -> Result<bool> {
+    let Some(node) = upstream
+        .children()
+        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "h2c"))
+    else {
+        return Ok(false);
+    };
+    node.entries()
+        .first()
+        .and_then(|e| e.value().as_bool())
+        .ok_or_else(|| anyhow!("Upstream '{id}': 'h2c' takes #true or #false, e.g. 'h2c #true'"))
+}
+
+/// Reject HTTP version settings the connection could not honour.
+///
+/// Without `tls` there is no ALPN, so HTTP/2 to a plain upstream is only
+/// possible with prior knowledge, which `h2c #true` asks for. An HTTP/2-only
+/// `http-version` on a plain upstream used to be served over HTTP/1.1 without
+/// a word, and `h2c` with `tls` or with an HTTP/1-only range cannot mean what
+/// it says, so each of these fails to load.
+fn check_http_version_transport(
+    id: &str,
+    http_version: &HttpVersionConfig,
+    tls: bool,
+    http_version_node: Option<&kdl::KdlNode>,
+) -> Result<()> {
+    if http_version.h2c {
+        if tls {
+            return Err(anyhow!(
+                "Upstream '{id}': 'h2c #true' is HTTP/2 over cleartext TCP and cannot be \
+                 combined with a 'tls' block. Over TLS, HTTP/2 is negotiated with ALPN: \
+                 remove 'h2c' and set 'http-version {{ min-version 2 }}' instead."
+            ));
+        }
+        if http_version.max_version < 2 {
+            return Err(anyhow!(
+                "Upstream '{id}': 'h2c #true' speaks HTTP/2 only, but 'http-version' \
+                 allows at most HTTP/{}. Remove 'max-version' or 'h2c'.",
+                http_version.max_version
+            ));
+        }
+        // min-version defaults to 1; only a value written down conflicts.
+        let explicit_min = http_version_node
+            .and_then(|n| n.children())
+            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "min-version"))
+            .and_then(|n| n.entries().first())
+            .and_then(|e| e.value().as_integer());
+        if explicit_min == Some(1) {
+            return Err(anyhow!(
+                "Upstream '{id}': 'h2c #true' never falls back to HTTP/1.1, but \
+                 'http-version' sets 'min-version 1'. Remove 'min-version' or 'h2c'."
+            ));
+        }
+    } else if !tls && http_version.min_version >= 2 {
+        return Err(anyhow!(
+            "Upstream '{id}': 'http-version' requires HTTP/2 ('min-version {}'), but \
+             the upstream has no 'tls' block, so there is no ALPN to negotiate it and \
+             the connection would use HTTP/1.1. Add 'h2c #true' for HTTP/2 over \
+             cleartext, or a 'tls' block.",
+            http_version.min_version
+        ));
+    }
+    Ok(())
 }
 
 /// Parse connection pool configuration
@@ -2004,6 +2079,72 @@ mod tests {
                     .unwrap();
                 assert_eq!(health_check_type_problem(check, "b"), None, "{name}");
             }
+        }
+    }
+
+    /// #614: `h2c #true` and the HTTP version settings it must agree with.
+    /// Read the struct back for the accepted cases; the rejected ones must
+    /// fail to load rather than be served over HTTP/1.1.
+    mod h2c {
+        use super::*;
+
+        fn parse(body: &str) -> Result<HttpVersionConfig> {
+            parse_kdl_upstreams(&format!(
+                r#"upstreams {{
+                    upstream "b" {{
+                        target "127.0.0.1:9000"
+                        {body}
+                    }}
+                }}"#
+            ))
+            .map(|u| u.get("b").unwrap().http_version.clone())
+        }
+
+        fn error_of(body: &str) -> String {
+            format!("{:#}", parse(body).expect_err("should be rejected"))
+        }
+
+        #[test]
+        fn h2c_is_read_and_off_by_default() {
+            assert!(parse("h2c #true").unwrap().h2c);
+            assert!(!parse("h2c #false").unwrap().h2c);
+            assert!(!parse("").unwrap().h2c);
+            let v = parse("h2c #true\nhttp-version { min-version 2; max-h2-streams 50; }").unwrap();
+            assert!(v.h2c);
+            assert_eq!(v.max_h2_streams, 50);
+        }
+
+        #[test]
+        fn h2c_that_is_not_a_boolean_is_rejected() {
+            for value in [r#""yes""#, "1", ""] {
+                let e = error_of(&format!("h2c {value}"));
+                assert!(e.contains("'h2c' takes #true or #false"), "{value}: {e}");
+            }
+        }
+
+        #[test]
+        fn h2c_with_tls_is_rejected() {
+            let e = error_of("h2c #true\ntls { sni \"b\" }");
+            assert!(e.contains("cannot be combined with a 'tls' block"), "{e}");
+        }
+
+        #[test]
+        fn h2c_with_an_http1_range_is_rejected() {
+            let e = error_of("h2c #true\nhttp-version { max-version 1; }");
+            assert!(e.contains("allows at most HTTP/1"), "{e}");
+            let e = error_of("h2c #true\nhttp-version { min-version 1; }");
+            assert!(e.contains("never falls back to HTTP/1.1"), "{e}");
+        }
+
+        /// Used to be accepted and served over HTTP/1.1.
+        #[test]
+        fn an_http2_only_range_on_a_plain_upstream_needs_h2c() {
+            let e = error_of("http-version { min-version 2; }");
+            assert!(e.contains("Add 'h2c #true'"), "{e}");
+            // With TLS it is negotiated by ALPN, as before.
+            assert!(parse("tls { sni \"b\" }\nhttp-version { min-version 2; }").is_ok());
+            // The default range on a plain upstream stays HTTP/1.1.
+            assert!(parse("http-version { max-version 2; }").is_ok());
         }
     }
 }

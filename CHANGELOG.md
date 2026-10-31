@@ -93,6 +93,30 @@ for details.
 
 ## [Unreleased]
 
+### Upgrade notes
+- **A plain upstream with an HTTP/2-only `http-version` no longer loads.**
+  `http-version { min-version 2 }` on an upstream without `tls` used to be
+  served over HTTP/1.1 without a word (there is no ALPN without TLS). It is
+  now a configuration error that points to `h2c #true`. Add `h2c #true` if the
+  backend speaks cleartext HTTP/2, or remove `min-version 2` to keep
+  HTTP/1.1. (#614)
+
+### Added
+- **`h2c #true` on an upstream: HTTP/2 over cleartext TCP** with prior
+  knowledge, for trusted internal hops where TLS ends elsewhere (#614). There
+  is no negotiation and no fallback: a backend that does not speak HTTP/2
+  fails the request. `zentinel test` rejects `h2c` together with `tls`,
+  `max-version 1` or `min-version 1`. Listeners follow in a separate change.
+
+### Fixed
+- **`max-h2-streams` was never applied** to upstream HTTP/2 connections, so
+  every one carried a single stream (Pingora's default) and concurrent
+  requests each opened a connection of their own. It now reaches the
+  connection (default 100). (#614)
+- **Gateway API: GRPCRoute upstreams now use `h2c`.** They asked for HTTP/2
+  only, on plain cluster Services, which without TLS could not take effect.
+  (#614)
+
 ---
 
 ## [26.10_10] - 2026-10-30
