@@ -51,6 +51,18 @@ pub struct TlsMetrics {
     /// Files in a scanned folder that could not be used as a certificate.
     /// Labels: listener, reason
     folder_entries_skipped_total: IntCounterVec,
+
+    /// OCSP fetch attempts for stapling, by outcome.
+    ///
+    /// A failed fetch never fails a handshake -- the certificate is served
+    /// without a staple -- so this is the only place it shows.
+    /// Labels: listener, result (`success`, `failure`, `invalid`, `revoked`,
+    /// `no_issuer`)
+    ocsp_fetch_total: IntCounterVec,
+
+    /// Certificates on a listener currently served with a valid OCSP staple.
+    /// Labels: listener
+    ocsp_stapled_certificates: IntGaugeVec,
 }
 
 impl TlsMetrics {
@@ -84,11 +96,27 @@ impl TlsMetrics {
         )
         .context("Failed to register zentinel_tls_folder_entries_skipped_total metric")?;
 
+        let ocsp_fetch_total = register_int_counter_vec!(
+            "zentinel_tls_ocsp_fetch_total",
+            "OCSP response fetches for stapling, by outcome",
+            &["listener", "result"]
+        )
+        .context("Failed to register zentinel_tls_ocsp_fetch_total metric")?;
+
+        let ocsp_stapled_certificates = register_int_gauge_vec!(
+            "zentinel_tls_ocsp_stapled_certificates",
+            "Number of certificates on a listener currently served with a valid OCSP staple",
+            &["listener"]
+        )
+        .context("Failed to register zentinel_tls_ocsp_stapled_certificates metric")?;
+
         Ok(Self {
             sni_certs_skipped_total,
             certificates_loaded,
             reload_total,
             folder_entries_skipped_total,
+            ocsp_fetch_total,
+            ocsp_stapled_certificates,
         })
     }
 
@@ -122,5 +150,22 @@ impl TlsMetrics {
         self.sni_certs_skipped_total
             .with_label_values(&[listener_id, primary_domain])
             .inc();
+    }
+
+    /// Record the outcome of an OCSP fetch.
+    ///
+    /// `result` is a small fixed set, never error text, so the label stays
+    /// bounded.
+    pub fn record_ocsp_fetch(&self, listener_id: &str, result: &str) {
+        self.ocsp_fetch_total
+            .with_label_values(&[listener_id, result])
+            .inc();
+    }
+
+    /// Record how many certificates currently carry a valid OCSP staple.
+    pub fn set_ocsp_stapled(&self, listener_id: &str, count: usize) {
+        self.ocsp_stapled_certificates
+            .with_label_values(&[listener_id])
+            .set(count as i64);
     }
 }

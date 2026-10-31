@@ -498,7 +498,22 @@ TLS termination and certificate management.
 - Wildcard certificate matching
 - mTLS client verification
 - Certificate hot-reload
-- OCSP stapling
+- OCSP stapling (`tls/ocsp.rs`)
+
+**OCSP stapling** (`ocsp-stapling`, default on): each listener's
+`HotReloadableSniResolver` owns an `OcspStapler`. A background task
+(`run_ocsp_refresher`, every 30 s) fetches a response for every served
+certificate that names an OCSP responder in its AIA extension, using the next
+certificate in `cert-file` as the issuer. A response is stapled only if the
+responder reported success, it covers this serial number, the status is
+`good`, and the current time is within `thisUpdate`/`nextUpdate`; the
+responder signature is left to the client. Responses are refreshed at half
+their validity window (at most hourly), retried every 5 minutes after a
+failure, kept across certificate reloads for unchanged certificates, and
+dropped when they expire or the status turns `revoked`/`unknown`. OCSP never
+fails a handshake. Metrics: `zentinel_tls_ocsp_fetch_total{listener,result}`
+(`success`, `failure`, `invalid`, `revoked`, `no_issuer`) and
+`zentinel_tls_ocsp_stapled_certificates{listener}`.
 
 **Key Structs:**
 

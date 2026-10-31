@@ -1289,6 +1289,17 @@ fn run_server(
 
                         cert_reloader.register(&listener.id, sni_resolver.clone());
 
+                        // OCSP stapling (#590): fetch and refresh responses in
+                        // the background. The first handshakes may go out
+                        // unstapled until the first fetch lands; a responder
+                        // problem never blocks startup or a handshake.
+                        if tls_config.ocsp_stapling {
+                            runtime.spawn(tls::run_ocsp_refresher(
+                                sni_resolver.clone(),
+                                tls::OCSP_REFRESH_TICK,
+                            ));
+                        }
+
                         // Folders configured to reload on their own get a
                         // watcher or a timer. Without this the `reload-mode`
                         // setting would parse and do nothing, which is the
