@@ -445,6 +445,14 @@ pub struct RequestContext {
     /// written to the client, and the upstream did nothing wrong.
     pub(crate) response_blocked: bool,
 
+    /// An agent refused the request (#610). When that happens on the
+    /// request body, Pingora has already connected to the upstream and sent
+    /// the headers, and the upstream request is abandoned. That abort is
+    /// not the upstream's failure: it must not reach the target's circuit
+    /// breaker, health or load-balancer accounting, or a client could take
+    /// a healthy backend out of rotation by sending bodies an agent refuses.
+    pub(crate) request_refused_by_agent: bool,
+
     // === Body Decompression ===
     /// Whether decompression is enabled for body inspection
     pub(crate) decompression_enabled: bool,
@@ -660,6 +668,7 @@ impl RequestContext {
             error_page_body: None,
             agent_block: None,
             response_blocked: false,
+            request_refused_by_agent: false,
             a2a_method: None,
             body_inspection_agents: Vec::new(),
             agent_response_headers: Vec::new(),
