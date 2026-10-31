@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.10_11](#261011---2026-10-31) | 0.6.54 | 2026-10-31 | **OCSP stapling works** (it is on by default, so the proxy now contacts each certificate's OCSP responder); **the `compress` filter no longer breaks every response it applies to**, applies its `algorithms`, and produces gzip/zstd only; **WebSocket frames reach the route's agents** and the agent-level `failure-mode` is deprecated; a body an agent refuses no longer trips the upstream's circuit breaker; response-phase Redirect/Challenge, filter `timeout-ms` on every path; reloads rebuild route error pages, schemas and static files; `request-body-mode "inspect-first"`; h2c on listeners and upstreams (**read the upgrade notes**) |
 | [26.10_10](#261010---2026-10-30) | 0.6.53 | 2026-10-30 | **A `graceful-shutdown-timeout-secs` above 300 s is no longer cut short** by Pingora's 300 s grace period; the shipped systemd unit has `TimeoutStopSec=40` (**read the upgrade notes**); `bundle install` no longer writes a `failure-mode` on the generated agents that `--strict` rejects; TLS accepts no longer scan every pending handshake |
 | [26.10_9](#26109---2026-10-28) | 0.6.52 | 2026-10-28 | **A reload loads added, renamed and reconfigured agents** (their filters used to call nothing); **SIGTERM/SIGINT drain open connections** before exiting; **SIGUSR1 reopens the log files** and SIGUSR2 no longer kills the proxy (**read the upgrade notes**); `cargo install` builds work with tokio 1.54; bundle `26.10_03` pins zentinelsec 0.4.1 |
 | [26.10_8](#26108---2026-10-22) | 0.6.51 | 2026-10-22 | **Agents get their `config { }` block and are acted on in every phase** (config delivered on every connection, response-phase blocks enforced, Challenge fails closed, request bodies reach subscribed agents and are held back until allowed; **read the upgrade notes**); a silent agent no longer holds up startup; daemon mode works; **every bundled agent is rebuilt from its tag and smoke-tested** (most published agents could not complete a v2 handshake over a socket) |
@@ -92,6 +93,14 @@ for details.
 ---
 
 ## [Unreleased]
+
+---
+
+## [26.10_11] - 2026-10-31
+
+**Crate version:** 0.6.54
+
+A batch of "parses but does nothing" fixes. OCSP stapling, the `compress` filter's settings and agent inspection of WebSocket frames were configurable and documented but never happened; they now do. The `compress` filter itself broke every response it applied to and is fixed. A request body an agent refuses no longer counts against a healthy upstream, and a reload now rebuilds each route's error pages, schema validator and static file server. HTTP/2 over cleartext (h2c) is supported on listeners and upstreams. **Read the upgrade notes:** several configurations that used to load silently now fail, warn or behave differently.
 
 ### Upgrade notes
 - **A plain upstream with an HTTP/2-only `http-version` no longer loads.**
