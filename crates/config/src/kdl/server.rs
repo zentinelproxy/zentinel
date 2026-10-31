@@ -84,6 +84,31 @@ pub(crate) fn unapplied_system_settings(node: &kdl::KdlNode, block: &str) -> Vec
     problems
 }
 
+/// A listener's protocol and its `tls` block have to agree. `h2c` is
+/// cleartext, so a `tls` block on it would never be read. `https` and `h2`
+/// need one: without it the listener used to pass validation and bind
+/// nothing at startup (an error in the log, no socket).
+pub(crate) fn check_listener_tls(id: &str, protocol: ListenerProtocol, tls: bool) -> Result<()> {
+    match (protocol, tls) {
+        (ListenerProtocol::H2c, true) => Err(anyhow::anyhow!(
+            "Listener '{id}': protocol \"h2c\" is HTTP/2 over cleartext TCP and cannot have a \
+             'tls' block. For HTTP/2 over TLS use protocol \"https\" (or \"h2\"), which \
+             negotiates it with ALPN."
+        )),
+        (ListenerProtocol::Https | ListenerProtocol::Http2, false) => Err(anyhow::anyhow!(
+            "Listener '{id}': protocol \"{}\" needs a 'tls' block (cert-file and key-file, \
+             or acme). For HTTP/2 without TLS use protocol \"h2c\"; for plain HTTP/1.1 use \
+             \"http\".",
+            if protocol == ListenerProtocol::Http2 {
+                "h2"
+            } else {
+                "https"
+            }
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Parse a listener's `trusted-proxies "10.0.0.0/8" "192.0.2.7" ...`.
 ///
 /// Every argument of every `trusted-proxies` node counts, so a long list can
@@ -194,9 +219,10 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                     "https" => ListenerProtocol::Https,
                     "h2" => ListenerProtocol::Http2,
                     "h3" => ListenerProtocol::Http3,
+                    "h2c" => ListenerProtocol::H2c,
                     other => {
                         return Err(anyhow::anyhow!(
-                            "Invalid protocol '{}' for listener '{}'. Valid protocols: http, https, h2, h3",
+                            "Invalid protocol '{}' for listener '{}'. Valid protocols: http, https, h2, h3, h2c",
                             other,
                             id
                         ));
@@ -214,6 +240,8 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                 } else {
                     None
                 };
+
+                check_listener_tls(&id, protocol, tls.is_some())?;
 
                 trace!(
                     listener_id = %id,

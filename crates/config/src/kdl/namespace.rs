@@ -231,12 +231,13 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
         "https" => ListenerProtocol::Https,
         "h2" | "http2" => ListenerProtocol::Http2,
         "h3" | "http3" => ListenerProtocol::Http3,
+        "h2c" => ListenerProtocol::H2c,
         other => {
             return Err(anyhow::anyhow!(
-                "Invalid protocol '{}' for listener '{}'. Valid protocols: http, https, h2, h3",
-                other,
-                id
-            ))
+            "Invalid protocol '{}' for listener '{}'. Valid protocols: http, https, h2, h3, h2c",
+            other,
+            id
+        ))
         }
     };
 
@@ -252,6 +253,8 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
     } else {
         None
     };
+
+    crate::kdl::server::check_listener_tls(&id, protocol, tls.is_some())?;
 
     let trusted_proxies = crate::kdl::server::parse_trusted_proxies(node, &id)?;
 
@@ -404,6 +407,10 @@ mod tests {
                     id "payments-https"
                     address "0.0.0.0:8443"
                     protocol "https"
+                    tls {
+                        cert-file "/etc/zentinel/certs/payments.crt"
+                        key-file "/etc/zentinel/certs/payments.key"
+                    }
                 }
             }
         "#;

@@ -208,3 +208,5 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 wiremock = "0.6"
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+# An HTTP/2 prior-knowledge client for the h2c listener test.
+h2 = "0.4"

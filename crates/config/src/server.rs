@@ -247,6 +247,10 @@ pub enum ListenerProtocol {
     Http2,
     #[serde(rename = "h3")]
     Http3,
+    /// HTTP/2 over cleartext TCP with prior knowledge: no TLS, and clients
+    /// that do not open with the HTTP/2 connection preface are refused.
+    #[serde(rename = "h2c")]
+    H2c,
 }
 
 // ============================================================================

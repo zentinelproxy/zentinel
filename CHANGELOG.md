@@ -93,6 +93,22 @@ for details.
 
 ## [Unreleased]
 
+### Upgrade notes
+- **An `https` or `h2` listener without a `tls` block no longer loads.** It
+  used to pass validation and then bind nothing at startup (an error in the
+  log, no socket). The error says to add `tls`, or to use `protocol "h2c"`
+  for HTTP/2 without TLS. (#614)
+
+### Added
+- **`protocol "h2c"` on a listener: HTTP/2 over cleartext TCP** with prior
+  knowledge, for trusted internal hops (#614). A client that does not open
+  with the HTTP/2 connection preface within 10 s is refused: one that sent
+  something else (HTTP/1.1) gets `505 HTTP Version Not Supported`. h2c
+  listeners run in a Pingora service of their own, so `http` listeners are
+  unchanged and do not start accepting HTTP/2; their connections count
+  against the same connection limits. A `tls` block on an h2c listener is a
+  configuration error.
+
 ---
 
 ## [26.10_10] - 2026-10-30
