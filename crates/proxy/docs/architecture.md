@@ -212,6 +212,17 @@ Client Request
                     Reload Complete
 ```
 
+What a reload does with each top-level block is declared in
+`crates/proxy/src/reload/coverage.rs` (#572). The list is an exhaustive
+destructure of `Config`, so a new block does not compile until it declares
+one:
+
+| Block | On reload |
+|-------|-----------|
+| `routes`, `upstreams`, `filters`, `agents`, `rate-limits`, `namespaces` | Reconciled: route matchers, route components (error pages, API schema validators, static file servers), pools, health checks, rate limiters and agents are rebuilt |
+| `waf`, `limits` | Reconciled: read from the current configuration per request / connection |
+| `listeners`, `system`, `observability`, `cache` | **Restart required.** A reload that changes one logs a warning naming the block |
+
 ### Agent Processing Pipeline
 
 ```
