@@ -258,8 +258,14 @@ impl ZentinelProxy {
         // which rebuilds its limiters from every reloaded config.
         let rate_limit_manager = Arc::new(Self::initialize_rate_limiters(&config));
 
-        // Setup configuration reload subscription
+        // Initialize service type components. Built before the reload
+        // handler, which rebuilds them from every reloaded config (#572).
+        let route_components = RouteComponents::from_config(&config);
+        let error_handlers = route_components.error_handlers.clone();
+        let validators = route_components.validators.clone();
+        let static_servers = route_components.static_servers.clone();
 
+        // Setup configuration reload subscription
         Self::setup_reload_handler(
             config_manager.clone(),
             route_matcher.clone(),
@@ -268,12 +274,9 @@ impl ZentinelProxy {
             health_check_runner.clone(),
             rate_limit_manager.clone(),
             agent_manager.clone(),
+            route_components,
         )
         .await;
-
-        // Initialize service type components
-        let (error_handlers, validators, static_servers) =
-            Self::initialize_route_components(&config).await?;
 
         // Create builtin handler state
         let builtin_state = Arc::new(BuiltinHandlerState::new(
@@ -488,6 +491,7 @@ impl ZentinelProxy {
         health_check_runner: Arc<HealthCheckRunner>,
         rate_limit_manager: Arc<RateLimitManager>,
         agent_manager: Arc<AgentManager>,
+        route_components: RouteComponents,
     ) {
         let mut reload_rx = config_manager.subscribe();
         let config_manager_clone = config_manager.clone();
@@ -595,6 +599,20 @@ impl ZentinelProxy {
                         );
                     }
 
+                    // Each route's error pages, API schema validator and
+                    // static file server, rebuilt before its routes go live.
+                    // They were built once at startup, so a route added by a
+                    // reload had none and a changed one kept its old ones
+                    // (#572).
+                    let changes = route_components.reconcile(&new_config).await;
+                    info!(
+                        added = changes.added,
+                        replaced = changes.replaced,
+                        removed = changes.removed,
+                        unchanged = changes.unchanged,
+                        "Route components reloaded"
+                    );
+
                     *route_matcher.write() = new_matcher;
                     info!(
                         routes = global_route_count,
@@ -694,76 +712,6 @@ impl ZentinelProxy {
             upstream.id = id.clone();
             upstream
         })
-    }
-
-    /// Initialize route-specific components (error handlers, validators, static servers)
-    async fn initialize_route_components(
-        config: &Config,
-    ) -> Result<(
-        Registry<ErrorHandler>,
-        Registry<SchemaValidator>,
-        Registry<StaticFileServer>,
-    )> {
-        let mut error_handlers_map = HashMap::new();
-        let mut validators_map = HashMap::new();
-        let mut static_servers_map = HashMap::new();
-
-        for route in &config.routes {
-            info!(
-                "Initializing components for route: {} with service type: {:?}",
-                route.id, route.service_type
-            );
-
-            // Initialize error handler for each route
-            if let Some(ref error_config) = route.error_pages {
-                let handler =
-                    ErrorHandler::new(route.service_type.clone(), Some(error_config.clone()));
-                error_handlers_map.insert(route.id.clone(), Arc::new(handler));
-                debug!("Initialized error handler for route: {}", route.id);
-            } else {
-                // Use default error handler for the service type
-                let handler = ErrorHandler::new(route.service_type.clone(), None);
-                error_handlers_map.insert(route.id.clone(), Arc::new(handler));
-            }
-
-            // Initialize schema validator for API routes
-            if route.service_type == zentinel_config::ServiceType::Api {
-                if let Some(ref api_schema) = route.api_schema {
-                    match SchemaValidator::new(api_schema.clone()) {
-                        Ok(validator) => {
-                            validators_map.insert(route.id.clone(), Arc::new(validator));
-                            info!("Initialized schema validator for route: {}", route.id);
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to initialize schema validator for route {}: {}",
-                                route.id, e
-                            );
-                        }
-                    }
-                }
-            }
-
-            // Initialize static file server for static routes
-            if route.service_type == zentinel_config::ServiceType::Static {
-                if let Some(ref static_config) = route.static_files {
-                    let server = StaticFileServer::new(static_config.clone());
-                    static_servers_map.insert(route.id.clone(), Arc::new(server));
-                    info!("Initialized static file server for route: {}", route.id);
-                } else {
-                    warn!(
-                        "Static route {} has no static_files configuration",
-                        route.id
-                    );
-                }
-            }
-        }
-
-        Ok((
-            Registry::from_map(error_handlers_map),
-            Registry::from_map(validators_map),
-            Registry::from_map(static_servers_map),
-        ))
     }
 
     /// Get or generate trace ID from session
@@ -1122,6 +1070,151 @@ impl ZentinelProxy {
                 );
             }
         }
+    }
+}
+
+/// Each route's error handler, API schema validator and static file server,
+/// keyed by route id. Shared with the proxy, which looks them up per
+/// request, and rebuilt by the reload handler (#572).
+#[derive(Clone)]
+pub(crate) struct RouteComponents {
+    pub(crate) error_handlers: Registry<ErrorHandler>,
+    pub(crate) validators: Registry<SchemaValidator>,
+    pub(crate) static_servers: Registry<StaticFileServer>,
+    /// Per route, the settings its components were built from.
+    settings: Arc<std::sync::Mutex<HashMap<String, serde_json::Value>>>,
+}
+
+/// What [`RouteComponents::reconcile`] did, counted per route.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RouteComponentChanges {
+    pub(crate) added: usize,
+    pub(crate) replaced: usize,
+    pub(crate) removed: usize,
+    pub(crate) unchanged: usize,
+}
+
+type RouteComponentMaps = (
+    HashMap<String, Arc<ErrorHandler>>,
+    HashMap<String, Arc<SchemaValidator>>,
+    HashMap<String, Arc<StaticFileServer>>,
+);
+
+impl RouteComponents {
+    /// The components of every route in `config`.
+    pub(crate) fn from_config(config: &Config) -> Self {
+        let (error_handlers, validators, static_servers) = Self::build(config);
+        Self {
+            error_handlers: Registry::from_map(error_handlers),
+            validators: Registry::from_map(validators),
+            static_servers: Registry::from_map(static_servers),
+            settings: Arc::new(std::sync::Mutex::new(Self::settings(config))),
+        }
+    }
+
+    /// Rebuild every route's components from `config`, replacing the old
+    /// ones. Counted by the settings that build them (`service-type`,
+    /// `error-pages`, `api-schema`, `static-files`); components hold no
+    /// state, so unchanged routes are rebuilt all the same.
+    pub(crate) async fn reconcile(&self, config: &Config) -> RouteComponentChanges {
+        let current = Self::settings(config);
+        let mut changes = RouteComponentChanges::default();
+        {
+            let previous = self
+                .settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (id, settings) in &current {
+                match previous.get(id) {
+                    None => changes.added += 1,
+                    Some(before) if before == settings => changes.unchanged += 1,
+                    Some(_) => changes.replaced += 1,
+                }
+            }
+            changes.removed = previous
+                .keys()
+                .filter(|id| !current.contains_key(*id))
+                .count();
+        }
+
+        let (error_handlers, validators, static_servers) = Self::build(config);
+        self.error_handlers.replace(error_handlers).await;
+        self.validators.replace(validators).await;
+        self.static_servers.replace(static_servers).await;
+        *self
+            .settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = current;
+        changes
+    }
+
+    /// Per route, the settings its components are built from.
+    fn settings(config: &Config) -> HashMap<String, serde_json::Value> {
+        config
+            .routes
+            .iter()
+            .map(|route| {
+                let settings = serde_json::json!({
+                    "service_type": serde_json::to_value(&route.service_type).ok(),
+                    "error_pages": serde_json::to_value(&route.error_pages).ok(),
+                    "api_schema": serde_json::to_value(&route.api_schema).ok(),
+                    "static_files": serde_json::to_value(&route.static_files).ok(),
+                });
+                (route.id.clone(), settings)
+            })
+            .collect()
+    }
+
+    fn build(config: &Config) -> RouteComponentMaps {
+        let mut error_handlers_map = HashMap::new();
+        let mut validators_map = HashMap::new();
+        let mut static_servers_map = HashMap::new();
+
+        for route in &config.routes {
+            debug!(
+                "Initializing components for route: {} with service type: {:?}",
+                route.id, route.service_type
+            );
+
+            // An error handler for each route: the route's error pages, or
+            // the default for its service type.
+            let handler = ErrorHandler::new(route.service_type.clone(), route.error_pages.clone());
+            error_handlers_map.insert(route.id.clone(), Arc::new(handler));
+
+            // Initialize schema validator for API routes
+            if route.service_type == zentinel_config::ServiceType::Api {
+                if let Some(ref api_schema) = route.api_schema {
+                    match SchemaValidator::new(api_schema.clone()) {
+                        Ok(validator) => {
+                            validators_map.insert(route.id.clone(), Arc::new(validator));
+                            debug!("Initialized schema validator for route: {}", route.id);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to initialize schema validator for route {}: {}",
+                                route.id, e
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Initialize static file server for static routes
+            if route.service_type == zentinel_config::ServiceType::Static {
+                if let Some(ref static_config) = route.static_files {
+                    let server = StaticFileServer::new(static_config.clone());
+                    static_servers_map.insert(route.id.clone(), Arc::new(server));
+                    debug!("Initialized static file server for route: {}", route.id);
+                } else {
+                    warn!(
+                        "Static route {} has no static_files configuration",
+                        route.id
+                    );
+                }
+            }
+        }
+
+        (error_handlers_map, validators_map, static_servers_map)
     }
 }
 
@@ -1875,6 +1968,7 @@ mod reload_rollback_tests {
         routes: Arc<RwLock<RouteMatcher>>,
         limits: Arc<RateLimitManager>,
         agents: Arc<AgentManager>,
+        components: RouteComponents,
     }
 
     impl Harness {
@@ -1917,6 +2011,7 @@ mod reload_rollback_tests {
                 ZentinelProxy::build_listener_matchers(&config).expect("config A compiles"),
             ));
             let limits = Arc::new(ZentinelProxy::initialize_rate_limiters(&config));
+            let components = RouteComponents::from_config(&config);
             ZentinelProxy::setup_reload_handler(
                 Arc::clone(&manager),
                 Arc::clone(&routes),
@@ -1925,6 +2020,7 @@ mod reload_rollback_tests {
                 Arc::new(HealthCheckRunner::new()),
                 Arc::clone(&limits),
                 Arc::clone(&agents),
+                components.clone(),
             )
             .await;
             Self {
@@ -1934,6 +2030,7 @@ mod reload_rollback_tests {
                 routes,
                 limits,
                 agents,
+                components,
             }
         }
 
@@ -1976,6 +2073,51 @@ mod reload_rollback_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         check()
+    }
+
+    /// #572: each route's error handler, schema validator and static file
+    /// server were built once at startup. A route added by a reload had
+    /// none -- a static route answered without its files -- and a removed
+    /// one kept its. They are now rebuilt with the routes.
+    #[tokio::test]
+    async fn a_reload_rebuilds_route_components() {
+        let h = Harness::start(true).await;
+        assert!(h.components.error_handlers.contains("a").await);
+        assert!(h.components.static_servers.get("s").await.is_none());
+
+        let root = h._dir.path().display().to_string();
+        h.write(&format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{
+                listener "http" {{ address "127.0.0.1:19291" protocol "http" }}
+            }}
+            routes {{
+                route "s" {{
+                    matches {{ path-prefix "/s" }}
+                    static-files {{ root "{root}" }}
+                }}
+            }}
+            "#
+        ));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("the static route reloads");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while h.components.static_servers.get("s").await.is_none() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the reloaded static route has no static file server"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(h.components.error_handlers.contains("s").await);
+        assert!(
+            !h.components.error_handlers.contains("a").await,
+            "the removed route kept its error handler"
+        );
     }
 
     /// The handler ignored `RolledBack`: after a rollback `current()` was

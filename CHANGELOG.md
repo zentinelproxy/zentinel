@@ -171,6 +171,18 @@ for details.
   configuration error.
 
 ### Fixed
+- **A route added or changed by a reload kept no error pages, API schema
+  validator or static file server.** They were built once at startup: a
+  static route added by a reload served without its files, a changed
+  `error-pages` or `api-schema` stayed the old one, and a removed route's
+  stayed loaded. They are now rebuilt with the routes on every reload
+  (`Route components reloaded added=… replaced=… removed=… unchanged=…`).
+  (#572)
+- **A reload that changes `observability` or `cache` now says a restart is
+  needed**, as it already did for `listeners` and `system`. Both are set up
+  at startup, and changes to them were ignored without a word. Every
+  top-level block now declares what a reload does with it, so a new block
+  cannot ship without choosing. (#572)
 - **OCSP stapling was parsed and never applied** (#590): no handshake ever
   carried a staple, so clients made their own OCSP lookups (slower, and a
   privacy leak to the CA) and a must-staple certificate was rejected by

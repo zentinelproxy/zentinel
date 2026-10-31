@@ -10,6 +10,7 @@
 //! - `validators`: Runtime configuration validators
 
 mod coordinator;
+pub mod coverage;
 pub mod diff;
 mod signals;
 mod validators;
@@ -583,25 +584,15 @@ impl ConfigManager {
             "Preparing configuration swap"
         );
 
-        // Listeners are bound at startup and are NOT hot-reloadable. Say so
-        // loudly instead of silently ignoring the change.
-        let old_listeners = serde_json::to_value(&old_config.listeners).ok();
-        let new_listeners = serde_json::to_value(&new_config.listeners).ok();
-        if old_listeners != new_listeners {
+        // Blocks a reload does not apply (listeners, `system`, observability,
+        // cache storage): say so loudly, naming each, instead of silently
+        // ignoring the change. Every block declares its behaviour in
+        // `coverage::blocks` (#572).
+        for (block, why) in coverage::restart_required_changes(&old_config, &new_config) {
             warn!(
-                "Listener configuration changed in the new config, but listeners \
-                 (addresses, ports, TLS bindings) are NOT applied by hot reload. \
-                 The proxy continues serving on the previously bound listeners; \
-                 restart zentinel to apply listener changes."
-            );
-        }
-        if serde_json::to_value(&old_config.server).ok()
-            != serde_json::to_value(&new_config.server).ok()
-        {
-            warn!(
-                "system/server configuration changed in the new config, but \
-                 worker threads and process-level settings are NOT applied by \
-                 hot reload; restart zentinel to apply them."
+                block = block,
+                "{}",
+                coverage::restart_required_message(block, why)
             );
         }
 
