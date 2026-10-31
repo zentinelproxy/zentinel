@@ -79,7 +79,7 @@ Minimum supported: `1.0`
 | `id` | Non-empty, unique |
 | `type` | Valid filter type |
 | `rate-limit.max-rps` | `> 0` |
-| `compress.algorithms` | At least one of `gzip`, `br`/`brotli`, `zstd`; `deflate` and unknown names are errors |
+| `compress.algorithms` | At least one of `gzip`, `zstd`, `br`/`brotli`; `deflate` and unknown names are errors. `br`/`brotli` loads but is skipped with a warning (Pingora's Brotli output cannot be decoded yet), so list `gzip` or `zstd` as well |
 | `compress.level` | 1-9 |
 | `geo.database-path` | Non-empty |
 | `geo.countries` | Valid ISO 3166-1 alpha-2 codes |
