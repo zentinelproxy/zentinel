@@ -256,7 +256,6 @@ pub struct WebSocketInspectorBuilder {
     metrics: Option<Arc<RequestMetrics>>,
 }
 
-
 impl WebSocketInspectorBuilder {
     /// Create a new builder
     pub fn new() -> Self {
