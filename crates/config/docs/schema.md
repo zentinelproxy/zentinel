@@ -472,7 +472,7 @@ Reusable filter definitions.
 |----------|------|---------|-------------|
 | `agent` | `string` | **required** | Agent ID reference |
 | `phase` | `string` | `"request"` | Execution phase |
-| `timeout-ms` | `u64` | - | Timeout override; can only shorten the agent's `timeout-ms` |
+| `timeout-ms` | `u64` | - | Timeout override for every call this filter's agent gets on the route (request and response headers and bodies); can only shorten the agent's `timeout-ms` |
 | `failure-mode` | `string` | - | What a failed call to the agent means on routes using the filter: `open` continues, `closed` refuses (503; on a response body, the response is aborted). Unset uses the route's `policies { failure-mode }`. Applies to every request and response path, and overrides the agent's own `failure-mode` |
 | `inspect-body` | `bool` | - | `#false` sends this agent no request body on routes using the filter; unset or `#true` leaves it to the agent's `events` |
 | `max-body-bytes` | `u64` | - | Lowers the agent's `max-request-body-bytes` for routes using the filter; cannot raise it |

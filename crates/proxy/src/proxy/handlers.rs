@@ -410,6 +410,7 @@ impl ZentinelProxy {
                         failure_mode: agent_filter
                             .failure_mode
                             .unwrap_or(route_config.policies.failure_mode),
+                        timeout_ms: agent_filter.timeout_ms,
                     })
                 }
                 _ => None,

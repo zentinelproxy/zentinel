@@ -128,6 +128,12 @@ for details.
 - **Gateway API: GRPCRoute upstreams now use `h2c`.** They asked for HTTP/2
   only, on plain cluster Services, which without TLS could not take effect.
   (#614)
+- **An agent filter's `timeout-ms` now applies on every event path.** It
+  was honoured on request headers only; the request body, response headers
+  and response body calls waited for the agent's own `timeout-ms` instead.
+  A filter that tightened its route's latency budget, say to 100 ms for an
+  agent with 1000 ms, waited the full 1000 ms there. The filter's value can
+  still only shorten the agent's, never extend it. (#589)
 
 ---
 
