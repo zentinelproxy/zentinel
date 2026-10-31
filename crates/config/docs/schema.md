@@ -313,6 +313,22 @@ Backend server pool configuration.
 | `timeouts` | `UpstreamTimeouts` | `{}` | Timeout settings |
 | `tls` | `UpstreamTlsConfig` | - | TLS configuration |
 | `http-version` | `HttpVersionConfig` | `{}` | HTTP version settings |
+| `h2c` | `bool` | `#false` | HTTP/2 over cleartext TCP with prior knowledge. Only without `tls`; never falls back to HTTP/1.1 |
+
+### HttpVersionConfig
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `min-version` | `1` or `2` | `1` | Lowest HTTP version to use with the upstream |
+| `max-version` | `1` or `2` | `2` | Highest HTTP version to use with the upstream |
+| `h2-ping-interval` | `int` (seconds) | `0` (off) | HTTP/2 PING interval on idle connections |
+| `max-h2-streams` | `int` | `100` | Concurrent streams per HTTP/2 connection |
+
+With `tls`, HTTP/2 is negotiated with ALPN within this range. Without `tls`
+there is no negotiation: the upstream is spoken to over HTTP/1.1, unless
+`h2c #true` is set, which uses HTTP/2 only. A plain upstream with
+`min-version 2` and no `h2c` is a configuration error, as is `h2c` together
+with `tls`, `max-version 1` or `min-version 1`.
 
 ### UpstreamDiscovery
 

@@ -406,6 +406,13 @@ upstreams {
             max-version 2
         }
     }
+
+    // HTTP/2 over cleartext (h2c) with prior knowledge: no TLS, no
+    // negotiation, no fallback to HTTP/1.1
+    upstream "internal-h2" {
+        target "10.0.0.5:8080"
+        h2c #true
+    }
 }
 ```
 

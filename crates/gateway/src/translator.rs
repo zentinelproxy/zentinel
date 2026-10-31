@@ -1300,6 +1300,9 @@ impl ConfigTranslator {
                 max_version: 2,
                 h2_ping_interval_secs: 30,
                 max_h2_streams: 100,
+                // The backend is a plain cluster Service: without TLS there is
+                // no ALPN, so HTTP/2 needs prior knowledge.
+                h2c: true,
             },
             discovery: None,
         };
