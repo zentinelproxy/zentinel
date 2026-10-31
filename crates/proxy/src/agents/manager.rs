@@ -160,6 +160,9 @@ pub struct BodyAgent {
     /// The filter's failure mode, else the route's; see
     /// [`FilterAgent::failure_mode`].
     pub failure_mode: FailureMode,
+    /// The filter's `timeout-ms`, if it set one; see
+    /// [`FilterAgent::effective_timeout_ms`].
+    pub timeout_ms: Option<u64>,
 }
 
 impl From<&FilterAgent> for BodyAgent {
@@ -169,6 +172,7 @@ impl From<&FilterAgent> for BodyAgent {
             id: filter.id.clone(),
             max_body_bytes: None,
             failure_mode: filter.failure_mode,
+            timeout_ms: filter.timeout_ms,
         }
     }
 }
@@ -1006,14 +1010,17 @@ impl AgentManager {
                 continue;
             }
 
-            // Call agent with timeout (using pingora-timeout for efficiency)
+            // Call agent with timeout (using pingora-timeout for efficiency).
+            // The filter's `timeout-ms` applies here as in the parallel
+            // dispatch (#589).
             let start = Instant::now();
-            let timeout_duration = Duration::from_millis(agent.timeout_ms());
+            let timeout_ms = filter.effective_timeout_ms(agent.timeout_ms());
+            let timeout_duration = Duration::from_millis(timeout_ms);
 
             trace!(
                 correlation_id = %ctx.correlation_id,
                 agent_id = %agent.id(),
-                timeout_ms = agent.timeout_ms(),
+                timeout_ms = timeout_ms,
                 "Calling agent"
             );
 
@@ -1068,7 +1075,7 @@ impl AgentManager {
                     warn!(
                         agent_id = %agent.id(),
                         correlation_id = %ctx.correlation_id,
-                        timeout_ms = agent.timeout_ms(),
+                        timeout_ms = timeout_ms,
                         failure_mode = ?filter.failure_mode,
                         "Agent call timed out"
                     );
@@ -1696,14 +1703,14 @@ impl AgentManager {
             .allowed
             .into_iter()
             .map(|id| {
-                let failure_mode = route_agents
-                    .iter()
-                    .find(|body_agent| body_agent.id == id)
-                    .map_or(FailureMode::Closed, |body_agent| body_agent.failure_mode);
+                let body_agent = route_agents.iter().find(|body_agent| body_agent.id == id);
                 FilterAgent {
+                    failure_mode: body_agent
+                        .map_or(FailureMode::Closed, |body_agent| body_agent.failure_mode),
+                    // The filter's timeout reaches the body dispatch too
+                    // (#589); it was dropped here before.
+                    timeout_ms: body_agent.and_then(|body_agent| body_agent.timeout_ms),
                     id,
-                    failure_mode,
-                    timeout_ms: None,
                 }
             })
             .collect();
@@ -1975,6 +1982,7 @@ mod tests {
             id: "a".to_string(),
             max_body_bytes,
             failure_mode: FailureMode::Closed,
+            timeout_ms: None,
         };
         assert_eq!(agent(None).effective_limit(1024), 1024);
         assert_eq!(agent(Some(16)).effective_limit(1024), 16);
@@ -2032,6 +2040,7 @@ mod tests {
             id: "waf".to_string(),
             max_body_bytes: Some(10),
             failure_mode: FailureMode::Closed,
+            timeout_ms: None,
         }];
         let decision = manager
             .process_request_body(&call_context(), &[b'x'; 100], true, &limited)
@@ -2307,12 +2316,42 @@ mod tests {
                 },
             )
         }
+
+        async fn on_request_body_chunk(
+            &self,
+            _event: zentinel_agent_protocol::RequestBodyChunkEvent,
+        ) -> AgentResponse {
+            tokio::time::sleep(self.delay).await;
+            AgentResponse::default_allow()
+        }
+
+        async fn on_response_headers(&self, _event: ResponseHeadersEvent) -> AgentResponse {
+            tokio::time::sleep(self.delay).await;
+            AgentResponse::default_allow()
+        }
+
+        async fn on_response_body_chunk(
+            &self,
+            _event: zentinel_agent_protocol::ResponseBodyChunkEvent,
+        ) -> AgentResponse {
+            tokio::time::sleep(self.delay).await;
+            AgentResponse::default_allow()
+        }
     }
 
     /// A connected manager with one agent, "slow", answering after `delay`.
     async fn manager_with_slow_agent(
         delay: Duration,
         timeout_ms: u64,
+    ) -> (Arc<AgentManager>, tempfile::TempDir) {
+        manager_with_slow_agent_on(delay, timeout_ms, r#""request_headers""#).await
+    }
+
+    /// [`manager_with_slow_agent`], subscribed to `events` (KDL arguments).
+    async fn manager_with_slow_agent_on(
+        delay: Duration,
+        timeout_ms: u64,
+        events: &str,
     ) -> (Arc<AgentManager>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("slow.sock");
@@ -2339,7 +2378,7 @@ mod tests {
             agents {{
                 agent "slow" type="custom" {{
                     unix-socket "{}"
-                    events "request_headers"
+                    events {events}
                     timeout-ms {timeout_ms}
                     failure-mode "closed"
                 }}
@@ -2351,6 +2390,93 @@ mod tests {
         let manager = AgentManager::new(config.agents).await.expect("manager");
         manager.initialize().await.expect("initialized");
         (Arc::new(manager), dir)
+    }
+
+    // ------------------------------------------------------------------
+    // #589: the filter's `timeout-ms` applies on every dispatch path
+    // ------------------------------------------------------------------
+
+    /// The decision on each event path for a filter with `timeout-ms 100`
+    /// whose agent answers after 2 s and has `timeout-ms 10000` of its own:
+    /// `(path, decision, elapsed)`. Request headers go through the parallel
+    /// dispatch, the other three through the sequential one.
+    async fn decisions_with_filter_timeout(
+        filter_timeout_ms: Option<u64>,
+    ) -> Vec<(&'static str, AgentDecision, Duration)> {
+        let (manager, _dir) = manager_with_slow_agent_on(
+            Duration::from_secs(2),
+            10_000,
+            r#""request_headers" "request_body" "response_headers" "response_body""#,
+        )
+        .await;
+        let ctx = call_context();
+        let filters = [FilterAgent {
+            id: "slow".to_string(),
+            failure_mode: FailureMode::Closed,
+            timeout_ms: filter_timeout_ms,
+        }];
+        let bodies = [BodyAgent::from(&filters[0])];
+        let mut decisions = Vec::new();
+        macro_rules! time {
+            ($path:expr, $call:expr) => {{
+                let start = Instant::now();
+                let decision = $call.await.unwrap_or_else(|e| panic!("{}: {e}", $path));
+                decisions.push(($path, decision, start.elapsed()));
+            }};
+        }
+        time!(
+            "request headers",
+            manager.process_request_headers(&ctx, headers_for("/"), &filters)
+        );
+        time!(
+            "request body",
+            manager.process_request_body(&ctx, b"body", true, &bodies)
+        );
+        time!(
+            "request body (streaming)",
+            manager.process_request_body_streaming(&ctx, b"body", true, 0, 4, Some(4), &bodies)
+        );
+        time!(
+            "response headers",
+            manager.process_response_headers(&ctx, 200, &HashMap::new(), &filters)
+        );
+        time!(
+            "response body (streaming)",
+            manager.process_response_body_streaming(&ctx, b"body", true, 0, 4, Some(4), &filters)
+        );
+        decisions
+    }
+
+    /// #589: a filter's `timeout-ms` shorter than its agent's cuts the call
+    /// off at the filter's value in both dispatch modes -- not only the
+    /// parallel one used for request headers.
+    #[tokio::test]
+    async fn a_filter_timeout_applies_in_both_dispatch_modes() {
+        for (path, decision, elapsed) in decisions_with_filter_timeout(Some(100)).await {
+            assert_eq!(
+                status_of(&decision),
+                Some(504),
+                "{path}: the filter's 100 ms timeout must fail the call closed"
+            );
+            assert!(
+                elapsed < Duration::from_millis(1500),
+                "{path}: waited {elapsed:?}, longer than the filter's 100 ms allows"
+            );
+        }
+    }
+
+    /// #589: without a filter timeout, the agent's own (10 s) applies, so the
+    /// same 2 s agent answers on every path.
+    #[tokio::test]
+    async fn without_a_filter_timeout_the_agents_applies_in_both_dispatch_modes() {
+        for (path, decision, elapsed) in decisions_with_filter_timeout(None).await {
+            assert_eq!(
+                status_of(&decision),
+                None,
+                "{path}: the agent answered within its own timeout"
+            );
+            assert!(elapsed >= Duration::from_secs(2), "{path}: {elapsed:?}");
+        }
     }
 
     fn headers_for(path: &str) -> HashMap<String, Vec<String>> {

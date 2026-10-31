@@ -1129,6 +1129,7 @@ mod tests {
             id: id.to_string(),
             max_body_bytes: None,
             failure_mode,
+            timeout_ms: None,
         };
         let mut ctx = RequestContext::new();
         // No body agents: nothing to fail closed for.
