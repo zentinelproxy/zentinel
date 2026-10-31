@@ -134,6 +134,15 @@ for details.
   A filter that tightened its route's latency budget, say to 100 ms for an
   agent with 1000 ms, waited the full 1000 ms there. The filter's value can
   still only shorten the agent's, never extend it. (#589)
+- **A request an agent refuses on its body no longer counts against the
+  upstream.** Pingora has already connected and sent the headers when the
+  body is inspected, so the refusal abandons the upstream request, and that
+  abort was reported as a connection failure (`Connection failure reported
+  for target`) to the target's circuit breaker. A stream of refused uploads
+  could take a healthy backend out of rotation, on purpose or not. Refused
+  requests are now left out of the target's circuit breaker and
+  load-balancer accounting entirely; genuine upstream failures still count.
+  (#610)
 
 ---
 

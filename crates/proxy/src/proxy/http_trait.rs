@@ -4148,8 +4148,13 @@ impl ProxyHttp for ZentinelProxy {
         // Not for an error the client caused -- an oversized body refused
         // mid-stream, a client that went away. The peer did nothing wrong,
         // and counting these let a client trip the circuit breaker on a
-        // healthy upstream.
-        if *e.esource() != pingora::ErrorSource::Downstream && !ctx.response_blocked {
+        // healthy upstream. The same goes for a request an agent refused on
+        // its body: the upstream request is abandoned because of the
+        // refusal, not because the peer failed (#610).
+        if *e.esource() != pingora::ErrorSource::Downstream
+            && !ctx.response_blocked
+            && !ctx.request_refused_by_agent
+        {
             let peer_address = peer.address().to_string();
             let upstream_pools = self.upstream_pools.clone();
             let upstream_id_owned = upstream_id.to_string();
@@ -4258,8 +4263,14 @@ impl ProxyHttp for ZentinelProxy {
             let success = status > 0 && status < 500;
 
             if let Some(pool) = self.upstream_pools.get(upstream_id).await {
-                pool.report_result_with_latency(peer_addr, success, Some(duration))
-                    .await;
+                // A request an agent refused says nothing about the target,
+                // either way: its status is the agent's, and its latency is
+                // the agent's decision time (#610). Counting it as a success
+                // would also reset the breaker's run of real failures.
+                if !ctx.request_refused_by_agent {
+                    pool.report_result_with_latency(peer_addr, success, Some(duration))
+                        .await;
+                }
                 pool.decrement_active();
                 trace!(
                     correlation_id = %ctx.trace_id,
