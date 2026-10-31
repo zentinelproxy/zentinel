@@ -531,7 +531,7 @@ Phase 2 (completed in v0.4.0):
 Phase 3 (planned):
 - Multiple certificate authorities
 - Certificate transparency logging
-- OCSP stapling integration
+- OCSP stapling integration (stapling itself works for ACME certificates since #590 when the CA runs OCSP; Let's Encrypt no longer does)
 - Distributed challenge coordination
 - Certificate inventory API
 - Additional DNS providers (Cloudflare, Route53, etc.)

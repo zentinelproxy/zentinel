@@ -104,6 +104,16 @@ for details.
   used to pass validation and then bind nothing at startup (an error in the
   log, no socket). The error says to add `tls`, or to use `protocol "h2c"`
   for HTTP/2 without TLS. (#614)
+- **OCSP stapling now actually happens, and it is on by default**
+  (`ocsp-stapling` defaults to `#true`). For each certificate whose AIA names
+  an OCSP responder, the proxy now contacts that responder over HTTP from
+  shortly after startup, and again at least hourly. If egress to your CA's
+  responder is blocked, you will see one warning per certificate and
+  `zentinel_tls_ocsp_fetch_total{result="failure"}` rising; handshakes are
+  unaffected. Set `ocsp-stapling #false` to keep the old behaviour. The
+  responder is found through the issuer certificate, so `cert-file` must
+  contain the chain (leaf, then intermediate); a leaf-only file is warned
+  about and served unstapled. (#590)
 
 ### Added
 - **`h2c #true` on an upstream: HTTP/2 over cleartext TCP** with prior
@@ -121,6 +131,20 @@ for details.
   configuration error.
 
 ### Fixed
+- **OCSP stapling was parsed and never applied** (#590): no handshake ever
+  carried a staple, so clients made their own OCSP lookups (slower, and a
+  privacy leak to the CA) and a must-staple certificate was rejected by
+  strict clients. Each listener now fetches the response for every served
+  certificate (default and SNI) from the certificate's own responder,
+  checks it (successful, for this serial, status `good`, within
+  `thisUpdate`/`nextUpdate`), and staples it for TLS 1.2 and 1.3 clients
+  that request status. Responses are refreshed in the background at half
+  their validity (at least hourly) and survive certificate reloads; an
+  expired or revoked response is dropped, never served. An unreachable or
+  misbehaving responder never fails a handshake: it is logged and counted
+  in the new `zentinel_tls_ocsp_fetch_total{listener,result}`;
+  `zentinel_tls_ocsp_stapled_certificates{listener}` shows how many
+  certificates currently carry a staple.
 - **`max-h2-streams` was never applied** to upstream HTTP/2 connections, so
   every one carried a single stream (Pingora's default) and concurrent
   requests each opened a connection of their own. It now reaches the

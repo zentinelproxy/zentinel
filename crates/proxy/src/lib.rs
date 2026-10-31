@@ -155,7 +155,7 @@ pub use otel::{
 pub use tls::{
     build_server_config, build_upstream_tls_config, load_client_ca, validate_tls_config,
     validate_upstream_tls_config, CertificateReloader, HotReloadableSniResolver, OcspCacheEntry,
-    OcspStapler, SniResolver, TlsError,
+    OcspRefreshSummary, OcspStapler, SniResolver, TlsError,
 };
 
 // Logging

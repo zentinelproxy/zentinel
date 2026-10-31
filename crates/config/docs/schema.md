@@ -72,7 +72,7 @@ Port binding configuration.
 | `max-version` | `string` | - | Maximum TLS version |
 | `cipher-suite` | `string` (repeatable) | `[]` | Cipher suite, one node per suite (empty = defaults) |
 | `client-auth` | `bool` | `false` | Require client certificates (mTLS) |
-| `ocsp-stapling` | `bool` | `true` | Enable OCSP stapling |
+| `ocsp-stapling` | `bool` | `true` | Staple OCSP responses fetched from each certificate's AIA responder; `cert-file` must include the issuer |
 | `session-resumption` | `bool` | `true` | Enable session resumption |
 | `sni` | `SniCertificate` (repeatable) | `[]` | Additional certs for SNI, one block per cert |
 | `acme` | `AcmeConfig` | - | ACME automatic certificate management |

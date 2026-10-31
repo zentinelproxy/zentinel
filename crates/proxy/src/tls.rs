@@ -12,7 +12,8 @@
 //! - Certificate validation at startup
 //! - mTLS client certificate verification
 //! - Certificate hot-reload on SIGHUP
-//! - OCSP stapling support
+//! - OCSP stapling (fetched from the certificate's responder, refreshed in
+//!   the background, never fatal to a handshake; see `tls/ocsp.rs`)
 //!
 //! # Example KDL Configuration
 //!
@@ -76,6 +77,12 @@ use rustls::{RootCertStore, ServerConfig};
 use tracing::{debug, error, info, trace, warn};
 
 use zentinel_config::{SniCertFolder, SniCertificate, TlsConfig, UpstreamTlsConfig};
+
+mod ocsp;
+
+pub use ocsp::{
+    run_ocsp_refresher, OcspCacheEntry, OcspRefreshSummary, OcspStapler, OCSP_REFRESH_TICK,
+};
 
 /// Error type for TLS operations
 #[derive(Debug)]
@@ -218,6 +225,56 @@ impl SniResolver {
             served.insert(hostname.clone(), cert_fingerprint(cert));
         }
         served
+    }
+
+    /// Every distinct certificate this resolver can serve.
+    pub(crate) fn unique_certs(&self) -> Vec<Arc<CertifiedKey>> {
+        let mut seen = HashSet::new();
+        std::iter::once(&self.default_cert)
+            .chain(self.sni_certs.values())
+            .chain(self.wildcard_certs.values())
+            .filter(|cert| seen.insert(Arc::as_ptr(cert)))
+            .cloned()
+            .collect()
+    }
+
+    /// A copy of this resolver whose certificates carry the OCSP responses
+    /// `staple` returns for them.
+    ///
+    /// A certificate shared by several hostnames stays one shared object, so
+    /// this costs one clone per distinct certificate that is actually stapled.
+    pub(crate) fn with_staples(
+        &self,
+        staple: impl Fn(&CertifiedKey) -> Option<Vec<u8>>,
+    ) -> SniResolver {
+        let mut memo: HashMap<*const CertifiedKey, Arc<CertifiedKey>> = HashMap::new();
+        let mut apply = |cert: &Arc<CertifiedKey>| -> Arc<CertifiedKey> {
+            memo.entry(Arc::as_ptr(cert))
+                .or_insert_with(|| {
+                    let ocsp = staple(cert);
+                    if ocsp == cert.ocsp {
+                        cert.clone()
+                    } else {
+                        let mut stapled = CertifiedKey::clone(cert);
+                        stapled.ocsp = ocsp;
+                        Arc::new(stapled)
+                    }
+                })
+                .clone()
+        };
+        SniResolver {
+            default_cert: apply(&self.default_cert),
+            sni_certs: self
+                .sni_certs
+                .iter()
+                .map(|(name, cert)| (name.clone(), apply(cert)))
+                .collect(),
+            wildcard_certs: self
+                .wildcard_certs
+                .iter()
+                .map(|(name, cert)| (name.clone(), apply(cert)))
+                .collect(),
+        }
     }
 
     /// Create a new SNI resolver from TLS configuration
@@ -588,8 +645,18 @@ impl ResolvesServerCert for SniResolver {
 /// without restarting the server. On SIGHUP, the inner resolver is replaced
 /// with a newly loaded one.
 pub struct HotReloadableSniResolver {
-    /// Inner resolver (protected by RwLock for hot-reload)
+    /// The resolver handshakes consult: `loaded` with any current OCSP
+    /// staples attached.
     inner: RwLock<Arc<SniResolver>>,
+    /// Certificates exactly as loaded from disk, without staples. Staples are
+    /// re-applied to this whenever they change, so an expired staple is
+    /// dropped rather than lingering on a certificate object.
+    loaded: RwLock<Arc<SniResolver>>,
+    /// Serialises updates of `loaded` and `inner`, so a staple refresh that
+    /// read the old `loaded` cannot overwrite a reload that just happened.
+    publish_lock: parking_lot::Mutex<()>,
+    /// OCSP responses for this listener's certificates.
+    ocsp: OcspStapler,
     /// Original config for reloading
     config: RwLock<TlsConfig>,
     /// Listener ID for observability
@@ -614,10 +681,13 @@ impl HotReloadableSniResolver {
         listener_id: impl Into<String>,
     ) -> Result<Self, TlsError> {
         let listener_id = listener_id.into();
-        let resolver = SniResolver::from_config(&config, Some(&listener_id))?;
+        let resolver = Arc::new(SniResolver::from_config(&config, Some(&listener_id))?);
 
         Ok(Self {
-            inner: RwLock::new(Arc::new(resolver)),
+            inner: RwLock::new(resolver.clone()),
+            loaded: RwLock::new(resolver),
+            publish_lock: parking_lot::Mutex::new(()),
+            ocsp: OcspStapler::new(),
             config: RwLock::new(config),
             listener_id,
             last_reload: RwLock::new(Instant::now()),
@@ -663,8 +733,9 @@ impl HotReloadableSniResolver {
         let after = new_resolver.served_certs();
         let diff = CertDiff::between(&before, &after);
 
-        // Swap in the new resolver atomically
-        *self.inner.write() = Arc::new(new_resolver);
+        // Swap in the new resolver atomically. Certificates that did not
+        // change keep their OCSP staple; new ones get one on the next refresh.
+        self.publish(Arc::new(new_resolver), config.ocsp_stapling);
         *self.last_reload.write() = Instant::now();
 
         if diff.is_empty() {
@@ -695,8 +766,9 @@ impl HotReloadableSniResolver {
         let new_resolver = SniResolver::from_config(&new_config, Some(&self.listener_id))?;
 
         // Update both config and resolver
+        let ocsp_stapling = new_config.ocsp_stapling;
         *self.config.write() = new_config;
-        *self.inner.write() = Arc::new(new_resolver);
+        self.publish(Arc::new(new_resolver), ocsp_stapling);
         *self.last_reload.write() = Instant::now();
 
         info!(
@@ -704,6 +776,62 @@ impl HotReloadableSniResolver {
             "TLS configuration updated and certificates reloaded"
         );
         Ok(())
+    }
+
+    /// Install freshly loaded certificates, with current staples attached.
+    fn publish(&self, loaded: Arc<SniResolver>, ocsp_stapling: bool) {
+        let _guard = self.publish_lock.lock();
+        let served = if ocsp_stapling {
+            Arc::new(loaded.with_staples(|cert| self.ocsp.staple_for(cert)))
+        } else {
+            loaded.clone()
+        };
+        *self.loaded.write() = loaded;
+        *self.inner.write() = served;
+    }
+
+    /// Re-attach staples to the currently loaded certificates.
+    fn restaple(&self, ocsp_stapling: bool) {
+        let _guard = self.publish_lock.lock();
+        let loaded = self.loaded.read().clone();
+        let served = if ocsp_stapling {
+            Arc::new(loaded.with_staples(|cert| self.ocsp.staple_for(cert)))
+        } else {
+            loaded
+        };
+        *self.inner.write() = served;
+    }
+
+    /// Whether this listener is configured to staple OCSP responses.
+    pub fn ocsp_stapling_enabled(&self) -> bool {
+        self.config.read().ocsp_stapling
+    }
+
+    /// Fetch or refresh OCSP responses that are due, and staple them.
+    ///
+    /// Called periodically by [`run_ocsp_refresher`]. Does nothing when
+    /// stapling is disabled. Never fails: a responder problem leaves the
+    /// certificate unstapled and is logged and counted.
+    pub async fn refresh_ocsp(&self) -> OcspRefreshSummary {
+        self.refresh_ocsp_inner(false).await
+    }
+
+    /// Like [`Self::refresh_ocsp`], but refetches every response now,
+    /// regardless of when it is due.
+    pub async fn force_refresh_ocsp(&self) -> OcspRefreshSummary {
+        self.refresh_ocsp_inner(true).await
+    }
+
+    async fn refresh_ocsp_inner(&self, force: bool) -> OcspRefreshSummary {
+        if !self.ocsp_stapling_enabled() {
+            return OcspRefreshSummary::default();
+        }
+        let certs = self.loaded.read().unique_certs();
+        let summary = self.ocsp.refresh(&self.listener_id, &certs, force).await;
+        if summary.changed {
+            self.restaple(self.ocsp_stapling_enabled());
+        }
+        summary
     }
 
     /// Get time since last reload
@@ -935,469 +1063,6 @@ impl Default for CertificateReloader {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ============================================================================
-// OCSP Stapling Support
-// ============================================================================
-
-/// OCSP response cache entry
-#[derive(Debug, Clone)]
-pub struct OcspCacheEntry {
-    /// DER-encoded OCSP response
-    pub response: Vec<u8>,
-    /// When this response was fetched
-    pub fetched_at: Instant,
-    /// When this response expires (from nextUpdate field)
-    pub expires_at: Option<Instant>,
-}
-
-/// OCSP stapling manager
-///
-/// Fetches and caches OCSP responses for certificates.
-pub struct OcspStapler {
-    /// Cache of OCSP responses by certificate fingerprint
-    cache: RwLock<HashMap<String, OcspCacheEntry>>,
-    /// Refresh interval for OCSP responses (default 1 hour)
-    refresh_interval: Duration,
-}
-
-impl OcspStapler {
-    /// Create a new OCSP stapler
-    pub fn new() -> Self {
-        Self {
-            cache: RwLock::new(HashMap::new()),
-            refresh_interval: Duration::from_secs(3600), // 1 hour default
-        }
-    }
-
-    /// Create with custom refresh interval
-    pub fn with_refresh_interval(interval: Duration) -> Self {
-        Self {
-            cache: RwLock::new(HashMap::new()),
-            refresh_interval: interval,
-        }
-    }
-
-    /// Get cached OCSP response for a certificate
-    pub fn get_response(&self, cert_fingerprint: &str) -> Option<Vec<u8>> {
-        let cache = self.cache.read();
-        if let Some(entry) = cache.get(cert_fingerprint) {
-            // Check if response is still valid
-            if entry.fetched_at.elapsed() < self.refresh_interval {
-                trace!(fingerprint = %cert_fingerprint, "OCSP cache hit");
-                return Some(entry.response.clone());
-            }
-            trace!(fingerprint = %cert_fingerprint, "OCSP cache expired");
-        }
-        None
-    }
-
-    /// Fetch OCSP response for a certificate
-    ///
-    /// This performs an HTTP request to the OCSP responder specified in the
-    /// certificate's Authority Information Access extension.
-    pub fn fetch_ocsp_response(
-        &self,
-        cert_der: &[u8],
-        issuer_der: &[u8],
-    ) -> Result<Vec<u8>, TlsError> {
-        use x509_parser::prelude::*;
-
-        // Parse the end-entity certificate
-        let (_, cert) = X509Certificate::from_der(cert_der)
-            .map_err(|e| TlsError::OcspFetch(format!("Failed to parse certificate: {}", e)))?;
-
-        // Parse the issuer certificate
-        let (_, issuer) = X509Certificate::from_der(issuer_der).map_err(|e| {
-            TlsError::OcspFetch(format!("Failed to parse issuer certificate: {}", e))
-        })?;
-
-        // Extract OCSP responder URL from AIA extension
-        let ocsp_url = extract_ocsp_responder_url(&cert)?;
-        debug!(url = %ocsp_url, "Found OCSP responder URL");
-
-        // Build OCSP request
-        let ocsp_request = build_ocsp_request(&cert, &issuer)?;
-
-        // Send request synchronously (blocking context)
-        // Note: In production, this should be async with proper timeout handling
-        let response = send_ocsp_request_sync(&ocsp_url, &ocsp_request)?;
-
-        // Calculate fingerprint for caching
-        let fingerprint = calculate_cert_fingerprint(cert_der);
-
-        // Cache the response
-        let entry = OcspCacheEntry {
-            response: response.clone(),
-            fetched_at: Instant::now(),
-            expires_at: None, // Could parse nextUpdate from response
-        };
-        self.cache.write().insert(fingerprint, entry);
-
-        info!("Successfully fetched and cached OCSP response");
-        Ok(response)
-    }
-
-    /// Async version of fetch_ocsp_response
-    pub async fn fetch_ocsp_response_async(
-        &self,
-        cert_der: &[u8],
-        issuer_der: &[u8],
-    ) -> Result<Vec<u8>, TlsError> {
-        use x509_parser::prelude::*;
-
-        // Parse the end-entity certificate
-        let (_, cert) = X509Certificate::from_der(cert_der)
-            .map_err(|e| TlsError::OcspFetch(format!("Failed to parse certificate: {}", e)))?;
-
-        // Parse the issuer certificate
-        let (_, issuer) = X509Certificate::from_der(issuer_der).map_err(|e| {
-            TlsError::OcspFetch(format!("Failed to parse issuer certificate: {}", e))
-        })?;
-
-        // Extract OCSP responder URL from AIA extension
-        let ocsp_url = extract_ocsp_responder_url(&cert)?;
-        debug!(url = %ocsp_url, "Found OCSP responder URL");
-
-        // Build OCSP request
-        let ocsp_request = build_ocsp_request(&cert, &issuer)?;
-
-        // Send request asynchronously
-        let response = send_ocsp_request_async(&ocsp_url, &ocsp_request).await?;
-
-        // Calculate fingerprint for caching
-        let fingerprint = calculate_cert_fingerprint(cert_der);
-
-        // Cache the response
-        let entry = OcspCacheEntry {
-            response: response.clone(),
-            fetched_at: Instant::now(),
-            expires_at: None,
-        };
-        self.cache.write().insert(fingerprint, entry);
-
-        info!("Successfully fetched and cached OCSP response (async)");
-        Ok(response)
-    }
-
-    /// Prefetch OCSP responses for all certificates in a config
-    pub fn prefetch_for_config(&self, config: &TlsConfig) -> Vec<String> {
-        let mut warnings = Vec::new();
-
-        if !config.ocsp_stapling {
-            trace!("OCSP stapling disabled in config");
-            return warnings;
-        }
-
-        info!("Prefetching OCSP responses for certificates");
-
-        // For now, just log that we would prefetch
-        // Full implementation would iterate certificates and fetch OCSP responses
-        warnings.push("OCSP stapling prefetch not yet fully implemented".to_string());
-
-        warnings
-    }
-
-    /// Clear the OCSP cache
-    pub fn clear_cache(&self) {
-        self.cache.write().clear();
-        info!("OCSP cache cleared");
-    }
-}
-
-impl Default for OcspStapler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ============================================================================
-// OCSP Helper Functions
-// ============================================================================
-
-/// Extract OCSP responder URL from certificate's Authority Information Access extension
-fn extract_ocsp_responder_url(
-    cert: &x509_parser::certificate::X509Certificate,
-) -> Result<String, TlsError> {
-    use x509_parser::prelude::*;
-
-    // Find the AIA extension
-    let aia = cert
-        .extensions()
-        .iter()
-        .find(|ext| ext.oid == oid_registry::OID_PKIX_AUTHORITY_INFO_ACCESS)
-        .ok_or_else(|| {
-            TlsError::OcspFetch(
-                "Certificate does not have Authority Information Access extension".to_string(),
-            )
-        })?;
-
-    // Parse AIA extension
-    let aia_value = match aia.parsed_extension() {
-        ParsedExtension::AuthorityInfoAccess(aia) => aia,
-        _ => {
-            return Err(TlsError::OcspFetch(
-                "Failed to parse Authority Information Access extension".to_string(),
-            ))
-        }
-    };
-
-    // Find OCSP access method
-    for access in &aia_value.accessdescs {
-        if access.access_method == oid_registry::OID_PKIX_ACCESS_DESCRIPTOR_OCSP {
-            match &access.access_location {
-                GeneralName::URI(url) => {
-                    return Ok(url.to_string());
-                }
-                _ => continue,
-            }
-        }
-    }
-
-    Err(TlsError::OcspFetch(
-        "Certificate AIA does not contain OCSP responder URL".to_string(),
-    ))
-}
-
-/// Build an OCSP request for the given certificate
-///
-/// This builds a minimal OCSP request with SHA-256 hashes
-fn build_ocsp_request(
-    cert: &x509_parser::certificate::X509Certificate,
-    issuer: &x509_parser::certificate::X509Certificate,
-) -> Result<Vec<u8>, TlsError> {
-    use sha2::{Digest, Sha256};
-
-    // Per RFC 6960, an OCSP request contains:
-    // - Hash of issuer name
-    // - Hash of issuer public key
-    // - Certificate serial number
-
-    // Hash issuer name (Distinguished Name)
-    let issuer_name_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(issuer.subject().as_raw());
-        hasher.finalize()
-    };
-
-    // Hash issuer public key (the BIT STRING content, not including tag/length)
-    let issuer_key_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(issuer.public_key().subject_public_key.data.as_ref());
-        hasher.finalize()
-    };
-
-    // Get certificate serial number
-    let serial = cert.serial.to_bytes_be();
-
-    // Build ASN.1 DER encoded OCSP request
-    // This is a minimal implementation of the OCSP request structure
-    let request = build_ocsp_request_der(&issuer_name_hash, &issuer_key_hash, &serial);
-
-    Ok(request)
-}
-
-/// Build DER-encoded OCSP request
-fn build_ocsp_request_der(
-    issuer_name_hash: &[u8],
-    issuer_key_hash: &[u8],
-    serial_number: &[u8],
-) -> Vec<u8> {
-    // OID for SHA-256
-    let sha256_oid: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
-
-    // Build CertID structure
-    let hash_algorithm = der_sequence(&[&der_oid(sha256_oid), &der_null()]);
-
-    let cert_id = der_sequence(&[
-        &hash_algorithm,
-        &der_octet_string(issuer_name_hash),
-        &der_octet_string(issuer_key_hash),
-        &der_integer(serial_number),
-    ]);
-
-    // Build Request structure
-    let request = der_sequence(&[&cert_id]);
-
-    // Build requestList (SEQUENCE OF Request)
-    let request_list = der_sequence(&[&request]);
-
-    // Build TBSRequest
-    let tbs_request = der_sequence(&[&request_list]);
-
-    // Build OCSPRequest
-    der_sequence(&[&tbs_request])
-}
-
-// DER encoding helpers
-fn der_sequence(items: &[&[u8]]) -> Vec<u8> {
-    let mut content = Vec::new();
-    for item in items {
-        content.extend_from_slice(item);
-    }
-    let mut result = vec![0x30]; // SEQUENCE tag
-    result.extend(der_length(content.len()));
-    result.extend(content);
-    result
-}
-
-fn der_oid(oid: &[u8]) -> Vec<u8> {
-    let mut result = vec![0x06]; // OID tag
-    result.extend(der_length(oid.len()));
-    result.extend_from_slice(oid);
-    result
-}
-
-fn der_null() -> Vec<u8> {
-    vec![0x05, 0x00] // NULL
-}
-
-fn der_octet_string(data: &[u8]) -> Vec<u8> {
-    let mut result = vec![0x04]; // OCTET STRING tag
-    result.extend(der_length(data.len()));
-    result.extend_from_slice(data);
-    result
-}
-
-fn der_integer(data: &[u8]) -> Vec<u8> {
-    let mut result = vec![0x02]; // INTEGER tag
-                                 // Remove leading zeros but ensure at least one byte
-    let data = match data.iter().position(|&b| b != 0) {
-        Some(pos) => &data[pos..],
-        None => &[0],
-    };
-    // Add leading zero if high bit is set (to ensure positive)
-    if !data.is_empty() && data[0] & 0x80 != 0 {
-        result.extend(der_length(data.len() + 1));
-        result.push(0x00);
-    } else {
-        result.extend(der_length(data.len()));
-    }
-    result.extend_from_slice(data);
-    result
-}
-
-fn der_length(len: usize) -> Vec<u8> {
-    if len < 128 {
-        vec![len as u8]
-    } else if len < 256 {
-        vec![0x81, len as u8]
-    } else {
-        vec![0x82, (len >> 8) as u8, len as u8]
-    }
-}
-
-/// Send OCSP request synchronously (blocking)
-fn send_ocsp_request_sync(url: &str, request: &[u8]) -> Result<Vec<u8>, TlsError> {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use std::time::Duration;
-
-    // Parse URL to get host, port, and path
-    let url = url::Url::parse(url)
-        .map_err(|e| TlsError::OcspFetch(format!("Invalid OCSP URL: {}", e)))?;
-
-    let host = url
-        .host_str()
-        .ok_or_else(|| TlsError::OcspFetch("OCSP URL has no host".to_string()))?;
-    let port = url.port().unwrap_or(80);
-    let path = if url.path().is_empty() {
-        "/"
-    } else {
-        url.path()
-    };
-
-    // Connect to server
-    let addr = format!("{}:{}", host, port);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| TlsError::OcspFetch(format!("Failed to connect to OCSP responder: {}", e)))?;
-
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .map_err(|e| TlsError::OcspFetch(format!("Failed to set timeout: {}", e)))?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .map_err(|e| TlsError::OcspFetch(format!("Failed to set timeout: {}", e)))?;
-
-    // Build HTTP POST request
-    let http_request = format!(
-        "POST {} HTTP/1.1\r\n\
-         Host: {}\r\n\
-         Content-Type: application/ocsp-request\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n",
-        path,
-        host,
-        request.len()
-    );
-
-    // Send request
-    stream
-        .write_all(http_request.as_bytes())
-        .map_err(|e| TlsError::OcspFetch(format!("Failed to send OCSP request: {}", e)))?;
-    stream
-        .write_all(request)
-        .map_err(|e| TlsError::OcspFetch(format!("Failed to send OCSP request body: {}", e)))?;
-
-    // Read response
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|e| TlsError::OcspFetch(format!("Failed to read OCSP response: {}", e)))?;
-
-    // Parse HTTP response - find body after headers
-    let headers_end = response
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| TlsError::OcspFetch("Invalid HTTP response: no headers end".to_string()))?;
-
-    let body = &response[headers_end + 4..];
-    if body.is_empty() {
-        return Err(TlsError::OcspFetch("Empty OCSP response body".to_string()));
-    }
-
-    Ok(body.to_vec())
-}
-
-/// Send OCSP request asynchronously
-async fn send_ocsp_request_async(url: &str, request: &[u8]) -> Result<Vec<u8>, TlsError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| TlsError::OcspFetch(format!("Failed to create HTTP client: {}", e)))?;
-
-    let response = client
-        .post(url)
-        .header("Content-Type", "application/ocsp-request")
-        .body(request.to_vec())
-        .send()
-        .await
-        .map_err(|e| TlsError::OcspFetch(format!("OCSP request failed: {}", e)))?;
-
-    if !response.status().is_success() {
-        return Err(TlsError::OcspFetch(format!(
-            "OCSP responder returned status: {}",
-            response.status()
-        )));
-    }
-
-    let body = response
-        .bytes()
-        .await
-        .map_err(|e| TlsError::OcspFetch(format!("Failed to read OCSP response: {}", e)))?;
-
-    Ok(body.to_vec())
-}
-
-/// Calculate certificate fingerprint for cache key
-fn calculate_cert_fingerprint(cert_der: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(cert_der);
-    let result = hasher.finalize();
-    hex::encode(result)
 }
 
 // ============================================================================
