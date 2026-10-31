@@ -606,6 +606,8 @@ struct Context {
     /// For each agent block, whether its `events` include request bodies,
     /// and its `max-request-body-bytes` (or the default).
     agent_request_bodies: std::collections::HashMap<String, (bool, usize)>,
+    /// For each filter id, the routes whose `filters` list it.
+    filter_routes: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Context {
@@ -614,6 +616,7 @@ impl Context {
             filters_without_failure_mode: Default::default(),
             agent_timeouts: Default::default(),
             agent_request_bodies: Default::default(),
+            filter_routes: Default::default(),
         };
         for document in documents {
             for node in document.nodes() {
@@ -656,6 +659,24 @@ impl Context {
                     .unwrap_or(crate::agents::DEFAULT_AGENT_MAX_BODY_BYTES);
                 self.agent_request_bodies
                     .insert(agent_id.to_string(), (receives_bodies, limit));
+            }
+        }
+        if node.name().value() == "route" {
+            if let (Some(route_id), Some(filters)) = (
+                first_arg(node),
+                node.children().and_then(|c| c.get("filters")),
+            ) {
+                for filter_id in filters
+                    .entries()
+                    .iter()
+                    .filter(|e| e.name().is_none())
+                    .filter_map(|e| e.value().as_string())
+                {
+                    self.filter_routes
+                        .entry(filter_id.to_string())
+                        .or_default()
+                        .push(route_id.to_string());
+                }
             }
         }
         if node.name().value() == "filter" && child_value(node, "type") == Some("agent") {
@@ -937,39 +958,54 @@ fn agent_filter_body_problems(
     problems
 }
 
-/// Whether an agent block's `failure-mode` is being relied on where it does
-/// not apply.
+/// An agent block's `failure-mode`, which is deprecated and has no effect
+/// (#586).
 ///
 /// What a failed call to an agent means on a route -- on request headers,
-/// request bodies, response headers and bodies, and for a body over the
-/// agent's inspection limit -- is decided by the agent filter's
-/// `failure-mode`, then the route's `policies { failure-mode }`, then closed
-/// (`FilterAgent::failure_mode` in the proxy, #584). The agent's own
-/// `failure-mode` applies only to WebSocket frames, which are not inspected
-/// per route. An agent written with `failure-mode "open"` and a filter
-/// without one therefore blocks requests when the agent is down.
+/// request bodies, response headers and bodies, WebSocket frames, and for a
+/// body over the agent's inspection limit -- is decided by the agent
+/// filter's `failure-mode`, then the route's `policies { failure-mode }`,
+/// then closed (`FilterAgent::failure_mode` in the proxy, #584, #586). An
+/// agent written with `failure-mode "open"` and a filter without one
+/// therefore blocks requests when the agent is down.
 ///
 /// Honouring the agent's value would turn setups that have been failing
-/// closed into ones that fail open, so the behaviour stays and this reports
-/// it instead -- only when some filter using the agent leaves the
-/// decision open, since a filter with its own value states the intent.
+/// closed into ones that fail open, so the key is deprecated instead, and
+/// reported wherever it is set: naming the filters (and their routes) that
+/// leave the decision open, where the value belongs instead.
 fn agent_failure_mode_problem(
     agent: &kdl::KdlNode,
     agent_id: &str,
     context: &Context,
 ) -> Option<String> {
     let value = child_value(agent, "failure-mode")?;
-    let filters = context.filters_without_failure_mode.get(agent_id)?;
+    let deprecated = format!(
+        "'failure-mode \"{value}\"' on agent '{agent_id}' is deprecated and has no effect: \
+         a failed call to an agent is answered by the agent filter's failure-mode, then the \
+         route's policies failure-mode, and is closed when neither is set, on every path \
+         including WebSocket frames. The key will be removed in a later release."
+    );
+    let Some(filters) = context.filters_without_failure_mode.get(agent_id) else {
+        return Some(format!("{deprecated} Remove it."));
+    };
     let filters = filters
         .iter()
-        .map(|f| format!("'{f}'"))
+        .map(|f| match context.filter_routes.get(f) {
+            Some(routes) => format!(
+                "'{f}' (route {})",
+                routes
+                    .iter()
+                    .map(|r| format!("'{r}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None => format!("'{f}'"),
+        })
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "'failure-mode \"{value}\"' on agent '{agent_id}' is being ignored for requests \
-         and responses: that is decided by the agent filter's failure-mode, then the route's \
-         policies failure-mode, and is closed when neither is set. Set failure-mode on \
-         filter {filters} as well. The agent's own setting applies only to WebSocket frames."
+        "{deprecated} Set failure-mode \"{value}\" on filter {filters} instead, or in the \
+         route's policies."
     ))
 }
 
@@ -2127,7 +2163,6 @@ mod tests {
                     events "request_headers" "request_body"
                     timeout-ms 200
                     connect-timeout-ms 750
-                    failure-mode "closed"
                     max-concurrent-calls 100
                     circuit-breaker {
                         failure-threshold 5
@@ -2677,7 +2712,9 @@ mod tests {
     fn an_agent_failure_mode_without_a_filter_one_is_reported() {
         let warnings = warnings_for(&agent_config(r#"failure-mode "open""#, ""));
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
-        assert!(warnings[0].contains("on agent 'waf' is being ignored for requests and responses"));
+        assert!(warnings[0].contains("on agent 'waf' is deprecated and has no effect"));
+        assert!(warnings[0].contains("including WebSocket frames"));
+        assert!(warnings[0].contains(r#"Set failure-mode "open" on filter"#));
         assert!(
             warnings[0].contains("filter 'waf-filter'"),
             "{}",
@@ -2686,11 +2723,61 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_failure_mode_is_not_reported_when_the_filter_sets_one() {
+    fn an_agent_failure_mode_is_deprecated_even_when_the_filter_sets_one() {
         let kdl = agent_config(r#"failure-mode "open""#, r#"failure-mode "open""#);
-        assert_eq!(warnings_for(&kdl), Vec::<String>::new());
-        // Neither is an agent without a failure-mode of its own.
+        let warnings = warnings_for(&kdl);
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(
+            warnings[0].contains("on agent 'waf' is deprecated and has no effect")
+                && warnings[0].ends_with("Remove it."),
+            "{}",
+            warnings[0]
+        );
+        // An agent without a failure-mode of its own is not reported.
         assert_eq!(warnings_for(&agent_config("", "")), Vec::<String>::new());
+    }
+
+    /// #586: the warning names the routes of the filters that leave the
+    /// decision open, so the value can be moved where it applies.
+    #[test]
+    fn an_agent_failure_mode_warning_names_the_filters_routes() {
+        let kdl = r#"
+            agents {
+                agent "waf" {
+                    unix-socket "/tmp/waf.sock"
+                    failure-mode "closed"
+                }
+            }
+            filters {
+                filter "waf-filter" {
+                    type "agent"
+                    agent "waf"
+                }
+            }
+            routes {
+                route "api" {
+                    matches { path-prefix "/api" }
+                    upstream "u"
+                    filters "waf-filter"
+                }
+                route "ws" {
+                    matches { path-prefix "/ws" }
+                    upstream "u"
+                    filters "waf-filter"
+                }
+            }
+        "#;
+        let warnings = warnings_for(kdl);
+        let warning = warnings
+            .iter()
+            .find(|w| w.contains("on agent 'waf'"))
+            .unwrap_or_else(|| panic!("{warnings:#?}"));
+        assert!(
+            warning.contains(
+                r#"Set failure-mode "closed" on filter 'waf-filter' (route 'api', 'ws')"#
+            ),
+            "{warning}"
+        );
     }
 
     /// #541: a configuration split over files is checked file by file, each

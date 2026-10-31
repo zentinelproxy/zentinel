@@ -94,7 +94,6 @@ agents {
         grpc address="http://localhost:50051"
         events "request_headers" "request_body"
         timeout-ms 200
-        failure-mode "closed"
     }
 }
 
@@ -148,7 +147,6 @@ namespace "platform" {
                 grpc address="http://localhost:50052"
                 events "request_headers"
                 timeout-ms 100
-                failure-mode "closed"
             }
         }
 

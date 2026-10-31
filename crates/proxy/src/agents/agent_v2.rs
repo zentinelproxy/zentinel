@@ -15,7 +15,7 @@ use zentinel_agent_protocol::v2::{
 };
 use zentinel_agent_protocol::{
     AgentResponse, EventType, GuardrailInspectEvent, RequestBodyChunkEvent, RequestHeadersEvent,
-    ResponseBodyChunkEvent, ResponseHeadersEvent,
+    ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketFrameEvent,
 };
 use zentinel_common::{
     errors::{ZentinelError, ZentinelResult},
@@ -428,6 +428,40 @@ impl AgentV2 {
             })
     }
 
+    /// Call agent with a WebSocket frame event.
+    pub async fn call_websocket_frame(
+        &self,
+        event: &WebSocketFrameEvent,
+    ) -> ZentinelResult<AgentResponse> {
+        let correlation_id = &event.correlation_id;
+
+        trace!(
+            agent_id = %self.config.id,
+            correlation_id = %correlation_id,
+            frame_index = event.frame_index,
+            client_to_server = event.client_to_server,
+            "Sending WebSocket frame to v2 agent"
+        );
+
+        self.pool
+            .send_websocket_frame(&self.config.id, correlation_id, event)
+            .await
+            .map_err(|e| {
+                error!(
+                    agent_id = %self.config.id,
+                    correlation_id = %correlation_id,
+                    error = %e,
+                    "V2 agent WebSocket frame call failed"
+                );
+                ZentinelError::Agent {
+                    agent: self.config.id.clone(),
+                    message: e.to_string(),
+                    event: "websocket_frame".to_string(),
+                    source: None,
+                }
+            })
+    }
+
     /// Call agent with guardrail inspect event.
     pub async fn call_guardrail_inspect(
         &self,
@@ -520,6 +554,18 @@ impl AgentV2 {
                         source: None,
                     })?;
                 self.call_response_body_chunk(&typed).await
+            }
+            // Frames used to fall through to "Unsupported event type": no
+            // agent ever saw one, and every frame was a failed call (#586).
+            EventType::WebSocketFrame => {
+                let typed: WebSocketFrameEvent =
+                    serde_json::from_value(json).map_err(|e| ZentinelError::Agent {
+                        agent: self.config.id.clone(),
+                        message: format!("Failed to deserialize WebSocketFrameEvent: {}", e),
+                        event: format!("{:?}", event_type),
+                        source: None,
+                    })?;
+                self.call_websocket_frame(&typed).await
             }
             EventType::GuardrailInspect => {
                 let typed: GuardrailInspectEvent =

@@ -742,15 +742,23 @@ impl AgentManager {
             .await
     }
 
-    /// Process a WebSocket frame through agents.
+    /// Process a WebSocket frame through the route's agents.
     ///
-    /// This is used for WebSocket frame inspection after an upgrade.
+    /// Only the agents of the route's filter chain that subscribe to
+    /// `websocket_frame` see the frame, in filter order. A failed call is
+    /// answered by the filter's failure mode (the filter's `failure-mode`,
+    /// otherwise the route's `policies`), and the filter's `timeout-ms`
+    /// shortens the agent's, as on every other event path (#586). Before,
+    /// every loaded agent subscribing to frames saw every route's frames,
+    /// and a failed call followed the agent's own `failure-mode`.
+    ///
     /// Returns the agent response directly to allow the caller to access
     /// the websocket_decision field.
     pub async fn process_websocket_frame(
         &self,
         route_id: &str,
         event: WebSocketFrameEvent,
+        route_agents: &[FilterAgent],
     ) -> ZentinelResult<AgentResponse> {
         trace!(
             correlation_id = %event.correlation_id,
@@ -760,12 +768,9 @@ impl AgentManager {
             "Processing WebSocket frame through agents"
         );
 
-        // Get relevant agents for this route that handle WebSocket frames
-        let agents = self.agents.read().await;
-        let relevant_agents: Vec<_> = agents
-            .values()
-            .filter(|agent| agent.handles_event(EventType::WebSocketFrame))
-            .collect();
+        let relevant_agents = self
+            .resolve_agents(route_agents, Some(EventType::WebSocketFrame))
+            .await;
 
         if relevant_agents.is_empty() {
             trace!(
@@ -783,17 +788,36 @@ impl AgentManager {
         );
 
         // Process through each agent sequentially
-        for agent in relevant_agents {
+        for resolved in relevant_agents {
+            let (filter, agent) = match resolved {
+                Resolved::Loaded(filter, agent) => (filter, agent),
+                Resolved::NotLoaded(filter) => {
+                    self.report_not_loaded(
+                        &event.correlation_id,
+                        EventType::WebSocketFrame,
+                        &filter.id,
+                        Some(filter.failure_mode),
+                    );
+                    if filter.failure_mode == FailureMode::Closed {
+                        return Ok(AgentResponse::websocket_close(
+                            1011,
+                            "Service unavailable".to_string(),
+                        ));
+                    }
+                    continue;
+                }
+            };
+
             // Check circuit breaker
             if !agent.circuit_breaker().is_closed() {
                 warn!(
                     agent_id = %agent.id(),
                     correlation_id = %event.correlation_id,
-                    failure_mode = ?agent.failure_mode(),
+                    failure_mode = ?filter.failure_mode,
                     "Circuit breaker open, skipping agent for WebSocket frame"
                 );
 
-                if agent.failure_mode() == FailureMode::Closed {
+                if filter.failure_mode == FailureMode::Closed {
                     debug!(
                         correlation_id = %event.correlation_id,
                         agent_id = %agent.id(),
@@ -809,7 +833,8 @@ impl AgentManager {
 
             // Call agent with timeout
             let start = Instant::now();
-            let timeout_duration = Duration::from_millis(agent.timeout_ms());
+            let timeout_ms = filter.effective_timeout_ms(agent.timeout_ms());
+            let timeout_duration = Duration::from_millis(timeout_ms);
 
             match timeout(
                 timeout_duration,
@@ -851,11 +876,11 @@ impl AgentManager {
                         correlation_id = %event.correlation_id,
                         error = %e,
                         duration_ms = start.elapsed().as_millis(),
-                        failure_mode = ?agent.failure_mode(),
+                        failure_mode = ?filter.failure_mode,
                         "WebSocket frame agent call failed"
                     );
 
-                    if agent.failure_mode() == FailureMode::Closed {
+                    if filter.failure_mode == FailureMode::Closed {
                         return Ok(AgentResponse::websocket_close(
                             1011,
                             "Agent error".to_string(),
@@ -867,12 +892,12 @@ impl AgentManager {
                     warn!(
                         agent_id = %agent.id(),
                         correlation_id = %event.correlation_id,
-                        timeout_ms = agent.timeout_ms(),
-                        failure_mode = ?agent.failure_mode(),
+                        timeout_ms = timeout_ms,
+                        failure_mode = ?filter.failure_mode,
                         "WebSocket frame agent call timed out"
                     );
 
-                    if agent.failure_mode() == FailureMode::Closed {
+                    if filter.failure_mode == FailureMode::Closed {
                         return Ok(AgentResponse::websocket_close(
                             1011,
                             "Gateway timeout".to_string(),
@@ -884,6 +909,23 @@ impl AgentManager {
 
         // All agents allowed the frame
         Ok(AgentResponse::websocket_allow())
+    }
+
+    /// The agents of a route's filter chain that subscribe to `event_type`,
+    /// in filter order. Agents that are not loaded are left out.
+    pub async fn route_agents_for_event(
+        &self,
+        route_agents: &[FilterAgent],
+        event_type: EventType,
+    ) -> Vec<String> {
+        self.resolve_agents(route_agents, Some(event_type))
+            .await
+            .into_iter()
+            .filter_map(|resolved| match resolved {
+                Resolved::Loaded(filter, _) => Some(filter.id.clone()),
+                Resolved::NotLoaded(_) => None,
+            })
+            .collect()
     }
 
     /// Process an event through relevant agents.
@@ -2337,6 +2379,11 @@ mod tests {
             tokio::time::sleep(self.delay).await;
             AgentResponse::default_allow()
         }
+
+        async fn on_websocket_frame(&self, _event: WebSocketFrameEvent) -> AgentResponse {
+            tokio::time::sleep(self.delay).await;
+            AgentResponse::websocket_allow()
+        }
     }
 
     /// A connected manager with one agent, "slow", answering after `delay`.
@@ -2477,6 +2524,154 @@ mod tests {
             );
             assert!(elapsed >= Duration::from_secs(2), "{path}: {elapsed:?}");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // #586: WebSocket frames follow the route's filters, like every path
+    // ------------------------------------------------------------------
+
+    fn frame_event() -> WebSocketFrameEvent {
+        WebSocketFrameEvent {
+            correlation_id: "ws".to_string(),
+            opcode: "text".to_string(),
+            data: String::new(),
+            client_to_server: true,
+            frame_index: 0,
+            fin: true,
+            route_id: Some("r".to_string()),
+            client_ip: "127.0.0.1".to_string(),
+        }
+    }
+
+    fn is_close_1011(response: &AgentResponse) -> bool {
+        matches!(
+            response.websocket_decision,
+            Some(zentinel_agent_protocol::WebSocketDecision::Close { code: 1011, .. })
+        )
+    }
+
+    fn is_ws_allow(response: &AgentResponse) -> bool {
+        matches!(
+            response.websocket_decision,
+            Some(zentinel_agent_protocol::WebSocketDecision::Allow)
+        )
+    }
+
+    /// A manager with one loaded agent, "down", subscribed to frames, that
+    /// cannot be reached, with the agent-level `failure-mode` given.
+    async fn manager_with_unreachable_frame_agent(agent_mode: &str) -> AgentManager {
+        let kdl = format!(
+            r#"
+            system {{ worker-threads 1 }}
+            listeners {{ listener "l" {{ address "127.0.0.1:8080" }} }}
+            upstreams {{ upstream "u" {{ target "127.0.0.1:9000" }} }}
+            routes {{ route "r" {{ matches {{ path-prefix "/" }}
+                                 upstream "u" }} }}
+            agents {{
+                agent "down" type="custom" {{
+                    unix-socket "/nonexistent/zentinel-586.sock"
+                    events "websocket_frame"
+                    timeout-ms 200
+                    failure-mode "{agent_mode}"
+                }}
+            }}
+            "#
+        );
+        let config = zentinel_config::Config::from_kdl(&kdl).expect("parses");
+        AgentManager::new(config.agents).await.expect("manager")
+    }
+
+    /// #586: a frame whose agent cannot be reached is answered by the
+    /// filter's failure mode, not the agent's -- as on every other path
+    /// since #584. Before, frames were the one path the agent-level
+    /// `failure-mode` still decided.
+    #[tokio::test]
+    async fn an_unreachable_frame_agent_follows_its_filters_failure_mode() {
+        for (agent_mode, filter_mode) in
+            [("open", FailureMode::Closed), ("closed", FailureMode::Open)]
+        {
+            let manager = manager_with_unreachable_frame_agent(agent_mode).await;
+            let response = manager
+                .process_websocket_frame("r", frame_event(), &[filter("down", filter_mode)])
+                .await
+                .expect("decided");
+            match filter_mode {
+                FailureMode::Closed => assert!(
+                    is_close_1011(&response),
+                    "agent {agent_mode}, filter closed: {response:?}"
+                ),
+                FailureMode::Open => assert!(
+                    is_ws_allow(&response),
+                    "agent {agent_mode}, filter open: {response:?}"
+                ),
+            }
+        }
+    }
+
+    /// #586: an agent that is not in the route's filter chain does not see
+    /// the route's frames. Before, every loaded agent subscribing to frames
+    /// saw every route's, so a fail-closed agent that was down closed
+    /// WebSockets on routes that never used it.
+    #[tokio::test]
+    async fn a_frame_agent_outside_the_routes_filters_is_not_called() {
+        let manager = manager_with_unreachable_frame_agent("closed").await;
+        let response = manager
+            .process_websocket_frame("r", frame_event(), &[])
+            .await
+            .expect("decided");
+        assert!(is_ws_allow(&response), "{response:?}");
+        assert_eq!(manager.metrics().calls_failed.load(Ordering::Relaxed), 0);
+    }
+
+    /// #586/#571: a frame filter whose agent is not loaded is a failed
+    /// call, answered by the filter's failure mode.
+    #[tokio::test]
+    async fn a_frame_filter_whose_agent_is_not_loaded_follows_its_failure_mode() {
+        let manager = AgentManager::new(Vec::new()).await.expect("manager");
+        let closed = manager
+            .process_websocket_frame("r", frame_event(), &[filter("gone", FailureMode::Closed)])
+            .await
+            .expect("decided");
+        assert!(is_close_1011(&closed), "{closed:?}");
+        let open = manager
+            .process_websocket_frame("r", frame_event(), &[filter("gone", FailureMode::Open)])
+            .await
+            .expect("decided");
+        assert!(is_ws_allow(&open), "{open:?}");
+    }
+
+    /// #586/#589: the filter's `timeout-ms` cuts a frame call short too.
+    #[tokio::test]
+    async fn a_filter_timeout_applies_to_websocket_frames() {
+        let (manager, _dir) =
+            manager_with_slow_agent_on(Duration::from_secs(2), 10_000, r#""websocket_frame""#)
+                .await;
+        let filters = [FilterAgent {
+            id: "slow".to_string(),
+            failure_mode: FailureMode::Closed,
+            timeout_ms: Some(100),
+        }];
+        let start = Instant::now();
+        let response = manager
+            .process_websocket_frame("r", frame_event(), &filters)
+            .await
+            .expect("decided");
+        assert!(is_close_1011(&response), "{response:?}");
+        assert!(start.elapsed() < Duration::from_millis(1500));
+
+        // Control: without the filter's timeout the agent's own (10 s)
+        // applies, and the same agent answers.
+        let filters = [FilterAgent {
+            timeout_ms: None,
+            ..filters[0].clone()
+        }];
+        let start = Instant::now();
+        let response = manager
+            .process_websocket_frame("r", frame_event(), &filters)
+            .await
+            .expect("decided");
+        assert!(is_ws_allow(&response), "{response:?}");
+        assert!(start.elapsed() >= Duration::from_secs(2));
     }
 
     fn headers_for(path: &str) -> HashMap<String, Vec<String>> {

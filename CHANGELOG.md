@@ -131,6 +131,29 @@ for details.
   of the next listed algorithm the client accepts, and reported by
   `zentinel test`/`lint` as a warning. Use `zstd` alongside `gzip` for a
   stronger coding. (#591)
+- **The agent-level `failure-mode` is deprecated and has no effect.**
+  WebSocket frames were the last path it decided; they now follow the same
+  rule as every other path: the agent filter's `failure-mode`, else the
+  route's `policies { failure-mode }`, else closed. A fail-closed failure
+  closes the connection with 1011. **If you relied on an agent's
+  `failure-mode "open"` for WebSocket frames, set `failure-mode "open"` on
+  its filter.** `zentinel test` and the startup log report the key wherever
+  it is set, naming the filters and routes where the value belongs. The key
+  still parses; it will be removed in a later release. (#586)
+- **WebSocket frames never reached an agent.** The proxy had no dispatch
+  for them: every frame was a failed call ("Unsupported event type"), so
+  with the agent's default `failure-mode "open"` frames passed uninspected,
+  and with `"closed"` every inspected WebSocket was closed on its first
+  frame. Frames are now sent to agents over UDS and reverse connections. gRPC
+  agents still cannot answer frames (the gRPC response has no WebSocket
+  decision) and get an explicit error, answered by the filter's failure
+  mode. (#586)
+- **WebSocket frames go only to the route's agents.** Every loaded agent
+  subscribed to `websocket_frame` used to see every route's frames, whether
+  or not the route listed it in its `filters`, and the 100 ms per-frame
+  timeout was hard-coded and failed open. Each frame now goes to the agents
+  of the route's filter chain, in order, under the filter's `timeout-ms`
+  (shortening the agent's) and failure mode. (#586)
 
 ### Added
 - **`h2c #true` on an upstream: HTTP/2 over cleartext TCP** with prior

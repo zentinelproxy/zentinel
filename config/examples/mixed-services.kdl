@@ -38,7 +38,6 @@ agents {
         grpc address="http://localhost:50051"
         events "request_headers"
         timeout-ms 100
-        failure-mode "closed"
 
         circuit-breaker {
             failure-threshold 5
@@ -52,7 +51,6 @@ agents {
         grpc address="http://localhost:50052"
         events "request_headers"
         timeout-ms 50
-        failure-mode "open"
     }
 }
 

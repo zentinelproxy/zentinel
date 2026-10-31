@@ -1872,17 +1872,13 @@ impl ProxyHttp for ZentinelProxy {
                         );
                         ctx.websocket_skip_inspection = true;
                     } else {
+                        // Which agents see the frames is decided at the
+                        // upgrade, from the route's filter chain (#586).
                         ctx.websocket_inspection_enabled = true;
-
-                        // Get agents that handle WebSocketFrame events
-                        ctx.websocket_inspection_agents = self.agent_manager.get_agents_for_event(
-                            zentinel_agent_protocol::EventType::WebSocketFrame,
-                        );
 
                         debug!(
                             correlation_id = %ctx.trace_id,
                             route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
-                            agent_count = ctx.websocket_inspection_agents.len(),
                             "WebSocket frame inspection enabled"
                         );
                     }
@@ -2368,7 +2364,21 @@ impl ProxyHttp for ZentinelProxy {
 
         // Handle WebSocket 101 Switching Protocols
         if status == 101 && ctx.is_websocket_upgrade {
+            // The route's agents that subscribe to frames: only they see
+            // them, each under its filter's failure mode and timeout (#586).
             if ctx.websocket_inspection_enabled && !ctx.websocket_skip_inspection {
+                ctx.websocket_inspection_agents = self
+                    .agent_manager
+                    .route_agents_for_event(
+                        &ctx.route_agents,
+                        zentinel_agent_protocol::EventType::WebSocketFrame,
+                    )
+                    .await;
+            }
+            if ctx.websocket_inspection_enabled
+                && !ctx.websocket_skip_inspection
+                && !ctx.websocket_inspection_agents.is_empty()
+            {
                 // Create WebSocket inspector and handler with metrics
                 let inspector = crate::websocket::WebSocketInspector::with_metrics(
                     self.agent_manager.clone(),
@@ -2377,7 +2387,7 @@ impl ProxyHttp for ZentinelProxy {
                         .unwrap_or_else(|| "unknown".to_string()),
                     ctx.trace_id.clone(),
                     ctx.client_ip.clone(),
-                    100, // 100ms timeout per frame inspection
+                    ctx.route_agents.clone(),
                     Some(self.metrics.clone()),
                 );
 

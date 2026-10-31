@@ -523,7 +523,6 @@ agents {
         }
         events "request-headers" "request-body"
         timeout-ms 50
-        failure-mode "open"
         max-request-body-bytes 1048576
     }
 
@@ -541,7 +540,6 @@ agents {
         }
         events "request-headers"
         timeout-ms 100
-        failure-mode "closed"
         circuit-breaker {
             failure-threshold 5
             recovery-timeout-secs 30
