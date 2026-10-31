@@ -2531,11 +2531,6 @@ impl ProxyHttp for ZentinelProxy {
             super::filters::apply_response_filters(upstream_response, ctx, &config);
         }
 
-        // Enable Pingora response compression if Compress filter marked it eligible
-        if ctx.compress_enabled {
-            session.upstream_compression.adjust_level(6);
-        }
-
         // Apply per-listener keepalive timeout
         if let Some(keepalive_secs) = ctx.listener_keepalive_timeout_secs {
             session
@@ -2912,7 +2907,7 @@ impl ProxyHttp for ZentinelProxy {
     /// Used for header modifications, adding authentication, etc.
     async fn upstream_request_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()>
@@ -3027,6 +3022,12 @@ impl ProxyHttp for ZentinelProxy {
             super::filters::apply_request_headers_filters(upstream_request, ctx, config);
         }
 
+        // Set up the Compress filter. Pingora feeds this upstream request into
+        // its compression module right after this filter returns.
+        if let Some(config) = ctx.config.as_ref().map(std::sync::Arc::clone) {
+            super::filters::prepare_compression(session, ctx, &config);
+        }
+
         // Remove sensitive headers that shouldn't go to upstream
         upstream_request.remove_header("X-Internal-Token");
         upstream_request.remove_header("Authorization-Internal");
@@ -3107,6 +3108,23 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
+        Ok(())
+    }
+
+    /// Modify the upstream response header before Pingora's own response
+    /// modules (compression) and the cache see it.
+    async fn upstream_response_filter(
+        &self,
+        session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if let Some(config) = ctx.config.as_ref().map(std::sync::Arc::clone) {
+            super::filters::finalize_compression(session, upstream_response, ctx, &config);
+        }
         Ok(())
     }
 

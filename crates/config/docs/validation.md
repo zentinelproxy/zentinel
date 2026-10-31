@@ -79,7 +79,8 @@ Minimum supported: `1.0`
 | `id` | Non-empty, unique |
 | `type` | Valid filter type |
 | `rate-limit.max-rps` | `> 0` |
-| `compress.algorithms` | At least one algorithm |
+| `compress.algorithms` | At least one of `gzip`, `br`/`brotli`, `zstd`; `deflate` and unknown names are errors |
+| `compress.level` | 1-9 |
 | `geo.database-path` | Non-empty |
 | `geo.countries` | Valid ISO 3166-1 alpha-2 codes |
 | `agent.agent` | Must reference existing agent |
@@ -220,7 +221,7 @@ Configuration validation failed:
 
 | Property | Default | Rationale |
 |----------|---------|-----------|
-| `algorithms` | `["gzip", "brotli"]` | Wide client support |
+| `algorithms` | `["gzip"]` | Universal client support; Brotli is not produced yet |
 | `min-size` | `1024` | Don't compress tiny responses |
 | `level` | `6` | Balance ratio vs CPU |
 

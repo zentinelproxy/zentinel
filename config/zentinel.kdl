@@ -83,7 +83,7 @@ filters {
     // Response compression filter
     filter "compress" {
         type "compress"
-        algorithms "gzip,br"
+        algorithms "gzip" "zstd"
         min-size 1024
     }
 

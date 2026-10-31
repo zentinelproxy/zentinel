@@ -438,9 +438,9 @@ Reusable filter definitions.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `algorithms` | `[string]` | `["gzip", "brotli"]` | Compression algorithms |
+| `algorithms` | `[string]` | `["gzip"]` | `gzip`, `zstd`, in order of preference: the first one the client accepts (q > 0) is used. `br` (`brotli`) is accepted but skipped with a warning: Pingora's Brotli encoder does not finish its stream. `deflate` is rejected. Also accepted comma-separated in one string. Does not transcode a response the upstream already encoded in a coding the client accepts |
 | `min-size` | `u32` | `1024` | Minimum size to compress |
-| `content-types` | `[string]` | *text types* | MIME types to compress |
+| `content-types` | `[string]` | `text/html`, `text/css`, `application/json`, `application/javascript` | MIME type prefixes to compress |
 | `level` | `u8` | `6` | Compression level (1-9) |
 
 #### cors

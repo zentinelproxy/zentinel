@@ -237,7 +237,7 @@ routes {
 filters {
     filter "compress" {
         type "compress"
-        algorithms "brotli" "gzip"
+        algorithms "gzip" "zstd"
         min-size 1024
         content-types "text/html" "text/css" "application/javascript" "application/json"
     }
