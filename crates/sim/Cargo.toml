@@ -1,6 +1,6 @@
 [package]
 name = "zentinel-sim"
-version = "0.6.53"
+version = "0.6.54"
 edition = "2021"
 authors = ["Zentinel Contributors"]
 license = "Apache-2.0"
