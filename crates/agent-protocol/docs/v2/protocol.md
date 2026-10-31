@@ -400,9 +400,18 @@ body never reaches the upstream. In `stream` mode each chunk is forwarded
 once the agents have allowed it; a refused chunk is never forwarded, but
 the chunks allowed before it have been.
 
+`request-body-mode "inspect-first"` (zentinelproxy/zentinel#608) avoids
+even that: the proxy reads the whole body and has the agents decide on it
+*before* it chooses or contacts an upstream. A refused request never
+reaches the upstream at all, and the agents' request-header changes on the
+body are applied. It is bounded by the route's body-size limit (413 above
+it) rather than the inspection limit, holds the whole body in memory, and
+the upstream request starts only after the full upload -- which is why it
+is opt-in. It is a request mode only.
+
 When several body agents on one route ask for different modes, one mode
-is used for all of them, the most conservative: `buffer`, else `hybrid`
-with the largest threshold, else `stream`.
+is used for all of them, the most conservative: `inspect-first`, else
+`buffer`, else `hybrid` with the largest threshold, else `stream`.
 
 #### Header changes on an allowed request
 
@@ -413,6 +422,7 @@ applied as follows (zentinelproxy/zentinel#596):
 |-------|-------------------|--------------------|
 | Request headers | Applied to the request sent upstream. | Applied to the response sent to the client. |
 | Request body (buffered or streamed) | **Dropped**, with a warning logged once per agent. | Applied to the response sent to the client. |
+| Request body (`inspect-first`) | Applied to the request sent upstream. | Applied to the response sent to the client. |
 | Response headers | -- | Applied to the response sent to the client. |
 
 Response-header changes from the request phases are applied first, so an
@@ -422,9 +432,9 @@ comes too late and is not applied.
 
 Request-header changes from the request-body phase cannot be applied: the
 proxy sends the upstream request's header before it reads the client's
-body, in every `request-body-mode`, so the header is gone by the time any
-body decision is made. An agent that needs to change request headers does
-it on `RequestHeaders`.
+body, in every `request-body-mode` but `inspect-first`, so the header is
+gone by the time any body decision is made. An agent that needs to change
+request headers does it on `RequestHeaders`, or uses `inspect-first`.
 
 In the response phases, only `Block` is acted on so far; `Redirect` and
 `Challenge` there are tracked in zentinelproxy/zentinel#588.

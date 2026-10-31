@@ -2022,10 +2022,16 @@ impl ProxyHttp for ZentinelProxy {
             correlation_id = %ctx.trace_id,
             "Processing request through agents"
         );
-        if let Err(e) = self
+        let agents = match self
             .process_agents(session, ctx, &client_addr, client_port)
             .await
         {
+            // `request-body-mode "inspect-first"`: the whole body is
+            // decided on here, before any upstream is chosen (#608).
+            Ok(()) => self.inspect_request_body_first(session, ctx).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = agents {
             // Check if this is an HTTPStatus error (e.g., agent block or fail-closed)
             // In that case, we need to send a proper HTTP response instead of just closing the connection
             if let ErrorType::HTTPStatus(status) = e.etype() {
@@ -2279,7 +2285,10 @@ impl ProxyHttp for ZentinelProxy {
                             .await?;
                     }
                 }
-                BodyStreamingMode::Buffer => {
+                // `InspectFirst` was decided in `request_filter`, which
+                // turns body inspection off here; should it not have run,
+                // it is buffer mode.
+                BodyStreamingMode::Buffer | BodyStreamingMode::InspectFirst => {
                     // Until the agents have decided, nothing is passed on:
                     // a refused body must not have reached the upstream.
                     let undecided = !ctx.request_body_decided;
@@ -5719,6 +5728,110 @@ impl ZentinelProxy {
     }
 
     /// Send buffered body to agents (buffer mode).
+    /// `request-body-mode "inspect-first"` (#608): read the whole request
+    /// body in `request_filter` and have the body agents decide on it
+    /// before an upstream is chosen, so a refused request never reaches
+    /// the upstream -- not even its headers -- and the agents'
+    /// request-header changes on the body apply.
+    ///
+    /// Bounded by the route's body-size limit (413 above it), not the
+    /// inspection limit. The body is then handed back to Pingora by
+    /// `request_body_filter`, as for API schema validation, and is not
+    /// inspected again there.
+    async fn inspect_request_body_first(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestContext,
+    ) -> Result<(), Box<Error>> {
+        if !ctx.body_inspection_enabled
+            || ctx.body_inspection_agents.is_empty()
+            || ctx.request_body_streaming_mode != zentinel_config::BodyStreamingMode::InspectFirst
+            || ctx.is_websocket_upgrade
+            || ctx.mcp_proxied_call.is_some()
+        {
+            return Ok(());
+        }
+
+        // Already read whole for API schema validation, or read now.
+        let body = match ctx.validated_request_body.take() {
+            Some(body) => body,
+            None => {
+                let global_limit = ctx
+                    .config
+                    .get_or_insert_with(|| self.config_manager.current())
+                    .limits
+                    .max_body_size_bytes;
+                let limit = ctx.max_body_size(global_limit);
+                // Retry buffering keeps Pingora's body loop running after the
+                // body is consumed here, so `request_body_filter` can hand it
+                // back (see `validate_api_request`, #531).
+                session.enable_retry_buffering_with_limit(limit);
+                let mut body = Vec::new();
+                while let Some(chunk) = session.read_request_body().await.map_err(|e| {
+                    Error::explain(
+                        ErrorType::InternalError,
+                        format!("Failed to read body: {e}"),
+                    )
+                })? {
+                    if body.len() + chunk.len() > limit {
+                        warn!(
+                            correlation_id = %ctx.trace_id,
+                            limit = limit,
+                            "Request body size limit exceeded (inspect-first)"
+                        );
+                        self.metrics.record_blocked_request("body_size_exceeded");
+                        return Err(Error::explain(
+                            ErrorType::HTTPStatus(413),
+                            "Request body exceeds the configured limit",
+                        ));
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                Bytes::from(body)
+            }
+        };
+
+        // Decided here: `request_body_filter` forwards the body as it is.
+        ctx.body_inspection_enabled = false;
+        ctx.request_body_decided = true;
+        ctx.validated_request_body = Some(body.clone());
+        if body.is_empty() {
+            return Ok(());
+        }
+
+        debug!(
+            correlation_id = %ctx.trace_id,
+            body_bytes = body.len(),
+            agent_count = ctx.body_inspection_agents.len(),
+            "Inspecting the whole request body before the upstream (inspect-first)"
+        );
+        ctx.request_body_inspected_first = true;
+        ctx.body_buffer = body.to_vec();
+        ctx.body_bytes_inspected = body.len() as u64;
+        let result = self.send_buffered_body_to_agents(true, ctx).await;
+        ctx.body_buffer.clear();
+        result?;
+
+        // Allowed: the request-header changes the agents asked for on the
+        // body go to the upstream request, whose headers are not sent yet.
+        let ops = std::mem::take(&mut ctx.body_phase_request_headers);
+        let req_header = session.req_header_mut();
+        for op in ops {
+            match op {
+                zentinel_agent_protocol::HeaderOp::Set { name, value } => {
+                    req_header.insert_header(name, &value).ok();
+                }
+                zentinel_agent_protocol::HeaderOp::Add { name, value } => {
+                    req_header.append_header(name, &value).ok();
+                }
+                zentinel_agent_protocol::HeaderOp::Remove { name } => {
+                    req_header.remove_header(&name);
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn send_buffered_body_to_agents(
         &self,
         end_of_stream: bool,

@@ -50,6 +50,15 @@ pub enum BodyStreamingMode {
         #[serde(default = "default_hybrid_threshold")]
         buffer_threshold: usize,
     },
+
+    /// Request bodies only: read the whole body and have the agents decide
+    /// on it before the upstream is contacted at all (#608).
+    ///
+    /// - A refused request never reaches the upstream, not even its headers
+    /// - The agents' request-header changes on the body are applied
+    /// - Bounded by the route's body-size limit, not the inspection limit;
+    ///   the whole body is held in memory and latency includes the upload
+    InspectFirst,
 }
 
 fn default_hybrid_threshold() -> usize {

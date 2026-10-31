@@ -156,6 +156,18 @@ for details.
   (shortening the agent's) and failure mode. (#586)
 
 ### Added
+- **`request-body-mode "inspect-first"` on an agent: decide on the whole
+  request body before the upstream is contacted** (#608). In the other
+  modes the upstream already has the request headers when the body is
+  inspected, so a refused request reaches it as an aborted request, and
+  request-header changes an agent asks for on the body are dropped. With
+  `inspect-first` the body is read in full and decided on first: a refused
+  request never reaches the upstream, and the body-phase request-header
+  changes are applied. It is bounded by the route's body-size limit (413
+  above it), holds the body in memory, and adds the upload time to the
+  upstream's start, so it is opt-in. One agent asking for it sets the
+  route's mode. Not a response mode: `response-body-mode "inspect-first"`
+  is a configuration error.
 - **`h2c #true` on an upstream: HTTP/2 over cleartext TCP** with prior
   knowledge, for trusted internal hops where TLS ends elsewhere (#614). There
   is no negotiation and no fallback: a backend that does not speak HTTP/2
