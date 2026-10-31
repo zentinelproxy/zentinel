@@ -261,9 +261,21 @@ fn h2c_connections_count_against_the_shared_connection_limit() {
     }
 }
 
-/// An HTTP/2 connection to `port` with its handshake done, kept open until
-/// the returned sender is dropped.
+/// An HTTP/2 connection to `port` that has served one request, kept open
+/// until the returned sender is dropped. Retried while the proxy refuses it:
+/// the slot of a connection that just closed is given back a moment later.
 fn hold_h2c_connection(port: u16) -> std::sync::mpsc::Sender<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(release) = try_hold_h2c_connection(port) {
+            return release;
+        }
+        assert!(Instant::now() < deadline, "no h2c connection was admitted");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn try_hold_h2c_connection(port: u16) -> Option<std::sync::mpsc::Sender<()>> {
     let (release, released) = std::sync::mpsc::channel::<()>();
     let (ready_tx, ready) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -272,20 +284,39 @@ fn hold_h2c_connection(port: u16) -> std::sync::mpsc::Sender<()> {
             .build()
             .unwrap()
             .block_on(async move {
-                let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                let served = async {
+                    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                        .await
+                        .ok()?;
+                    let (client, connection) = h2::client::handshake(tcp).await.ok()?;
+                    let driver = tokio::spawn(connection);
+                    // A completed request proves the proxy accepted the
+                    // connection, which is when it takes the slot; a ready
+                    // client only means the connect and the preface went out.
+                    let mut client = client.ready().await.ok()?;
+                    let request = http::Request::builder()
+                        .uri(format!("http://127.0.0.1:{port}/"))
+                        .body(())
+                        .unwrap();
+                    let (response, _) = client.send_request(request, true).ok()?;
+                    let status = response.await.ok()?.status();
+                    (status == 200).then_some((driver, client))
+                };
+                let held = tokio::time::timeout(Duration::from_secs(5), served)
                     .await
-                    .unwrap();
-                let (client, connection) = h2::client::handshake(tcp).await.unwrap();
-                let driver = tokio::spawn(connection);
-                // The server's SETTINGS have arrived once the client is ready.
-                let _client = client.ready().await.unwrap();
-                ready_tx.send(()).unwrap();
-                let _ = tokio::task::spawn_blocking(move || released.recv()).await;
-                driver.abort();
+                    .ok()
+                    .flatten();
+                let ok = held.is_some();
+                let _ = ready_tx.send(ok);
+                if let Some((driver, _client)) = held {
+                    let _ = tokio::task::spawn_blocking(move || released.recv()).await;
+                    driver.abort();
+                }
             });
     });
     ready
         .recv_timeout(Duration::from_secs(10))
-        .expect("the h2c connection was established");
-    release
+        .ok()
+        .filter(|ok| *ok)
+        .map(|_| release)
 }
