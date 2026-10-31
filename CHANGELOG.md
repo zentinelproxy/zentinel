@@ -100,13 +100,25 @@ for details.
   now a configuration error that points to `h2c #true`. Add `h2c #true` if the
   backend speaks cleartext HTTP/2, or remove `min-version 2` to keep
   HTTP/1.1. (#614)
+- **An `https` or `h2` listener without a `tls` block no longer loads.** It
+  used to pass validation and then bind nothing at startup (an error in the
+  log, no socket). The error says to add `tls`, or to use `protocol "h2c"`
+  for HTTP/2 without TLS. (#614)
 
 ### Added
 - **`h2c #true` on an upstream: HTTP/2 over cleartext TCP** with prior
   knowledge, for trusted internal hops where TLS ends elsewhere (#614). There
   is no negotiation and no fallback: a backend that does not speak HTTP/2
   fails the request. `zentinel test` rejects `h2c` together with `tls`,
-  `max-version 1` or `min-version 1`. Listeners follow in a separate change.
+  `max-version 1` or `min-version 1`.
+- **`protocol "h2c"` on a listener: HTTP/2 over cleartext TCP** with prior
+  knowledge, for trusted internal hops (#614). A client that does not open
+  with the HTTP/2 connection preface within 10 s is refused: one that sent
+  something else (HTTP/1.1) gets `505 HTTP Version Not Supported`. h2c
+  listeners run in a Pingora service of their own, so `http` listeners are
+  unchanged and do not start accepting HTTP/2; their connections count
+  against the same connection limits. A `tls` block on an h2c listener is a
+  configuration error.
 
 ### Fixed
 - **`max-h2-streams` was never applied** to upstream HTTP/2 connections, so

@@ -29,9 +29,9 @@ use async_trait::async_trait;
 use pingora_core::apps::ServerApp;
 use pingora_core::listeners::PreTlsProcess;
 use pingora_core::protocols::l4::stream::Stream as L4Stream;
-use pingora_core::protocols::{GetSocketDigest, SocketDigest, Stream};
+use pingora_core::protocols::{GetSocketDigest, Peek, SocketDigest, Stream};
 use pingora_core::server::ShutdownWatch;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use zentinel_common::ids::Scope;
 use zentinel_common::limits::{ConnectionLimiter, ConnectionPermit};
@@ -259,10 +259,26 @@ pub struct ConnectionLimitedApp<A> {
     /// `ns:svc`) that has had a connection. Like the global one it counts
     /// whether or not a limit is set, so a reload that adds a limit sees the
     /// connections already open.
-    namespaces: parking_lot::Mutex<HashMap<String, Arc<ConnectionLimiter>>>,
+    namespaces: Arc<parking_lot::Mutex<HashMap<String, Arc<ConnectionLimiter>>>>,
     limits: LimitsSource,
     handshakes: Option<Arc<HandshakeTracker>>,
+    /// Set for the h2c listeners' app: how long a connection has to send the
+    /// HTTP/2 connection preface before it is refused.
+    h2_preface: Option<Duration>,
 }
+
+/// What a client speaking HTTP/2 with prior knowledge sends first (RFC 9113
+/// section 3.4).
+const H2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// The answer to a client that opened an h2c connection with anything else:
+/// most likely HTTP/1.1, which can read it.
+const H2C_ONLY_RESPONSE: &[u8] = b"HTTP/1.1 505 HTTP Version Not Supported\r\n\
+    Content-Type: text/plain\r\n\
+    Content-Length: 60\r\n\
+    Connection: close\r\n\
+    \r\n\
+    This listener speaks HTTP/2 with prior knowledge (h2c) only\n";
 
 /// The slots one connection holds: the global one, and its namespace's and
 /// service's.
@@ -279,10 +295,34 @@ impl<A> ConnectionLimitedApp<A> {
         Self {
             inner: Arc::new(inner),
             limiter,
-            namespaces: parking_lot::Mutex::new(HashMap::new()),
+            namespaces: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             limits: Arc::new(limits),
             handshakes: None,
+            h2_preface: None,
         }
+    }
+
+    /// The same limits around another app: connections through either count
+    /// against one global, namespace and service total, and the same
+    /// handshake tracker. For listeners that need an app of their own.
+    pub fn sibling<B>(&self, inner: B) -> ConnectionLimitedApp<B> {
+        ConnectionLimitedApp {
+            inner: Arc::new(inner),
+            limiter: Arc::clone(&self.limiter),
+            namespaces: Arc::clone(&self.namespaces),
+            limits: Arc::clone(&self.limits),
+            handshakes: self.handshakes.clone(),
+            h2_preface: None,
+        }
+    }
+
+    /// Refuse every connection that does not open with the HTTP/2 connection
+    /// preface within `timeout`. A client that sent something else gets a
+    /// `505` it can read if it speaks HTTP/1.1; one that sent too little in
+    /// time is closed. Pingora's own h2c mode instead falls back to HTTP/1.1.
+    pub fn requiring_h2_preface(mut self, timeout: Duration) -> Self {
+        self.h2_preface = Some(timeout);
+        self
     }
 
     /// Tell `tracker` when a connection's handshake is over, so it stops
@@ -353,6 +393,44 @@ fn local_addr(stream: &Stream) -> Option<SocketAddr> {
     digest.local_addr()?.as_inet().copied()
 }
 
+/// Whether `stream` starts with the HTTP/2 preface, leaving the bytes for
+/// the app to read. `None` when the connection ended or `timeout` passed
+/// before 24 bytes arrived; `Some(false)` after answering anything else with
+/// a 505. A stream that cannot peek is left to Pingora, which then insists on
+/// HTTP/2 as well.
+async fn opens_with_h2_preface(stream: &mut Stream, timeout: Duration) -> Option<bool> {
+    use tokio::io::AsyncWriteExt;
+
+    let peer = peer_ip(stream).map(|ip| ip.to_string()).unwrap_or_default();
+    let mut buf = [0u8; H2_PREFACE.len()];
+    match tokio::time::timeout(timeout, stream.try_peek(&mut buf)).await {
+        Ok(Ok(true)) if &buf == H2_PREFACE => Some(true),
+        Ok(Ok(false)) => Some(true),
+        Ok(Ok(true)) => {
+            warn!(
+                client_ip = %peer,
+                "Connection refused: h2c listener received something other than the \
+                 HTTP/2 preface (HTTP/1.1?); answered 505"
+            );
+            let _ = stream.write_all(H2C_ONLY_RESPONSE).await;
+            let _ = stream.flush().await;
+            Some(false)
+        }
+        Ok(Err(e)) => {
+            debug!(client_ip = %peer, error = %e, "h2c connection ended before the preface");
+            None
+        }
+        Err(_) => {
+            warn!(
+                client_ip = %peer,
+                timeout_ms = timeout.as_millis() as u64,
+                "Connection refused: h2c listener did not receive the HTTP/2 preface in time"
+            );
+            None
+        }
+    }
+}
+
 #[async_trait]
 impl<A> ServerApp for ConnectionLimitedApp<A>
 where
@@ -372,6 +450,12 @@ where
             tracker.finished(&digest);
         }
         let _permits = permits?;
+        let mut stream = stream;
+        if let Some(timeout) = self.h2_preface {
+            if !opens_with_h2_preface(&mut stream, timeout).await? {
+                return None;
+            }
+        }
         self.inner.process_new(stream, shutdown).await
     }
 

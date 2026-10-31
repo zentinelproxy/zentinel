@@ -43,7 +43,7 @@ Minimum supported: `1.0`
 |----------|------------|
 | `id` | Non-empty, unique |
 | `address` | Valid socket address (host:port) |
-| `protocol` | Must be `http`, `https`, `h2`, or `h3` |
+| `protocol` | Must be `http`, `https`, `h2`, `h3` or `h2c`; `https` and `h2` need a `tls` block, `h2c` must not have one |
 | `tls` | Required when protocol is `https` |
 | `request-timeout-secs` | `> 0` |
 

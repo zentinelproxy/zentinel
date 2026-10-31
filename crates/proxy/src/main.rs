@@ -797,6 +797,10 @@ fn pingora_options(upgrade: bool) -> Opt {
     opt
 }
 
+/// How long an h2c listener waits for a connection's HTTP/2 preface (24
+/// bytes, the first thing a prior-knowledge client sends) before refusing it.
+const H2C_PREFACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Run the proxy server
 fn run_server(
     config_path: Option<String>,
@@ -1064,6 +1068,11 @@ fn run_server(
     // how `max-total-connections` and `max-connections-per-client` are
     // enforced (see `connection_limit`). The limits are read from the current
     // config for every new connection, so a reload applies to the next one.
+    let has_h2c_listener = config
+        .listeners
+        .iter()
+        .any(|l| l.protocol == zentinel_config::ListenerProtocol::H2c);
+    let h2c_parts = has_h2c_listener.then(|| (proxy.clone(), server_options.clone()));
     let mut http_proxy = pingora_proxy::HttpProxy::new(proxy, server.configuration.clone());
     http_proxy.server_options = Some(server_options);
     http_proxy.handle_init_modules();
@@ -1082,6 +1091,24 @@ fn run_server(
         },
     )
     .with_handshakes(Arc::clone(&handshakes));
+    // h2c listeners get a service of their own. Pingora's h2c switch is per
+    // app, and once on it makes every cleartext connection of that app peek
+    // for the HTTP/2 preface and fall back to HTTP/1.1 without it: plain
+    // `http` listeners would start accepting HTTP/2, and h2c ones HTTP/1.1.
+    // Apart, `http` listeners are unchanged and h2c ones refuse HTTP/1.1. The
+    // sibling app counts connections against the same limits.
+    let mut h2c_service = h2c_parts.map(|(proxy, mut options)| {
+        options.h2c = true;
+        let mut http_proxy = pingora_proxy::HttpProxy::new(proxy, server.configuration.clone());
+        http_proxy.server_options = Some(options);
+        http_proxy.handle_init_modules();
+        pingora_core::services::listening::Service::new(
+            "Zentinel Proxy (h2c)".to_string(),
+            connection_app
+                .sibling(http_proxy)
+                .requiring_h2_preface(H2C_PREFACE_TIMEOUT),
+        )
+    });
     {
         let (connections, handshakes) = (Arc::clone(&connections), Arc::clone(&handshakes));
         shutdown_request.count_open_with(move || {
@@ -1114,6 +1141,18 @@ fn run_server(
             zentinel_config::ListenerProtocol::Http => {
                 proxy_service.add_tcp(&listener.address);
                 info!("HTTP listening on: {}", listener.address);
+            }
+            zentinel_config::ListenerProtocol::H2c => {
+                // `has_h2c_listener` saw this listener, so the service exists.
+                let service = h2c_service
+                    .as_mut()
+                    .expect("h2c service created for h2c listeners");
+                service.add_tcp(&listener.address);
+                info!(
+                    listener_id = %listener.id,
+                    "h2c (HTTP/2 cleartext, prior knowledge only) listening on: {}",
+                    listener.address
+                );
             }
             // `h2` is served by the HTTPS path: that listener already
             // advertises h2 through ALPN, so the two are the same socket setup.
@@ -1303,6 +1342,9 @@ fn run_server(
 
     // Add proxy service to server
     server.add_service(proxy_service);
+    if let Some(service) = h2c_service {
+        server.add_service(service);
+    }
 
     // Enable auto-reload file watching if configured
     let auto_reload_enabled = config.server.auto_reload;

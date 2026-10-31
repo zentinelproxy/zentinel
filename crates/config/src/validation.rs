@@ -1460,6 +1460,47 @@ mod tests {
             let config = Config::from_kdl(&config_with_protocol("https")).expect("should parse");
             assert!(config.validate().is_ok());
         }
+
+        /// #614: h2c is cleartext, so a `tls` block on it is an error rather
+        /// than a block the listener never reads.
+        #[test]
+        fn h2c_with_a_tls_block_is_rejected() {
+            let message = format!(
+                "{:#}",
+                Config::from_kdl(&config_with_protocol("h2c")).expect_err("rejected")
+            );
+            assert!(
+                message.contains("cannot have a 'tls' block") && message.contains("https"),
+                "{message}"
+            );
+        }
+
+        /// These used to validate and then bind nothing at startup.
+        #[test]
+        fn https_and_h2_without_tls_are_rejected_with_a_pointer_to_h2c() {
+            for protocol in ["https", "h2"] {
+                let kdl = config_with_protocol(protocol);
+                let start = kdl.find("    tls {").unwrap();
+                let end = start + kdl[start..].find("    }\n").unwrap() + "    }\n".len();
+                let kdl = format!("{}{}", &kdl[..start], &kdl[end..]);
+                let message = format!("{:#}", Config::from_kdl(&kdl).expect_err(protocol));
+                assert!(
+                    message.contains("needs a 'tls' block") && message.contains("\"h2c\""),
+                    "{protocol}: {message}"
+                );
+            }
+        }
+
+        #[test]
+        fn h2c_without_tls_is_accepted() {
+            let kdl = config_with_protocol("h2c");
+            let start = kdl.find("    tls {").unwrap();
+            let end = start + kdl[start..].find("    }\n").unwrap() + "    }\n".len();
+            let kdl = format!("{}{}", &kdl[..start], &kdl[end..]);
+            let config = Config::from_kdl(&kdl).expect("should parse");
+            assert_eq!(config.listeners[0].protocol, crate::ListenerProtocol::H2c);
+            assert!(config.validate().is_ok(), "{:?}", config.validate());
+        }
     }
     use crate::{
         ConnectionPoolConfig, HttpVersionConfig, MatchCondition, RouteConfig, RoutePolicies,

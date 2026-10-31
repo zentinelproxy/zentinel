@@ -67,6 +67,10 @@ use zentinel_common::TraceIdFormat;
 use zentinel_config::Config;
 
 /// Main proxy service implementing Pingora's ProxyHttp trait
+///
+/// Every field is a shared handle, so a clone serves from the same state:
+/// `main` gives h2c listeners a Pingora service of their own around a clone.
+#[derive(Clone)]
 pub struct ZentinelProxy {
     /// Configuration manager with hot reload
     pub config_manager: Arc<ConfigManager>,

@@ -191,10 +191,12 @@ listeners {
         }
     }
 
-    // HTTP/2 listener
-    listener "h2" {
-        address "0.0.0.0:8443"
-        protocol "h2"
+    // HTTP/2 over cleartext (h2c) with prior knowledge, for trusted internal
+    // hops: no TLS, and clients that do not open with the HTTP/2 preface get
+    // a 505. (`h2` is the same as `https`: HTTP/2 negotiated over TLS.)
+    listener "internal-h2c" {
+        address "10.0.0.1:8080"
+        protocol "h2c"
         max-concurrent-streams 100
     }
 

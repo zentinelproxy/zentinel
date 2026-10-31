@@ -208,5 +208,5 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 wiremock = "0.6"
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
-# A cleartext HTTP/2 backend for the h2c upstream test.
+# Cleartext HTTP/2 peers for the h2c upstream and listener tests.
 h2 = "0.4"

@@ -92,7 +92,9 @@ impl ConfigWriter {
             let proto = match listener.protocol {
                 zentinel_config::ListenerProtocol::Http => "http",
                 zentinel_config::ListenerProtocol::Https => "https",
-                _ => "http",
+                zentinel_config::ListenerProtocol::Http2 => "h2",
+                zentinel_config::ListenerProtocol::Http3 => "h3",
+                zentinel_config::ListenerProtocol::H2c => "h2c",
             };
             out.push_str(&format!("        protocol \"{proto}\"\n"));
 

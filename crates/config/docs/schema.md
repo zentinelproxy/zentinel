@@ -54,7 +54,7 @@ Port binding configuration.
 |----------|------|---------|-------------|
 | `id` | `string` | **required** | Unique listener identifier |
 | `address` | `string` | **required** | Socket address (e.g., `0.0.0.0:8080`) |
-| `protocol` | `string` | **required** | Protocol: `http`, `https`, `h2`, `h3` |
+| `protocol` | `string` | **required** | Protocol: `http`, `https`, `h2`, `h3`, `h2c` |
 | `tls` | `TlsConfig` | - | TLS configuration (required for https) |
 | `default-route` | `string` | - | Default route if no match |
 | `request-timeout-secs` | `u64` | `60` | Request timeout |
@@ -130,10 +130,11 @@ Port binding configuration.
 
 | Value | Description |
 |-------|-------------|
-| `http` | HTTP/1.1 |
-| `https` | HTTP/1.1 with TLS |
-| `h2` | HTTP/2 |
-| `h3` | HTTP/3 (QUIC) |
+| `http` | HTTP/1.1, cleartext |
+| `https` | TLS, HTTP/2 or HTTP/1.1 negotiated with ALPN. Needs a `tls` block |
+| `h2` | The same as `https`. Needs a `tls` block |
+| `h3` | HTTP/3 (QUIC). Not implemented: rejected by validation |
+| `h2c` | HTTP/2 over cleartext TCP with prior knowledge. No `tls` block; a client that does not open with the HTTP/2 preface within 10 s is refused (`505` if it sent something else) |
 
 ---
 
