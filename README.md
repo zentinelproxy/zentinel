@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://github.com/zentinelproxy/zentinel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zentinelproxy/zentinel/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-9b4d8a?style=flat&labelColor=1f161e">
-  <img alt="Rust" src="https://img.shields.io/badge/rust-1.96%2B-f68d31?style=flat&labelColor=1f161e&logo=rust&logoColor=white">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.99%2B-f68d31?style=flat&labelColor=1f161e&logo=rust&logoColor=white">
   <img alt="Agent protocol" src="https://img.shields.io/badge/agent%20protocol-v2-f68d31?style=flat&labelColor=1f161e">
 </p>
 
@@ -296,7 +296,7 @@ and built separately.
 
 ## Development
 
-The toolchain is pinned to Rust 1.96.0 in `rust-toolchain.toml`.
+The toolchain is pinned to Rust 1.99.1 in `rust-toolchain.toml`.
 
 ```bash
 mise run build       # cargo build --workspace

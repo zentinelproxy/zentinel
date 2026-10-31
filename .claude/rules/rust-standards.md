@@ -1,7 +1,7 @@
 # Rust Coding Standards
 
-> Minimum Rust version: **1.96.0** (Edition 2021)
-> Last updated: 2026-05-12
+> Minimum Rust version: **1.99.0** (Edition 2021)
+> Last updated: 2026-10-31
 
 These standards apply to all Rust code in Zentinel. They enforce the [Manifesto](../../MANIFESTO.md) principles of **explicit behavior**, **bounded resources**, and **production correctness**.
 
@@ -507,6 +507,7 @@ let handler = async |request: Request| {
 
 | Date | Rust Version | Changes |
 |------|--------------|---------|
+| 2026-10-31 | 1.99.1 | Bumped toolchain to latest stable (MSRV 1.99.0); unblocks wasmtime 50 (needs 1.97) |
 | 2026-10-18 | 1.96.0 | Bumped toolchain to unblock wasmtime 49 (cranelift 0.136 requires 1.96) |
 | 2026-05-12 | 1.95.0 | Bumped toolchain to unblock sysinfo 0.39 (requires 1.95) |
 | 2026-03-06 | 1.94.0 | Bumped toolchain; added array_windows, LazyLock::get |

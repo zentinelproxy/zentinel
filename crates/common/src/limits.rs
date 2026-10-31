@@ -671,7 +671,7 @@ impl InFlightPermit {
     fn try_take(counter: &Arc<AtomicUsize>, limit: Option<usize>) -> Option<Self> {
         let max = limit.unwrap_or(usize::MAX);
         counter
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < max).then_some(n + 1)
             })
             .ok()?;

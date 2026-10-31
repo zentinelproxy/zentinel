@@ -20,7 +20,7 @@
 # uses the prebuilt path, stays green even when this is too old. `docker compose
 # build` and a plain `docker build .` use the builder and do not. CI checks the
 # three agree; see the "Rust version" step in ci.yml.
-ARG RUST_VERSION=1.96
+ARG RUST_VERSION=1.99
 ARG DEBIAN_VARIANT=slim-bookworm
 
 ################################################################################

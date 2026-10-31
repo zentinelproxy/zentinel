@@ -94,6 +94,12 @@ for details.
 
 ## [Unreleased]
 
+### Upgrade notes
+- **Building from source needs Rust 1.99** (was 1.96). The toolchain is
+  pinned to 1.99.1 in `rust-toolchain.toml`, the workspace `rust-version` is
+  1.99.0, and the Dockerfile builds on `rust:1.99`. Prebuilt binaries and
+  container images are unaffected.
+
 ---
 
 ## [26.10_11] - 2026-10-31

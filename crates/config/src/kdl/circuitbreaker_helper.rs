@@ -174,7 +174,8 @@ mod tests {
 
         assert_eq!(
             format!("{}", err_msg),
-            "out of range integral type conversion attempted"
+            // std's own message: its wording changed in Rust 1.99.
+            u32::try_from(u64::MAX).unwrap_err().to_string()
         );
     }
 
@@ -198,7 +199,8 @@ mod tests {
 
         assert_eq!(
             format!("{}", err_msg),
-            "out of range integral type conversion attempted"
+            // std's own message: its wording changed in Rust 1.99.
+            u32::try_from(-1i64).unwrap_err().to_string()
         );
     }
 
@@ -246,7 +248,8 @@ mod tests {
 
         assert_eq!(
             format!("{}", err_msg),
-            "out of range integral type conversion attempted"
+            // std's own message: its wording changed in Rust 1.99.
+            u64::try_from(-1i64).unwrap_err().to_string()
         );
     }
 
