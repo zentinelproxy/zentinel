@@ -286,6 +286,8 @@ pub struct HttpVersionOptions {
     pub h2_ping_interval: Duration,
     /// Maximum concurrent H2 streams per connection
     pub max_h2_streams: usize,
+    /// HTTP/2 over cleartext with prior knowledge (no TLS, no fallback)
+    pub h2c: bool,
 }
 
 impl ConnectionPoolConfig {
@@ -950,6 +952,7 @@ impl UpstreamPool {
                 Duration::ZERO
             },
             max_h2_streams: config.http_version.max_h2_streams,
+            h2c: config.http_version.h2c,
         };
 
         // TLS configuration
@@ -971,6 +974,12 @@ impl UpstreamPool {
             info!(
                 upstream_id = %config.id,
                 "HTTP/2 enabled for upstream (via ALPN)"
+            );
+        }
+        if http_version.h2c {
+            info!(
+                upstream_id = %config.id,
+                "HTTP/2 over cleartext (h2c, prior knowledge) for upstream"
             );
         }
 
@@ -1843,8 +1852,17 @@ impl UpstreamPool {
             );
         }
 
+        // Cleartext HTTP/2 with prior knowledge: with H2 as the minimum and no
+        // TLS, Pingora's connector opens HTTP/2 straight away and never falls
+        // back to HTTP/1.1 (config parsing rejects h2c together with TLS).
+        if self.http_version.h2c && !self.tls_enabled {
+            peer.options.alpn = pingora::upstreams::peer::ALPN::H2;
+        }
+
         // Configure H2-specific settings when HTTP/2 is enabled
         if self.http_version.max_version >= 2 {
+            // Pingora's default is one stream per HTTP/2 connection.
+            peer.options.max_h2_streams = self.http_version.max_h2_streams.max(1);
             // H2 ping interval for connection health monitoring
             if !self.http_version.h2_ping_interval.is_zero() {
                 peer.options.h2_ping_interval = Some(self.http_version.h2_ping_interval);

@@ -237,10 +237,16 @@ fn a_plain_http_listener_beside_it_is_unchanged() {
 fn h2c_connections_count_against_the_shared_connection_limit() {
     let proxy = start_proxy_with("limits { max-total-connections 1 }");
 
-    // One open connection on the h2c listener takes the only slot.
-    let mut held = TcpStream::connect(("127.0.0.1", proxy.h2c)).unwrap();
-    held.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").unwrap();
-    std::thread::sleep(Duration::from_millis(300));
+    // The startup probes may still hold the slot for a moment.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while http1_get(proxy.http).0 != Some(200) {
+        assert!(Instant::now() < deadline, "the http listener never served");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // One established HTTP/2 connection on the h2c listener takes the only
+    // slot, and keeps it until told to close.
+    let held = hold_h2c_connection(proxy.h2c);
     assert_eq!(
         http1_get(proxy.http).0,
         None,
@@ -253,4 +259,33 @@ fn h2c_connections_count_against_the_shared_connection_limit() {
         assert!(Instant::now() < deadline, "the slot was never given back");
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// An HTTP/2 connection to `port` with its handshake done, kept open until
+/// the returned sender is dropped.
+fn hold_h2c_connection(port: u16) -> std::sync::mpsc::Sender<()> {
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (ready_tx, ready) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .unwrap();
+                let (client, connection) = h2::client::handshake(tcp).await.unwrap();
+                let driver = tokio::spawn(connection);
+                // The server's SETTINGS have arrived once the client is ready.
+                let _client = client.ready().await.unwrap();
+                ready_tx.send(()).unwrap();
+                let _ = tokio::task::spawn_blocking(move || released.recv()).await;
+                driver.abort();
+            });
+    });
+    ready
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the h2c connection was established");
+    release
 }
