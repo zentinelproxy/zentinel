@@ -203,6 +203,24 @@ pub enum AgentDecision {
 }
 ```
 
+### Decisions in each phase
+
+Every decision type has the same meaning in every phase; only `Allow` lets
+the request, or the upstream's response, through.
+
+| Decision | Request headers / body | Response headers | Response body |
+|----------|------------------------|------------------|---------------|
+| `Allow` | Proxied | Upstream response sent | Body sent |
+| `Block` | Agent's status, body, headers | Replaces the upstream response | Aborts the response¹ |
+| `Redirect` | Agent's 301/302/303/307/308 (else 302) with `Location` | Replaces the upstream response | Aborts the response¹ |
+| `Challenge` | 403, or 401 with the `www-authenticate` parameter | Replaces the upstream response | Aborts the response¹ |
+
+¹ Once the status line has gone out it cannot be replaced: the body is
+withheld and the connection closed without ending it, so the client sees an
+incomplete response. If the header has not gone out yet (a body that arrived
+with it), the decision's response replaces the upstream's instead. Response
+`Redirect` and `Challenge` were ignored before #588.
+
 ### Mutations
 
 ```rust
