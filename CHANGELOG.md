@@ -100,6 +100,17 @@ for details.
   1.99.0, and the Dockerfile builds on `rust:1.99`. Prebuilt binaries and
   container images are unaffected.
 
+### Dependencies
+- **`wasmtime` / `wasmtime-wasi` 49.0.3 → 50.0.1** in `zentinel-wasm-runtime`
+  (#617). 50.0.1 fixes five advisories (GHSA-hmmr-87qq-258j, GHSA-qw58-7h65-crq2,
+  GHSA-3982-jqvv-277m, GHSA-6fr9-xmw9-5352, GHSA-h4wp-g4x3-7398). Needs Rust
+  1.97, hence the toolchain bump above. **No shipped artifact contains this
+  crate:** it is not published and the proxy does not link it, so this keeps
+  the workspace off a vulnerable wasmtime and changes nothing for operators.
+  WASM agents run in the separate `zentinel-agent-wasm` agent, which carries
+  its own wasmtime. (The 26.10_3 entry for wasmtime 49 described this crate as
+  the runtime for WASM agents; that was wrong for the same reason.)
+
 ---
 
 ## [26.10_11] - 2026-10-31
