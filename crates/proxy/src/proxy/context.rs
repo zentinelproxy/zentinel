@@ -96,10 +96,7 @@ const REDIRECT_FALLBACK_STATUS: u16 = 302;
 
 impl AgentBlock {
     /// The block response for `action`, if it is a block.
-    ///
-    /// Used by the response phases, which act on `Block` only so far:
-    /// `Redirect` and `Challenge` there are #588.
-    pub(crate) fn from_action(action: &crate::agents::AgentAction) -> Option<Self> {
+    fn from_action(action: &crate::agents::AgentAction) -> Option<Self> {
         use crate::agents::AgentAction;
         match action {
             AgentAction::Block {
@@ -120,11 +117,29 @@ impl AgentBlock {
                     headers,
                 })
             }
-            // #588: not yet acted on in the response phase.
             AgentAction::Allow | AgentAction::Redirect { .. } | AgentAction::Challenge { .. } => {
                 None
             }
         }
+    }
+
+    /// The response for an agent's decision in a response phase (response
+    /// headers or response body), or `None` to let the upstream's response
+    /// through.
+    ///
+    /// The same response as in a request phase -- see
+    /// [`AgentBlock::for_request`] -- for every decision type (#588): only
+    /// `Allow` lets the upstream's response through. What the client gets
+    /// depends on how far the upstream's response has gone:
+    ///
+    /// - on response headers, and on a response body whose header has not
+    ///   gone out yet, nothing has been sent: this response replaces the
+    ///   upstream's;
+    /// - on a response body whose status has gone out, it cannot be
+    ///   replaced: the response is aborted (the body is withheld and the
+    ///   connection closed without ending it), as for a block (#584).
+    pub(crate) fn for_response(action: &crate::agents::AgentAction) -> Option<Self> {
+        Self::for_request(action)
     }
 
     /// The response for an agent's decision in a request phase (request
@@ -1194,16 +1209,38 @@ mod tests {
             assert_eq!(block.headers, vec![("X-B".to_string(), "1".to_string())]);
         }
 
+        /// #588: the response phases answer every decision type, and
+        /// answer it as the request phases do. `Redirect` and `Challenge`
+        /// there used to be dropped, letting the upstream's response through.
         #[test]
-        fn the_response_phases_still_act_on_blocks_only() {
-            // #588 decides Redirect and Challenge there.
-            assert_eq!(AgentBlock::from_action(&challenge(&[])), None);
-            assert_eq!(
-                AgentBlock::from_action(&AgentAction::Redirect {
+        fn the_response_phases_act_on_every_decision_as_the_request_phases_do() {
+            assert_eq!(AgentBlock::for_response(&AgentAction::Allow), None);
+            for action in [
+                AgentAction::Block {
+                    status: 451,
+                    body: Some("no".to_string()),
+                    headers: None,
+                },
+                AgentAction::Redirect {
                     url: "/x".to_string(),
-                    status: 302
-                }),
-                None
+                    status: 307,
+                },
+                challenge(&[]),
+                challenge(&[("WWW-Authenticate", "Basic realm=\"z\"")]),
+            ] {
+                let response = AgentBlock::for_response(&action);
+                assert!(response.is_some(), "{action:?} must not be dropped");
+                assert_eq!(response, AgentBlock::for_request(&action), "{action:?}");
+            }
+            let redirect = AgentBlock::for_response(&AgentAction::Redirect {
+                url: "/x".to_string(),
+                status: 307,
+            })
+            .unwrap();
+            assert_eq!(redirect.status, 307);
+            assert_eq!(
+                redirect.headers,
+                vec![("Location".to_string(), "/x".to_string())]
             );
         }
 

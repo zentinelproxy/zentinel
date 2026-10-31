@@ -2681,7 +2681,8 @@ impl ProxyHttp for ZentinelProxy {
                 .await
             {
                 Ok(decision) => {
-                    // A block replaces the upstream's response (#584). Nothing
+                    // A block replaces the upstream's response (#584), and so
+                    // do a redirect and a challenge (#588). Nothing
                     // has been sent to the client yet: Pingora writes the
                     // upstream's header only after this filter returns, and
                     // its body after that. The block response is written
@@ -2691,7 +2692,7 @@ impl ProxyHttp for ZentinelProxy {
                     // here rather than by `fail_to_proxy` because this filter
                     // also runs for cache hits, where Pingora answers a
                     // failed filter with a bare 500 instead.
-                    if let Some(block) = AgentBlock::from_action(&decision.action) {
+                    if let Some(block) = AgentBlock::for_response(&decision.action) {
                         self.record_response_block(ctx, &decision, block.status, None);
                         ctx.response_blocked = true;
                         let (header, body) = self
@@ -3266,8 +3267,10 @@ impl ProxyHttp for ZentinelProxy {
                         // framing `response_filter` set lets the client
                         // see the body is incomplete. (If the header has
                         // not gone out, `fail_to_proxy` sends the block
-                        // response instead.)
-                        if let Some(block) = AgentBlock::from_action(&decision.action) {
+                        // response instead.) A redirect or a challenge is
+                        // answered the same way (#588): replaced while the
+                        // header is unsent, aborted after.
+                        if let Some(block) = AgentBlock::for_response(&decision.action) {
                             *body = None;
                             ctx.response_blocked = true;
                             self.record_response_block(

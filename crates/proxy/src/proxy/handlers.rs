@@ -896,8 +896,11 @@ impl ZentinelProxy {
         Ok((header, body))
     }
 
-    /// Log (WARN), count and audit an agent's block of the upstream's
-    /// response (#584), as a request-phase block is.
+    /// Log, count and audit an agent's refusal of the upstream's response:
+    /// a block (#584), redirect or challenge (#588), as a request-phase
+    /// decision is. Logged at WARN with the decision type as `action`;
+    /// a redirect is not counted as a blocked request, as in the request
+    /// phases.
     ///
     /// `aborted` is `None` for a block on response headers, which replaced
     /// the response. For one on the response body it is the body bytes
@@ -932,6 +935,9 @@ impl ZentinelProxy {
             })
             .map(String::as_str)
             .unwrap_or("unknown");
+        let action = AgentBlock::action_name(&decision.action);
+        // A redirect sends the client elsewhere; it is no refusal to count.
+        let counted = !matches!(decision.action, crate::agents::AgentAction::Redirect { .. });
 
         match aborted {
             None => {
@@ -940,11 +946,14 @@ impl ZentinelProxy {
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                     agent_id = %agent_id,
                     filter_id = %filter_id,
+                    action = action,
                     status = status,
-                    "Response blocked by agent, upstream response replaced"
+                    "Response refused by agent, upstream response replaced"
                 );
-                self.metrics
-                    .record_blocked_request("agent_response_blocked");
+                if counted {
+                    self.metrics
+                        .record_blocked_request("agent_response_blocked");
+                }
             }
             Some((bytes_sent, bytes_withheld)) => {
                 warn!(
@@ -952,13 +961,16 @@ impl ZentinelProxy {
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                     agent_id = %agent_id,
                     filter_id = %filter_id,
+                    action = action,
                     status = status,
                     body_bytes_sent = bytes_sent,
                     body_bytes_withheld = bytes_withheld,
-                    "Response body blocked by agent, aborting the response"
+                    "Response body refused by agent, aborting the response"
                 );
-                self.metrics
-                    .record_blocked_request("agent_response_body_blocked");
+                if counted {
+                    self.metrics
+                        .record_blocked_request("agent_response_body_blocked");
+                }
             }
         }
 
@@ -977,6 +989,10 @@ impl ZentinelProxy {
             crate::agents::AgentAction::Block {
                 body: Some(body), ..
             } => body.clone(),
+            crate::agents::AgentAction::Redirect { url, .. } => format!("Redirected to {url}"),
+            crate::agents::AgentAction::Challenge { challenge_type, .. } => {
+                format!("Challenge: {challenge_type}")
+            }
             _ => "Response blocked by agent".to_string(),
         };
         let audit_entry = AuditLogEntry::new(
@@ -988,7 +1004,7 @@ impl ZentinelProxy {
         )
         .with_route_id(ctx.route_id.as_deref().unwrap_or("unknown"))
         .with_agent_id(agent_id)
-        .with_action("block")
+        .with_action(action)
         .with_status_code(status)
         .with_reason(reason)
         .with_tags(tags)

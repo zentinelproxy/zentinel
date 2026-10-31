@@ -134,6 +134,14 @@ for details.
   A filter that tightened its route's latency budget, say to 100 ms for an
   agent with 1000 ms, waited the full 1000 ms there. The filter's value can
   still only shorten the agent's, never extend it. (#589)
+- **An agent's `Redirect` or `Challenge` in a response phase is acted on.**
+  Since 26.10_9 a `Block` on response headers or the response body was
+  enforced (#584), but a `Redirect` or `Challenge` there was dropped and the
+  upstream response sent. Both are now answered as in the request phases (a
+  redirect with its `Location`, a challenge as 403, or 401 with
+  `WWW-Authenticate`), replacing the upstream response while its header is
+  unsent and aborting it after, as a block does. Logged and audited with the
+  decision type as `action`. (#588)
 
 ---
 
