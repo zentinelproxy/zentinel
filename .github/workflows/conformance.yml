@@ -13,6 +13,8 @@ on:
   pull_request:
     paths:
       - 'crates/gateway/**'
+      - 'crates/common/**'
+      - 'crates/config/**'
       - 'conformance/**'
       - 'deploy/helm/zentinel-gateway/**'
       - '.github/workflows/conformance.yml'
@@ -21,6 +23,8 @@ on:
       - main
     paths:
       - 'crates/gateway/**'
+      - 'crates/common/**'
+      - 'crates/config/**'
       - 'conformance/**'
       - 'deploy/helm/zentinel-gateway/**'
       - '.github/workflows/conformance.yml'
