@@ -37,7 +37,7 @@ Caddy) at 10,000 req/s, and a 1-hour, 1,000,000-request soak test finished with
 a 99.95% success rate and no memory leak detected.
 
 <p align="center">
-  <img src=".github/static/demo.gif" alt="Zentinel demo: install, configure, run" width="720" />
+  <img src=".github/static/demo.gif" alt="Zentinel demo: validate a config, start the proxy, send a request through it" width="720" />
 </p>
 
 The core (proxy, routing, TLS, caching, load balancing) is production-ready.

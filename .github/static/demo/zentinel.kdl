@@ -1,0 +1,25 @@
+system {
+    worker-threads 0
+}
+
+listeners {
+    listener "http" {
+        address "127.0.0.1:8080"
+        protocol "http"
+    }
+}
+
+routes {
+    route "app" {
+        matches {
+            path-prefix "/"
+        }
+        upstream "backend"
+    }
+}
+
+upstreams {
+    upstream "backend" {
+        target "127.0.0.1:3000"
+    }
+}
