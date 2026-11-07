@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.11_1](#26111---2026-11-07) | 0.6.55 | 2026-11-07 | Security: `rustls-webpki` 0.103.16 (distrusted intermediates), `zstd` 0.13.4; building from source needs **Rust 1.99** (**read the upgrade notes**); `wasmtime` 50.0.1 in the unshipped WASM runtime crate (five advisories); `sysinfo` 0.40, rust-minor batch (10 updates) |
 | [26.10_11](#261011---2026-10-31) | 0.6.54 | 2026-10-31 | **OCSP stapling works** (it is on by default, so the proxy now contacts each certificate's OCSP responder); **the `compress` filter no longer breaks every response it applies to**, applies its `algorithms`, and produces gzip/zstd only; **WebSocket frames reach the route's agents** and the agent-level `failure-mode` is deprecated; a body an agent refuses no longer trips the upstream's circuit breaker; response-phase Redirect/Challenge, filter `timeout-ms` on every path; reloads rebuild route error pages, schemas and static files; `request-body-mode "inspect-first"`; h2c on listeners and upstreams (**read the upgrade notes**) |
 | [26.10_10](#261010---2026-10-30) | 0.6.53 | 2026-10-30 | **A `graceful-shutdown-timeout-secs` above 300 s is no longer cut short** by Pingora's 300 s grace period; the shipped systemd unit has `TimeoutStopSec=40` (**read the upgrade notes**); `bundle install` no longer writes a `failure-mode` on the generated agents that `--strict` rejects; TLS accepts no longer scan every pending handshake |
 | [26.10_9](#26109---2026-10-28) | 0.6.52 | 2026-10-28 | **A reload loads added, renamed and reconfigured agents** (their filters used to call nothing); **SIGTERM/SIGINT drain open connections** before exiting; **SIGUSR1 reopens the log files** and SIGUSR2 no longer kills the proxy (**read the upgrade notes**); `cargo install` builds work with tokio 1.54; bundle `26.10_03` pins zentinelsec 0.4.1 |
@@ -94,11 +95,39 @@ for details.
 
 ## [Unreleased]
 
+---
+
+## [26.11_1] - 2026-11-07
+
+**Crate version:** 0.6.55
+
+Security and maintenance release: a certificate-verification fix in
+`rustls-webpki`, plus toolchain and dependency updates.
+Nothing in this release changes how Zentinel routes, inspects or blocks
+traffic, and no configuration change is needed. Building from source now
+needs Rust 1.99.
+
+### Security
+- **`rustls-webpki` 0.103.15 → 0.103.16** (RUSTSEC-2026-0382): certificate
+  verification could accept distrusted intermediates. Zentinel verifies
+  upstream, agent and ACME server certificates through it (Pingora uses its
+  rustls backend). **`webpki-root-certs` 1.0.7 → 1.0.11** (RUSTSEC-2026-0383) removes
+  trust in the distrusted emSign intermediates from the bundled roots. (#657)
+- **`zstd` 0.13.3 → 0.13.4, `zstd-safe` 7.2.4 → 7.4.0, `zstd-sys` 2.0.16 → 2.1.2**
+  (RUSTSEC-2026-0391, -0398, -0403, -0410). 0391 lets data from an abandoned
+  stream leak into the next one on a reused compression context. Zentinel's
+  `compress` filter creates a new compressor for every response, so this was
+  not reachable; the update keeps the tree off the affected versions. (#657)
+- `ctutils` 0.4.8 (RUSTSEC-2026-0385, non-constant-time comparisons) and
+  `pulldown-cmark` 0.13.6 (RUSTSEC-2026-0414, -0433, wikilink parsing, a
+  feature Zentinel does not enable) are updated as well. `cargo audit` is
+  clean. (#657)
+
 ### Upgrade notes
 - **Building from source needs Rust 1.99** (was 1.96). The toolchain is
   pinned to 1.99.1 in `rust-toolchain.toml`, the workspace `rust-version` is
   1.99.0, and the Dockerfile builds on `rust:1.99`. Prebuilt binaries and
-  container images are unaffected.
+  container images are unaffected. (#653)
 
 ### Dependencies
 - **`wasmtime` / `wasmtime-wasi` 49.0.3 → 50.0.1** in `zentinel-wasm-runtime`
@@ -110,6 +139,21 @@ for details.
   WASM agents run in the separate `zentinel-agent-wasm` agent, which carries
   its own wasmtime. (The 26.10_3 entry for wasmtime 49 described this crate as
   the runtime for WASM agents; that was wrong for the same reason.)
+- **`sysinfo` 0.39.6 → 0.40.0** in `zentinel-common`. Reading system metrics
+  is fallible in 0.40; when a read fails, the CPU and memory gauges keep their
+  previous values. (#655)
+- **rust-minor group:** `tonic` / `tonic-health` / `tonic-prost` /
+  `tonic-prost-build` 0.14.9, `aws-lc-rs` 1.19.0, `jsonschema` 0.60.2,
+  `brotli` 9.1.1, `notify` 8.2.1, `h2` 0.4.20, `smallvec` 1.16.4; no code
+  changes were needed. (#654)
+
+### Documentation
+- The configuration reference says that `brotli` is accepted in a `compress`
+  filter's `algorithms` but skipped, as described in the 26.10_11 upgrade
+  notes. (#652)
+
+`k8s-openapi` 0.29 (#656) is not included: `kube` 3 still depends on 0.27, and
+two versions in one build fail. It moves together with `kube` 4 (#331).
 
 ---
 
