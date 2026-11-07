@@ -600,11 +600,19 @@ impl RequestMetrics {
         use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
         // Create system with specific refresh kinds
-        let mut system = System::new_with_specifics(
+        // sysinfo 0.40 made construction fallible; on failure keep the
+        // previous gauge values rather than reporting zeros.
+        let mut system = match System::new_with_specifics(
             RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
-        );
+        ) {
+            Ok(system) => system,
+            Err(e) => {
+                tracing::debug!(error = %e, "Failed to read system metrics");
+                return;
+            }
+        };
 
         // Get memory usage
         self.memory_usage.set(system.total_memory() as i64);
