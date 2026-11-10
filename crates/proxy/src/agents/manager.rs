@@ -1477,12 +1477,18 @@ impl AgentManager {
                     let semaphore = semaphores.get(agent_id.agent_id()).cloned();
                     let agent_id_str = agent_id.agent_id().to_string();
                     Some(async move {
-                        let _permit = match semaphore {
-                            Some(sem) => sem.acquire_owned().await.ok(),
-                            None => None,
+                        // The permit wait is part of the same budget: an agent
+                        // saturated by real traffic must not hold up request
+                        // teardown for an informational event.
+                        let call = async {
+                            let _permit = match &semaphore {
+                                Some(sem) => sem.clone().acquire_owned().await.ok(),
+                                None => None,
+                            };
+                            agent.call_request_complete(&event).await
                         };
 
-                        match timeout(timeout_duration, agent.call_request_complete(&event)).await {
+                        match timeout(timeout_duration, call).await {
                             Ok(Ok(())) => {
                                 trace!(
                                     correlation_id = %event.correlation_id,

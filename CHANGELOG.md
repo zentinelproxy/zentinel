@@ -102,13 +102,13 @@ for details.
   against the `content-types` allowlist like `application/json`, as RFC 9110
   requires, so the body reaches the agent. A request is also inspected when any
   of several `Content-Type` headers matches, not only the first.
-
 - **Agents receive `RequestComplete` when a request ends** — the proxy now sends
   the lifecycle terminator to every agent that participated in the request
   (route filters, body inspection, WebSocket inspection), deduplicated and
   without requiring a `log` event subscription. Agents use this to release
   per-request state on body-less requests. Correlation affinity is cleared
   afterward. (#664)
+
 ---
 
 ## [26.11_2] - 2026-11-12
