@@ -837,6 +837,8 @@ fn convert_request_complete_from_grpc(e: grpc_v2::RequestCompleteEvent) -> Reque
         request_body_size: e.bytes_received as usize,
         response_body_size: e.bytes_sent as usize,
         upstream_attempts: 1,
+        upstream: e.upstream,
+        from_cache: e.from_cache,
         error: e.error,
     }
 }

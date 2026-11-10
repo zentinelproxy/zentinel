@@ -506,6 +506,12 @@ pub struct RequestCompleteEvent {
     pub response_body_size: usize,
     /// Upstream attempts
     pub upstream_attempts: u32,
+    /// Selected upstream pool id, if any
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    /// Whether the response was served from cache
+    #[serde(default)]
+    pub from_cache: bool,
     /// Error if any
     pub error: Option<String>,
 }

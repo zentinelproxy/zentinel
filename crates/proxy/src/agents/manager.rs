@@ -12,7 +12,8 @@ use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, trace, warn};
 use zentinel_agent_protocol::{
     v2::MetricsCollector, AgentResponse, EventType, GuardrailInspectEvent, RequestBodyChunkEvent,
-    RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketFrameEvent,
+    RequestCompleteEvent, RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent,
+    WebSocketFrameEvent,
 };
 use zentinel_common::{
     errors::{ZentinelError, ZentinelResult},
@@ -1403,6 +1404,124 @@ impl AgentManager {
         );
 
         Ok(combined_decision)
+    }
+
+    /// How long the proxy waits for each agent's `RequestComplete` handler.
+    ///
+    /// This is a fixed ceiling, not the agent's configured `timeout-ms`: the
+    /// event is informational and must not extend request teardown.
+    const REQUEST_COMPLETE_PER_AGENT_TIMEOUT_MS: u64 = 300;
+
+    /// Agent ids that participated in this request, in route → body → websocket
+    /// order, each id at most once.
+    pub fn deduplicate_request_complete_agent_ids(
+        route_agents: &[FilterAgent],
+        body_inspection_agents: &[BodyAgent],
+        websocket_inspection_agents: &[String],
+    ) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut ids = Vec::new();
+
+        let mut push = |id: &str| {
+            if seen.insert(id.to_string()) {
+                ids.push(id.to_string());
+            }
+        };
+
+        for agent in route_agents {
+            push(&agent.id);
+        }
+        for agent in body_inspection_agents {
+            push(&agent.id);
+        }
+        for id in websocket_inspection_agents {
+            push(id);
+        }
+
+        ids
+    }
+
+    /// Notify participating agents that the request is complete so they can
+    /// release per-request state.
+    ///
+    /// Does not gate on agent `events` subscriptions (`handles_event`). Failures
+    /// are logged and ignored; the client response is never affected.
+    pub async fn process_request_complete(
+        &self,
+        agent_ids: &[String],
+        event: &RequestCompleteEvent,
+    ) {
+        if agent_ids.is_empty() {
+            return;
+        }
+
+        trace!(
+            correlation_id = %event.correlation_id,
+            agent_count = agent_ids.len(),
+            agent_ids = ?agent_ids,
+            "Sending request complete to participating agents"
+        );
+
+        let id_refs: Vec<&str> = agent_ids.iter().map(String::as_str).collect();
+        let resolved = self.resolve_agents(&id_refs, None).await;
+        let semaphores = self.agent_semaphores.read().await;
+
+        let timeout_duration = Duration::from_millis(Self::REQUEST_COMPLETE_PER_AGENT_TIMEOUT_MS);
+
+        let futures: Vec<_> = resolved
+            .into_iter()
+            .filter_map(|resolved| match resolved {
+                Resolved::Loaded(agent_id, agent) => {
+                    let agent = Arc::clone(&agent);
+                    let event = event.clone();
+                    let semaphore = semaphores.get(agent_id.agent_id()).cloned();
+                    let agent_id_str = agent_id.agent_id().to_string();
+                    Some(async move {
+                        let _permit = match semaphore {
+                            Some(sem) => sem.acquire_owned().await.ok(),
+                            None => None,
+                        };
+
+                        match timeout(timeout_duration, agent.call_request_complete(&event)).await {
+                            Ok(Ok(())) => {
+                                trace!(
+                                    correlation_id = %event.correlation_id,
+                                    agent_id = %agent_id_str,
+                                    "Request complete delivered"
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                debug!(
+                                    correlation_id = %event.correlation_id,
+                                    agent_id = %agent_id_str,
+                                    error = %e,
+                                    "Request complete call failed"
+                                );
+                            }
+                            Err(_) => {
+                                debug!(
+                                    correlation_id = %event.correlation_id,
+                                    agent_id = %agent_id_str,
+                                    timeout_ms = Self::REQUEST_COMPLETE_PER_AGENT_TIMEOUT_MS,
+                                    "Request complete call timed out"
+                                );
+                            }
+                        }
+                    })
+                }
+                Resolved::NotLoaded(agent_id) => {
+                    debug!(
+                        correlation_id = %event.correlation_id,
+                        agent_id = %agent_id.agent_id(),
+                        "Skipping request complete for agent that is not loaded"
+                    );
+                    None
+                }
+            })
+            .collect();
+
+        drop(semaphores);
+        join_all(futures).await;
     }
 
     /// Call a named agent with a guardrail inspect event.
@@ -2943,5 +3062,38 @@ mod tests {
             started.elapsed()
         );
         assert!(manager.is_loaded("silent").await);
+    }
+
+    #[test]
+    fn deduplicate_request_complete_agent_ids_preserves_order_and_dedupes() {
+        let route = vec![
+            FilterAgent {
+                id: "a".into(),
+                failure_mode: FailureMode::Open,
+                timeout_ms: None,
+            },
+            FilterAgent {
+                id: "b".into(),
+                failure_mode: FailureMode::Open,
+                timeout_ms: None,
+            },
+        ];
+        let body = vec![
+            BodyAgent {
+                id: "b".into(),
+                max_body_bytes: None,
+                failure_mode: FailureMode::Open,
+                timeout_ms: None,
+            },
+            BodyAgent {
+                id: "c".into(),
+                max_body_bytes: None,
+                failure_mode: FailureMode::Open,
+                timeout_ms: None,
+            },
+        ];
+        let ws = vec!["c".into(), "d".into()];
+        let ids = AgentManager::deduplicate_request_complete_agent_ids(&route, &body, &ws);
+        assert_eq!(ids, vec!["a", "b", "c", "d"]);
     }
 }

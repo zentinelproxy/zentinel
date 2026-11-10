@@ -799,6 +799,8 @@ mod tests {
                         request_body_size: 2,
                         response_body_size: 2,
                         upstream_attempts: 1,
+                        upstream: None,
+                        from_cache: false,
                         error: None,
                     },
                 )
