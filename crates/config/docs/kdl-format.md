@@ -526,14 +526,15 @@ agents {
         max-request-body-bytes 1048576
     }
 
-    // gRPC agent
+    // gRPC agent over TLS. Every TLS option is applied or the configuration is
+    // rejected: an https:// address proves the agent's certificate against
+    // ca-cert, and client-cert/client-key add mTLS.
     agent "auth-agent" {
         type "auth"
         transport {
             grpc {
-                address "localhost:50051"
+                address "https://localhost:50051"
                 tls {
-                    insecure-skip-verify #false
                     ca-cert "/etc/ssl/certs/ca.crt"
                 }
             }
