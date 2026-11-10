@@ -14,8 +14,8 @@ use zentinel_agent_protocol::v2::{
     MetricsCollector,
 };
 use zentinel_agent_protocol::{
-    AgentResponse, EventType, GuardrailInspectEvent, RequestBodyChunkEvent, RequestHeadersEvent,
-    ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketFrameEvent,
+    AgentResponse, EventType, GuardrailInspectEvent, RequestBodyChunkEvent, RequestCompleteEvent,
+    RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent, WebSocketFrameEvent,
 };
 use zentinel_common::{
     errors::{ZentinelError, ZentinelResult},
@@ -391,6 +391,39 @@ impl AgentV2 {
             })
     }
 
+    /// Call agent with request-complete event (per-request cleanup terminator).
+    ///
+    /// Informational only: agents use this to release per-request state. Failures
+    /// are logged at debug/trace and must not affect the client response.
+    pub async fn call_request_complete(&self, event: &RequestCompleteEvent) -> ZentinelResult<()> {
+        let correlation_id = &event.correlation_id;
+
+        trace!(
+            agent_id = %self.config.id,
+            correlation_id = %correlation_id,
+            status = event.status,
+            "Sending request complete to v2 agent"
+        );
+
+        self.pool
+            .send_request_complete(&self.config.id, correlation_id, event)
+            .await
+            .map_err(|e| {
+                debug!(
+                    agent_id = %self.config.id,
+                    correlation_id = %correlation_id,
+                    error = %e,
+                    "V2 agent request complete call failed"
+                );
+                ZentinelError::Agent {
+                    agent: self.config.id.clone(),
+                    message: e.to_string(),
+                    event: "request_complete".to_string(),
+                    source: None,
+                }
+            })
+    }
+
     /// Call agent with response body chunk event.
     ///
     /// For streaming response body inspection, chunks are sent sequentially.
@@ -576,6 +609,18 @@ impl AgentV2 {
                         source: None,
                     })?;
                 self.call_guardrail_inspect(&typed).await
+            }
+            EventType::RequestComplete => {
+                let typed: RequestCompleteEvent =
+                    serde_json::from_value(json).map_err(|e| ZentinelError::Agent {
+                        agent: self.config.id.clone(),
+                        message: format!("Failed to deserialize RequestCompleteEvent: {}", e),
+                        event: format!("{:?}", event_type),
+                        source: None,
+                    })?;
+                self.call_request_complete(&typed)
+                    .await
+                    .map(|_| AgentResponse::default_allow())
             }
             _ => Err(ZentinelError::Agent {
                 agent: self.config.id.clone(),
