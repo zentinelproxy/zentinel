@@ -18,6 +18,7 @@ use std::os::unix::io::RawFd;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 
+use crate::agents::AgentManager;
 use crate::cache::{get_cache_eviction, get_cache_lock, get_cache_storage};
 use crate::disk_cache::DiskHitHandler;
 use crate::hybrid_cache::HybridHitHandler;
@@ -27,6 +28,7 @@ use crate::inference::{
 use crate::logging::{AccessLogEntry, AuditEventType, AuditLogEntry};
 use crate::rate_limit::HeaderAccessor;
 use crate::routing::RequestInfo;
+use zentinel_agent_protocol::RequestCompleteEvent;
 
 use super::context::{AgentBlock, FallbackReason, RequestContext};
 use super::fallback::FallbackEvaluator;
@@ -4248,16 +4250,42 @@ impl ProxyHttp for ZentinelProxy {
         enhanced_error
     }
 
-    async fn logging(&self, session: &mut Session, _error: Option<&Error>, ctx: &mut Self::CTX) {
+    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
         // Decrement active requests
         self.reload_coordinator.dec_requests();
 
-        // Release per-request agent state (correlation affinity) now that the
-        // request is complete; the pool TTL sweep is only the backstop.
+        let status = session
+            .response_written()
+            .map(|r| r.status.as_u16())
+            .unwrap_or(0);
+        let duration = ctx.elapsed();
+
         if !ctx.route_agents.is_empty()
             || !ctx.body_inspection_agents.is_empty()
             || !ctx.websocket_inspection_agents.is_empty()
         {
+            let agent_ids = AgentManager::deduplicate_request_complete_agent_ids(
+                &ctx.route_agents,
+                &ctx.body_inspection_agents,
+                &ctx.websocket_inspection_agents,
+            );
+            let event = RequestCompleteEvent {
+                correlation_id: ctx.trace_id.clone(),
+                status,
+                duration_ms: duration.as_millis() as u64,
+                request_body_size: ctx.request_body_bytes.min(usize::MAX as u64) as usize,
+                response_body_size: ctx.response_bytes.min(usize::MAX as u64) as usize,
+                upstream_attempts: ctx.upstream_attempts,
+                upstream: ctx.upstream.clone(),
+                from_cache: ctx.cache_status.is_some(),
+                error: error.map(|e| e.to_string()),
+            };
+            self.agent_manager
+                .process_request_complete(&agent_ids, &event)
+                .await;
+
+            // Release per-request agent state (correlation affinity) after
+            // agents have been notified; the pool TTL sweep is only the backstop.
             self.agent_manager.end_request(&ctx.trace_id).await;
         }
 
@@ -4285,14 +4313,6 @@ impl ProxyHttp for ZentinelProxy {
                 ctx.shadow_sent = true;
             }
         }
-
-        let duration = ctx.elapsed();
-
-        // Get response status
-        let status = session
-            .response_written()
-            .map(|r| r.status.as_u16())
-            .unwrap_or(0);
 
         // Report result to load balancer for adaptive LB feedback
         // This enables latency-aware weight adjustment
@@ -4605,7 +4625,7 @@ impl ProxyHttp for ZentinelProxy {
                 duration_ms = duration.as_millis() as u64,
                 upstream_write_pending_ms = write_pending_ms,
                 upstream_attempts = ctx.upstream_attempts,
-                error = ?_error.map(|e| e.to_string()),
+                error = ?error.map(|e| e.to_string()),
                 "Request completed"
             );
         }

@@ -584,6 +584,46 @@ impl AgentClientV2 {
         self.send_and_wait(correlation_id, msg).await
     }
 
+    /// Send a request-complete event (logging/audit terminator).
+    ///
+    /// Fire-and-forget on the outbound stream: agents use this to release
+    /// per-request state even when no body chunks were exchanged.
+    pub async fn send_request_complete(
+        &self,
+        correlation_id: &str,
+        event: &crate::RequestCompleteEvent,
+    ) -> Result<(), AgentProtocolError> {
+        if !*self.connected.read().await {
+            return Err(AgentProtocolError::ConnectionClosed);
+        }
+
+        let msg = ProxyToAgent {
+            message: Some(grpc_v2::proxy_to_agent::Message::RequestComplete(
+                convert_request_complete_to_grpc(correlation_id, event),
+            )),
+        };
+
+        let outbound = self.outbound_tx.lock().await;
+        if let Some(sender) = outbound.as_ref() {
+            sender
+                .send(msg)
+                .await
+                .map_err(|e| AgentProtocolError::ConnectionFailed(format!("Send failed: {}", e)))?;
+        } else {
+            return Err(AgentProtocolError::ConnectionFailed(
+                "Not connected".to_string(),
+            ));
+        }
+
+        trace!(
+            correlation_id = %correlation_id,
+            status = event.status,
+            "RequestComplete sent on gRPC stream"
+        );
+
+        Ok(())
+    }
+
     /// Send any event type and wait for response.
     pub async fn send_event<T: serde::Serialize>(
         &self,
@@ -1074,6 +1114,22 @@ fn convert_response_headers_to_grpc(
         correlation_id: event.correlation_id.clone(),
         status_code: event.status as u32,
         headers,
+    }
+}
+
+fn convert_request_complete_to_grpc(
+    correlation_id: &str,
+    event: &crate::RequestCompleteEvent,
+) -> grpc_v2::RequestCompleteEvent {
+    grpc_v2::RequestCompleteEvent {
+        correlation_id: correlation_id.to_string(),
+        status_code: event.status as u32,
+        duration_ms: event.duration_ms,
+        bytes_received: event.request_body_size as u64,
+        bytes_sent: event.response_body_size as u64,
+        upstream: event.upstream.clone(),
+        from_cache: event.from_cache,
+        error: event.error.clone(),
     }
 }
 

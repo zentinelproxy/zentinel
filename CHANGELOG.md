@@ -95,6 +95,14 @@ for details.
 
 ## [Unreleased]
 
+### Fixed
+- **Agents receive `RequestComplete` when a request ends** — the proxy now sends
+  the lifecycle terminator to every agent that participated in the request
+  (route filters, body inspection, WebSocket inspection), deduplicated and
+  without requiring a `log` event subscription. Agents use this to release
+  per-request state on body-less requests. Correlation affinity is cleared
+  afterward. (#)
+
 ---
 
 ## [26.11_1] - 2026-11-07
