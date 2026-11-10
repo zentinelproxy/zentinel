@@ -101,7 +101,7 @@ for details.
   (route filters, body inspection, WebSocket inspection), deduplicated and
   without requiring a `log` event subscription. Agents use this to release
   per-request state on body-less requests. Correlation affinity is cleared
-  afterward. (#)
+  afterward.
 
 ---
 
