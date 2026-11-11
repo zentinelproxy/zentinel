@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "TinyUFO"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec216270884504fd1df6bd4fb1cbf5086813883f1de411c4ed0b1df9a791b27b"
+checksum = "72518a72324e6fefaa2d456e4ac4ff950c02f12e885e1ff5aab32c8549fc518d"
 dependencies = [
  "ahash",
  "crossbeam-queue",
@@ -4037,15 +4037,15 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pingora-error"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6399da6e698035093d6b458707df5f3ea5292858816b99d4b2624d96b4f567f"
+checksum = "c40ff4c1717b5fa27d80daa1d0f1b0bf15994a4de25023f18c79a69d4fc1f4c1"
 
 [[package]]
 name = "pingora-header-serde"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2e824dac9612e4b807e55981c2d6b665b6f936a8b4b75ee0ce1922373e93243"
+checksum = "b2b537b4d0079548ae396905063e74712300572ec73efb83c7532335675ca9e7"
 dependencies = [
  "bytes",
  "http",
@@ -4053,15 +4053,15 @@ dependencies = [
  "pingora-error",
  "pingora-http",
  "thread_local",
- "zstd",
- "zstd-safe",
+ "zstd 0.14.3",
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
 name = "pingora-http"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac9876e8775ebeb5d91262be4daaaf26d21a8932f53402106ed280867fe4c4f4"
+checksum = "3f38e9e519d53fab09eb320f7be2cd27ef9e66f755eba3bd84cc68852108d841"
 dependencies = [
  "bytes",
  "http",
@@ -4070,27 +4070,27 @@ dependencies = [
 
 [[package]]
 name = "pingora-ketama"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21e1baa2fffc859944e0c42d1955412858ac80f1e6ad175c6c3d93693c990d60"
+checksum = "b164b534ff4bed5cc19d676b2bb6287da79f0de07cb696b2b5b92ddfca67136d"
 dependencies = [
  "crc32fast",
 ]
 
 [[package]]
 name = "pingora-limits"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f17248f7a1586c1f1244481f058a70e4d44707d8f936bf0b2323c8c85c40c8c0"
+checksum = "5f30fea64fcf042a9e9048627403d895494dae261463b8286b78cf3704dfcc28"
 dependencies = [
  "ahash",
 ]
 
 [[package]]
 name = "pingora-lru"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aff106b6d8a53a746a23a6304e25709b3f2e580841ffe3176acc1979095b3806"
+checksum = "0f20e42e8c8822a2518ccbd6e2dce90a27132d87a29815ca601ce9eafd9f7425"
 dependencies = [
  "ahash",
  "arrayvec",
@@ -4105,9 +4105,9 @@ dependencies = [
 
 [[package]]
 name = "pingora-memory-cache"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c67b44aab068c5b69904fff4cd3d2905bc1921bc2688bae233ef796a948b2b5f"
+checksum = "d46aa3745310b446e30a1ab5df52a6b5a7aa5e90c97cfc959a0de80c2e330aac"
 dependencies = [
  "TinyUFO",
  "ahash",
@@ -4121,9 +4121,9 @@ dependencies = [
 
 [[package]]
 name = "pingora-pool"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f9276b751bf2f908d24c73b8f23fcf05c2102fe373513457deb8868e17ef238"
+checksum = "ecda093a10bad5e887d73286f052dd0fc78ad0d6c7654235e507ed0f85b64af1"
 dependencies = [
  "crossbeam-queue",
  "dashmap 5.5.3",
@@ -4137,9 +4137,9 @@ dependencies = [
 
 [[package]]
 name = "pingora-runtime"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89aed2e58b34196682bdc2370c4293f908dece5741c56f5f5ba1018f55de68f2"
+checksum = "09d2c5be0a8fcffa36c23d21b3d6ec5bad113395086f5b4e1a0c50b300c674c0"
 dependencies = [
  "log",
  "once_cell",
@@ -4151,9 +4151,9 @@ dependencies = [
 
 [[package]]
 name = "pingora-rustls"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac8d84e886ff5c33148c7b9546d7a41c1352141c48f9c8bfa7a0f2663261358a"
+checksum = "f9a1bd91fd1adb760a3d44338b4dadc4bb6e8e20357d02ebec0a69811413a2bc"
 dependencies = [
  "log",
  "no_debug",
@@ -4168,9 +4168,9 @@ dependencies = [
 
 [[package]]
 name = "pingora-timeout"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a1dac05d3ebf3ec1be4748d7ef391c48baa886181ce0f1b564ef8fa569243e3"
+checksum = "d58d029af71f7694815494c681f1bb93aa06d83b6fa6a6b42e7154ee0e8e43e4"
 dependencies = [
  "once_cell",
  "parking_lot 0.12.5",
@@ -6831,7 +6831,7 @@ dependencies = [
  "toml",
  "wasmtime-environ",
  "windows-sys 0.61.2",
- "zstd",
+ "zstd 0.13.4",
 ]
 
 [[package]]
@@ -7906,9 +7906,9 @@ dependencies = [
 
 [[package]]
 name = "zentinel-pingora-cache"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e70b5046190ab37f5e0357bac7f21fbd6e45de92b70c9eda0e059717efadb372"
+checksum = "df199d8014396f29a038e400043e37bf5859a4f6f4fc7a7ba8d3aff7ba2f2a46"
 dependencies = [
  "ahash",
  "arrayvec",
@@ -7942,9 +7942,9 @@ dependencies = [
 
 [[package]]
 name = "zentinel-pingora-core"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc9a08ce9bc56dfb254b838389decb6258eb6083a70396d55e325f934388fb89"
+checksum = "8b29f204c7614d7068fecd3697a29340d9dd62990120a54c4731789de865e83d"
 dependencies = [
  "ahash",
  "async-trait",
@@ -7991,14 +7991,14 @@ dependencies = [
  "unicase",
  "windows-sys 0.59.0",
  "x509-parser 0.16.0",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
 name = "zentinel-pingora-load-balancing"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a130dc3bf15d5de093da63ad58f936185b2c6e47ac4105495a2696384cef3ea"
+checksum = "c6e3f1f16f8ec8bba8e5e47d4f2944918cf8c848cdf5f8810e0ff81b187b8994"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -8018,9 +8018,9 @@ dependencies = [
 
 [[package]]
 name = "zentinel-pingora-proxy"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c7619d322be202a92ea1da999060ac4eb4317d8b8672dc8ca00cfdeb768338e"
+checksum = "7c7f44e1b5752118cae80d815174cc39b91b75c485a014ae684671f727c91cb4"
 dependencies = [
  "async-trait",
  "bytes",
@@ -8270,7 +8270,16 @@ version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.4.0",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
+dependencies = [
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
@@ -8278,6 +8287,15 @@ name = "zstd-safe"
 version = "7.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "8.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
 dependencies = [
  "zstd-sys",
 ]
