@@ -95,6 +95,17 @@ for details.
 
 ## [Unreleased]
 
+### Dependencies
+- **Pingora fork rebased on upstream Pingora 0.9.1**: `zentinel-pingora-core`
+  0.9.2 → 0.9.3; `zentinel-pingora-proxy`, `-cache` and `-load-balancing`
+  0.9.0 → 0.9.1; the unmodified `pingora-*` crates 0.9.0 → 0.9.1. Upstream
+  0.9.1 contains the tokio 1.54 fix the fork had already shipped in core 0.9.2,
+  so the fork now carries only its three Zentinel patches
+  (`TlsSettings::with_server_config`, `should_retry_response`, per-request
+  retry buffer size). It also requires `zstd` ≥ 0.14.3, adding `zstd` 0.14.3 /
+  `zstd-safe` 8.2.0 next to the patched 0.13.4 already in the tree. No
+  behaviour change; no configuration change. (zentinelproxy/pingora#16)
+
 ---
 
 ## [26.11_1] - 2026-11-07
