@@ -761,7 +761,7 @@ fn parse_dns_provider_type(
             Ok(DnsProviderType::Webhook { url, auth_header })
         }
         other => Err(anyhow::anyhow!(
-            "Unknown DNS provider type '{}' for listener '{}'. Valid types: hetzner, webhook",
+            "Unknown DNS provider type '{}' for listener '{}'. Valid types: hetzner, cloudflare, webhook",
             other,
             listener_id
         )),

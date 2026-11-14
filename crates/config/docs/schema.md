@@ -110,7 +110,7 @@ Port binding configuration.
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `type` | `string` | **required** | Provider: `cloudflare`, `hetzner`, `webhook` |
-| `credentials-file` | `string` | - | Path to credentials file |
+| `credentials-file` | `string` | - | Path to credentials file (for `hetzner`: a Hetzner Cloud API token with Read & Write permission; old DNS Console tokens no longer work) |
 | `credentials-env` | `string` | - | Environment variable with credentials |
 | `api-timeout-secs` | `u64` | `30` | API request timeout |
 | `url` | `string` | - | Webhook URL (for webhook provider) |

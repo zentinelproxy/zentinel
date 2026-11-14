@@ -491,7 +491,7 @@ pub struct DnsProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum DnsProviderType {
-    /// Hetzner DNS API
+    /// Hetzner DNS via the Hetzner Cloud API (needs a Hetzner Cloud API token)
     Hetzner,
 
     /// Cloudflare DNS API

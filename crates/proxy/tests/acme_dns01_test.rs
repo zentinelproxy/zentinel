@@ -1074,100 +1074,500 @@ mod cloudflare_provider {
     }
 }
 
+/// Hetzner Cloud DNS API (api.hetzner.cloud/v1, zones + RRSets)
 mod hetzner_provider {
     use super::*;
+    use wiremock::matchers::{body_json, header, query_param};
 
-    #[tokio::test]
-    async fn test_create_record_duplicate_reuses_existing_hetzner() {
-        let mock_server = MockServer::start().await;
-        let zone_id = "zone-123";
-        let expected_value = "hetzner-challenge-value";
-        let existing_id = "existing-hetzner-456";
+    const ZONE_ID: u64 = 4711;
+    const RRSET_PATH: &str = "/zones/4711/rrsets/_acme-challenge/TXT";
 
+    fn provider(server: &MockServer) -> HetznerProvider {
+        HetznerProvider::new_test("cloud-token", server.uri(), Duration::from_secs(5)).unwrap()
+    }
+
+    fn action(id: u64, command: &str, status: &str) -> serde_json::Value {
+        serde_json::json!({
+            "action": {
+                "id": id,
+                "command": command,
+                "status": status,
+                "progress": if status == "running" { 0 } else { 100 },
+                "started": "2026-11-14T10:00:00Z",
+                "finished": null,
+                "resources": [{ "id": ZONE_ID, "type": "zone" }],
+                "error": if status == "error" {
+                    serde_json::json!({ "code": "action_failed", "message": "boom" })
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+        })
+    }
+
+    fn rrset(ttl: Option<u32>, values: &[&str]) -> serde_json::Value {
+        let records: Vec<_> = values
+            .iter()
+            .map(|v| serde_json::json!({ "value": v, "comment": "" }))
+            .collect();
+        serde_json::json!({
+            "rrset": {
+                "id": "_acme-challenge/TXT",
+                "name": "_acme-challenge",
+                "type": "TXT",
+                "ttl": ttl,
+                "labels": {},
+                "protection": { "change": false },
+                "records": records,
+                "zone": ZONE_ID
+            }
+        })
+    }
+
+    /// Zone `example.com` exists; any other name filter returns no zones.
+    async fn mount_zone(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "example.com"))
+            .and(header("authorization", "Bearer cloud-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "zones": [{ "id": ZONE_ID, "name": "example.com", "mode": "primary" }],
+                "meta": { "pagination": { "page": 1, "per_page": 25, "total_entries": 1 } }
+            })))
+            .with_priority(1)
+            .mount(server)
+            .await;
         Mock::given(method("GET"))
             .and(path("/zones"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "zones": [{ "id": zone_id, "name": "example.com" }]
+                "zones": [],
+                "meta": { "pagination": { "page": 1, "per_page": 25, "total_entries": 0 } }
             })))
-            .mount(&mock_server)
+            .with_priority(10)
+            .mount(server)
             .await;
+    }
 
+    async fn mount_rrset_missing(server: &MockServer) {
         Mock::given(method("GET"))
-            .and(path(format!("/zones/{}", zone_id)))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "zone": { "id": zone_id, "name": "example.com" }
+            .and(path(RRSET_PATH))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": { "code": "not_found", "message": "rrset not found" }
             })))
-            .mount(&mock_server)
+            .mount(server)
             .await;
-
-        Mock::given(method("POST"))
-            .and(path("/records"))
-            .respond_with(ResponseTemplate::new(422).set_body_string("already exists"))
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/records"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "records": [{ "id": existing_id, "name": "_acme-challenge", "value": expected_value, "type": "TXT" }]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let provider =
-            HetznerProvider::new_test("token", mock_server.uri(), Duration::from_secs(30)).unwrap();
-
-        let id = provider
-            .create_txt_record("example.com", "_acme-challenge", expected_value)
-            .await
-            .unwrap();
-
-        assert_eq!(id, existing_id);
     }
 
     #[tokio::test]
-    async fn test_create_record_duplicate_without_match_still_fails_hetzner() {
-        let mock_server = MockServer::start().await;
-        let zone_id = "zone-123";
+    async fn create_adds_quoted_value_with_bearer_token() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+        mount_rrset_missing(&server).await;
 
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/add_records", RRSET_PATH)))
+            .and(header("authorization", "Bearer cloud-token"))
+            .and(body_json(serde_json::json!({
+                "ttl": 60,
+                "records": [{ "value": "\"challenge-value\"", "comment": "zentinel acme dns-01 challenge" }]
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(1, "add_records", "success")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let id = provider(&server)
+            .create_txt_record("example.com", "_acme-challenge", "challenge-value")
+            .await
+            .unwrap();
+        assert_eq!(id, "4711/_acme-challenge/challenge-value");
+    }
+
+    #[tokio::test]
+    async fn create_walks_up_to_parent_zone() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones/4711/rrsets/_acme-challenge.a.b/TXT"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/zones/4711/rrsets/_acme-challenge.a.b/TXT/actions/add_records",
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(
+                2,
+                "add_records",
+                "success",
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let id = provider(&server)
+            .create_txt_record("a.b.example.com", "_acme-challenge", "v1")
+            .await
+            .unwrap();
+        assert_eq!(id, "4711/_acme-challenge.a.b/v1");
+
+        // a.b.example.com, b.example.com, example.com
+        let zone_lookups = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/zones")
+            .count();
+        assert_eq!(zone_lookups, 3);
+    }
+
+    /// Wildcard + apex: the second challenge value is added next to the
+    /// first, keeping the RRSet's TTL; the existing value is not resent.
+    #[tokio::test]
+    async fn create_appends_to_existing_rrset_without_clobbering() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path(RRSET_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(rrset(Some(300), &["\"apex-value\""])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/add_records", RRSET_PATH)))
+            .and(body_json(serde_json::json!({
+                "ttl": 300,
+                "records": [{ "value": "\"wildcard-value\"", "comment": "zentinel acme dns-01 challenge" }]
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(3, "add_records", "success")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // set_records would replace the RRSet; it must never be used.
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/set_records", RRSET_PATH)))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        provider(&server)
+            .create_txt_record("example.com", "_acme-challenge", "wildcard-value")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_reuses_value_already_present() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path(RRSET_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(rrset(Some(60), &["\"leftover\""])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let id = provider(&server)
+            .create_txt_record("example.com", "_acme-challenge", "leftover")
+            .await
+            .unwrap();
+        assert_eq!(id, "4711/_acme-challenge/leftover");
+    }
+
+    #[tokio::test]
+    async fn create_waits_for_running_action() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+        mount_rrset_missing(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/add_records", RRSET_PATH)))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(
+                42,
+                "add_records",
+                "running",
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zones/actions/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(action(
+                42,
+                "add_records",
+                "running",
+            )))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zones/actions/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(action(
+                42,
+                "add_records",
+                "success",
+            )))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+
+        provider(&server)
+            .create_txt_record("example.com", "_acme-challenge", "v")
+            .await
+            .unwrap();
+
+        let polls = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/zones/actions/42")
+            .count();
+        assert_eq!(polls, 3);
+    }
+
+    #[tokio::test]
+    async fn create_fails_when_action_fails() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+        mount_rrset_missing(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/add_records", RRSET_PATH)))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(
+                5,
+                "add_records",
+                "error",
+            )))
+            .mount(&server)
+            .await;
+
+        let err = provider(&server)
+            .create_txt_record("example.com", "_acme-challenge", "v")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DnsProviderError::RecordCreation { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("boom"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn create_retries_while_rrset_locked() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+        mount_rrset_missing(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/add_records", RRSET_PATH)))
+            .respond_with(ResponseTemplate::new(423).set_body_json(serde_json::json!({
+                "error": { "code": "locked", "message": "there is already an action running" }
+            })))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/add_records", RRSET_PATH)))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(
+                6,
+                "add_records",
+                "success",
+            )))
+            .with_priority(2)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        provider(&server)
+            .create_txt_record("example.com", "_acme-challenge", "v")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn old_dns_console_token_gets_a_clear_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": { "code": "unauthorized", "message": "unable to authenticate" }
+            })))
+            .mount(&server)
+            .await;
+
+        let err = provider(&server)
+            .create_txt_record("example.com", "_acme-challenge", "v")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DnsProviderError::Authentication(_)), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("unauthorized"), "{msg}");
+        assert!(msg.contains("dns.hetzner.com"), "{msg}");
+        assert!(msg.contains("Hetzner Console"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn zone_not_found() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+
+        let p = provider(&server);
+        let err = p
+            .create_txt_record("example.org", "_acme-challenge", "v")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DnsProviderError::ZoneNotFound { .. }),
+            "{err}"
+        );
+        assert!(!p.supports_domain("example.org").await.unwrap());
+        assert!(p.supports_domain("*.example.com").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn secondary_zone_is_rejected() {
+        let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/zones"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "zones": [{ "id": zone_id, "name": "example.com" }]
+                "zones": [{ "id": ZONE_ID, "name": "example.com", "mode": "secondary" }]
             })))
-            .mount(&mock_server)
+            .mount(&server)
             .await;
 
-        Mock::given(method("GET"))
-            .and(path(format!("/zones/{}", zone_id)))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "zone": { "id": zone_id, "name": "example.com" }
-            })))
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/records"))
-            .respond_with(ResponseTemplate::new(422).set_body_string("already exists"))
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/records"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "records": [{ "id": "other-id", "name": "_acme-challenge", "value": "other-value", "type": "TXT" }]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let provider =
-            HetznerProvider::new_test("token", mock_server.uri(), Duration::from_secs(30)).unwrap();
-
-        let err = provider
-            .create_txt_record("example.com", "_acme-challenge", "expected-value")
+        let err = provider(&server)
+            .create_txt_record("example.com", "_acme-challenge", "v")
             .await
             .unwrap_err();
+        assert!(matches!(err, DnsProviderError::Configuration(_)), "{err}");
+    }
 
-        assert!(matches!(err, DnsProviderError::RecordCreation { .. }));
+    /// Cleanup sends only our value, exactly as Hetzner stores it.
+    #[tokio::test]
+    async fn delete_removes_only_our_value() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path(RRSET_PATH))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(rrset(Some(60), &["\"other-value\"", "\"our-value\""])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/remove_records", RRSET_PATH)))
+            .and(header("authorization", "Bearer cloud-token"))
+            .and(body_json(serde_json::json!({
+                "records": [{ "value": "\"our-value\"" }]
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(
+                7,
+                "remove_records",
+                "success",
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        provider(&server)
+            .delete_txt_record("example.com", "4711/_acme-challenge/our-value")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_is_idempotent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        // RRSet gone
+        Mock::given(method("GET"))
+            .and(path(RRSET_PATH))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        // RRSet present, but without our value
+        Mock::given(method("GET"))
+            .and(path("/zones/4711/rrsets/_acme-challenge.sub/TXT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rrset(Some(60), &["\"other\""])))
+            .mount(&server)
+            .await;
+
+        let p = provider(&server);
+        p.delete_txt_record("example.com", "4711/_acme-challenge/v")
+            .await
+            .unwrap();
+        p.delete_txt_record("sub.example.com", "4711/_acme-challenge.sub/v")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_then_delete_roundtrip() {
+        let server = MockServer::start().await;
+        mount_zone(&server).await;
+        Mock::given(method("GET"))
+            .and(path(RRSET_PATH))
+            .respond_with(ResponseTemplate::new(404))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(RRSET_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rrset(Some(60), &["\"x\""])))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/add_records", RRSET_PATH)))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(
+                8,
+                "add_records",
+                "success",
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("{}/actions/remove_records", RRSET_PATH)))
+            .and(body_json(
+                serde_json::json!({ "records": [{ "value": "\"x\"" }] }),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(action(
+                9,
+                "remove_records",
+                "success",
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Wildcard names resolve to the same record as the apex.
+        let p = provider(&server);
+        let id = p
+            .create_txt_record("*.example.com", "_acme-challenge", "x")
+            .await
+            .unwrap();
+        p.delete_txt_record("example.com", &id).await.unwrap();
     }
 }

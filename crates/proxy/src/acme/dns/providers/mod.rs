@@ -1,7 +1,7 @@
 //! DNS provider implementations
 //!
 //! Available providers:
-//! - [`HetznerProvider`] - Hetzner DNS API
+//! - [`HetznerProvider`] - Hetzner Cloud DNS API
 //! - [`CloudflareProvider`] - Cloudflare DNS API
 //! - [`WebhookProvider`] - Generic webhook for custom providers
 

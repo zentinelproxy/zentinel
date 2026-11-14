@@ -96,7 +96,28 @@ for details.
 
 ## [Unreleased]
 
+### Upgrade notes
+- **The Hetzner DNS-01 provider needs a new token.** It now uses the Hetzner
+  Cloud API (`api.hetzner.cloud`), because Hetzner shut down the DNS Console
+  and its API (`dns.hetzner.com`) on 2026-05-27. Tokens from the old DNS
+  Console do not work there. Create an API token with **Read & Write**
+  permission in the Hetzner Console, in the project that holds the zone
+  (*Security → API Tokens*), and put it where `credentials-file` or
+  `credentials-env` points. The configuration itself is unchanged. With an
+  old token, issuance fails with an authentication error that says this.
+  (#671)
+
 ### Fixed
+- **DNS-01 with `type "hetzner"` works again.** Since 2026-05-27 every
+  Hetzner DNS-01 challenge failed, so wildcard certificates for zones at
+  Hetzner could not be issued or renewed. The provider now finds the zone by
+  name (walking up to the parent domain), adds the quoted challenge value to
+  the `_acme-challenge` TXT RRSet with `add_records`, waits for the Action to
+  finish, and removes only its own value with `remove_records` afterwards.
+  A wildcard and an apex challenge on the same name no longer overwrite each
+  other, and records left over from an earlier attempt are reused. (#671)
+- The error for an unknown `dns-provider` type lists `cloudflare` among the
+  valid types.
 - **WAF body inspection recognises content types regardless of case.**
   `Content-Type: APPLICATION/JSON` (and surrounding whitespace) is matched
   against the `content-types` allowlist like `application/json`, as RFC 9110

@@ -12,7 +12,7 @@
 //!
 //! # Providers
 //!
-//! - [`HetznerProvider`] - Hetzner DNS API
+//! - [`HetznerProvider`] - Hetzner Cloud DNS API
 //! - [`WebhookProvider`] - Generic webhook for custom DNS providers
 //!
 //! # Example
