@@ -87,7 +87,7 @@ acme/dns/
 ├── credentials.rs   # Secure credential loading
 └── providers/
     ├── mod.rs       # Provider factory
-    ├── hetzner.rs   # Hetzner DNS provider
+    ├── hetzner.rs   # Hetzner DNS provider (Hetzner Cloud API)
     ├── cloudflare.rs # Cloudflare DNS provider
     └── webhook.rs   # Generic webhook provider
 ```
@@ -119,7 +119,7 @@ pub trait DnsProvider: Send + Sync + Debug {
 
 | Provider | Description |
 |----------|-------------|
-| `hetzner` | Hetzner DNS API |
+| `hetzner` | Hetzner Cloud DNS API (`api.hetzner.cloud`); needs a Hetzner Cloud API token, see [Hetzner](#hetzner) |
 | `cloudflare` | Cloudflare DNS API v4 |
 | `webhook` | Generic webhook for custom DNS integrations |
 
@@ -414,6 +414,31 @@ listeners {
 }
 ```
 
+### Hetzner
+
+The `hetzner` provider manages challenge records through the DNS endpoints of
+the **Hetzner Cloud API** (`https://api.hetzner.cloud/v1`, zones and RRSets).
+Hetzner shut down the old DNS Console and its API (`dns.hetzner.com`) on
+2026-05-27; DNS zones are now part of a Hetzner Cloud project.
+
+- **Token:** a Hetzner Cloud API token with **Read & Write** permission,
+  created in the Hetzner Console in the project that holds the zone
+  (*Security → API Tokens*). Tokens from the old DNS Console are rejected
+  (`401 unauthorized`); the error message says so. A read-only token is
+  rejected with `403` when the record is written.
+- **Zone:** looked up by name, trying the domain and then each parent domain
+  (`_acme-challenge.a.b.example.com` finds the zone `example.com`). The zone
+  must be in primary mode and in the token's project.
+- **Records:** the challenge value is added to the `_acme-challenge` TXT
+  RRSet with the `add_records` action (quoted, as Hetzner requires) and
+  removed with `remove_records` afterwards. Other TXT values on the same name,
+  such as the second value of a wildcard + apex certificate, are left alone.
+  A new RRSet gets a 60 s TTL; an existing RRSet keeps its TTL. The provider
+  waits for each Action to finish, up to `api-timeout-secs`.
+
+The configuration is unchanged (`type "hetzner"` with `credentials-file` or
+`credentials-env`); only the token has to be replaced.
+
 ### Webhook Provider (Custom DNS Integration)
 
 ```kdl
@@ -461,7 +486,7 @@ acme {
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `type` | string | required | Provider type: `hetzner`, `webhook` |
+| `type` | string | required | Provider type: `hetzner`, `cloudflare`, `webhook` |
 | `credentials-file` | path | - | Path to credentials file |
 | `credentials-env` | string | - | Environment variable with credentials |
 | `api-timeout-secs` | u64 | `30` | API request timeout |
