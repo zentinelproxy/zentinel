@@ -581,6 +581,14 @@ waf {
 }
 ```
 
+`body-inspection { content-types }` is an allowlist of media types, matched
+without regard to ASCII case (RFC 9110 section 8.3.1): `APPLICATION/JSON` matches
+`application/json`, and leading whitespace and parameters (`; charset=utf-8`) on
+the request's value are ignored. An entry matches as a prefix. A request that
+carries several `Content-Type` headers is inspected when **any** of them matches.
+A request with no `Content-Type` is inspected only when the list has an empty
+entry (`content-types "" "application/json"`); an empty list inspects every body.
+
 ### Observability Block
 
 ```kdl

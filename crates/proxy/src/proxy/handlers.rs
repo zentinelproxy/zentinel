@@ -447,13 +447,6 @@ impl ZentinelProxy {
                 .await
         {
             // Check content-type allowlist
-            let content_type = session
-                .req_header()
-                .headers
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-
             let allowed_types = config
                 .waf
                 .as_ref()
@@ -461,9 +454,19 @@ impl ZentinelProxy {
                 .cloned()
                 .unwrap_or_default();
 
-            let is_allowed_type = allowed_types
+            // Every Content-Type header counts: with two of them, the one that
+            // is not allowlisted must not hide the one that is.
+            let content_types: Vec<&str> = session
+                .req_header()
+                .headers
+                .get_all("content-type")
                 .iter()
-                .any(|allowed| content_type.starts_with(allowed));
+                .filter_map(|v| v.to_str().ok())
+                .collect();
+            let content_type = content_types.first().copied().unwrap_or("");
+
+            let is_allowed_type =
+                content_type_is_inspected(content_types.iter().copied(), &allowed_types);
 
             if is_allowed_type || allowed_types.is_empty() {
                 ctx.body_inspection_enabled = true;
@@ -1300,11 +1303,128 @@ pub(super) fn apply_agent_response_header_ops(
     }
 }
 
+/// Whether a request's `Content-Type` is on the WAF body-inspection allowlist.
+///
+/// Media types are case-insensitive (RFC 9110 section 8.3.1), so `APPLICATION/JSON`
+/// is `application/json`. An entry matches as a prefix, so `application/json`
+/// also covers `application/json; charset=utf-8`. A request without a
+/// `Content-Type` is matched as the empty string. The request is inspected if
+/// any of its `Content-Type` values matches.
+fn content_type_is_inspected<'a>(
+    content_types: impl IntoIterator<Item = &'a str>,
+    allowed: &[String],
+) -> bool {
+    let matches = |content_type: &str| {
+        let content_type = content_type.trim_start().as_bytes();
+        allowed.iter().any(|allowed| {
+            let allowed = allowed.as_bytes();
+            content_type.len() >= allowed.len()
+                && content_type[..allowed.len()].eq_ignore_ascii_case(allowed)
+        })
+    };
+    let mut seen = false;
+    for content_type in content_types {
+        seen = true;
+        if matches(content_type) {
+            return true;
+        }
+    }
+    !seen && matches("")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::errors::ErrorHandler;
     use zentinel_config::{ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType};
+
+    fn allowlist(types: &[&str]) -> Vec<String> {
+        types.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn content_type_allowlist_matches_the_media_type_exactly_cased_or_not() {
+        let allowed = allowlist(&["application/json", "multipart/form-data"]);
+        for content_type in [
+            "application/json",
+            "application/json; charset=utf-8",
+            "application/json;charset=utf-8",
+            "application/json ; charset=utf-8",
+            "  application/json",
+            "APPLICATION/JSON",
+            "Application/Json; Charset=UTF-8",
+            "multipart/form-data; boundary=x",
+            "MULTIPART/FORM-DATA; boundary=x",
+        ] {
+            assert!(
+                content_type_is_inspected([content_type], &allowed),
+                "{content_type:?} must be inspected"
+            );
+        }
+    }
+
+    #[test]
+    fn content_type_allowlist_still_skips_what_it_does_not_list() {
+        let allowed = allowlist(&["application/json"]);
+        for content_type in [
+            "",
+            "text/plain",
+            "application/octet-stream",
+            "application/x-custom",
+            "xapplication/json",
+        ] {
+            assert!(
+                !content_type_is_inspected([content_type], &allowed),
+                "{content_type:?} is not on the allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn content_type_allowlist_entry_is_matched_case_insensitively_too() {
+        let allowed = allowlist(&["Application/JSON"]);
+        assert!(content_type_is_inspected(["application/json"], &allowed));
+    }
+
+    #[test]
+    fn any_of_several_content_type_headers_can_put_the_request_on_the_allowlist() {
+        let allowed = allowlist(&["application/x-www-form-urlencoded"]);
+        assert!(content_type_is_inspected(
+            [
+                "application/octet-stream",
+                "application/x-www-form-urlencoded"
+            ],
+            &allowed
+        ));
+        assert!(content_type_is_inspected(
+            [
+                "application/x-www-form-urlencoded",
+                "application/octet-stream"
+            ],
+            &allowed
+        ));
+        assert!(!content_type_is_inspected(
+            ["application/octet-stream", "text/plain"],
+            &allowed
+        ));
+    }
+
+    #[test]
+    fn no_content_type_header_is_matched_as_the_empty_string() {
+        assert!(!content_type_is_inspected(
+            [],
+            &allowlist(&["application/json"])
+        ));
+        assert!(content_type_is_inspected([], &allowlist(&[""])));
+    }
+
+    #[test]
+    fn empty_string_entry_inspects_every_content_type() {
+        let allowed = allowlist(&[""]);
+        for content_type in ["", "text/plain", "APPLICATION/JSON", "image/png"] {
+            assert!(content_type_is_inspected([content_type], &allowed));
+        }
+    }
 
     fn upstream_error(status: u16, content_type: &str, body: &str) -> ResponseHeader {
         let mut resp = ResponseHeader::build(status, None).unwrap();

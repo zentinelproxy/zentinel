@@ -96,6 +96,13 @@ for details.
 
 ## [Unreleased]
 
+### Fixed
+- **WAF body inspection recognises content types regardless of case.**
+  `Content-Type: APPLICATION/JSON` (and surrounding whitespace) is matched
+  against the `content-types` allowlist like `application/json`, as RFC 9110
+  requires, so the body reaches the agent. A request is also inspected when any
+  of several `Content-Type` headers matches, not only the first.
+
 ---
 
 ## [26.11_2] - 2026-11-12
