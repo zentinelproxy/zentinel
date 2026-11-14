@@ -3,7 +3,7 @@
 //! Maintains an in-memory index of all ReferenceGrant resources to quickly
 //! check whether a cross-namespace reference is permitted.
 
-use gateway_api::referencegrants::ReferenceGrant;
+use gateway_api::referencegrants::v1beta1::ReferenceGrant;
 use kube::ResourceExt;
 use std::collections::HashSet;
 use std::sync::Arc;

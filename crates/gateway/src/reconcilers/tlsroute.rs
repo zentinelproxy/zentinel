@@ -4,7 +4,7 @@
 //! TLSRoutes match on SNI hostnames and forward the raw TLS connection
 //! to backends without termination.
 
-use gateway_api::experimental::tlsroutes::TLSRoute;
+use gateway_api::experimental::tlsroutes::v1alpha3::TlsRoute as TLSRoute;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
 use kube::api::{Api, Patch, PatchParams};

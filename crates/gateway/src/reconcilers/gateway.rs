@@ -6,7 +6,7 @@
 
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::{Gateway, GatewayListeners};
-use gateway_api::httproutes::HTTPRoute;
+use gateway_api::httproutes::HttpRoute as HTTPRoute;
 use k8s_openapi::api::core::v1::{Secret, Service};
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
