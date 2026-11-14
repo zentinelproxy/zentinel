@@ -150,6 +150,25 @@ for details.
   compiling. The release build now hides that rewrite from `git status`, and
   warns if anything else leaves the tree modified.
 
+### Dependencies
+- **Gateway API controller (`zentinel-gateway`): `kube` 3.1 → 5.1,
+  `k8s-openapi` 0.27 → 0.29, `gateway-api` from a pinned git revision (0.20)
+  to 0.23.0 from crates.io.** The three have to move together, which is why
+  the kube 4 bump was blocked until `gateway-api` supported it. `gateway-api`
+  0.23 generates one module per CRD version and drops the shared `common`
+  types, so the controller now names the versions it watches explicitly:
+  HTTPRoute, GRPCRoute, Gateway and GatewayClass `v1`, TLSRoute `v1alpha3`,
+  TCPRoute `v1alpha2` and ReferenceGrant `v1beta1` — the same versions as
+  before, so clusters with the Gateway API v1.4.1 CRDs keep working (the
+  crate's default re-exports would have switched TLSRoute, TCPRoute and
+  ReferenceGrant to `v1`, which v1.4.1 CRDs do not serve). `k8s-openapi`'s
+  `latest` feature now targets Kubernetes 1.36, where an EndpointSlice's
+  `endpoints` is optional; a slice without endpoints contributes no targets.
+  kube 4 also enables client retries for non-watch requests by default and
+  replaces the global read timeout with a watcher idle timeout. The proxy
+  itself is unaffected; `zentinel-gateway` is not published to crates.io.
+  (supersedes #663, #656)
+
 ---
 
 ## [26.11_2] - 2026-11-12

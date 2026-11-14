@@ -4,7 +4,7 @@
 //! TCPRoutes forward TCP connections to backends without any
 //! protocol-specific handling.
 
-use gateway_api::experimental::tcproutes::TCPRoute;
+use gateway_api::experimental::tcproutes::v1alpha2::TcpRoute as TCPRoute;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
 use kube::api::{Api, Patch, PatchParams};

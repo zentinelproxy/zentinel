@@ -6,7 +6,7 @@
 
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
-use gateway_api::grpcroutes::GRPCRoute;
+use gateway_api::grpcroutes::GrpcRoute as GRPCRoute;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Client, ResourceExt};

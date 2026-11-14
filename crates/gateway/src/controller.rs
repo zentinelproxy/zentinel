@@ -5,13 +5,16 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use futures::StreamExt;
-use gateway_api::experimental::tcproutes::TCPRoute;
-use gateway_api::experimental::tlsroutes::TLSRoute;
+// CRD versions are pinned explicitly: `gateway-api` re-exports the newest
+// version of each CRD (v1 for TLSRoute, TCPRoute and ReferenceGrant), which
+// the Gateway API v1.4.1 CRDs we document and test against do not serve.
+use gateway_api::experimental::tcproutes::v1alpha2::TcpRoute as TCPRoute;
+use gateway_api::experimental::tlsroutes::v1alpha3::TlsRoute as TLSRoute;
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
-use gateway_api::grpcroutes::GRPCRoute;
-use gateway_api::httproutes::HTTPRoute;
-use gateway_api::referencegrants::ReferenceGrant;
+use gateway_api::grpcroutes::GrpcRoute as GRPCRoute;
+use gateway_api::httproutes::HttpRoute as HTTPRoute;
+use gateway_api::referencegrants::v1beta1::ReferenceGrant;
 use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::api::networking::v1::Ingress;
 use kube::api::ListParams;

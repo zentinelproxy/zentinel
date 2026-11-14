@@ -6,7 +6,7 @@
 
 use gateway_api::gatewayclasses::GatewayClass;
 use gateway_api::gateways::Gateway;
-use gateway_api::httproutes::HTTPRoute;
+use gateway_api::httproutes::HttpRoute as HTTPRoute;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Client, ResourceExt};
