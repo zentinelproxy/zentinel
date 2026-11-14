@@ -119,6 +119,15 @@ Proxy                                    Agent
 | `0x41` | `Ping` | Either | Keep-alive ping |
 | `0x42` | `Pong` | Either | Keep-alive response |
 
+### RequestComplete delivery
+
+After every request finishes, the proxy sends `RequestComplete` to each agent that
+participated in that request (route → body → WebSocket inspection agents,
+deduplicated). This is independent of whether the agent's `events` list includes
+`log` / `request_complete`; agents should use it to drop per-request state.
+Failures are logged and do not affect the client response. Correlation affinity
+is released only after these notifications.
+
 ### Example Frame
 
 ```

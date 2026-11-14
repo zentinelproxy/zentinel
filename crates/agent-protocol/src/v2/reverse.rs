@@ -625,6 +625,17 @@ impl ReverseConnectionClient {
             .await
     }
 
+    /// Send a request-complete event (fire-and-forget at the proxy).
+    pub async fn send_request_complete(
+        &self,
+        correlation_id: &str,
+        event: &crate::RequestCompleteEvent,
+    ) -> Result<(), AgentProtocolError> {
+        self.send_event(MessageType::RequestComplete, correlation_id, event)
+            .await
+            .map(|_| ())
+    }
+
     /// Send a WebSocket frame event.
     pub async fn send_websocket_frame(
         &self,

@@ -33,29 +33,33 @@ use zentinel_agent_protocol::v2::AgentClientV2;
 use std::time::Duration;
 
 // Basic connection
-let client = AgentClientV2::connect(
+let client = AgentClientV2::new(
     "waf-agent",
     "http://localhost:50051",
     Duration::from_secs(30),
 ).await?;
 
-// With TLS
-use zentinel_agent_protocol::v2::TlsConfig;
+// With TLS. An `https://` endpoint is verified against `ca-cert` (or the
+// system roots); `client-cert`/`client-key` add mTLS.
+use zentinel_agent_protocol::v2::AgentTlsOptions;
 
-let tls_config = TlsConfig {
+let tls = AgentTlsOptions {
     ca_cert: Some("/path/to/ca.crt".into()),
     client_cert: Some("/path/to/client.crt".into()),
     client_key: Some("/path/to/client.key".into()),
-    verify_server: true,
 };
 
-let client = AgentClientV2::connect_with_tls(
+let client = AgentClientV2::new_with_tls(
     "waf-agent",
     "https://waf.internal:50051",
-    tls_config,
     Duration::from_secs(30),
+    Some(&tls),
 ).await?;
 ```
+
+TLS options on an `http://` endpoint are refused rather than ignored: the
+connection is never made in plaintext while the configuration says TLS. There
+is no option to skip verification of the agent's certificate.
 
 ### Streaming Protocol
 

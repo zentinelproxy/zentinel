@@ -316,6 +316,51 @@ pub struct AgentTlsConfig {
     pub client_key: Option<PathBuf>,
 }
 
+impl AgentTlsConfig {
+    /// Check that these options can be applied to a connection to `address`.
+    ///
+    /// The agent client applies every option it is given or refuses to connect.
+    /// Settings that cannot be honoured are rejected here, at load time, rather
+    /// than ignored: an agent that silently falls back to plaintext (or never
+    /// connects, and is bypassed under `failure-mode "open"`) is worse than a
+    /// configuration that does not start.
+    pub fn check(&self, address: &str, check_files: bool) -> Result<(), String> {
+        if !address.starts_with("https://") {
+            return Err(format!(
+                "TLS options are set but the address '{}' is not https://; \
+                 they would not be applied, and the connection would be plaintext",
+                address
+            ));
+        }
+        if self.insecure_skip_verify {
+            return Err("tls-insecure is not supported for agent connections; \
+                 set ca-cert to the CA that signed the agent's certificate"
+                .to_string());
+        }
+        if self.client_cert.is_some() != self.client_key.is_some() {
+            return Err("client-cert and client-key must be set together".to_string());
+        }
+        if check_files {
+            for (name, path) in [
+                ("ca-cert", &self.ca_cert),
+                ("client-cert", &self.client_cert),
+                ("client-key", &self.client_key),
+            ] {
+                if let Some(path) = path {
+                    if !path.is_file() {
+                        return Err(format!(
+                            "{} '{}' is not a readable file",
+                            name,
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 // ============================================================================
 // Agent Events
 // ============================================================================

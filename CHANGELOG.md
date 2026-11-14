@@ -123,6 +123,27 @@ for details.
   against the `content-types` allowlist like `application/json`, as RFC 9110
   requires, so the body reaches the agent. A request is also inspected when any
   of several `Content-Type` headers matches, not only the first.
+- **Agents receive `RequestComplete` when a request ends** — the proxy now sends
+  the lifecycle terminator to every agent that participated in the request
+  (route filters, body inspection, WebSocket inspection), deduplicated and
+  without requiring a `log` event subscription. Agents use this to release
+  per-request state on body-less requests. Correlation affinity is cleared
+  afterward. (#664)
+- **The TLS options of an agent's `grpc` transport are applied.** `ca-cert`,
+  `client-cert` and `client-key` were parsed and then dropped, so the agent
+  connection used none of them: an `http://` address with a `tls` block was
+  plaintext, and an `https://` address could not connect at all (the agent was
+  left unhealthy, and with `failure-mode "open"` requests went through
+  unchecked). `https://` agents are now verified against `ca-cert` (or the
+  system store) and present `client-cert`/`client-key` for mTLS. Options inside
+  a `tls { }` block are read as well.
+- **Agent TLS settings that cannot be applied are a configuration error**
+  instead of being ignored: TLS options on an address that is not `https://`,
+  `tls-insecure` (agent connections cannot skip verification; `tls-insecure
+  #false` no longer turns it on), a `client-cert` without a `client-key`, and
+  files that do not exist. `zentinel test --strict` no longer reports
+  `ca-cert`, `client-cert`, `client-key` and `tls-insecure` directly under
+  `grpc`/`http` as ignored settings.
 
 ---
 
