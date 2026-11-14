@@ -18,6 +18,7 @@ for details.
 
 | CalVer | Crate Version | Date | Highlights |
 |--------|---------------|------|------------|
+| [26.11_3](#26113---2026-11-14) | 0.6.57 | 2026-11-14 | **Agent gRPC TLS options are applied** (`ca-cert`, `client-cert`/`client-key`; TLS options on a non-`https://` agent and `tls-insecure` are now configuration errors, **read the upgrade notes**); agents receive `RequestComplete` at the end of every request; **Hetzner DNS-01 works again** on the Hetzner Cloud API (**needs a new token**); WAF body-inspection content types matched case-insensitively; release binaries no longer report `-dirty`; Gateway API controller on kube 5 / gateway-api 0.23 |
 | [26.11_2](#26112---2026-11-12) | 0.6.56 | 2026-11-12 | Pingora fork rebased on upstream **Pingora 0.9.1** (`zentinel-pingora-core` 0.9.3); no behaviour or configuration change |
 | [26.11_1](#26111---2026-11-07) | 0.6.55 | 2026-11-07 | Security: `rustls-webpki` 0.103.16 (distrusted intermediates), `zstd` 0.13.4; building from source needs **Rust 1.99** (**read the upgrade notes**); `wasmtime` 50.0.1 in the unshipped WASM runtime crate (five advisories); `sysinfo` 0.40, rust-minor batch (10 updates) |
 | [26.10_11](#261011---2026-10-31) | 0.6.54 | 2026-10-31 | **OCSP stapling works** (it is on by default, so the proxy now contacts each certificate's OCSP responder); **the `compress` filter no longer breaks every response it applies to**, applies its `algorithms`, and produces gzip/zstd only; **WebSocket frames reach the route's agents** and the agent-level `failure-mode` is deprecated; a body an agent refuses no longer trips the upstream's circuit breaker; response-phase Redirect/Challenge, filter `timeout-ms` on every path; reloads rebuild route error pages, schemas and static files; `request-body-mode "inspect-first"`; h2c on listeners and upstreams (**read the upgrade notes**) |
@@ -96,7 +97,26 @@ for details.
 
 ## [Unreleased]
 
+---
+
+## [26.11_3] - 2026-11-14
+
+**Crate version:** 0.6.57
+
+Security and correctness release. TLS settings on an agent's `grpc` transport
+were parsed and then ignored, so agent connections were plaintext or failed;
+they are now applied, and settings that cannot be applied stop the proxy from
+starting. The proxy now sends `RequestComplete` to the agents that handled a
+request, so agents can release per-request state. DNS-01 with Hetzner works
+again on the Hetzner Cloud API, with a new API token.
+
 ### Upgrade notes
+- **Agent `grpc` transports with TLS options must use an `https://` address.**
+  TLS options (`ca-cert`, `client-cert`, `client-key`, or a `tls { }` block) on
+  an `http://` agent address, and `tls-insecure`, are now configuration errors
+  instead of being silently ignored. Before upgrading, run
+  `zentinel test --strict` against your configuration. `https://` agents are
+  verified against `ca-cert`, or the system trust store when it is unset.
 - **The Hetzner DNS-01 provider needs a new token.** It now uses the Hetzner
   Cloud API (`api.hetzner.cloud`), because Hetzner shut down the DNS Console
   and its API (`dns.hetzner.com`) on 2026-05-27. Tokens from the old DNS
@@ -151,6 +171,10 @@ for details.
   warns if anything else leaves the tree modified.
 
 ### Dependencies
+- `quinn-udp` 0.5.14 → 0.5.16 in `Cargo.lock` (RUSTSEC-2026-0538, a receive
+  loop that can spin after a truncated datagram). No workspace crate builds
+  `quinn` with any feature or target, so the shipped binaries were not
+  affected; this clears `cargo audit`.
 - **Gateway API controller (`zentinel-gateway`): `kube` 3.1 → 5.1,
   `k8s-openapi` 0.27 → 0.29, `gateway-api` from a pinned git revision (0.20)
   to 0.23.0 from crates.io.** The three have to move together, which is why
