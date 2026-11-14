@@ -83,6 +83,12 @@ jobs:
           fi
           grep -q "^version = \"$NEW_SEMVER\"" Cargo.toml \
             || { echo "::error::Cargo.toml was not set to $NEW_SEMVER"; exit 1; }
+          # The rewrite (and the Cargo.lock update the build makes from it) is
+          # not a change to the source: hide it from `git status`, which
+          # crates/proxy/build.rs uses to append `-dirty` to the commit in
+          # `zentinel --version` (#661).
+          git ls-files -z -- Cargo.lock 'Cargo.toml' '**/Cargo.toml' \
+            | xargs -0 git update-index --assume-unchanged
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -170,6 +176,17 @@ jobs:
               $BUILD_CMD --workspace --target "$TARGET"
             fi
             echo "BUILD_DIR=target/$TARGET" >> $GITHUB_ENV
+          fi
+
+      - name: Check the build tree is clean
+        shell: bash
+        run: |
+          # crates/proxy/build.rs marks the binary `-dirty` if `git status`
+          # shows anything; say so here instead of in a user's bug report.
+          DIRTY=$(git status --porcelain)
+          if [ -n "$DIRTY" ]; then
+            echo "::warning::Working tree is not clean, so the binary reports its commit as -dirty:"
+            echo "$DIRTY"
           fi
 
       - name: Strip binaries (Linux)

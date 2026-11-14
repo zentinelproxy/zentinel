@@ -144,6 +144,11 @@ for details.
   files that do not exist. `zentinel test --strict` no longer reports
   `ca-cert`, `client-cert`, `client-key` and `tls-insecure` directly under
   `grpc`/`http` as ignored settings.
+- **Release binaries no longer report their commit as `-dirty`** (#661).
+  `zentinel --version` printed `commit <sha>-dirty` for every release because
+  the build rewrites the crate manifests to the published version before
+  compiling. The release build now hides that rewrite from `git status`, and
+  warns if anything else leaves the tree modified.
 
 ---
 
