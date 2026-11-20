@@ -2496,34 +2496,10 @@ impl ProxyHttp for ZentinelProxy {
 
         // Apply route-specific response header modifications (policies)
         if let Some(ref route_config) = ctx.route_config {
-            let mods = &route_config.policies.response_headers;
-            // Rename runs before set/add/remove
-            for (old_name, new_name) in &mods.rename {
-                if let Some(value) = upstream_response
-                    .headers
-                    .get(old_name)
-                    .and_then(|v| v.to_str().ok())
-                {
-                    let owned = value.to_string();
-                    upstream_response
-                        .insert_header(new_name.clone(), &owned)
-                        .ok();
-                    upstream_response.remove_header(old_name);
-                }
-            }
-            for (name, value) in &mods.set {
-                upstream_response
-                    .insert_header(name.clone(), value.as_str())
-                    .ok();
-            }
-            for (name, value) in &mods.add {
-                upstream_response
-                    .append_header(name.clone(), value.as_str())
-                    .ok();
-            }
-            for name in &mods.remove {
-                upstream_response.remove_header(name);
-            }
+            super::filters::apply_response_header_policy(
+                upstream_response,
+                &route_config.policies.response_headers,
+            );
         }
 
         // Inject Cache-Status header (RFC 9211) if enabled
