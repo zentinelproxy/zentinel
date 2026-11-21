@@ -3,8 +3,12 @@ Description=Zentinel Security-First Reverse Proxy
 Documentation=https://docs.zentinelproxy.io https://github.com/zentinelproxy/zentinel
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=60
-StartLimitBurst=3
+# No start rate limit. With one, a process that fails a few times in a row would
+# leave the unit in the failed state and systemd would stop restarting it until
+# someone started it by hand. Restarts are spaced by RestartSec= instead. To
+# bring a limit back, set StartLimitIntervalSec= and StartLimitBurst= in a
+# drop-in.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

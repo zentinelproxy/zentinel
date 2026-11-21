@@ -3,8 +3,8 @@ Description=Zentinel Echo Agent - Reference Implementation
 Documentation=https://github.com/zentinelproxy/zentinel
 After=network.target zentinel.service
 PartOf=zentinel.service
-StartLimitIntervalSec=60
-StartLimitBurst=3
+# No start rate limit; restarts are spaced by RestartSec=. See zentinel.service.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
