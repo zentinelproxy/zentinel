@@ -697,9 +697,11 @@ impl Context {
         if node.name().value() == "filter" && child_value(node, "type") == Some("agent") {
             if let (Some(filter_id), Some(agent_id)) = (first_arg(node), child_value(node, "agent"))
             {
-                let (mode, _) =
-                    crate::kdl::filters::resolve_agent_filter_failure_mode(node, filter_id);
-                if mode.is_none() {
+                // A filter that writes `failure-mode` twice is not read at all:
+                // loading refuses it, and so does `check_values` below.
+                if let Ok((None, _)) =
+                    crate::kdl::filters::resolve_agent_filter_failure_mode(node, filter_id)
+                {
                     self.filters_without_failure_mode
                         .entry(agent_id.to_string())
                         .or_default()
@@ -765,57 +767,118 @@ fn check_values(
     result: &mut ValidationResult,
 ) {
     let id = first_arg(node);
+    // Two parser functions can read the same node, so a repeat in it comes
+    // back from both; one finding is enough.
+    let mut reported: Vec<String> = Vec::new();
     let mut report = |problem: Option<String>| {
         if let Some(problem) = problem {
-            result.add_warning(ValidationWarning::new(problem));
+            if !reported.contains(&problem) {
+                reported.push(problem.clone());
+                result.add_warning(ValidationWarning::new(problem));
+            }
         }
     };
+
+    /// What a parser function read, or `None` after reporting why it could not.
+    ///
+    /// A node written twice is refused when the configuration is loaded, so
+    /// the parser functions return an error for it. This check reads source
+    /// that may not have been loaded, and says what it found instead of
+    /// dropping the finding.
+    fn or_report<T>(read: anyhow::Result<T>, report: &mut impl FnMut(Option<String>)) -> Option<T> {
+        match read {
+            Ok(value) => Some(value),
+            Err(error) => {
+                report(Some(error.to_string()));
+                None
+            }
+        }
+    }
 
     match (node.name().value(), id) {
         ("route", Some(route_id)) => {
             // `service-type` is applied or not depending on the route's
             // other blocks.
-            report(crate::kdl::routes::resolve_service_type(node, route_id).1);
-            report(crate::kdl::routes::resolve_priority(node, route_id).1);
-            report(crate::kdl::routes::resolve_builtin_handler(node, route_id).1);
-            let service_type = crate::kdl::routes::resolve_service_type(node, route_id).0;
-            let (_, problems) =
-                crate::kdl::error_pages::resolve_error_pages(node, route_id, &service_type);
-            for problem in problems {
-                report(Some(problem));
+            let service_type = or_report(
+                crate::kdl::routes::resolve_service_type(node, route_id),
+                &mut report,
+            );
+            if let Some((_, problem)) = &service_type {
+                report(problem.clone());
             }
-        }
-        ("pages", _) if parent == Some("error-pages") => check_error_page_keys(node, result),
-        ("upstream", Some(upstream_id)) => {
-            let (algorithm, problem) =
-                crate::kdl::upstreams::resolve_load_balancing(node, upstream_id);
-            report(problem);
-            // The sticky settings are read only when the algorithm is sticky.
-            if algorithm == crate::LoadBalancingAlgorithm::Sticky {
-                if let Some(sticky) = node
-                    .children()
-                    .and_then(|c| c.get("load-balancing"))
-                    .and_then(|n| n.children())
-                {
-                    let (_, problems) =
-                        crate::kdl::upstreams::resolve_sticky_session_config(sticky, upstream_id);
+            if let Some((_, problem)) = or_report(
+                crate::kdl::routes::resolve_priority(node, route_id),
+                &mut report,
+            ) {
+                report(problem);
+            }
+            if let Some((_, problem)) = or_report(
+                crate::kdl::routes::resolve_builtin_handler(node, route_id),
+                &mut report,
+            ) {
+                report(problem);
+            }
+            if let Some((service_type, _)) = service_type {
+                if let Some((_, problems)) = or_report(
+                    crate::kdl::error_pages::resolve_error_pages(node, route_id, &service_type),
+                    &mut report,
+                ) {
                     for problem in problems {
                         report(Some(problem));
                     }
                 }
             }
+        }
+        ("pages", _) if parent == Some("error-pages") => check_error_page_keys(node, result),
+        ("upstream", Some(upstream_id)) => {
+            if let Some((algorithm, problem)) = or_report(
+                crate::kdl::upstreams::resolve_load_balancing(node, upstream_id),
+                &mut report,
+            ) {
+                report(problem);
+                // The sticky settings are read only when the algorithm is sticky.
+                if algorithm == crate::LoadBalancingAlgorithm::Sticky {
+                    if let Some(sticky) = node
+                        .children()
+                        .and_then(|c| c.get("load-balancing"))
+                        .and_then(|n| n.children())
+                    {
+                        if let Some((_, problems)) = or_report(
+                            crate::kdl::upstreams::resolve_sticky_session_config(
+                                sticky,
+                                upstream_id,
+                            ),
+                            &mut report,
+                        ) {
+                            for problem in problems {
+                                report(Some(problem));
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(check) = node.children().and_then(|c| c.get("health-check")) {
-                report(crate::kdl::upstreams::health_check_type_problem(
-                    check,
-                    upstream_id,
-                ));
+                if let Some(problem) = or_report(
+                    crate::kdl::upstreams::health_check_type_problem(check, upstream_id),
+                    &mut report,
+                ) {
+                    report(problem);
+                }
             }
         }
         ("filter", Some(filter_id)) if child_value(node, "type") == Some("agent") => {
-            report(crate::kdl::filters::resolve_agent_filter_failure_mode(node, filter_id).1);
-            report(crate::kdl::filters::agent_filter_phase_problem(
-                node, filter_id,
-            ));
+            if let Some((_, problem)) = or_report(
+                crate::kdl::filters::resolve_agent_filter_failure_mode(node, filter_id),
+                &mut report,
+            ) {
+                report(problem);
+            }
+            if let Some(problem) = or_report(
+                crate::kdl::filters::agent_filter_phase_problem(node, filter_id),
+                &mut report,
+            ) {
+                report(problem);
+            }
             report(agent_filter_timeout_problem(node, filter_id, context));
             for problem in agent_filter_body_problems(node, filter_id, context) {
                 report(Some(problem));
@@ -835,8 +898,12 @@ fn check_values(
         // scoped block is checked from its namespace or service, which is
         // where its id is.
         ("limits", _) if parent.is_none() => {
-            for problem in crate::kdl::unapplied_limits_settings(node) {
-                report(Some(problem));
+            if let Some(problems) =
+                or_report(crate::kdl::unapplied_limits_settings(node), &mut report)
+            {
+                for problem in problems {
+                    report(Some(problem));
+                }
             }
         }
         ("namespace" | "service", Some(_)) => {
@@ -846,14 +913,20 @@ fn check_values(
                 .flat_map(|c| c.nodes())
                 .filter(|n| n.name().value() == "limits")
             {
-                for problem in crate::kdl::unapplied_limits_settings(limits) {
-                    report(Some(problem));
+                if let Some(problems) =
+                    or_report(crate::kdl::unapplied_limits_settings(limits), &mut report)
+                {
+                    for problem in problems {
+                        report(Some(problem));
+                    }
                 }
             }
         }
         ("cache", _) if parent.is_none() => {
-            for problem in crate::kdl::cache_alias_problems(node) {
-                report(Some(problem));
+            if let Some(problems) = or_report(crate::kdl::cache_alias_problems(node), &mut report) {
+                for problem in problems {
+                    report(Some(problem));
+                }
             }
         }
         ("matches", _) if parent == Some("route") => check_run_together_matches(node, result),
@@ -897,7 +970,11 @@ fn agent_filter_timeout_problem(
     filter_id: &str,
     context: &Context,
 ) -> Option<String> {
-    let (timeout, problem) = crate::kdl::filters::resolve_agent_filter_timeout(filter, filter_id);
+    let (timeout, problem) =
+        match crate::kdl::filters::resolve_agent_filter_timeout(filter, filter_id) {
+            Ok(read) => read,
+            Err(error) => return Some(error.to_string()),
+        };
     if problem.is_some() {
         return problem;
     }
@@ -928,10 +1005,16 @@ fn agent_filter_body_problems(
 ) -> Vec<String> {
     let mut problems = Vec::new();
     let (inspect_body, problem) =
-        crate::kdl::filters::resolve_agent_filter_inspect_body(filter, filter_id);
+        match crate::kdl::filters::resolve_agent_filter_inspect_body(filter, filter_id) {
+            Ok(read) => read,
+            Err(error) => return vec![error.to_string()],
+        };
     problems.extend(problem);
     let (max_body_bytes, problem) =
-        crate::kdl::filters::resolve_agent_filter_max_body_bytes(filter, filter_id);
+        match crate::kdl::filters::resolve_agent_filter_max_body_bytes(filter, filter_id) {
+            Ok(read) => read,
+            Err(error) => return vec![error.to_string()],
+        };
     problems.extend(problem);
 
     let Some(agent_id) = child_value(filter, "agent") else {
@@ -3207,5 +3290,197 @@ mod tests {
         let warnings = warnings_for(r#"routes { route "r" { cache { lock-timeout-secs 3 } } }"#);
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
         assert!(warnings[0].contains("top-level 'cache'"), "{warnings:#?}");
+    }
+
+    /// A node that is written twice is refused when the configuration is
+    /// loaded. This check reads source that may not have been loaded, so it
+    /// reports the repeat as a finding, once.
+    mod repeated_nodes {
+        use super::*;
+
+        fn repeats_of(kdl: &str, node: &str) -> usize {
+            let marker = format!("Duplicate node '{node}'");
+            warnings_for(kdl)
+                .iter()
+                .filter(|w| w.starts_with(&marker))
+                .count()
+        }
+
+        #[test]
+        fn a_builtin_handler_written_twice_is_reported_once() {
+            // Both `resolve_service_type` and `resolve_builtin_handler` read it.
+            let kdl = r#"
+                routes {
+                    route "r" {
+                        matches { path "/" }
+                        builtin-handler "health"
+                        builtin-handler "status"
+                    }
+                }
+            "#;
+            assert_eq!(
+                repeats_of(kdl, "builtin-handler"),
+                1,
+                "{:?}",
+                warnings_for(kdl)
+            );
+        }
+
+        #[test]
+        fn a_priority_written_twice_is_reported_once() {
+            let kdl = r#"
+                routes {
+                    route "r" {
+                        matches { path "/" }
+                        priority "high"
+                        priority "low"
+                    }
+                }
+            "#;
+            assert_eq!(repeats_of(kdl, "priority"), 1, "{:?}", warnings_for(kdl));
+        }
+
+        #[test]
+        fn a_service_type_written_twice_is_reported_once() {
+            let kdl = r#"
+                routes {
+                    route "r" {
+                        matches { path "/" }
+                        service-type "web"
+                        service-type "api"
+                    }
+                }
+            "#;
+            assert_eq!(
+                repeats_of(kdl, "service-type"),
+                1,
+                "{:?}",
+                warnings_for(kdl)
+            );
+        }
+
+        #[test]
+        fn a_load_balancing_written_twice_is_reported_once() {
+            let kdl = r#"
+                upstreams {
+                    upstream "u" {
+                        target "127.0.0.1:9000"
+                        load-balancing "round_robin"
+                        load-balancing "random"
+                    }
+                }
+            "#;
+            assert_eq!(
+                repeats_of(kdl, "load-balancing"),
+                1,
+                "{:?}",
+                warnings_for(kdl)
+            );
+        }
+
+        #[test]
+        fn a_health_check_type_written_twice_is_reported_once() {
+            let kdl = r#"
+                upstreams {
+                    upstream "u" {
+                        target "127.0.0.1:9000"
+                        health-check {
+                            type "tcp"
+                            type "http"
+                        }
+                    }
+                }
+            "#;
+            assert_eq!(repeats_of(kdl, "type"), 1, "{:?}", warnings_for(kdl));
+        }
+
+        #[test]
+        fn an_agent_filter_failure_mode_written_twice_is_reported_once() {
+            let kdl = r#"
+                filters {
+                    filter "f" {
+                        type "agent"
+                        agent "a"
+                        failure-mode "open"
+                        failure-mode "closed"
+                    }
+                }
+            "#;
+            assert_eq!(
+                repeats_of(kdl, "failure-mode"),
+                1,
+                "{:?}",
+                warnings_for(kdl)
+            );
+        }
+
+        #[test]
+        fn an_agent_filter_timeout_written_twice_is_reported_once() {
+            let kdl = r#"
+                filters {
+                    filter "f" {
+                        type "agent"
+                        agent "a"
+                        timeout-ms 100
+                        timeout-ms 200
+                    }
+                }
+            "#;
+            assert_eq!(repeats_of(kdl, "timeout-ms"), 1, "{:?}", warnings_for(kdl));
+        }
+
+        #[test]
+        fn a_limit_written_twice_is_reported_once() {
+            let kdl = r#"
+                limits {
+                    max-total-connections 0
+                    max-total-connections 5
+                }
+            "#;
+            assert_eq!(
+                repeats_of(kdl, "max-total-connections"),
+                1,
+                "{:?}",
+                warnings_for(kdl)
+            );
+        }
+
+        #[test]
+        fn a_cache_setting_written_twice_is_reported_once() {
+            let kdl = r#"
+                cache {
+                    max-size 100
+                    max-size 200
+                    max-size-bytes 300
+                }
+            "#;
+            assert_eq!(repeats_of(kdl, "max-size"), 1, "{:?}", warnings_for(kdl));
+        }
+
+        #[test]
+        fn a_configuration_without_repeats_reports_none() {
+            let kdl = r#"
+                routes {
+                    route "r" {
+                        matches { path "/" }
+                        priority "high"
+                        builtin-handler "health"
+                    }
+                }
+                upstreams {
+                    upstream "u" {
+                        target "127.0.0.1:9000"
+                        load-balancing "random"
+                    }
+                }
+            "#;
+            assert!(
+                warnings_for(kdl)
+                    .iter()
+                    .all(|w| !w.starts_with("Duplicate node")),
+                "{:?}",
+                warnings_for(kdl)
+            );
+        }
     }
 }

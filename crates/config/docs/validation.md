@@ -28,6 +28,11 @@ Minimum supported: `1.0`
 
 ## Validation Rules
 
+The type of every value is checked when the file is parsed, before the rules
+below: a string where an integer is expected, a number where a string is
+expected, and so on, is an error and not the setting's default. See
+[Value Types](kdl-format.md#value-types).
+
 ### Server
 
 | Property | Validation |
@@ -43,8 +48,8 @@ Minimum supported: `1.0`
 |----------|------------|
 | `id` | Non-empty, unique |
 | `address` | Valid socket address (host:port) |
-| `protocol` | Must be `http`, `https`, `h2`, `h3` or `h2c`; `https` and `h2` need a `tls` block, `h2c` must not have one |
-| `tls` | Required when protocol is `https` |
+| `protocol` | Must be `http`, `https`, `h2`, `h3` or `h2c`; `http` is the protocol when none is written. `https` and `h2` need a `tls` block; `http` and `h2c` must not have one |
+| `tls` | Required when protocol is `https` or `h2`; an error on `http` (including no `protocol`) and `h2c` |
 | `request-timeout-secs` | `> 0` |
 
 **At least one listener is required.**
@@ -325,6 +330,27 @@ Configuration validation failed:
   Filter 'auth' references non-existent agent 'auth-agent'
 
   Available agents: ["waf-agent"]
+```
+
+```
+Duplicate node 'timeouts' in upstreams > upstream "backend": it is written 2 times,
+but only one of them would take effect. Combine them into a single 'timeouts' node,
+or remove the extra ones.
+```
+
+```
+Duplicate upstream ID 'backend' found. Each upstream ID must be unique.
+```
+
+```
+Wrong value type for 'max-connections-per-client' in limits: expected an integer
+(without quotes), found a string.
+```
+
+```
+Listener 'web': has a 'tls' block, but protocol "http" (the protocol when none is
+written) serves plain HTTP/1.1, so the block would not be used. Add protocol
+"https" to serve TLS, or remove the 'tls' block.
 ```
 
 ```

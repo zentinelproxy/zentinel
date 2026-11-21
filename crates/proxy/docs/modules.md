@@ -531,6 +531,7 @@ pub struct HotReloadableSniResolver {
 
 ```kdl
 listener "https" {
+    protocol "https"
     tls {
         cert-file "/etc/certs/default.crt"
         key-file "/etc/certs/default.key"

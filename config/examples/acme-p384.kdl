@@ -10,6 +10,7 @@ system {
 listeners {
     listener "https" {
         address "0.0.0.0:443"
+        protocol "https"
         tls {
             acme {
                 email "admin@example.com"

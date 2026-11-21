@@ -54,8 +54,8 @@ Port binding configuration.
 |----------|------|---------|-------------|
 | `id` | `string` | **required** | Unique listener identifier |
 | `address` | `string` | **required** | Socket address (e.g., `0.0.0.0:8080`) |
-| `protocol` | `string` | **required** | Protocol: `http`, `https`, `h2`, `h3`, `h2c` |
-| `tls` | `TlsConfig` | - | TLS configuration (required for https) |
+| `protocol` | `string` | `"http"` | Protocol: `http`, `https`, `h2`, `h3`, `h2c` |
+| `tls` | `TlsConfig` | - | TLS configuration: required for `https` and `h2`, and an error for `http` (the default) and `h2c` |
 | `default-route` | `string` | - | Default route if no match |
 | `request-timeout-secs` | `u64` | `60` | Request timeout |
 | `keepalive-timeout-secs` | `u64` | `75` | Keep-alive timeout |
