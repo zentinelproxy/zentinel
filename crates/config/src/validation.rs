@@ -14,7 +14,8 @@ use std::net::SocketAddr;
 use tracing::{debug, trace, warn};
 
 use crate::{
-    Config, Filter, ListenerProtocol, NamespaceConfig, ServiceConfig, ServiceType, WafMode,
+    Config, Filter, ListenerProtocol, NamespaceConfig, RouteConfig, ServiceConfig, ServiceType,
+    WafMode,
 };
 use zentinel_common::ids::Scope;
 use zentinel_common::types::Priority;
@@ -995,22 +996,92 @@ fn validate_duplicates(config: &Config, errors: &mut Vec<String>) {
     );
 }
 
-fn warn_orphaned_upstreams(config: &Config, upstream_ids: &HashSet<&str>) {
-    let referenced_upstreams: HashSet<_> = config
+/// The upstreams `route` names: where it sends traffic, and where it can send
+/// it instead or in addition (its shadow, its fallback upstreams, the upstreams
+/// of its model routing, and the servers behind an MCP route).
+fn upstreams_named_by(route: &RouteConfig) -> Vec<&str> {
+    let mut named: Vec<&str> = route.upstream.iter().map(String::as_str).collect();
+    named.extend(route.shadow.iter().map(|s| s.upstream.as_str()));
+    if let Some(fallback) = &route.fallback {
+        named.extend(fallback.upstreams.iter().map(|u| u.upstream.as_str()));
+    }
+    if let Some(model_routing) = route
+        .inference
+        .as_ref()
+        .and_then(|i| i.model_routing.as_ref())
+    {
+        named.extend(model_routing.mappings.iter().map(|m| m.upstream.as_str()));
+        named.extend(model_routing.default_upstream.as_deref());
+    }
+    if let Some(mcp) = &route.mcp {
+        named.extend(mcp.upstreams.iter().map(|u| u.upstream.as_str()));
+    }
+    named
+}
+
+/// The ids in `upstream_ids` that no route names, in order. Routes of
+/// namespaces and services count too.
+fn orphaned_upstreams<'a>(config: &Config, upstream_ids: &HashSet<&'a str>) -> Vec<&'a str> {
+    let scoped_routes = config.namespaces.iter().flat_map(|ns| {
+        ns.routes
+            .iter()
+            .chain(ns.services.iter().flat_map(|svc| svc.routes.iter()))
+    });
+    let referenced: HashSet<&str> = config
         .routes
         .iter()
-        .filter_map(|r| r.upstream.as_ref())
-        .map(|s| s.as_str())
+        .chain(scoped_routes)
+        .flat_map(upstreams_named_by)
         .collect();
 
-    for upstream_id in upstream_ids {
-        if !referenced_upstreams.contains(*upstream_id) {
-            tracing::warn!(
-                upstream_id = %upstream_id,
-                "Upstream '{}' is defined but not referenced by any route.",
-                upstream_id
-            );
+    let mut orphaned: Vec<&str> = upstream_ids
+        .iter()
+        .copied()
+        .filter(|id| !referenced.contains(id))
+        .collect();
+    orphaned.sort_unstable();
+    orphaned
+}
+
+/// Warnings for the values of a `Config` that was read from JSON or TOML and
+/// that the proxy does not apply: a listener's `max_concurrent_streams`, and
+/// the `logging` level and format, when they differ from the default.
+///
+/// A KDL file is reported from its source instead (`kdl::unapplied`), which can
+/// tell a value that was written from the default; a `Config` cannot, so these
+/// are the values that are certainly not the default.
+pub(crate) fn unapplied_value_warnings(config: &Config) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    for listener in &config.listeners {
+        if listener.max_concurrent_streams != crate::server::default_max_concurrent_streams() {
+            warnings.push(format!(
+                "Listener '{}' has max_concurrent_streams={} but Pingora's H2 settings \
+                 do not yet support per-listener configuration.",
+                listener.id, listener.max_concurrent_streams
+            ));
         }
+    }
+
+    let logging = &config.observability.logging;
+    if logging.level != "info" || logging.format != "json" {
+        warnings.push(format!(
+            "Logging level='{}' and format='{}' are configured but the tracing subscriber uses \
+             RUST_LOG env var and --verbose flag instead. Set RUST_LOG={} as a workaround.",
+            logging.level, logging.format, logging.level
+        ));
+    }
+
+    warnings
+}
+
+fn warn_orphaned_upstreams(config: &Config, upstream_ids: &HashSet<&str>) {
+    for upstream_id in orphaned_upstreams(config, upstream_ids) {
+        tracing::warn!(
+            upstream_id = %upstream_id,
+            "Upstream '{}' is defined but not referenced by any route.",
+            upstream_id
+        );
     }
 }
 
@@ -1279,19 +1350,14 @@ fn validate_implementation_status(
         ));
     }
 
-    // Listener settings: max_concurrent_streams not yet wired to H2
-    for listener in &config.listeners {
-        if listener.max_concurrent_streams != crate::server::default_max_concurrent_streams() {
-            warnings.push(format!(
-                "Listener '{}' has max_concurrent_streams={} but Pingora's H2 settings \
-                 do not yet support per-listener configuration.",
-                listener.id, listener.max_concurrent_streams
-            ));
-        }
-    }
+    // A listener's `max-concurrent-streams` and the `level` and `format` of
+    // `logging` are not checked here: a `Config` cannot tell a value that was
+    // written from the default. For KDL they are reported from the source,
+    // where the parser logs them as it reads them and `lint` and
+    // `test --strict` report them (`kdl::unapplied`); JSON and TOML configs get
+    // `unapplied_value_warnings` when they are read.
 
-    // Logging: level/format are controlled by RUST_LOG env var and --verbose flag,
-    // not yet by the config file. File output also not yet wired.
+    // Logging: application log file routing is not wired.
     let logging = &config.observability.logging;
     if logging.file.is_some() {
         warnings.push(
@@ -1299,13 +1365,6 @@ fn validate_implementation_status(
              Logs go to stdout/stderr. Use shell redirection as a workaround."
                 .to_string(),
         );
-    }
-    if logging.level != "info" || logging.format != "json" {
-        warnings.push(format!(
-            "Logging level='{}' and format='{}' are configured but the tracing subscriber uses \
-             RUST_LOG env var and --verbose flag instead. Set RUST_LOG={} as a workaround.",
-            logging.level, logging.format, logging.level
-        ));
     }
 }
 
@@ -1344,6 +1403,89 @@ fn build_validation_result(errors: Vec<String>) -> Result<(), validator::Validat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A listener's `max-concurrent-streams` and the `logging` level and format
+    /// are reported from the source of a KDL file. A configuration read from
+    /// JSON or TOML has no source to read, so it is told from its values.
+    #[test]
+    fn a_json_config_is_warned_about_unapplied_values() {
+        let mut value = serde_json::to_value(Config::default_for_testing()).unwrap();
+        value["listeners"][0]["max_concurrent_streams"] = 200.into();
+        value["observability"]["logging"]["level"] = "debug".into();
+        let json = value.to_string();
+
+        let (loaded, warnings) = crate::test_log::warnings_logged_by(|| Config::from_json(&json));
+        loaded.expect("the document should load");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("max_concurrent_streams")),
+            "{warnings:#?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("Logging level")),
+            "{warnings:#?}"
+        );
+
+        let (loaded, warnings) = crate::test_log::warnings_logged_by(|| {
+            Config::from_json(&serde_json::to_string(&Config::default_for_testing()).unwrap())
+        });
+        loaded.expect("the default configuration should load");
+        assert!(warnings.is_empty(), "{warnings:#?}");
+    }
+
+    /// An upstream is not orphaned because a route reaches it as its shadow,
+    /// as a fallback upstream, or through model routing rather than as its
+    /// `upstream`.
+    #[test]
+    fn upstreams_named_by_other_parts_of_a_route_are_not_orphaned() {
+        let kdl = r#"
+            system { worker-threads 1 }
+            listeners { listener "l" { address "127.0.0.1:8080" } }
+            upstreams {
+                upstream "main" { target "127.0.0.1:9001" }
+                upstream "mirror" { target "127.0.0.1:9002" }
+                upstream "backup" { target "127.0.0.1:9003" }
+                upstream "ruled" { target "127.0.0.1:9004" }
+                upstream "catch-all" { target "127.0.0.1:9005" }
+                upstream "scoped" { target "127.0.0.1:9006" }
+                upstream "tools" { target "127.0.0.1:9009" }
+                upstream "unused-b" { target "127.0.0.1:9007" }
+                upstream "unused-a" { target "127.0.0.1:9008" }
+            }
+            routes {
+                route "r" {
+                    matches { path "/" }
+                    upstream "main"
+                    shadow { upstream "mirror" }
+                    fallback { fallback-upstream "backup" }
+                    inference {
+                        model-routing {
+                            model "m*" upstream="ruled"
+                            default-upstream "catch-all"
+                        }
+                    }
+                }
+                route "m" {
+                    matches { path "/mcp" }
+                    mcp {
+                        upstreams { upstream "tools" prefix="tools" }
+                    }
+                }
+            }
+            namespace "team" {
+                routes {
+                    route "s" {
+                        matches { path "/s" }
+                        upstream "scoped"
+                    }
+                }
+            }
+        "#;
+        let config = Config::from_kdl(kdl).expect("the document should load");
+        let ids: HashSet<&str> = config.upstreams.keys().map(String::as_str).collect();
+        assert_eq!(orphaned_upstreams(&config, &ids), ["unused-a", "unused-b"]);
+    }
     use crate::namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
     use zentinel_common::types::TlsVersion;
 
@@ -1546,6 +1688,7 @@ mod tests {
             format!(
                 "system {{\n  workers 2\n}}\n\
                  listeners {{\n  listener \"https\" {{\n    address \"127.0.0.1:8443\"\n\
+                 \x20   protocol \"https\"\n\
                  \x20   tls {{\n{tls_body}\n    }}\n  }}\n}}\n\
                  upstreams {{\n  upstream \"b\" {{\n    target \"127.0.0.1:9000\"\n  }}\n}}\n\
                  routes {{\n  route \"r\" {{\n    matches {{\n      path-prefix \"/\"\n    }}\n\
@@ -2153,17 +2296,23 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
-    /// Each field `validate_implementation_status` calls unwired, searched
-    /// for in the proxy's source. Finding one means the feature has been
-    /// wired and its warning is now a false alarm: remove the warning, and
-    /// the name from this list.
+    /// Each field that `validate_implementation_status` or `kdl::unapplied`
+    /// calls unwired, searched for in the proxy's source. Finding one means
+    /// the feature has been wired and its warning is now a false alarm:
+    /// remove the warning, and the name from this list.
     ///
-    /// Only names distinctive enough to search for are listed. The logging
-    /// warnings are about `level`, `format` and `file`, which appear all over
-    /// the proxy for unrelated reasons, so they are not.
+    /// Only names distinctive enough to search for are listed. `level`,
+    /// `format` and `file` of the logging block, and settings such as
+    /// `ca-cert` or `max-idle` whose names the proxy uses for other things,
+    /// appear all over the proxy for unrelated reasons, so they are not.
     #[test]
     fn unwired_fields_are_not_read_by_the_proxy() {
-        const UNWIRED: &[&str] = &["max_concurrent_streams"];
+        const UNWIRED: &[&str] = &[
+            "max_concurrent_streams",
+            "vary_headers",
+            "ignore_query_params",
+            "inspect_response_body",
+        ];
 
         let proxy_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../proxy/src");
         if !proxy_src.is_dir() {
@@ -2652,13 +2801,13 @@ mod tests {
 
         // Enable all features that currently produce warnings:
 
-        // max_concurrent_streams (unwired — Pingora H2 per-listener config)
-        config.listeners[0].max_concurrent_streams = 200; // non-default → produces warning
-
         // Logging file (unwired — goes to stdout/stderr)
         config.observability.logging.file = Some("/var/log/zentinel/app.log".into());
 
-        // Logging level/format (unwired — controlled by RUST_LOG env var)
+        // A listener's max_concurrent_streams and the logging level/format are
+        // unwired too, and reported from the source (`kdl::unapplied`), so a
+        // `Config` that carries them produces no warning here.
+        config.listeners[0].max_concurrent_streams = 200;
         config.observability.logging.level = "debug".to_string();
         config.observability.logging.format = "pretty".to_string();
 
@@ -2672,8 +2821,7 @@ mod tests {
         // Exact expected warnings — update when features are wired or new warnings added.
         //
         // Each entry is a substring that must appear in exactly one warning.
-        let expected_warning_fragments =
-            vec!["max_concurrent_streams", "logging.file", "Logging level"];
+        let expected_warning_fragments = vec!["logging.file"];
 
         assert_eq!(
             warnings.len(),

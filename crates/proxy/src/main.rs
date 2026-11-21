@@ -78,7 +78,8 @@ enum Commands {
         config: Option<String>,
 
         /// Fail if any setting is being ignored (unknown keys, run-together
-        /// lines, values that fall back to a default)
+        /// lines, values that fall back to a default, settings the proxy
+        /// reads and does not apply)
         #[arg(long = "strict")]
         strict: bool,
     },

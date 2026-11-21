@@ -74,7 +74,7 @@ cache {
 
 routes {
     // -------------------------------------------------------------------------
-    // API with caching enabled
+    // API whose response varies by request headers: not cached
     // -------------------------------------------------------------------------
     route "api-cached" {
         priority "high"
@@ -86,31 +86,12 @@ routes {
 
         upstream "api-backend"
 
+        // Not cached here: this route's response varies by the Accept headers,
+        // and request headers are not part of the cache key (`vary-headers` is
+        // not applied). A route whose response does not vary by a header is
+        // cached with a `cache` block, as in "static-assets" below.
         policies {
             timeout-secs 30
-
-            // Per-route cache configuration
-            cache {
-                enabled #true
-
-                // Cache TTL in seconds
-                ttl-secs 300  // 5 minutes
-
-                // Vary cache by these headers
-                vary-headers "Accept" "Accept-Encoding" "Accept-Language"
-
-                // Respect Cache-Control headers from upstream
-                respect-cache-control #true
-
-                // Cache even if upstream returns no-cache (override)
-                ignore-no-cache #false
-
-                // Stale-while-revalidate: serve stale while refreshing
-                stale-while-revalidate-secs 60
-
-                // Stale-if-error: serve stale on upstream error
-                stale-if-error-secs 300
-            }
         }
     }
 
@@ -130,33 +111,37 @@ routes {
         policies {
             timeout-secs 10
 
-            cache {
-                enabled #true
-
-                // Long TTL for static assets
-                ttl-secs 86400  // 24 hours
-
-                // Only vary by Accept-Encoding for static files
-                vary-headers "Accept-Encoding"
-
-                // Ignore Cache-Control from origin for static
-                respect-cache-control #false
-
-                // Long stale times for availability
-                stale-while-revalidate-secs 3600
-                stale-if-error-secs 86400
-            }
-
             response-headers {
                 set {
                     "Cache-Control" "public, max-age=86400, immutable"
                 }
             }
         }
+
+        // Per-route cache configuration: a block of the route itself, beside
+        // `policies` (inside `policies` it is not read).
+        //
+        // Request headers are not part of the cache key (`vary-headers` is not
+        // applied), so cache a route like this one only if the origin does not
+        // change its response by request headers (for example, it does not
+        // compress by Accept-Encoding).
+        cache {
+            enabled #true
+
+            // Long TTL for static assets, for responses without Cache-Control
+            default-ttl-secs 86400  // 24 hours
+
+            // Largest response to keep (2MB)
+            max-size-bytes 2097152
+
+            // Long stale times for availability
+            stale-while-revalidate-secs 3600
+            stale-if-error-secs 86400
+        }
     }
 
     // -------------------------------------------------------------------------
-    // Short-lived cache for dynamic content
+    // Dynamic content that differs per user: not cached
     // -------------------------------------------------------------------------
     route "dynamic-cached" {
         priority "normal"
@@ -168,25 +153,15 @@ routes {
 
         upstream "api-backend"
 
+        // Not cached here: this feed differs per user, and request headers
+        // are not part of the cache key (`vary-headers` is not applied).
         policies {
             timeout-secs 30
-
-            cache {
-                enabled #true
-
-                // Short TTL for frequently changing data
-                ttl-secs 30
-
-                vary-headers "Accept" "Authorization"
-
-                // Follow upstream cache headers strictly
-                respect-cache-control #true
-            }
         }
     }
 
     // -------------------------------------------------------------------------
-    // API key-based cache variation
+    // Responses that differ per API key: not cached
     // -------------------------------------------------------------------------
     route "api-key-cached" {
         priority "high"
@@ -199,18 +174,10 @@ routes {
 
         upstream "api-backend"
 
+        // Not cached here: responses differ per API key, and request headers
+        // are not part of the cache key (`vary-headers` is not applied).
         policies {
             timeout-secs 30
-
-            cache {
-                enabled #true
-                ttl-secs 60
-
-                // Cache varies by API key (per-user cache)
-                vary-headers "X-API-Key" "Accept"
-
-                respect-cache-control #true
-            }
         }
     }
 
@@ -229,19 +196,25 @@ routes {
 
         policies {
             timeout-secs 120
+        }
 
-            cache {
-                enabled #true
+        // Cached only because the origin returns the same response whatever the
+        // Accept header says: request headers are not part of the cache key
+        // (`vary-headers` is not applied).
+        cache {
+            enabled #true
 
-                // Long cache for expensive computations
-                ttl-secs 3600  // 1 hour
+            // Long cache for expensive computations, for responses without
+            // Cache-Control
+            default-ttl-secs 3600  // 1 hour
 
-                vary-headers "Accept"
+            // Only these methods and statuses are kept
+            cacheable-methods "GET"
+            cacheable-status-codes 200
 
-                // Generous stale settings
-                stale-while-revalidate-secs 600
-                stale-if-error-secs 3600
-            }
+            // Generous stale settings
+            stale-while-revalidate-secs 600
+            stale-if-error-secs 3600
         }
     }
 
@@ -261,16 +234,16 @@ routes {
 
         policies {
             timeout-secs 30
+        }
 
-            // Disable caching for authenticated requests
-            cache {
-                enabled #false
-            }
+        // Disable caching for authenticated requests
+        cache {
+            enabled #false
         }
     }
 
     // -------------------------------------------------------------------------
-    // Cache with custom key
+    // Search endpoint whose response varies by the Accept header: not cached
     // -------------------------------------------------------------------------
     route "custom-cache-key" {
         priority "normal"
@@ -282,17 +255,11 @@ routes {
 
         upstream "api-backend"
 
+        // Not cached here: this route's response varies by the Accept header,
+        // and request headers are not part of the cache key (`vary-headers` is
+        // not applied). The query string is part of the cache key as written.
         policies {
             timeout-secs 30
-
-            cache {
-                enabled #true
-                ttl-secs 300
-
-                // Include query parameters in cache key
-                vary-headers "Accept"
-                // Query string is automatically part of cache key
-            }
         }
     }
 
@@ -317,8 +284,6 @@ routes {
 
             // Don't cache admin or login paths
             exclude-paths "/wp-admin/**" "/login" "/api/auth/**"
-
-            vary-headers "Accept-Encoding"
         }
     }
 
@@ -401,9 +366,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         access-log {
             enabled #true
             file "/var/log/zentinel/access.log"

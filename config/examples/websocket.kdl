@@ -172,11 +172,6 @@ upstreams {
             healthy-threshold 2
             unhealthy-threshold 3
         }
-
-        connection-pool {
-            max-connections 1000
-            max-idle 100
-        }
     }
 
     upstream "socketio-backend" {
@@ -229,9 +224,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         access-log {
             enabled #true
             file "/var/log/zentinel/websocket-access.log"

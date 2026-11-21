@@ -122,12 +122,9 @@ routes {
 
         filters "public-cors"
 
-        websocket {
-            enabled #true
-            ping-interval-secs 30
-            ping-timeout-secs 10
-            max-message-size-bytes 65536
-        }
+        websocket #true
+        // Not yet configurable: ping-interval-secs 30, ping-timeout-secs 10,
+        // max-message-size-bytes 65536.
 
         policies {
             response-headers {
@@ -181,11 +178,6 @@ observability {
         enabled #true
         address "0.0.0.0:9090"
         path "/metrics"
-    }
-
-    logging {
-        level "info"
-        format "json"
     }
 }
 

@@ -299,10 +299,11 @@ namespace "storefront" {
 
                 policies {
                     timeout-secs 10
-                    cache {
-                        enabled #true
-                        ttl-secs 300
-                    }
+                }
+
+                cache {
+                    enabled #true
+                    default-ttl-secs 300
                 }
             }
 
@@ -377,11 +378,6 @@ namespace "analytics" {
                 target "ingest.analytics.internal:8082" weight=1
 
                 load-balancing "least_connections"
-
-                connection-pool {
-                    max-connections 200
-                    max-idle 50
-                }
             }
 
             upstream "query" {
@@ -485,9 +481,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         access-log {
             enabled #true
             file "/var/log/zentinel/access.log"

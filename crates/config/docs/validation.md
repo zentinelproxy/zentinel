@@ -28,6 +28,11 @@ Minimum supported: `1.0`
 
 ## Validation Rules
 
+The type of every value is checked when the file is parsed, before the rules
+below: a string where an integer is expected, a number where a string is
+expected, and so on, is an error and not the setting's default. See
+[Value Types](kdl-format.md#value-types).
+
 ### Server
 
 | Property | Validation |
@@ -43,8 +48,8 @@ Minimum supported: `1.0`
 |----------|------------|
 | `id` | Non-empty, unique |
 | `address` | Valid socket address (host:port) |
-| `protocol` | Must be `http`, `https`, `h2`, `h3` or `h2c`; `https` and `h2` need a `tls` block, `h2c` must not have one |
-| `tls` | Required when protocol is `https` |
+| `protocol` | Must be `http`, `https`, `h2`, `h3` or `h2c`; `http` is the protocol when none is written. `https` and `h2` need a `tls` block; `http` and `h2c` must not have one |
+| `tls` | Required when protocol is `https` or `h2`; an error on `http` (including no `protocol`) and `h2c` |
 | `request-timeout-secs` | `> 0` |
 
 **At least one listener is required.**
@@ -161,7 +166,7 @@ Configuration validation failed:
 |----------|---------|-----------|
 | `request-timeout-secs` | `60` | Standard HTTP timeout |
 | `keepalive-timeout-secs` | `75` | Slightly longer than typical client |
-| `max-concurrent-streams` | `100` | Reasonable HTTP/2 limit |
+| `max-concurrent-streams` | `100` | Not applied ([details](schema.md#accepted-but-not-applied)) |
 
 ### TLS Defaults
 
@@ -179,7 +184,7 @@ Configuration validation failed:
 | `priority` | `normal` | Standard priority |
 | `service-type` | `web` | Traditional web proxy |
 | `failure-mode` | `closed` | Security-first (fail-closed) |
-| `waf-enabled` | `false` | WAF opt-in |
+| `waf-enabled` | `false` | Not applied ([details](schema.md#accepted-but-not-applied)) |
 | `websocket` | `false` | WebSocket opt-in |
 
 ### Upstream Defaults
@@ -188,8 +193,8 @@ Configuration validation failed:
 |----------|---------|-----------|
 | `load-balancing` | `round-robin` | Simple, fair distribution |
 | `targets[].weight` | `1` | Equal weight by default |
-| `connection-pool.max-connections` | `100` | Reasonable pool size |
-| `connection-pool.max-idle` | `20` | Balance memory vs latency |
+| `connection-pool.max-connections` | `100` | Not applied ([details](schema.md#accepted-but-not-applied)) |
+| `connection-pool.max-idle` | `20` | Not applied ([details](schema.md#accepted-but-not-applied)) |
 | `connection-pool.idle-timeout-secs` | `60` | Reclaim idle connections |
 | `timeouts.connect-secs` | `10` | Reasonable connect timeout |
 | `timeouts.request-secs` | `60` | Standard request timeout |
@@ -261,7 +266,7 @@ Configuration validation failed:
 | `ruleset.paranoia-level` | `1` | Low false positives |
 | `ruleset.anomaly-threshold` | `5` | Standard CRS threshold |
 | `body-inspection.inspect-request-body` | `true` | Inspect requests |
-| `body-inspection.inspect-response-body` | `false` | Response inspection opt-in |
+| `body-inspection.inspect-response-body` | `false` | Not applied ([details](schema.md#accepted-but-not-applied)) |
 | `body-inspection.max-inspection-bytes` | `1048576` | 1MB inspection limit |
 
 ### Observability Defaults
@@ -303,7 +308,6 @@ Zentinel follows a **security-first** design philosophy:
 |---------|---------|-----------------|
 | `failure-mode` | `closed` | Block on failure (not fail-open) |
 | `tls.min-version` | `tls1.2` | No legacy TLS |
-| `waf-enabled` | `false` | WAF must be explicitly enabled |
 | `agent.timeout-ms` | `1000` | Bounded agent calls |
 | `limits.*` | Bounded | Prevent resource exhaustion |
 
@@ -325,6 +329,27 @@ Configuration validation failed:
   Filter 'auth' references non-existent agent 'auth-agent'
 
   Available agents: ["waf-agent"]
+```
+
+```
+Duplicate node 'timeouts' in upstreams > upstream "backend": it is written 2 times,
+but only one of them would take effect. Combine them into a single 'timeouts' node,
+or remove the extra ones.
+```
+
+```
+Duplicate upstream ID 'backend' found. Each upstream ID must be unique.
+```
+
+```
+Wrong value type for 'max-connections-per-client' in limits: expected an integer
+(without quotes), found a string.
+```
+
+```
+Listener 'web': has a 'tls' block, but protocol "http" (the protocol when none is
+written) serves plain HTTP/1.1, so the block would not be used. Add protocol
+"https" to serve TLS, or remove the 'tls' block.
 ```
 
 ```

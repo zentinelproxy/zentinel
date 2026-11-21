@@ -85,8 +85,6 @@ upstreams {
         }
 
         connection-pool {
-            max-connections 50
-            max-idle 10
             idle-timeout-secs 60
         }
     }
@@ -123,38 +121,31 @@ routes {
             rate-limit {
                 tokens-per-minute 100000
                 burst-tokens 20000
-                key "header:X-API-Key"  // Rate limit per API key
             }
 
             // Token budget for cumulative tracking
             budget {
                 limit 10000000  // 10M tokens per period
                 period "monthly"
-                key "header:X-Org-Id"  // Budget per organization
             }
 
             // Cost attribution for billing
             cost-attribution {
                 enabled #true
-                models {
+                pricing {
                     model "gpt-4" {
-                        input-cost-per-1k 0.03
-                        output-cost-per-1k 0.06
+                        input-cost-per-million 30.0
+                        output-cost-per-million 60.0
                     }
                     model "gpt-4-turbo" {
-                        input-cost-per-1k 0.01
-                        output-cost-per-1k 0.03
+                        input-cost-per-million 10.0
+                        output-cost-per-million 30.0
                     }
                     model "gpt-3.5-turbo" {
-                        input-cost-per-1k 0.0005
-                        output-cost-per-1k 0.0015
+                        input-cost-per-million 0.5
+                        output-cost-per-million 1.5
                     }
                 }
-            }
-
-            // Inference-aware routing
-            routing {
-                strategy "least_tokens_queued"
             }
         }
 
@@ -183,24 +174,17 @@ routes {
             rate-limit {
                 tokens-per-minute 50000
                 burst-tokens 10000
-                key "header:X-API-Key"
             }
 
             // Model routing with fallback
             model-routing {
-                // Route specific models to specific upstreams
-                mappings {
-                    mapping "claude-3-opus*" {
-                        upstream "anthropic"
-                    }
-                    mapping "claude-3-sonnet*" {
-                        upstream "anthropic"
-                    }
-                    // Fallback unknown models to local
-                    mapping "*" {
-                        upstream "local-llm"
-                    }
-                }
+                // Route specific models to specific upstreams: one
+                // `model "<pattern>" upstream="<id>"` line per rule, the first
+                // match wins
+                model "claude-3-opus*" upstream="anthropic"
+                model "claude-3-sonnet*" upstream="anthropic"
+                // Fallback unknown models to local
+                model "*" upstream="local-llm"
             }
         }
 
@@ -226,42 +210,24 @@ routes {
         inference {
             provider "generic"
 
-            // Token estimation when provider doesn't report tokens
-            token-estimation "chars"  // chars, words, or tiktoken
-
             rate-limit {
                 tokens-per-minute 500000
                 burst-tokens 100000
-                key "client_ip"
+                // Token estimation when provider doesn't report tokens
+                estimation-method "chars"  // chars, words, or tiktoken
             }
 
-            routing {
-                strategy "least_latency"
-            }
-
-            // Model routing for multi-model deployments
+            // Model routing for multi-model deployments. The model name is
+            // read from the X-Model (or X-Model-Id) request header.
             model-routing {
-                model-header "X-Model-Name"
-                mappings {
-                    mapping "llama-70b*" {
-                        upstream "local-llm"
-                        weight 1
-                    }
-                    mapping "llama-7b*" {
-                        upstream "local-llm"
-                        weight 3  // Prefer smaller model
-                    }
-                    mapping "mistral*" {
-                        upstream "local-llm"
-                    }
-                }
+                model "llama-70b*" upstream="local-llm"
+                model "llama-7b*" upstream="local-llm"
+                model "mistral*" upstream="local-llm"
             }
         }
 
         // Automatic fallback on errors
         fallback {
-            upstream "fallback-llm"
-
             triggers {
                 on-health-failure #true
                 on-budget-exhausted #true
@@ -269,10 +235,12 @@ routes {
                 on-error-codes 502 503 504 429
             }
 
-            // Model mapping for cross-provider fallback
-            model-mapping {
-                "llama-70b" "llama-7b"  // Fall back to smaller model
-                "claude-3-opus" "gpt-4"
+            fallback-upstream "fallback-llm" {
+                // Model mapping for cross-provider fallback
+                model-mapping {
+                    "llama-70b" "llama-7b"  // Fall back to smaller model
+                    "claude-3-opus" "gpt-4"
+                }
             }
         }
 
@@ -317,9 +285,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         access-log {
             enabled #true
             file "/var/log/zentinel/inference-access.log"

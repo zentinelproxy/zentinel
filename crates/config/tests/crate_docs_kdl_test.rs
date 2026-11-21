@@ -116,3 +116,47 @@ fn every_kdl_snippet_in_crate_docs_parses() {
         failures.join("\n  ")
     );
 }
+
+/// A kdl snippet in the crate docs must not write a setting the proxy ignores.
+///
+/// The docs are what operators copy. Settings that are read and not applied,
+/// and keys of the inference and fallback blocks that the parser does not
+/// read, load without a word and change nothing, so an example that uses one
+/// teaches a configuration that does not do what it says. Only these two kinds
+/// of finding are checked here: the docs also hold deliberate fragments and
+/// wrong examples that other checks would flag.
+///
+/// `ZENTINEL_DOCS_TEST_ROOT` names another tree with a `crates/*/docs` layout to
+/// check instead of this one, for running the test against older docs.
+#[test]
+fn kdl_snippets_in_crate_docs_do_not_write_ignored_settings() {
+    let root = std::env::var_os("ZENTINEL_DOCS_TEST_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(workspace_root);
+    let mut findings = Vec::new();
+
+    for file in markdown_files(&root) {
+        let text = std::fs::read_to_string(&file).expect("read markdown");
+        for (line, body) in kdl_fences(&text) {
+            let mut result = zentinel_config::validate::ValidationResult::new();
+            zentinel_config::validate::unknown_keys::check_unknown_keys(&body, &mut result);
+            for warning in result.warnings {
+                if warning
+                    .message
+                    .contains("is not applied and is being ignored")
+                    || warning.message.contains("is not read and is being ignored")
+                {
+                    let rel = file.strip_prefix(&root).unwrap_or(&file);
+                    findings.push(format!("{}:{line}  {}", rel.display(), warning.message));
+                }
+            }
+        }
+    }
+
+    assert!(
+        findings.is_empty(),
+        "{} setting(s) in kdl snippets of crates/*/docs/ are ignored:\n  {}",
+        findings.len(),
+        findings.join("\n  ")
+    );
+}

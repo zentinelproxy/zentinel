@@ -168,3 +168,94 @@ fn every_shipped_example_loads_and_validates() {
         failures.join("\n  ")
     );
 }
+
+/// The inference example's model routing, prices and fallback are read, not dropped:
+/// its rules were once written in shapes the parser does not take, and the
+/// routes loaded with none.
+#[test]
+fn inference_routing_example_model_rules_and_fallback_are_read() {
+    let path = examples_dir().join("inference-routing.kdl");
+    let config = Config::from_file(&path).unwrap_or_else(|e| panic!("failed to load: {e:#}"));
+    let route = |id: &str| {
+        config
+            .routes
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("the example should have a route '{id}'"))
+    };
+
+    let mappings = |id: &str| {
+        route(id)
+            .inference
+            .as_ref()
+            .and_then(|i| i.model_routing.as_ref())
+            .map(|m| m.mappings.iter().map(|m| m.upstream.clone()).collect())
+            .unwrap_or_else(Vec::<String>::new)
+    };
+    assert_eq!(
+        mappings("anthropic-messages"),
+        ["anthropic", "anthropic", "local-llm"]
+    );
+    assert_eq!(
+        mappings("local-inference"),
+        ["local-llm", "local-llm", "local-llm"]
+    );
+
+    let fallback = route("local-inference")
+        .fallback
+        .as_ref()
+        .expect("the local-inference route should have a fallback");
+    // The openai route's prices come from `pricing`, per million tokens.
+    let prices = route("openai-chat")
+        .inference
+        .as_ref()
+        .and_then(|i| i.cost_attribution.as_ref())
+        .map(|c| c.pricing.len());
+    assert_eq!(prices, Some(3));
+
+    assert_eq!(fallback.upstreams.len(), 1);
+    assert_eq!(fallback.upstreams[0].upstream, "fallback-llm");
+    assert_eq!(fallback.upstreams[0].model_mapping.len(), 2);
+}
+
+/// The caching example's cache blocks are read, and a route whose response
+/// varies by a request header is not given one: request headers are not part of
+/// the cache key.
+#[test]
+fn http_caching_example_caches_only_routes_that_do_not_vary_by_header() {
+    let path = examples_dir().join("http-caching.kdl");
+    let config = Config::from_file(&path).unwrap_or_else(|e| panic!("failed to load: {e:#}"));
+    let cache_of = |id: &str| {
+        config
+            .routes
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("the example should have a route '{id}'"))
+            .policies
+            .cache
+            .as_ref()
+    };
+
+    let assets = cache_of("static-assets").expect("static-assets should be cached");
+    assert!(assets.enabled);
+    assert_eq!(assets.default_ttl_secs, 86400);
+    assert_eq!(assets.max_size_bytes, 2_097_152);
+    assert_eq!(assets.stale_while_revalidate_secs, 3600);
+    assert_eq!(assets.stale_if_error_secs, 86400);
+
+    let slow = cache_of("slow-endpoint").expect("slow-endpoint should be cached");
+    assert!(slow.enabled);
+    assert_eq!(slow.cacheable_methods, ["GET"]);
+    assert_eq!(slow.cacheable_status_codes, [200]);
+
+    assert!(cache_of("site-with-exclusions").is_some_and(|c| c.enabled));
+    assert!(cache_of("no-cache-auth").is_some_and(|c| !c.enabled));
+    for id in [
+        "api-cached",
+        "dynamic-cached",
+        "api-key-cached",
+        "custom-cache-key",
+    ] {
+        assert!(cache_of(id).is_none(), "route '{id}' should not be cached");
+    }
+}

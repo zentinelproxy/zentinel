@@ -117,9 +117,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         error-log {
             enabled #true
             file "/var/log/zentinel/error.log"

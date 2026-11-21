@@ -108,8 +108,6 @@ pub fn lint_config(config: &Config) -> ValidationResult {
 mod bound_thresholds {
     /// Roughly a file descriptor per connection, well past a default ulimit.
     pub const GENEROUS_MAX_CONNECTIONS: usize = 100_000;
-    /// Per upstream target, not in total.
-    pub const GENEROUS_UPSTREAM_CONNECTIONS: usize = 10_000;
     /// Each entry is a route ID keyed by method, host, path, and any matched
     /// headers and query parameters.
     pub const GENEROUS_ROUTE_CACHE: usize = 1_000_000;
@@ -153,32 +151,9 @@ fn check_resource_bounds(config: &Config, result: &mut ValidationResult) {
         )));
     }
 
-    for (name, upstream) in &config.upstreams {
-        let pool = &upstream.connection_pool;
-
-        if pool.max_connections == 0 {
-            result.add_warning(ValidationWarning::new(format!(
-                "Upstream '{name}' has connection-pool max-connections 0, so the pool \
-                 is unbounded. A slow upstream will accumulate connections until the \
-                 process runs out of them."
-            )));
-        } else if pool.max_connections > GENEROUS_UPSTREAM_CONNECTIONS {
-            result.add_warning(ValidationWarning::new(format!(
-                "Upstream '{name}' allows {} connections per target, more than most \
-                 origins accept. The effective limit will be the origin's, and it \
-                 will surface as errors rather than as backpressure.",
-                pool.max_connections
-            )));
-        }
-
-        if pool.max_connections > 0 && pool.max_idle > pool.max_connections {
-            result.add_warning(ValidationWarning::new(format!(
-                "Upstream '{name}' has max-idle ({}) greater than max-connections \
-                 ({}), so the idle bound can never be reached.",
-                pool.max_idle, pool.max_connections
-            )));
-        }
-    }
+    // `connection-pool` sizes are not checked: `max-connections` and
+    // `max-idle` are read and not applied (`kdl::unapplied` says so), so advice
+    // about their values would be about a setting that does nothing.
 
     for route in &config.routes {
         let policies = &route.policies;
@@ -583,27 +558,6 @@ mod resource_bound_tests {
             bound_warnings.is_empty(),
             "defaults should not trip the bounds lint: {bound_warnings:?}"
         );
-    }
-
-    #[test]
-    fn an_unbounded_upstream_pool_is_reported() {
-        let mut config = Config::default_for_testing();
-        for upstream in config.upstreams.values_mut() {
-            upstream.connection_pool.max_connections = 0;
-        }
-        assert!(mentions(&config, "connection-pool max-connections 0"));
-    }
-
-    /// An idle bound above the total is unreachable, so it reads as configured
-    /// while doing nothing.
-    #[test]
-    fn an_unreachable_idle_bound_is_reported() {
-        let mut config = Config::default_for_testing();
-        for upstream in config.upstreams.values_mut() {
-            upstream.connection_pool.max_connections = 10;
-            upstream.connection_pool.max_idle = 100;
-        }
-        assert!(mentions(&config, "can never be reached"));
     }
 
     /// #366 removed `buffer_requests` / `buffer_responses`, so the guard test

@@ -172,10 +172,11 @@ routes {
             timeout-secs 15
             max-body-size "1MB"
             failure-mode "open"  // Fail open for reads
-            cache {
-                enabled #true
-                ttl-secs 60
-            }
+        }
+
+        cache {
+            enabled #true
+            default-ttl-secs 60
         }
     }
 
@@ -258,11 +259,6 @@ upstreams {
             timeout-secs 5
             healthy-threshold 2
             unhealthy-threshold 3
-        }
-
-        connection-pool {
-            max-connections 50
-            max-idle 10
         }
     }
 
@@ -356,9 +352,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         access-log {
             enabled #true
             file "/var/log/zentinel/gateway-access.log"

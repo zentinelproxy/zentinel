@@ -127,8 +127,6 @@ upstreams {
         }
 
         connection-pool {
-            max-connections 100
-            max-idle 20
             idle-timeout-secs 60
         }
     }
@@ -299,7 +297,6 @@ routes {
             host "admin.example.com"
         }
         upstream "admin-backend"
-        waf-enabled #true
     }
 
     route "main" {
@@ -354,7 +351,6 @@ routes {
             path-prefix "/api"
         }
         upstream "api-backend"
-        waf-enabled #true
     }
 }
 ```
@@ -445,8 +441,8 @@ routes {
                 burst-tokens 10000
             }
             budget {
-                daily-limit 1000000
-                monthly-limit 10000000
+                period "daily"
+                limit 1000000
             }
         }
     }
@@ -490,19 +486,19 @@ routes {
                 model "claude-*" upstream="anthropic" provider="anthropic"
                 default-upstream "openai"
             }
-            fallback {
-                upstreams {
-                    upstream "anthropic" provider="anthropic" {
-                        model-mapping {
-                            "gpt-4" "claude-3-opus"
-                            "gpt-3.5-turbo" "claude-3-sonnet"
-                        }
-                    }
-                }
-                triggers {
-                    on-health-failure #true
-                    on-budget-exhausted #true
-                    on-error-codes 429 503
+        }
+        // `fallback` is a block of the route, beside `inference`
+        fallback {
+            triggers {
+                on-health-failure #true
+                on-budget-exhausted #true
+                on-error-codes 429 503
+            }
+            fallback-upstream "anthropic" {
+                provider "anthropic"
+                model-mapping {
+                    "gpt-4" "claude-3-opus"
+                    "gpt-3.5-turbo" "claude-3-sonnet"
                 }
             }
         }
@@ -574,18 +570,16 @@ routes {
             path-prefix "/api"
         }
         upstream "api-backend"
-        policies {
-            cache {
-                enabled #true
-                default-ttl-secs 300  // 5 minutes
-                max-size-bytes 1048576  // 1MB per response
-                cacheable-methods "GET" "HEAD"
-                cacheable-status-codes 200 203 204 206 300 301
-                stale-while-revalidate-secs 60
-                stale-if-error-secs 300
-                vary-headers "Accept" "Accept-Encoding"
-                ignore-query-params "utm_source" "utm_campaign"
-            }
+        // Request headers are not part of the cache key: cache only a route whose
+        // response does not vary by a request header
+        cache {
+            enabled #true
+            default-ttl-secs 300  // 5 minutes
+            max-size-bytes 1048576  // 1MB per response
+            cacheable-methods "GET" "HEAD"
+            cacheable-status-codes 200 203 204 206 300 301
+            stale-while-revalidate-secs 60
+            stale-if-error-secs 300
         }
     }
 
@@ -613,19 +607,17 @@ routes {
             path-prefix "/"
         }
         upstream "origin"
-        policies {
-            cache {
-                enabled #true
-                default-ttl-secs 3600
+        // Request headers are not part of the cache key: cache only a route whose
+        // response does not vary by a request header
+        cache {
+            enabled #true
+            default-ttl-secs 3600
 
-                // Don't cache dynamic file types
-                exclude-extensions "php" "html" "asp"
+            // Don't cache dynamic file types
+            exclude-extensions "php" "html" "asp"
 
-                // Don't cache admin or auth paths (glob patterns)
-                exclude-paths "/wp-admin/**" "/login" "/api/auth/**"
-
-                vary-headers "Accept-Encoding"
-            }
+            // Don't cache admin or auth paths (glob patterns)
+            exclude-paths "/wp-admin/**" "/login" "/api/auth/**"
         }
     }
 }
@@ -729,9 +721,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         access-log {
             enabled #true
             file "/var/log/zentinel/access.log"
@@ -786,7 +775,6 @@ schema-version "1.0"
 
 server {
     worker-threads 0
-    max-connections 50000
     graceful-shutdown-timeout-secs 60
     trace-id-format "uuid"
     auto-reload #false
@@ -804,7 +792,6 @@ listeners {
         protocol "https"
         request-timeout-secs 60
         keepalive-timeout-secs 75
-        max-concurrent-streams 200
         tls {
             cert-file "/etc/ssl/certs/server.crt"
             key-file "/etc/ssl/private/server.key"

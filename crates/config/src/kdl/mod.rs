@@ -12,6 +12,8 @@
 //! - `namespace`: Namespace and service parsing
 
 mod circuitbreaker_helper;
+#[cfg(test)]
+mod duplicate_nodes_tests;
 pub(crate) mod error_pages;
 pub(crate) mod filters;
 mod helpers;
@@ -19,11 +21,20 @@ pub(crate) mod namespace;
 mod retrypolicy_helper;
 pub(crate) mod routes;
 pub(crate) mod server;
+pub(crate) mod unapplied;
+#[cfg(test)]
+mod unapplied_tests;
 pub(crate) mod upstreams;
+#[cfg(test)]
+mod wrong_type_tests;
 
 use tracing::{debug, trace, warn};
 
 // Re-export commonly used items
+use helpers::{
+    get_arg_string, get_float_entry, get_unique, get_unique_child, node_bool, node_int,
+    property_string, string_args,
+};
 pub use helpers::{
     get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, offset_to_line_col,
 };
@@ -49,7 +60,19 @@ use crate::{AgentConfig, Config, CURRENT_SCHEMA_VERSION};
 // ============================================================================
 
 /// Convert a parsed KDL document to Config
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](helpers::DuplicateNode) when a block that is read once
+/// is written twice, a [`WrongValueType`](helpers::WrongValueType) when a
+/// setting has a value of a type it does not take, each with where in the
+/// document it is, and any error the parsers raise for a block or value they
+/// cannot use.
 pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
+    parse_document(&doc).map_err(|error| helpers::locate_error(error, &doc))
+}
+
+fn parse_document(doc: &kdl::KdlDocument) -> Result<Config> {
     trace!(node_count = doc.nodes().len(), "Parsing KDL document");
 
     let mut schema_version = None;
@@ -72,7 +95,7 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
 
         match node_name {
             "schema-version" | "version" => {
-                schema_version = get_first_arg_string(node);
+                schema_version = get_arg_string(node)?;
                 trace!(version = ?schema_version, "Parsed schema version");
             }
             // Accept both "system" (preferred) and "server" (deprecated)
@@ -184,18 +207,22 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
                 namespaces.push(ns);
             }
             "limits" => {
+                warn_if_repeated(limits.is_some(), "limits");
                 limits = Some(parse_limits_config(node)?);
                 trace!("Parsed limits configuration");
             }
             "observability" => {
+                warn_if_repeated(observability.is_some(), "observability");
                 observability = Some(parse_observability_config(node)?);
                 trace!("Parsed observability configuration");
             }
             "rate-limits" => {
+                warn_if_repeated(rate_limits.is_some(), "rate-limits");
                 rate_limits = Some(parse_rate_limits_config(node)?);
                 trace!("Parsed rate-limits configuration");
             }
             "cache" => {
+                warn_if_repeated(cache.is_some(), "cache");
                 cache = Some(parse_cache_config(node)?);
                 trace!("Parsed cache configuration");
             }
@@ -289,6 +316,20 @@ pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
         cache,
         default_upstream: None,
     })
+}
+
+/// Warn that a top-level singleton block is written again.
+///
+/// A later block replaces an earlier one, which is how a file in a directory or
+/// an environment override changes what another file set. `system` and `waf`
+/// say so where they are read.
+fn warn_if_repeated(already_read: bool, block: &str) {
+    if already_read {
+        warn!(
+            "Duplicate '{block}' block found. Singleton blocks use last-wins semantics; \
+             the previous '{block}' block will be overridden."
+        );
+    }
 }
 
 // ============================================================================
@@ -404,6 +445,9 @@ fn kdl_to_json(node: &kdl::KdlNode) -> Result<serde_json::Value> {
 
     // Process children nodes
     if let Some(children) = node.children() {
+        // Each name becomes one key of the object, and a second would replace
+        // the first.
+        helpers::reject_repeated_names(children)?;
         for child in children.nodes() {
             let name = child.name().value().to_string();
 
@@ -489,12 +533,11 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
     // used, where it silently produced `Custom(<id>)` instead of the declared
     // type. Both are accepted here for the same reason `unix-socket` accepts a
     // child `path` or a bare argument.
-    let agent_type = match node
-        .get("type")
-        .and_then(|v| v.as_string())
-        .map(|s| s.to_string())
-        .or_else(|| get_string_entry(node, "type"))
-    {
+    let declared_type = match property_string(node, "type")? {
+        Some(t) => Some(t),
+        None => get_string_entry(node, "type")?,
+    };
+    let agent_type = match declared_type {
         Some(t) => match t.as_str() {
             "waf" => AgentType::Waf,
             "auth" => AgentType::Auth,
@@ -522,10 +565,17 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
     let mut chunk_timeout_ms = 5000u64;
     let mut config: Option<serde_json::Value> = None;
     let mut max_concurrent_calls = 100usize; // Per-agent concurrency limit
+
+    // Each setting holds one value, and a repeat would keep the last; only
+    // `events` adds up when repeated.
+    // `protocol-version` is read for its deprecation warning only.
+    helpers::reject_repeated(children, |name| {
+        name != "events" && name != "protocol-version" && RECOGNIZED_AGENT_KEYS.contains(&name)
+    })?;
     for child in children.nodes() {
         match child.name().value() {
             "unix-socket" => {
-                let path = get_string_entry(child, "path")
+                let path = get_string_entry(child, "path")?
                     .or_else(|| get_first_arg_string(child))
                     .ok_or_else(|| {
                         anyhow::anyhow!("unix-socket requires 'path' attribute or argument")
@@ -535,7 +585,7 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 });
             }
             "grpc" => {
-                let address = get_string_entry(child, "address")
+                let address = get_string_entry(child, "address")?
                     .or_else(|| get_first_arg_string(child))
                     .ok_or_else(|| {
                         anyhow::anyhow!("grpc requires 'address' attribute or argument")
@@ -544,76 +594,64 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 transport = Some(AgentTransport::Grpc { address, tls });
             }
             "http" => {
-                let url = get_string_entry(child, "url")
+                let url = get_string_entry(child, "url")?
                     .or_else(|| get_first_arg_string(child))
                     .ok_or_else(|| anyhow::anyhow!("http requires 'url' attribute or argument"))?;
                 let tls = parse_agent_tls(child)?;
                 transport = Some(AgentTransport::Http { url, tls });
             }
             "timeout-ms" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        timeout_ms = v as u64;
-                    }
+                if let Some(v) = node_int(child)? {
+                    timeout_ms = v as u64;
                 }
             }
             "connect-timeout-ms" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        connect_timeout_ms = Some(v.clamp(0, u64::MAX as i128) as u64);
-                    }
+                if let Some(v) = node_int(child)? {
+                    connect_timeout_ms = Some(v.clamp(0, u64::MAX as i128) as u64);
                 }
             }
             "failure-mode" => {
-                if let Some(mode) = get_first_arg_string(child) {
+                if let Some(mode) = get_arg_string(child)? {
                     failure_mode = parse_agent_failure_mode(&mode)?;
                 }
             }
             "events" => {
                 // Parse events from arguments
-                for entry in child.entries() {
-                    if let Some(event_str) = entry.value().as_string() {
-                        let event = match event_str {
-                            "request_headers" | "request-headers" => AgentEvent::RequestHeaders,
-                            "request_body" | "request-body" => AgentEvent::RequestBody,
-                            "response_headers" | "response-headers" => AgentEvent::ResponseHeaders,
-                            "response_body" | "response-body" => AgentEvent::ResponseBody,
-                            "log" | "request_complete" | "request-complete" => AgentEvent::Log,
-                            "websocket_frame" | "websocket-frame" | "web_socket_frame"
-                            | "web-socket-frame" => AgentEvent::WebSocketFrame,
-                            "guardrail" => AgentEvent::Guardrail,
-                            other => {
-                                return Err(anyhow::anyhow!("Unknown agent event: '{}'", other))
-                            }
-                        };
-                        events.push(event);
-                    }
+                for event_str in string_args(child)? {
+                    let event = match event_str.as_str() {
+                        "request_headers" | "request-headers" => AgentEvent::RequestHeaders,
+                        "request_body" | "request-body" => AgentEvent::RequestBody,
+                        "response_headers" | "response-headers" => AgentEvent::ResponseHeaders,
+                        "response_body" | "response-body" => AgentEvent::ResponseBody,
+                        "log" | "request_complete" | "request-complete" => AgentEvent::Log,
+                        "websocket_frame" | "websocket-frame" | "web_socket_frame"
+                        | "web-socket-frame" => AgentEvent::WebSocketFrame,
+                        "guardrail" => AgentEvent::Guardrail,
+                        other => return Err(anyhow::anyhow!("Unknown agent event: '{}'", other)),
+                    };
+                    events.push(event);
                 }
             }
             "circuit-breaker" => {
                 circuit_breaker = Some(parse_circuit_breaker_faildefault(child)?);
             }
             "max-request-body-bytes" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        max_request_body_bytes = Some(v as usize);
-                    }
+                if let Some(v) = node_int(child)? {
+                    max_request_body_bytes = Some(v as usize);
                 }
             }
             "max-response-body-bytes" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        max_response_body_bytes = Some(v as usize);
-                    }
+                if let Some(v) = node_int(child)? {
+                    max_response_body_bytes = Some(v as usize);
                 }
             }
             "request-body-mode" => {
-                if let Some(mode) = get_first_arg_string(child) {
+                if let Some(mode) = get_arg_string(child)? {
                     request_body_mode = parse_body_streaming_mode(&mode, &id)?;
                 }
             }
             "response-body-mode" => {
-                if let Some(mode) = get_first_arg_string(child) {
+                if let Some(mode) = get_arg_string(child)? {
                     response_body_mode = parse_body_streaming_mode(&mode, &id)?;
                     if response_body_mode == BodyStreamingMode::InspectFirst {
                         return Err(anyhow::anyhow!(
@@ -626,20 +664,16 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 }
             }
             "chunk-timeout-ms" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        chunk_timeout_ms = v as u64;
-                    }
+                if let Some(v) = node_int(child)? {
+                    chunk_timeout_ms = v as u64;
                 }
             }
             "config" => {
                 config = Some(kdl_to_json(child)?);
             }
             "max-concurrent-calls" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        max_concurrent_calls = v as usize;
-                    }
+                if let Some(v) = node_int(child)? {
+                    max_concurrent_calls = v as usize;
                 }
             }
             "protocol-version" => {
@@ -720,59 +754,69 @@ fn parse_body_streaming_mode(mode: &str, agent_id: &str) -> Result<BodyStreaming
 }
 
 /// Merge TLS-related children from a transport or nested `tls { }` block.
-fn collect_agent_tls<'a>(
-    nodes: impl Iterator<Item = &'a kdl::KdlNode>,
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](helpers::DuplicateNode) when a TLS setting, or `tls`
+/// itself, is written more than once in one block; the last one would win.
+fn collect_agent_tls(
+    nodes: &kdl::KdlDocument,
     has_tls: &mut bool,
     insecure_skip_verify: &mut bool,
     ca_cert: &mut Option<PathBuf>,
     client_cert: &mut Option<PathBuf>,
     client_key: &mut Option<PathBuf>,
-) {
-    for child in nodes {
+) -> Result<()> {
+    helpers::reject_repeated(nodes, |name| {
+        name == "tls" || RECOGNIZED_AGENT_TLS_KEYS.contains(&name)
+    })?;
+    for child in nodes.nodes() {
         match child.name().value() {
             "tls" => {
                 *has_tls = true;
                 if let Some(doc) = child.children() {
                     collect_agent_tls(
-                        doc.nodes().iter(),
+                        doc,
                         has_tls,
                         insecure_skip_verify,
                         ca_cert,
                         client_cert,
                         client_key,
-                    );
+                    )?;
                 }
             }
             "tls-insecure" => {
                 *has_tls = true;
-                *insecure_skip_verify = child
-                    .entries()
-                    .iter()
-                    .find(|e| e.name().is_none())
-                    .and_then(|e| e.value().as_bool())
-                    .unwrap_or(true);
+                // A bare `tls-insecure` means #true. An argument has to be a
+                // boolean: `tls-insecure "false"` used to read as #true.
+                *insecure_skip_verify = if child.entries().is_empty() {
+                    true
+                } else {
+                    node_bool(child)?.unwrap_or(true)
+                };
             }
             "ca-cert" => {
                 *has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
+                if let Some(path) = get_arg_string(child)? {
                     *ca_cert = Some(PathBuf::from(path));
                 }
             }
             "client-cert" => {
                 *has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
+                if let Some(path) = get_arg_string(child)? {
                     *client_cert = Some(PathBuf::from(path));
                 }
             }
             "client-key" => {
                 *has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
+                if let Some(path) = get_arg_string(child)? {
                     *client_key = Some(PathBuf::from(path));
                 }
             }
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// Parse TLS configuration for agent transport
@@ -789,13 +833,13 @@ fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
     let mut client_key = None;
 
     collect_agent_tls(
-        children.nodes().iter(),
+        children,
         &mut has_tls,
         &mut insecure_skip_verify,
         &mut ca_cert,
         &mut client_cert,
         &mut client_key,
-    );
+    )?;
 
     if has_tls {
         Ok(Some(AgentTlsConfig {
@@ -836,7 +880,6 @@ fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
 ///
 ///     body-inspection {
 ///         inspect-request-body true
-///         inspect-response-body false
 ///         max-inspection-bytes 1048576
 ///         content-types "application/json" "application/xml"
 ///         decompress false
@@ -848,7 +891,7 @@ pub fn parse_waf_config(node: &kdl::KdlNode) -> Result<WafConfig> {
     use crate::waf::{BodyInspectionPolicy, WafEngine, WafMode, WafRuleset};
 
     // Parse engine type
-    let engine = if let Some(engine_str) = get_string_entry(node, "engine") {
+    let engine = if let Some(engine_str) = get_string_entry(node, "engine")? {
         match engine_str.to_lowercase().as_str() {
             "mod_security" | "modsecurity" => WafEngine::ModSecurity,
             "coraza" => WafEngine::Coraza,
@@ -860,7 +903,7 @@ pub fn parse_waf_config(node: &kdl::KdlNode) -> Result<WafConfig> {
     };
 
     // Parse mode
-    let mode = if let Some(mode_str) = get_string_entry(node, "mode") {
+    let mode = if let Some(mode_str) = get_string_entry(node, "mode")? {
         match mode_str.to_lowercase().as_str() {
             "off" => WafMode::Off,
             "detection" | "detect" => WafMode::Detection,
@@ -877,11 +920,11 @@ pub fn parse_waf_config(node: &kdl::KdlNode) -> Result<WafConfig> {
     };
 
     // Parse audit logging
-    let audit_log = get_bool_entry(node, "audit-log").unwrap_or(true);
+    let audit_log = get_bool_entry(node, "audit-log")?.unwrap_or(true);
 
     // Parse ruleset
     let ruleset = if let Some(children) = node.children() {
-        if let Some(ruleset_node) = children.get("ruleset") {
+        if let Some(ruleset_node) = get_unique(children, "ruleset")? {
             parse_waf_ruleset(ruleset_node)?
         } else {
             // Default ruleset if none specified
@@ -906,7 +949,7 @@ pub fn parse_waf_config(node: &kdl::KdlNode) -> Result<WafConfig> {
 
     // Parse body inspection
     let body_inspection = if let Some(children) = node.children() {
-        if let Some(body_node) = children.get("body-inspection") {
+        if let Some(body_node) = get_unique(children, "body-inspection")? {
             parse_body_inspection_policy(body_node)?
         } else {
             BodyInspectionPolicy::default()
@@ -929,11 +972,11 @@ fn parse_waf_ruleset(node: &kdl::KdlNode) -> Result<crate::waf::WafRuleset> {
     use crate::waf::WafRuleset;
     use std::path::PathBuf;
 
-    let crs_version = get_string_entry(node, "crs-version").unwrap_or_else(|| "3.3.4".to_string());
+    let crs_version = get_string_entry(node, "crs-version")?.unwrap_or_else(|| "3.3.4".to_string());
 
-    let custom_rules_dir = get_string_entry(node, "custom-rules-dir").map(PathBuf::from);
+    let custom_rules_dir = get_string_entry(node, "custom-rules-dir")?.map(PathBuf::from);
 
-    let paranoia_level = get_int_entry(node, "paranoia-level")
+    let paranoia_level = get_int_entry(node, "paranoia-level")?
         .map(|v| v as u8)
         .unwrap_or(1);
 
@@ -945,7 +988,7 @@ fn parse_waf_ruleset(node: &kdl::KdlNode) -> Result<crate::waf::WafRuleset> {
         ));
     }
 
-    let anomaly_threshold = get_int_entry(node, "anomaly-threshold")
+    let anomaly_threshold = get_int_entry(node, "anomaly-threshold")?
         .map(|v| v as u32)
         .unwrap_or(5);
 
@@ -994,27 +1037,14 @@ fn parse_rule_exclusion(node: &kdl::KdlNode) -> Result<crate::waf::RuleExclusion
 
     // Try getting from "rule-ids" child node first
     if let Some(children) = node.children() {
-        if let Some(ids_node) = children.get("rule-ids") {
-            for entry in ids_node.entries() {
-                if let Some(id) = entry.value().as_string() {
-                    rule_ids.push(id.to_string());
-                }
-            }
+        if let Some(ids_node) = get_unique(children, "rule-ids")? {
+            rule_ids.extend(string_args(ids_node)?);
         }
     }
 
     // Also try getting from entries on the exclusion node itself
-    for entry in node.entries() {
-        if let Some(name) = entry.name() {
-            if name.value() == "rule-ids" {
-                // Skip, handled above
-                continue;
-            }
-        } else if let Some(id) = entry.value().as_string() {
-            // Positional argument - this is a rule ID
-            rule_ids.push(id.to_string());
-        }
-    }
+    // The positional arguments of the exclusion node are rule IDs too.
+    rule_ids.extend(string_args(node)?);
 
     // Parse scope.
     //
@@ -1022,16 +1052,12 @@ fn parse_rule_exclusion(node: &kdl::KdlNode) -> Result<crate::waf::RuleExclusion
     // `scope "path" "/x"`, which is what config/zentinel.kdl uses and the more
     // natural KDL of the two. Only the first was implemented, which nobody
     // noticed while exclusions were being discarded wholesale.
-    let scope_argument = node.children().and_then(|c| {
-        c.nodes()
-            .iter()
-            .find(|n| n.name().value() == "scope")
-            .and_then(|n| n.entries().get(1))
-            .and_then(|e| e.value().as_string())
-            .map(str::to_string)
-    });
+    let scope_argument = match get_unique_child(node, "scope")? {
+        Some(n) => helpers::string_arg_at(n, 1)?,
+        None => None,
+    };
 
-    let scope = if let Some(scope_str) = get_string_entry(node, "scope") {
+    let scope = if let Some(scope_str) = get_string_entry(node, "scope")? {
         match (scope_str.to_lowercase().as_str(), scope_argument) {
             ("global", _) => ExclusionScope::Global,
             ("path", Some(pattern)) => ExclusionScope::Path(pattern),
@@ -1074,25 +1100,27 @@ fn parse_rule_exclusion(node: &kdl::KdlNode) -> Result<crate::waf::RuleExclusion
 fn parse_body_inspection_policy(node: &kdl::KdlNode) -> Result<crate::waf::BodyInspectionPolicy> {
     use crate::waf::BodyInspectionPolicy;
 
-    let inspect_request_body = get_bool_entry(node, "inspect-request-body").unwrap_or(true);
-    let inspect_response_body = get_bool_entry(node, "inspect-response-body").unwrap_or(false);
-    let max_inspection_bytes = get_int_entry(node, "max-inspection-bytes")
+    for problem in unapplied::body_inspection_settings(node) {
+        warn!("{}", problem);
+    }
+
+    let inspect_request_body = get_bool_entry(node, "inspect-request-body")?.unwrap_or(true);
+    let inspect_response_body = get_bool_entry(node, "inspect-response-body")?.unwrap_or(false);
+    let max_inspection_bytes = get_int_entry(node, "max-inspection-bytes")?
         .map(|v| v as usize)
         .unwrap_or(1024 * 1024); // 1MB default
-    let decompress = get_bool_entry(node, "decompress").unwrap_or(false);
-    let max_decompression_ratio = get_int_entry(node, "max-decompression-ratio")
+    let decompress = get_bool_entry(node, "decompress")?.unwrap_or(false);
+    // A ratio, so a fractional value is a number too: the shipped config
+    // writes `max-decompression-ratio 100.0`, which was never read.
+    let max_decompression_ratio = get_float_entry(node, "max-decompression-ratio")?
         .map(|v| v as f32)
         .unwrap_or(100.0);
 
     // Parse content types
     let mut content_types = Vec::new();
     if let Some(children) = node.children() {
-        if let Some(ct_node) = children.get("content-types") {
-            for entry in ct_node.entries() {
-                if let Some(ct) = entry.value().as_string() {
-                    content_types.push(ct.to_string());
-                }
-            }
+        if let Some(ct_node) = get_unique(children, "content-types")? {
+            content_types.extend(string_args(ct_node)?);
         }
     }
 
@@ -1150,10 +1178,10 @@ const CONCURRENCY_LIMIT_KEYS: &[&str] = &[
 ];
 
 /// A concurrency limit's value: `None` (unlimited) when absent or `0`.
-fn concurrency_limit(node: &kdl::KdlNode, key: &str) -> Option<usize> {
-    get_int_entry(node, key)
+fn concurrency_limit(node: &kdl::KdlNode, key: &str) -> Result<Option<usize>> {
+    Ok(get_int_entry(node, key)?
         .filter(|v| *v != 0)
-        .map(|v| v as usize)
+        .map(|v| v as usize))
 }
 
 /// Settings in a `limits` block that are read but not applied.
@@ -1164,25 +1192,30 @@ fn concurrency_limit(node: &kdl::KdlNode, key: &str) -> Option<usize> {
 /// The same for a top-level, namespace or service block: a service's limits
 /// apply to its routes like a namespace's since #548, when service routes
 /// started being served.
-pub(crate) fn unapplied_limits_settings(node: &kdl::KdlNode) -> Vec<String> {
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](helpers::DuplicateNode) when one of the limits is
+/// written more than once.
+pub(crate) fn unapplied_limits_settings(node: &kdl::KdlNode) -> Result<Vec<String>> {
     let mut problems = Vec::new();
     for key in CONCURRENCY_LIMIT_KEYS {
-        if get_int_entry(node, key) == Some(0) {
+        if get_int_entry(node, key)? == Some(0) {
             problems.push(format!(
                 "'{key} 0' is being ignored: 0 would refuse everything, so it is read as \
                  no limit. Remove the line for no limit, or set a positive number."
             ));
         }
     }
-    problems
+    Ok(problems)
 }
 
 /// Parse the top-level `limits` block.
 pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
-    for problem in unapplied_limits_settings(node) {
+    for problem in unapplied_limits_settings(node)? {
         warn!("{}", problem);
     }
-    Ok(parse_limits_onto(node, Limits::default()))
+    parse_limits_onto(node, Limits::default())
 }
 
 /// Parse a namespace's or service's `limits` block. `kind` is `"namespace"`
@@ -1195,7 +1228,7 @@ pub fn parse_limits_config(node: &kdl::KdlNode) -> Result<Limits> {
 /// `max-body-size` would also have put its routes back on the default 8 KiB
 /// `max-header-size` under a global block that raised it.
 pub fn parse_scope_limits_config(node: &kdl::KdlNode, kind: &str, id: &str) -> Result<Limits> {
-    for problem in unapplied_limits_settings(node) {
+    for problem in unapplied_limits_settings(node)? {
         warn!("{kind} '{id}': {problem}");
     }
     let unbounded = Limits {
@@ -1204,18 +1237,18 @@ pub fn parse_scope_limits_config(node: &kdl::KdlNode, kind: &str, id: &str) -> R
         max_body_size_bytes: usize::MAX,
         ..Limits::default()
     };
-    Ok(parse_limits_onto(node, unbounded))
+    parse_limits_onto(node, unbounded)
 }
 
 /// Apply the keys a `limits` block writes on top of `limits`.
-fn parse_limits_onto(node: &kdl::KdlNode, mut limits: Limits) -> Limits {
-    if let Some(v) = get_int_entry(node, "max-header-size") {
+fn parse_limits_onto(node: &kdl::KdlNode, mut limits: Limits) -> Result<Limits> {
+    if let Some(v) = get_int_entry(node, "max-header-size")? {
         limits.max_header_size_bytes = v as usize;
     }
-    if let Some(v) = get_int_entry(node, "max-header-count") {
+    if let Some(v) = get_int_entry(node, "max-header-count")? {
         limits.max_header_count = v as usize;
     }
-    if let Some(v) = get_int_entry(node, "max-body-size") {
+    if let Some(v) = get_int_entry(node, "max-body-size")? {
         limits.max_body_size_bytes = v as usize;
         // The body buffer cannot exceed the body it buffers, and validation
         // rejects a config where it does. A single-file config has no key for
@@ -1224,11 +1257,11 @@ fn parse_limits_onto(node: &kdl::KdlNode, mut limits: Limits) -> Limits {
         // could not change. Nothing reads the buffer size at request time.
         limits.max_body_buffer_bytes = limits.max_body_buffer_bytes.min(limits.max_body_size_bytes);
     }
-    limits.max_connections_per_client = concurrency_limit(node, "max-connections-per-client");
-    limits.max_total_connections = concurrency_limit(node, "max-total-connections");
-    limits.max_in_flight_requests = concurrency_limit(node, "max-in-flight-requests");
+    limits.max_connections_per_client = concurrency_limit(node, "max-connections-per-client")?;
+    limits.max_total_connections = concurrency_limit(node, "max-total-connections")?;
+    limits.max_in_flight_requests = concurrency_limit(node, "max-in-flight-requests")?;
 
-    limits
+    Ok(limits)
 }
 
 // ============================================================================
@@ -1254,17 +1287,17 @@ use crate::routes::{CacheBackend, CacheStorageConfig};
 pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
     let mut config = CacheStorageConfig::default();
 
-    for problem in cache_alias_problems(node) {
+    for problem in cache_alias_problems(node)? {
         warn!("{}", problem);
     }
 
     // Parse enabled flag
-    if let Some(v) = get_bool_entry(node, "enabled") {
+    if let Some(v) = get_bool_entry(node, "enabled")? {
         config.enabled = v;
     }
 
     // Parse backend type
-    if let Some(backend) = get_string_entry(node, "backend") {
+    if let Some(backend) = get_string_entry(node, "backend")? {
         config.backend = match backend.to_lowercase().as_str() {
             "memory" => CacheBackend::Memory,
             "disk" => CacheBackend::Disk,
@@ -1280,36 +1313,36 @@ pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
 
     // Parse size limits. `max-size-bytes` is the spelling the field and much
     // of the documentation use; it was ignored until #553.
-    if let Some(v) = cache_entry_with_alias(node, CACHE_KEY_ALIASES[0]) {
+    if let Some(v) = cache_entry_with_alias(node, CACHE_KEY_ALIASES[0])? {
         config.max_size_bytes = v as usize;
     }
-    if let Some(v) = get_int_entry(node, "eviction-limit") {
+    if let Some(v) = get_int_entry(node, "eviction-limit")? {
         config.eviction_limit_bytes = Some(v as usize);
     }
 
     // Parse lock timeout, in seconds under either spelling.
-    if let Some(v) = cache_entry_with_alias(node, CACHE_KEY_ALIASES[1]) {
+    if let Some(v) = cache_entry_with_alias(node, CACHE_KEY_ALIASES[1])? {
         config.lock_timeout_secs = v as u64;
     }
 
     // Parse disk options
-    if let Some(path) = get_string_entry(node, "disk-path") {
+    if let Some(path) = get_string_entry(node, "disk-path")? {
         config.disk_path = Some(std::path::PathBuf::from(path));
     }
-    if let Some(v) = get_int_entry(node, "disk-shards") {
+    if let Some(v) = get_int_entry(node, "disk-shards")? {
         config.disk_shards = v as u32;
     }
-    if let Some(v) = get_int_entry(node, "disk-max-size") {
+    if let Some(v) = get_int_entry(node, "disk-max-size")? {
         config.disk_max_size_bytes = Some(v as usize);
     }
 
     // Parse status-header flag (Cache-Status response header, RFC 9211)
-    if let Some(v) = get_bool_entry(node, "status-header") {
+    if let Some(v) = get_bool_entry(node, "status-header")? {
         config.status_header = v;
     }
 
     // Parse custom status-header-name (RFC 9211 cache identifier, defaults to "zentinel")
-    if let Some(name) = get_string_entry(node, "status-header-name") {
+    if let Some(name) = get_string_entry(node, "status-header-name")? {
         config.status_header_name = name.to_string();
     }
 
@@ -1338,24 +1371,38 @@ pub(crate) const CACHE_KEY_ALIASES: [(&str, &str); 2] = [
 ///
 /// The original name wins when both are written, which is what configs
 /// carrying both have been running on.
-fn cache_entry_with_alias(node: &kdl::KdlNode, (name, alias): (&str, &str)) -> Option<i128> {
-    get_int_entry(node, name).or_else(|| get_int_entry(node, alias))
+fn cache_entry_with_alias(
+    node: &kdl::KdlNode,
+    (name, alias): (&str, &str),
+) -> Result<Option<i128>> {
+    helpers::get_int_entry_or(node, name, alias)
 }
 
 /// Settings of a top-level `cache` block written under both spellings, of
 /// which the alias is ignored.
-pub(crate) fn cache_alias_problems(node: &kdl::KdlNode) -> Vec<String> {
-    CACHE_KEY_ALIASES
-        .iter()
-        .filter_map(|&(name, alias)| {
-            let used = get_int_entry(node, name)?;
-            let ignored = node.children()?.get(alias)?.entries().first()?.value();
-            Some(format!(
-                "'{alias} {ignored}' in the top-level 'cache' block is being ignored: \
-                 '{name} {used}' sets the same value and takes precedence. Keep one of the two."
-            ))
-        })
-        .collect()
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](helpers::DuplicateNode) when one of the settings is
+/// written more than once.
+pub(crate) fn cache_alias_problems(node: &kdl::KdlNode) -> Result<Vec<String>> {
+    let mut problems = Vec::new();
+    for &(name, alias) in CACHE_KEY_ALIASES.iter() {
+        let Some(used) = get_int_entry(node, name)? else {
+            continue;
+        };
+        let Some(ignored) = get_unique_child(node, alias)?
+            .and_then(|n| n.entries().first())
+            .map(|e| e.value())
+        else {
+            continue;
+        };
+        problems.push(format!(
+            "'{alias} {ignored}' in the top-level 'cache' block is being ignored: \
+             '{name} {used}' sets the same value and takes precedence. Keep one of the two."
+        ));
+    }
+    Ok(problems)
 }
 
 // ============================================================================
@@ -1384,24 +1431,19 @@ pub fn parse_rate_limits_config(node: &kdl::KdlNode) -> Result<GlobalRateLimitCo
     let mut config = GlobalRateLimitConfig::default();
 
     // Parse direct properties
-    if let Some(v) = get_int_entry(node, "default-rps") {
+    if let Some(v) = get_int_entry(node, "default-rps")? {
         config.default_rps = Some(v as u32);
     }
-    if let Some(v) = get_int_entry(node, "default-burst") {
+    if let Some(v) = get_int_entry(node, "default-burst")? {
         config.default_burst = Some(v as u32);
     }
-    if let Some(key) = get_string_entry(node, "key") {
+    if let Some(key) = get_string_entry(node, "key")? {
         config.key = parse_rate_limit_key(&key)?;
     }
 
     // Parse global block
-    if let Some(children) = node.children() {
-        for child in children.nodes() {
-            let name = child.name().value();
-            if name == "global" {
-                config.global = Some(parse_global_limit_config(child)?);
-            }
-        }
+    if let Some(global) = get_unique_child(node, "global")? {
+        config.global = Some(parse_global_limit_config(global)?);
     }
 
     Ok(config)
@@ -1409,13 +1451,13 @@ pub fn parse_rate_limits_config(node: &kdl::KdlNode) -> Result<GlobalRateLimitCo
 
 /// Parse a global limit configuration block
 fn parse_global_limit_config(node: &kdl::KdlNode) -> Result<GlobalLimitConfig> {
-    let max_rps = get_int_entry(node, "max-rps")
+    let max_rps = get_int_entry(node, "max-rps")?
         .ok_or_else(|| anyhow::anyhow!("global rate limit requires 'max-rps'"))?
         as u32;
 
-    let burst = get_int_entry(node, "burst").unwrap_or(10) as u32;
+    let burst = get_int_entry(node, "burst")?.unwrap_or(10) as u32;
 
-    let key = if let Some(key_str) = get_string_entry(node, "key") {
+    let key = if let Some(key_str) = get_string_entry(node, "key")? {
         parse_rate_limit_key(&key_str)?
     } else {
         RateLimitKey::ClientIp
@@ -1535,6 +1577,9 @@ pub fn parse_observability_config(node: &kdl::KdlNode) -> Result<ObservabilityCo
     let mut config = ObservabilityConfig::default();
 
     if let Some(children) = node.children() {
+        helpers::reject_repeated(children, |name| {
+            matches!(name, "logging" | "metrics" | "tracing")
+        })?;
         for child in children.nodes() {
             let name = child.name().value();
             match name {
@@ -1563,19 +1608,26 @@ fn parse_logging_config(node: &kdl::KdlNode) -> Result<crate::observability::Log
 
     let mut config = LoggingConfig::default();
 
+    for problem in unapplied::logging_settings(node) {
+        warn!("{}", problem);
+    }
+
     // Parse direct properties
-    if let Some(level) = get_string_entry(node, "level") {
+    if let Some(level) = get_string_entry(node, "level")? {
         config.level = level;
     }
-    if let Some(format) = get_string_entry(node, "format") {
+    if let Some(format) = get_string_entry(node, "format")? {
         config.format = format;
     }
-    if let Some(timestamps) = get_bool_entry(node, "timestamps") {
+    if let Some(timestamps) = get_bool_entry(node, "timestamps")? {
         config.timestamps = timestamps;
     }
 
     // Parse child blocks
     if let Some(children) = node.children() {
+        helpers::reject_repeated(children, |name| {
+            matches!(name, "access-log" | "error-log" | "audit-log")
+        })?;
         for child in children.nodes() {
             let name = child.name().value();
             match name {
@@ -1605,23 +1657,23 @@ fn parse_access_log_config(node: &kdl::KdlNode) -> Result<crate::observability::
 
     let mut config = AccessLogConfig::default();
 
-    if let Some(enabled) = get_bool_entry(node, "enabled") {
+    if let Some(enabled) = get_bool_entry(node, "enabled")? {
         config.enabled = enabled;
     }
-    if let Some(file) = get_string_entry(node, "file") {
+    if let Some(file) = get_string_entry(node, "file")? {
         config.file = PathBuf::from(file);
     }
-    if let Some(format) = get_string_entry(node, "format") {
+    if let Some(format) = get_string_entry(node, "format")? {
         config.format = format;
     }
     // `include-trace-id` selects the trace id field in the access log line.
     // The field list itself has no KDL syntax, so this is the only way to reach
     // it -- and it was previously read by nothing at all.
-    if let Some(include_trace_id) = get_bool_entry(node, "include-trace-id") {
+    if let Some(include_trace_id) = get_bool_entry(node, "include-trace-id")? {
         config.include_trace_id = include_trace_id;
         config.fields.trace_id = include_trace_id;
     }
-    if let Some(buffer_size) = get_int_entry(node, "buffer-size") {
+    if let Some(buffer_size) = get_int_entry(node, "buffer-size")? {
         config.buffer_size = buffer_size as usize;
     }
 
@@ -1635,16 +1687,16 @@ fn parse_error_log_config(node: &kdl::KdlNode) -> Result<crate::observability::E
 
     let mut config = ErrorLogConfig::default();
 
-    if let Some(enabled) = get_bool_entry(node, "enabled") {
+    if let Some(enabled) = get_bool_entry(node, "enabled")? {
         config.enabled = enabled;
     }
-    if let Some(file) = get_string_entry(node, "file") {
+    if let Some(file) = get_string_entry(node, "file")? {
         config.file = PathBuf::from(file);
     }
-    if let Some(level) = get_string_entry(node, "level") {
+    if let Some(level) = get_string_entry(node, "level")? {
         config.level = level;
     }
-    if let Some(buffer_size) = get_int_entry(node, "buffer-size") {
+    if let Some(buffer_size) = get_int_entry(node, "buffer-size")? {
         config.buffer_size = buffer_size as usize;
     }
 
@@ -1658,22 +1710,22 @@ fn parse_audit_log_config(node: &kdl::KdlNode) -> Result<crate::observability::A
 
     let mut config = AuditLogConfig::default();
 
-    if let Some(enabled) = get_bool_entry(node, "enabled") {
+    if let Some(enabled) = get_bool_entry(node, "enabled")? {
         config.enabled = enabled;
     }
-    if let Some(file) = get_string_entry(node, "file") {
+    if let Some(file) = get_string_entry(node, "file")? {
         config.file = PathBuf::from(file);
     }
-    if let Some(buffer_size) = get_int_entry(node, "buffer-size") {
+    if let Some(buffer_size) = get_int_entry(node, "buffer-size")? {
         config.buffer_size = buffer_size as usize;
     }
-    if let Some(log_blocked) = get_bool_entry(node, "log-blocked") {
+    if let Some(log_blocked) = get_bool_entry(node, "log-blocked")? {
         config.log_blocked = log_blocked;
     }
-    if let Some(log_agent) = get_bool_entry(node, "log-agent-decisions") {
+    if let Some(log_agent) = get_bool_entry(node, "log-agent-decisions")? {
         config.log_agent_decisions = log_agent;
     }
-    if let Some(log_waf) = get_bool_entry(node, "log-waf-events") {
+    if let Some(log_waf) = get_bool_entry(node, "log-waf-events")? {
         config.log_waf_events = log_waf;
     }
 
@@ -1686,16 +1738,16 @@ fn parse_metrics_config(node: &kdl::KdlNode) -> Result<crate::observability::Met
 
     let mut config = MetricsConfig::default();
 
-    if let Some(enabled) = get_bool_entry(node, "enabled") {
+    if let Some(enabled) = get_bool_entry(node, "enabled")? {
         config.enabled = enabled;
     }
-    if let Some(address) = get_string_entry(node, "address") {
+    if let Some(address) = get_string_entry(node, "address")? {
         config.address = address;
     }
-    if let Some(path) = get_string_entry(node, "path") {
+    if let Some(path) = get_string_entry(node, "path")? {
         config.path = path;
     }
-    if let Some(high_cardinality) = get_bool_entry(node, "high-cardinality") {
+    if let Some(high_cardinality) = get_bool_entry(node, "high-cardinality")? {
         config.high_cardinality = high_cardinality;
     }
 
@@ -1716,14 +1768,13 @@ fn parse_metrics_config(node: &kdl::KdlNode) -> Result<crate::observability::Met
 /// ```
 fn parse_tracing_config(node: &kdl::KdlNode) -> Result<crate::observability::TracingConfig> {
     use crate::observability::TracingConfig;
-    use helpers::get_float_entry;
 
     let backend = parse_tracing_backend(node)?;
 
-    let enabled = get_bool_entry(node, "enabled").unwrap_or(true);
-    let sampling_rate = get_float_entry(node, "sampling-rate").unwrap_or(0.01);
+    let enabled = get_bool_entry(node, "enabled")?.unwrap_or(true);
+    let sampling_rate = get_float_entry(node, "sampling-rate")?.unwrap_or(0.01);
     let service_name =
-        get_string_entry(node, "service-name").unwrap_or_else(|| "zentinel".to_string());
+        get_string_entry(node, "service-name")?.unwrap_or_else(|| "zentinel".to_string());
 
     Ok(TracingConfig {
         enabled,
@@ -1743,9 +1794,7 @@ fn parse_tracing_backend(node: &kdl::KdlNode) -> Result<crate::observability::Tr
     use crate::observability::TracingBackend;
 
     // Look for a "backend" child node
-    let backend_node = node
-        .children()
-        .and_then(|children| children.get("backend"))
+    let backend_node = get_unique_child(node, "backend")?
         .ok_or_else(|| anyhow::anyhow!("tracing config requires 'backend' block"))?;
 
     // Get the backend type from the first argument
@@ -1756,7 +1805,7 @@ fn parse_tracing_backend(node: &kdl::KdlNode) -> Result<crate::observability::Tr
         .ok_or_else(|| anyhow::anyhow!("backend requires a type (otlp, jaeger, or zipkin)"))?;
 
     // Get the endpoint from the backend block's children
-    let endpoint = get_string_entry(backend_node, "endpoint")
+    let endpoint = get_string_entry(backend_node, "endpoint")?
         .ok_or_else(|| anyhow::anyhow!("backend requires 'endpoint' configuration"))?;
 
     match backend_type.to_lowercase().as_str() {
