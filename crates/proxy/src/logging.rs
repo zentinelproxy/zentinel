@@ -98,6 +98,8 @@ impl AccessLogEntry {
     /// Format the entry as a string based on the specified format.
     ///
     /// When `fields` is provided, disabled fields are omitted from JSON output.
+    /// The Combined format has fixed columns, so of the field list it applies
+    /// only `query`: with `query` disabled the request line has no `?query`.
     pub fn format(
         &self,
         format: AccessLogFormat,
@@ -105,7 +107,7 @@ impl AccessLogEntry {
     ) -> String {
         match format {
             AccessLogFormat::Json => self.format_json(fields),
-            AccessLogFormat::Combined => self.format_combined(),
+            AccessLogFormat::Combined => self.format_combined(fields),
         }
     }
 
@@ -232,12 +234,18 @@ impl AccessLogEntry {
 
     /// Format as Combined Log Format with trace_id extension
     /// Format: client_ip - - [timestamp] "method path?query protocol" status bytes "referer" "user_agent" trace_id duration_ms
-    fn format_combined(&self) -> String {
+    ///
+    /// `?query` is left out when `fields` disables `query`.
+    fn format_combined(&self, fields: Option<&zentinel_config::AccessLogFields>) -> String {
         // Parse RFC3339 timestamp to CLF format [day/month/year:hour:min:sec zone]
         let clf_timestamp = self.format_clf_timestamp();
 
         // Build request line
-        let request_line = if let Some(ref query) = self.query {
+        let query = self
+            .query
+            .as_deref()
+            .filter(|_| fields.is_none_or(|f| f.query));
+        let request_line = if let Some(query) = query {
             format!("{} {}?{} {}", self.method, self.path, query, self.protocol)
         } else {
             format!("{} {} {}", self.method, self.path, self.protocol)
@@ -1424,6 +1432,70 @@ mod tests {
         assert!(parsed.get("method").is_some());
         assert!(parsed.get("status").is_some());
         assert!(parsed.get("duration_ms").is_some());
+    }
+
+    /// A field list with every field but `query` set to `others`.
+    fn fields_with(query: bool, others: bool) -> zentinel_config::AccessLogFields {
+        zentinel_config::AccessLogFields {
+            timestamp: others,
+            trace_id: others,
+            method: others,
+            path: others,
+            query,
+            status: others,
+            latency_ms: others,
+            body_bytes_sent: others,
+            upstream_addr: others,
+            connection_reused: others,
+            rate_limit_hit: others,
+            geo_country: others,
+            user_agent: others,
+            referer: others,
+            client_ip: others,
+        }
+    }
+
+    #[test]
+    fn combined_request_line_includes_the_query_by_default() {
+        let entry = test_entry();
+        let fields = zentinel_config::AccessLogFields::default();
+
+        for fields in [None, Some(&fields)] {
+            let combined = entry.format(AccessLogFormat::Combined, fields);
+            assert!(
+                combined.contains("\"POST /api/submit?v=2 HTTP/2.0\""),
+                "{combined}"
+            );
+        }
+    }
+
+    #[test]
+    fn combined_request_line_omits_the_query_when_the_field_is_disabled() {
+        let entry = test_entry();
+        let fields = fields_with(false, true);
+
+        let combined = entry.format(AccessLogFormat::Combined, Some(&fields));
+
+        assert!(
+            combined.contains("\"POST /api/submit HTTP/2.0\""),
+            "{combined}"
+        );
+        assert!(!combined.contains("v=2"), "{combined}");
+        // The other columns are those of the format, not of the field list.
+        assert!(combined.starts_with("10.0.0.1 - - ["), "{combined}");
+        assert!(combined.contains("\"https://example.com\" \"curl/8.0\""));
+        assert!(combined.contains("trace-xyz"));
+    }
+
+    #[test]
+    fn combined_format_applies_only_the_query_field_of_the_field_list() {
+        let entry = test_entry();
+        let fields = fields_with(true, false);
+
+        assert_eq!(
+            entry.format(AccessLogFormat::Combined, Some(&fields)),
+            entry.format(AccessLogFormat::Combined, None)
+        );
     }
 
     #[test]

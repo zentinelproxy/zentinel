@@ -482,6 +482,7 @@ impl ProxyHttp for ZentinelProxy {
 
         ctx.method = method.to_string();
         ctx.path = path.to_string();
+        ctx.query = req_header.uri.query().map(str::to_string);
         ctx.host = Some(host.to_string());
 
         // Assign the trace id before route matching, not after it succeeds: a
@@ -626,13 +627,6 @@ impl ProxyHttp for ZentinelProxy {
 
         let req_header = session.req_header();
 
-        // Cache request info for access logging if not already set
-        if ctx.method.is_empty() {
-            ctx.method = req_header.method.to_string();
-            ctx.path = req_header.uri.path().to_string();
-            ctx.query = req_header.uri.query().map(|q| q.to_string());
-            ctx.host = Some(crate::http_helpers::extract_request_host(req_header).to_string());
-        }
         ctx.user_agent = req_header
             .headers
             .get("user-agent")
@@ -4563,7 +4557,8 @@ impl ProxyHttp for ZentinelProxy {
                 method: ctx.method.clone(),
                 path: ctx.path.clone(),
                 query: ctx.query.clone(),
-                protocol: "HTTP/1.1".to_string(),
+                protocol: crate::http_helpers::protocol_label(session.req_header().version)
+                    .to_string(),
                 status,
                 body_bytes: ctx.response_bytes,
                 duration_ms: duration.as_millis() as u64,

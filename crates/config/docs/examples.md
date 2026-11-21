@@ -738,15 +738,11 @@ observability {
             format "json"
             sample-rate 1.0
             include-trace-id #true
+            // Every field is written unless it is set to #false here.
             fields {
-                timestamp #true
-                trace-id #true
-                method #true
-                path #true
-                status #true
-                latency-ms #true
-                client-ip #true
-                user-agent #true
+                query #false
+                referer #false
+                user-agent #false
             }
         }
 

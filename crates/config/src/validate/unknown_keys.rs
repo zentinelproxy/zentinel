@@ -514,6 +514,11 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
         keys: crate::kdl::RECOGNIZED_ACCESS_LOG_KEYS,
     },
     ClosedBlock {
+        name: "fields",
+        nesting: Nesting::In("access-log"),
+        keys: crate::kdl::RECOGNIZED_ACCESS_LOG_FIELD_KEYS,
+    },
+    ClosedBlock {
         // Takes `level` where the access log takes `format`; the two look alike
         // and accept different settings.
         name: "error-log",
@@ -2485,6 +2490,66 @@ mod tests {
                 "{key} is parsed now and must not be reported: {warnings:?}"
             );
         }
+    }
+
+    /// `fields` is read, so it is not reported, and neither is any of its keys.
+    #[test]
+    fn the_access_log_fields_block_and_its_keys_are_not_reported() {
+        let keys: String = crate::kdl::RECOGNIZED_ACCESS_LOG_FIELD_KEYS
+            .iter()
+            .map(|key| format!("{key} #true\n"))
+            .collect();
+        let kdl = format!(
+            r#"
+            observability {{
+                logging {{
+                    access-log {{
+                        fields {{
+                            {keys}
+                        }}
+                    }}
+                }}
+            }}
+            "#
+        );
+        assert!(warnings_for(&kdl).is_empty(), "{:?}", warnings_for(&kdl));
+    }
+
+    #[test]
+    fn an_unknown_access_log_field_is_reported() {
+        let kdl = r#"
+            observability {
+                logging {
+                    access-log {
+                        fields {
+                            query #false
+                            request-id #true
+                        }
+                    }
+                }
+            }
+        "#;
+        let warnings = warnings_for(kdl);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("'request-id'"), "{warnings:?}");
+        assert!(warnings[0].contains("'fields'"), "{warnings:?}");
+    }
+
+    /// Only the `fields` block of an access log is checked: the name is not
+    /// reserved elsewhere.
+    #[test]
+    fn a_fields_block_elsewhere_is_not_checked() {
+        let kdl = r#"
+            fields { anything #true }
+            observability {
+                logging {
+                    error-log {
+                        enabled #true
+                    }
+                }
+            }
+        "#;
+        assert!(warnings_for(kdl).is_empty(), "{:?}", warnings_for(kdl));
     }
 
     #[test]

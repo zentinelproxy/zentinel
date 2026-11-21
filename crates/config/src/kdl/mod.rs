@@ -1498,6 +1498,27 @@ pub(crate) const RECOGNIZED_ACCESS_LOG_KEYS: &[&str] = &[
     "format",
     "buffer-size",
     "include-trace-id",
+    "fields",
+];
+
+/// Settings `parse_access_log_fields` reads: one for each field of
+/// `AccessLogFields`, spelled in kebab-case.
+pub(crate) const RECOGNIZED_ACCESS_LOG_FIELD_KEYS: &[&str] = &[
+    "timestamp",
+    "trace-id",
+    "method",
+    "path",
+    "query",
+    "status",
+    "latency-ms",
+    "body-bytes-sent",
+    "upstream-addr",
+    "connection-reused",
+    "rate-limit-hit",
+    "geo-country",
+    "user-agent",
+    "referer",
+    "client-ip",
 ];
 
 /// Settings `parse_error_log_config` reads.
@@ -1614,18 +1635,102 @@ fn parse_access_log_config(node: &kdl::KdlNode) -> Result<crate::observability::
     if let Some(format) = get_string_entry(node, "format") {
         config.format = format;
     }
-    // `include-trace-id` selects the trace id field in the access log line.
-    // The field list itself has no KDL syntax, so this is the only way to reach
-    // it -- and it was previously read by nothing at all.
-    if let Some(include_trace_id) = get_bool_entry(node, "include-trace-id") {
+    // `include-trace-id` is the older, single setting for the `trace-id` field
+    // that `fields` (below) sets with the others; it was previously read by
+    // nothing at all.
+    let include_trace_id = get_bool_entry(node, "include-trace-id");
+    if let Some(include_trace_id) = include_trace_id {
         config.include_trace_id = include_trace_id;
         config.fields.trace_id = include_trace_id;
     }
     if let Some(buffer_size) = get_int_entry(node, "buffer-size") {
         config.buffer_size = buffer_size as usize;
     }
+    if let Some(fields) = node.children().and_then(|c| c.get("fields")) {
+        parse_access_log_fields(fields, include_trace_id, &mut config.fields)?;
+        config.include_trace_id = config.fields.trace_id;
+    }
 
     Ok(config)
+}
+
+/// Read an `access-log` block's `fields` block onto `fields`.
+///
+/// Each key is one field of the access log entry and takes `#true` or
+/// `#false` as its argument; a key that is not written keeps its value. A key
+/// that is not a field is left to the unknown-key check, which reports it.
+///
+/// What is not understood is an error rather than a fallback: `query "no"`
+/// would otherwise leave the query string in the log under a config that reads
+/// as if it were off. That covers a `fields` that is not a block
+/// (`fields #false`), a value that is not a boolean, a value given as a
+/// property (`query x=#false`), and a `trace-id` that disagrees with an
+/// `include-trace-id` written beside `fields`, since both set the same field.
+fn parse_access_log_fields(
+    node: &kdl::KdlNode,
+    include_trace_id: Option<bool>,
+    fields: &mut crate::observability::AccessLogFields,
+) -> Result<()> {
+    fn setting(on: bool) -> &'static str {
+        if on {
+            "#true"
+        } else {
+            "#false"
+        }
+    }
+
+    if !node.entries().is_empty() {
+        anyhow::bail!(
+            "access-log: 'fields' takes a block of settings, as in 'fields {{ query #false }}'"
+        );
+    }
+    let Some(children) = node.children() else {
+        return Ok(());
+    };
+    for child in children.nodes() {
+        let key = child.name().value();
+        let field = match key {
+            "timestamp" => &mut fields.timestamp,
+            "trace-id" => &mut fields.trace_id,
+            "method" => &mut fields.method,
+            "path" => &mut fields.path,
+            "query" => &mut fields.query,
+            "status" => &mut fields.status,
+            "latency-ms" => &mut fields.latency_ms,
+            "body-bytes-sent" => &mut fields.body_bytes_sent,
+            "upstream-addr" => &mut fields.upstream_addr,
+            "connection-reused" => &mut fields.connection_reused,
+            "rate-limit-hit" => &mut fields.rate_limit_hit,
+            "geo-country" => &mut fields.geo_country,
+            "user-agent" => &mut fields.user_agent,
+            "referer" => &mut fields.referer,
+            "client-ip" => &mut fields.client_ip,
+            _ => continue,
+        };
+        // The argument only: `query x=#false` has no argument.
+        let value = child
+            .entries()
+            .iter()
+            .find(|entry| entry.name().is_none())
+            .and_then(|entry| entry.value().as_bool())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "access-log fields: '{key}' must be #true or #false, as in '{key} #false'"
+                )
+            })?;
+        if key == "trace-id" {
+            if let Some(include) = include_trace_id.filter(|include| *include != value) {
+                anyhow::bail!(
+                    "access-log: 'include-trace-id {}' and 'fields {{ trace-id {} }}' set the \
+                     same field to different values; write one of them",
+                    setting(include),
+                    setting(value)
+                );
+            }
+        }
+        *field = value;
+    }
+    Ok(())
 }
 
 /// Parse error log configuration
@@ -1876,9 +1981,8 @@ mod tests {
         );
     }
 
-    /// `include-trace-id` selects the trace id field in the access log line.
-    /// The field list has no KDL syntax of its own, so this is the only way to
-    /// reach it.
+    /// `include-trace-id` is the older, single setting for the `trace-id`
+    /// field that `fields` sets with the others.
     #[test]
     fn access_log_include_trace_id_is_read() {
         fn access_log_of(body: &str) -> crate::observability::AccessLogConfig {
@@ -1927,6 +2031,177 @@ mod tests {
         let off = access_log_of(r#"include-trace-id #false"#);
         assert!(!off.include_trace_id);
         assert!(!off.fields.trace_id);
+    }
+
+    /// The config with `body` as the contents of its `access-log` block.
+    fn access_log_result(body: &str) -> anyhow::Result<crate::observability::AccessLogConfig> {
+        let kdl = format!(
+            r#"
+            schema-version "1.0"
+            system {{
+                worker-threads 1
+            }}
+            listeners {{
+                listener "l" {{
+                    address "127.0.0.1:8080"
+                }}
+            }}
+            routes {{
+                route "r" {{
+                    matches {{
+                        path "/"
+                    }}
+                    service-type "builtin"
+                    builtin-handler "health"
+                }}
+            }}
+            observability {{
+                logging {{
+                    access-log {{
+                        enabled #true
+                        {body}
+                    }}
+                }}
+            }}
+            "#
+        );
+        crate::Config::from_kdl(&kdl).map(|config| {
+            config
+                .observability
+                .logging
+                .access_log
+                .expect("access-log block present")
+        })
+    }
+
+    /// The access log fields as `{field: bool}`, for comparing whole lists.
+    fn access_log_fields_json(
+        fields: &crate::observability::AccessLogFields,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::to_value(fields).expect("fields serialize") {
+            serde_json::Value::Object(map) => map,
+            other => panic!("fields serialized to {other}"),
+        }
+    }
+
+    #[test]
+    fn access_log_fields_block_turns_fields_off() {
+        let config = access_log_result("fields {\n query #false\n latency-ms #false\n }")
+            .expect("config parses");
+
+        assert!(!config.fields.query);
+        assert!(!config.fields.latency_ms);
+        // A key that is not written keeps its default.
+        assert!(config.fields.path && config.fields.client_ip && config.fields.trace_id);
+    }
+
+    #[test]
+    fn access_log_without_a_fields_block_keeps_every_field_on() {
+        let config = access_log_result("format \"json\"").expect("config parses");
+        let defaults = crate::observability::AccessLogFields::default();
+
+        assert_eq!(
+            access_log_fields_json(&config.fields),
+            access_log_fields_json(&defaults)
+        );
+        assert!(config.fields.query);
+    }
+
+    /// Every key the `fields` block lists reads exactly one field, and every
+    /// field has a key: the key list, the parser and the struct stay together.
+    #[test]
+    fn each_access_log_field_key_reads_its_own_field() {
+        let defaults = access_log_fields_json(&crate::observability::AccessLogFields::default());
+        assert_eq!(
+            RECOGNIZED_ACCESS_LOG_FIELD_KEYS.len(),
+            defaults.len(),
+            "a field has no key, or a key reads no field"
+        );
+
+        for key in RECOGNIZED_ACCESS_LOG_FIELD_KEYS {
+            let config = access_log_result(&format!("fields {{ {key} #false }}"))
+                .unwrap_or_else(|e| panic!("{key}: {e:#}"));
+            let fields = access_log_fields_json(&config.fields);
+            let off: Vec<&String> = fields
+                .iter()
+                .filter(|(_, value)| **value == serde_json::Value::Bool(false))
+                .map(|(name, _)| name)
+                .collect();
+            assert_eq!(off, [&key.replace('-', "_")], "{key} turned off {off:?}");
+        }
+    }
+
+    #[test]
+    fn access_log_field_that_is_not_a_boolean_is_an_error() {
+        for body in [
+            r#"fields { query "no" }"#,
+            r#"fields { query 0 }"#,
+            r#"fields { query }"#,
+            // The value is the argument; a property is not read in its place.
+            r#"fields { query x=#false }"#,
+        ] {
+            let error = access_log_result(body).expect_err(body);
+            assert!(
+                format!("{error:#}").contains("'query' must be #true or #false"),
+                "{body}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn access_log_fields_that_is_not_a_block_is_an_error() {
+        for body in [
+            "fields #false",
+            r#"fields "query""#,
+            "fields query=#false",
+            r#"fields "query" { query #false }"#,
+        ] {
+            let error = access_log_result(body).expect_err(body);
+            assert!(
+                format!("{error:#}").contains("'fields' takes a block of settings"),
+                "{body}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_access_log_fields_block_changes_nothing() {
+        let config = access_log_result("fields {}").expect("config parses");
+        let defaults = crate::observability::AccessLogFields::default();
+
+        assert_eq!(
+            access_log_fields_json(&config.fields),
+            access_log_fields_json(&defaults)
+        );
+    }
+
+    #[test]
+    fn include_trace_id_and_a_trace_id_field_may_not_disagree() {
+        for body in [
+            "include-trace-id #false\nfields { trace-id #true }",
+            "include-trace-id #true\nfields { trace-id #false }",
+        ] {
+            let error = access_log_result(body).expect_err(body);
+            assert!(
+                format!("{error:#}").contains("set the same field to different values"),
+                "{body}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn include_trace_id_and_a_trace_id_field_may_agree() {
+        for on in [true, false] {
+            let body = format!("include-trace-id #{on}\nfields {{ trace-id #{on} }}");
+            let config = access_log_result(&body).expect(&body);
+            assert_eq!(config.fields.trace_id, on, "{body}");
+            assert_eq!(config.include_trace_id, on, "{body}");
+        }
+
+        // Either one alone sets the field, and `include_trace_id` follows it.
+        let config = access_log_result("fields { trace-id #false }").expect("config parses");
+        assert!(!config.fields.trace_id);
+        assert!(!config.include_trace_id);
     }
 
     /// `type` is documented as a property but four shipped configs wrote it as
