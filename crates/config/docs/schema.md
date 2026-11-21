@@ -223,7 +223,7 @@ Request routing configuration.
 | `timeout-secs` | `u64` | - | Request timeout override |
 | `max-body-size` | `string` | - | Body size limit (e.g., `"10MB"`) |
 | `rate-limit` | `RateLimitPolicy` | - | Rate limit policy |
-| `failure-mode` | `string` | `"closed"` | Failure mode: `open` or `closed` |
+| `failure-mode` | `string` | `"closed"` | Failure mode: `open` or `closed`. Also decides what a request gets when the route lists a filter the active configuration does not define, which only happens while a reload or rollback is being applied: `closed` answers 503, `open` continues with the filters that are defined |
 | `cache` | `RouteCacheConfig` | - | HTTP caching config (see [Cache](#routecacheconfig)) |
 
 ### RouteCacheConfig
