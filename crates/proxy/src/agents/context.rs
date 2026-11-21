@@ -8,7 +8,9 @@ use zentinel_common::CorrelationId;
 /// Contains all information needed for an agent to process a request,
 /// including correlation ID, request metadata, and optional body data.
 pub struct AgentCallContext {
-    /// Correlation ID for request tracing
+    /// ID the request's agent calls are matched by: the request's
+    /// [`RequestContext::agent_correlation_id`](crate::proxy::RequestContext::agent_correlation_id),
+    /// not its trace ID
     pub correlation_id: CorrelationId,
     /// Request metadata
     pub metadata: RequestMetadata,

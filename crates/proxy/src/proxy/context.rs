@@ -3,7 +3,7 @@
 //! The `RequestContext` struct maintains state throughout a single request,
 //! including timing, routing decisions, and metadata for logging.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use zentinel_common::ids::Scope;
@@ -281,8 +281,15 @@ pub struct RequestContext {
     start_time: Instant,
 
     // === Tracing ===
-    /// Unique trace ID for request tracing (also used as correlation_id)
+    /// Trace ID for request tracing: the client's `X-Trace-Id`,
+    /// `X-Correlation-Id` or `X-Request-Id` when it sent one, else generated.
+    /// Logs, error pages and response headers carry it, and the
+    /// `X-Correlation-Id` header agents receive. Agent calls are matched by
+    /// [`RequestContext::agent_correlation_id`] instead.
     pub(crate) trace_id: String,
+    /// The ID every agent call of this request is matched by; see
+    /// [`RequestContext::agent_correlation_id`].
+    agent_correlation_id: OnceLock<String>,
 
     // === Global config (cached once per request) ===
     /// Cached global configuration snapshot for this request
@@ -651,6 +658,7 @@ impl RequestContext {
         Self {
             start_time: Instant::now(),
             trace_id: String::new(),
+            agent_correlation_id: OnceLock::new(),
             config: None,
             route_id: None,
             route_config: None,
@@ -782,6 +790,9 @@ impl RequestContext {
     // === Read-only accessors ===
 
     /// Get trace_id (alias for backwards compatibility with correlation_id usage).
+    ///
+    /// This is not the ID agent calls are matched by; see
+    /// [`RequestContext::agent_correlation_id`].
     #[inline]
     pub fn correlation_id(&self) -> &str {
         &self.trace_id
@@ -791,6 +802,23 @@ impl RequestContext {
     #[inline]
     pub fn trace_id(&self) -> &str {
         &self.trace_id
+    }
+
+    /// The ID every agent call of this request is matched by: request
+    /// headers, body chunks, response headers and body, WebSocket frames,
+    /// guardrail inspections, and the end-of-request notification.
+    ///
+    /// A UUID v4 the proxy generates on the first agent call, whatever the
+    /// `trace-id-format` is, and the same for every later call. It is never
+    /// taken from a request header: a client's `X-Trace-Id`,
+    /// `X-Correlation-Id` or `X-Request-Id` becomes the trace ID, and two
+    /// requests can carry the same one. A request that makes no agent call
+    /// never generates it. Logs of agent calls carry both IDs, so the
+    /// access log and an agent's log can be matched.
+    #[inline]
+    pub fn agent_correlation_id(&self) -> &str {
+        self.agent_correlation_id
+            .get_or_init(crate::trace_id::generate_uuid)
     }
 
     /// Get the route ID, if set.
@@ -1400,6 +1428,26 @@ mod tests {
         assert_eq!(info.limit, 50);
         assert_eq!(info.remaining, 25);
         assert_eq!(info.reset_at, 1704067300);
+    }
+
+    #[test]
+    fn agent_correlation_id_is_one_generated_uuid_per_request() {
+        let mut first = RequestContext::new();
+        let mut second = RequestContext::new();
+        first.set_trace_id("same-client-value");
+        second.set_trace_id("same-client-value");
+
+        let id = first.agent_correlation_id().to_string();
+        assert!(uuid::Uuid::parse_str(&id).is_ok(), "not a UUID: {id}");
+        assert_ne!(id, "same-client-value");
+
+        // The same for every later call, whatever the trace ID becomes.
+        assert_eq!(first.agent_correlation_id(), id);
+        first.set_trace_id("another-value");
+        assert_eq!(first.agent_correlation_id(), id);
+
+        // A request with the same trace ID has an ID of its own.
+        assert_ne!(second.agent_correlation_id(), id);
     }
 
     #[test]

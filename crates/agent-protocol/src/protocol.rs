@@ -201,7 +201,11 @@ impl BodyMutation {
 /// Request metadata sent to agents
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestMetadata {
-    /// Correlation ID for request tracing
+    /// ID that every event of this request carries as its `correlation_id`
+    ///
+    /// A UUID the proxy generates for each request; agent replies are
+    /// matched to the request by it. It is not the request's trace ID, which
+    /// is the `X-Correlation-Id` header of the request headers.
     pub correlation_id: String,
     /// Request ID (internal)
     pub request_id: String,

@@ -1719,7 +1719,7 @@ impl ProxyHttp for ZentinelProxy {
                                         &content,
                                         ctx.inference_model.as_deref(),
                                         ctx.route_id.as_deref(),
-                                        &ctx.trace_id,
+                                        ctx.agent_correlation_id(),
                                     )
                                     .await;
 
@@ -1731,6 +1731,7 @@ impl ProxyHttp for ZentinelProxy {
                                     } => {
                                         warn!(
                                             correlation_id = %ctx.trace_id,
+                                            agent_correlation_id = %ctx.agent_correlation_id(),
                                             route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                                             detection_count = detections.len(),
                                             "Prompt injection detected, blocking request"
@@ -2200,6 +2201,7 @@ impl ProxyHttp for ZentinelProxy {
                     crate::websocket::ProcessResult::Close(reason) => {
                         warn!(
                             correlation_id = %ctx.trace_id,
+                            agent_correlation_id = %ctx.agent_correlation_id(),
                             code = reason.code,
                             reason = %reason.reason,
                             "WebSocket connection closed by agent (client->server)"
@@ -2440,7 +2442,7 @@ impl ProxyHttp for ZentinelProxy {
                     ctx.route_id
                         .clone()
                         .unwrap_or_else(|| "unknown".to_string()),
-                    ctx.trace_id.clone(),
+                    ctx.agent_correlation_id().to_string(),
                     ctx.client_ip.clone(),
                     ctx.route_agents.clone(),
                     Some(self.metrics.clone()),
@@ -2455,6 +2457,7 @@ impl ProxyHttp for ZentinelProxy {
 
                 info!(
                     correlation_id = %ctx.trace_id,
+                    agent_correlation_id = %ctx.agent_correlation_id(),
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                     agent_count = ctx.websocket_inspection_agents.len(),
                     "WebSocket upgrade successful, frame inspection enabled"
@@ -2690,9 +2693,11 @@ impl ProxyHttp for ZentinelProxy {
             }
 
             let agent_ctx = crate::agents::AgentCallContext {
-                correlation_id: zentinel_common::CorrelationId::from_string(&ctx.trace_id),
+                correlation_id: zentinel_common::CorrelationId::from_string(
+                    ctx.agent_correlation_id(),
+                ),
                 metadata: zentinel_agent_protocol::RequestMetadata {
-                    correlation_id: ctx.trace_id.clone(),
+                    correlation_id: ctx.agent_correlation_id().to_string(),
                     request_id: uuid::Uuid::new_v4().to_string(),
                     client_ip: ctx.client_ip.clone(),
                     client_port: 0,
@@ -2791,12 +2796,14 @@ impl ProxyHttp for ZentinelProxy {
                         session.downstream_session.set_keepalive(None);
                         debug!(
                             correlation_id = %ctx.trace_id,
+                            agent_correlation_id = %ctx.agent_correlation_id(),
                             "Enabling response body agent processing (agent subscribes to ResponseBody)"
                         );
                     }
 
                     debug!(
                         correlation_id = %ctx.trace_id,
+                        agent_correlation_id = %ctx.agent_correlation_id(),
                         response_headers_modified = !decision.response_headers.is_empty(),
                         needs_body = ctx.response_agent_processing_enabled,
                         "Response headers processed through agents"
@@ -2805,6 +2812,7 @@ impl ProxyHttp for ZentinelProxy {
                 Err(e) => {
                     warn!(
                         correlation_id = %ctx.trace_id,
+                        agent_correlation_id = %ctx.agent_correlation_id(),
                         error = %e,
                         "Agent response header processing failed, continuing without agent"
                     );
@@ -3211,6 +3219,7 @@ impl ProxyHttp for ZentinelProxy {
                     crate::websocket::ProcessResult::Close(reason) => {
                         warn!(
                             correlation_id = %ctx.trace_id,
+                            agent_correlation_id = %ctx.agent_correlation_id(),
                             code = reason.code,
                             reason = %reason.reason,
                             "WebSocket connection closed by agent (server->client)"
@@ -3262,7 +3271,7 @@ impl ProxyHttp for ZentinelProxy {
                 let buffer = std::mem::take(&mut ctx.response_agent_body_buffer);
                 let chunk_index = 0u32;
                 let total_size = end_of_stream.then_some(buffer.len());
-                let trace_id = ctx.trace_id.clone();
+                let agent_correlation_id = ctx.agent_correlation_id().to_string();
                 let client_ip = ctx.client_ip.clone();
                 let host = ctx.host.clone();
                 let route_id = ctx.route_id.clone();
@@ -3274,9 +3283,11 @@ impl ProxyHttp for ZentinelProxy {
                 // async agent call is waited for.
                 let result = super::sync_filter::wait_for(async {
                     let agent_ctx = crate::agents::AgentCallContext {
-                        correlation_id: zentinel_common::CorrelationId::from_string(&trace_id),
+                        correlation_id: zentinel_common::CorrelationId::from_string(
+                            &agent_correlation_id,
+                        ),
                         metadata: zentinel_agent_protocol::RequestMetadata {
-                            correlation_id: trace_id.clone(),
+                            correlation_id: agent_correlation_id.clone(),
                             request_id: uuid::Uuid::new_v4().to_string(),
                             client_ip,
                             client_port: 0,
@@ -3358,6 +3369,7 @@ impl ProxyHttp for ZentinelProxy {
                                     ) {
                                         debug!(
                                             correlation_id = %ctx.trace_id,
+                                            agent_correlation_id = %agent_correlation_id,
                                             original_size = total,
                                             new_size = decoded.len(),
                                             "Agent replaced response body"
@@ -3367,6 +3379,7 @@ impl ProxyHttp for ZentinelProxy {
                                     } else {
                                         warn!(
                                             correlation_id = %ctx.trace_id,
+                                            agent_correlation_id = %agent_correlation_id,
                                             "Failed to decode agent response body mutation (invalid base64)"
                                         );
                                     }
@@ -3397,6 +3410,7 @@ impl ProxyHttp for ZentinelProxy {
                         ctx.response_blocked = true;
                         warn!(
                             correlation_id = %ctx.trace_id,
+                            agent_correlation_id = %agent_correlation_id,
                             error = %error,
                             body_bytes_sent = ctx.response_bytes,
                             body_bytes_withheld = total,
@@ -3411,6 +3425,7 @@ impl ProxyHttp for ZentinelProxy {
                     }
                     warn!(
                         correlation_id = %ctx.trace_id,
+                        agent_correlation_id = %agent_correlation_id,
                         error = %error,
                         "Agent response body processing failed, passing through original (fail-open)"
                     );
@@ -4290,7 +4305,7 @@ impl ProxyHttp for ZentinelProxy {
                 &ctx.websocket_inspection_agents,
             );
             let event = RequestCompleteEvent {
-                correlation_id: ctx.trace_id.clone(),
+                correlation_id: ctx.agent_correlation_id().to_string(),
                 status,
                 duration_ms: duration.as_millis() as u64,
                 request_body_size: ctx.request_body_bytes.min(usize::MAX as u64) as usize,
@@ -4306,7 +4321,9 @@ impl ProxyHttp for ZentinelProxy {
 
             // Release per-request agent state (correlation affinity) after
             // agents have been notified; the pool TTL sweep is only the backstop.
-            self.agent_manager.end_request(&ctx.trace_id).await;
+            self.agent_manager
+                .end_request(ctx.agent_correlation_id())
+                .await;
         }
 
         // === Fire pending shadow request (if body buffering was enabled) ===
@@ -4429,7 +4446,7 @@ impl ProxyHttp for ZentinelProxy {
                                                         pii_config,
                                                         response_content,
                                                         ctx.route_id.as_deref(),
-                                                        &ctx.trace_id,
+                                                        ctx.agent_correlation_id(),
                                                     )
                                                     .await;
 
@@ -4440,6 +4457,7 @@ impl ProxyHttp for ZentinelProxy {
                                                     } => {
                                                         warn!(
                                                             correlation_id = %ctx.trace_id,
+                                                            agent_correlation_id = %ctx.agent_correlation_id(),
                                                             route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                                                             detection_count = detections.len(),
                                                             "PII detected in inference response"
@@ -4468,6 +4486,7 @@ impl ProxyHttp for ZentinelProxy {
                                                     crate::inference::PiiCheckResult::Error { message } => {
                                                         debug!(
                                                             correlation_id = %ctx.trace_id,
+                                                            agent_correlation_id = %ctx.agent_correlation_id(),
                                                             error = %message,
                                                             "PII detection check failed"
                                                         );
@@ -5622,6 +5641,7 @@ impl ZentinelProxy {
 
         debug!(
             correlation_id = %ctx.trace_id,
+            agent_correlation_id = %ctx.agent_correlation_id(),
             chunk_index = chunk_index,
             chunk_size = chunk_data.len(),
             end_of_stream = end_of_stream,
@@ -5630,9 +5650,9 @@ impl ZentinelProxy {
 
         // Create agent call context
         let agent_ctx = crate::agents::AgentCallContext {
-            correlation_id: zentinel_common::CorrelationId::from_string(&ctx.trace_id),
+            correlation_id: zentinel_common::CorrelationId::from_string(ctx.agent_correlation_id()),
             metadata: zentinel_agent_protocol::RequestMetadata {
-                correlation_id: ctx.trace_id.clone(),
+                correlation_id: ctx.agent_correlation_id().to_string(),
                 request_id: ctx.trace_id.clone(),
                 client_ip: ctx.client_ip.clone(),
                 client_port: 0,
@@ -5731,6 +5751,7 @@ impl ZentinelProxy {
                 if fail_closed {
                     error!(
                         correlation_id = %ctx.trace_id,
+                        agent_correlation_id = %ctx.agent_correlation_id(),
                         error = %e,
                         "Agent streaming body inspection failed, blocking (fail-closed)"
                     );
@@ -5749,6 +5770,7 @@ impl ZentinelProxy {
                 } else {
                     warn!(
                         correlation_id = %ctx.trace_id,
+                        agent_correlation_id = %ctx.agent_correlation_id(),
                         error = %e,
                         "Agent streaming body inspection failed, allowing (fail-open)"
                     );
@@ -5841,6 +5863,7 @@ impl ZentinelProxy {
 
         debug!(
             correlation_id = %ctx.trace_id,
+            agent_correlation_id = %ctx.agent_correlation_id(),
             body_bytes = body.len(),
             agent_count = ctx.body_inspection_agents.len(),
             "Inspecting the whole request body before the upstream (inspect-first)"
@@ -5879,6 +5902,7 @@ impl ZentinelProxy {
     ) -> Result<(), Box<Error>> {
         debug!(
             correlation_id = %ctx.trace_id,
+            agent_correlation_id = %ctx.agent_correlation_id(),
             buffer_size = ctx.body_buffer.len(),
             end_of_stream = end_of_stream,
             agent_count = ctx.body_inspection_agents.len(),
@@ -5965,9 +5989,9 @@ impl ZentinelProxy {
         };
 
         let agent_ctx = crate::agents::AgentCallContext {
-            correlation_id: zentinel_common::CorrelationId::from_string(&ctx.trace_id),
+            correlation_id: zentinel_common::CorrelationId::from_string(ctx.agent_correlation_id()),
             metadata: zentinel_agent_protocol::RequestMetadata {
-                correlation_id: ctx.trace_id.clone(),
+                correlation_id: ctx.agent_correlation_id().to_string(),
                 request_id: ctx.trace_id.clone(),
                 client_ip: ctx.client_ip.clone(),
                 client_port: 0,
@@ -6017,6 +6041,7 @@ impl ZentinelProxy {
                 if fail_closed {
                     error!(
                         correlation_id = %ctx.trace_id,
+                        agent_correlation_id = %ctx.agent_correlation_id(),
                         error = %e,
                         "Agent body inspection failed, blocking (fail-closed)"
                     );
@@ -6035,6 +6060,7 @@ impl ZentinelProxy {
                 } else {
                     warn!(
                         correlation_id = %ctx.trace_id,
+                        agent_correlation_id = %ctx.agent_correlation_id(),
                         error = %e,
                         "Agent body inspection failed, allowing (fail-open)"
                     );

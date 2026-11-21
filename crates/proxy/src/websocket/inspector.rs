@@ -45,7 +45,8 @@ pub struct WebSocketInspector {
     agent_manager: Arc<AgentManager>,
     /// Route ID for this connection
     route_id: String,
-    /// Correlation ID (from the original upgrade request)
+    /// ID the connection's frames are matched by: the agent correlation ID
+    /// of the original upgrade request
     correlation_id: String,
     /// Client IP address
     client_ip: String,
