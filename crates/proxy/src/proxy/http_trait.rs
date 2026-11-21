@@ -23,7 +23,8 @@ use crate::cache::{get_cache_eviction, get_cache_lock, get_cache_storage};
 use crate::disk_cache::DiskHitHandler;
 use crate::hybrid_cache::HybridHitHandler;
 use crate::inference::{
-    extract_inference_content, is_sse_response, PromptInjectionResult, StreamingTokenCounter,
+    extract_inference_content, is_sse_response, BlockCause, PromptInjectionResult,
+    StreamingTokenCounter,
 };
 use crate::logging::{AccessLogEntry, AuditEventType, AuditLogEntry};
 use crate::rate_limit::HeaderAccessor;
@@ -1615,118 +1616,6 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
-        // Prompt injection guardrail (for inference routes)
-        if let Some(ref route_config) = ctx.route_config {
-            if let Some(ref inference) = route_config.inference {
-                if let Some(ref guardrails) = inference.guardrails {
-                    if let Some(ref pi_config) = guardrails.prompt_injection {
-                        if pi_config.enabled && !ctx.body_buffer.is_empty() {
-                            ctx.guardrails_enabled = true;
-
-                            // Extract content from request body
-                            if let Some(content) = extract_inference_content(&ctx.body_buffer) {
-                                let result = self
-                                    .guardrail_processor
-                                    .check_prompt_injection(
-                                        pi_config,
-                                        &content,
-                                        ctx.inference_model.as_deref(),
-                                        ctx.route_id.as_deref(),
-                                        &ctx.trace_id,
-                                    )
-                                    .await;
-
-                                match result {
-                                    PromptInjectionResult::Blocked {
-                                        status,
-                                        message,
-                                        detections,
-                                    } => {
-                                        warn!(
-                                            correlation_id = %ctx.trace_id,
-                                            route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
-                                            detection_count = detections.len(),
-                                            "Prompt injection detected, blocking request"
-                                        );
-
-                                        self.metrics.record_blocked_request("prompt_injection");
-
-                                        // Store detection categories for logging
-                                        ctx.guardrail_detection_categories =
-                                            detections.iter().map(|d| d.category.clone()).collect();
-
-                                        // Audit log the block
-                                        let audit_entry = AuditLogEntry::new(
-                                            &ctx.trace_id,
-                                            AuditEventType::Blocked,
-                                            &ctx.method,
-                                            &ctx.path,
-                                            &ctx.client_ip,
-                                        )
-                                        .with_route_id(ctx.route_id.as_deref().unwrap_or("unknown"))
-                                        .with_status_code(status)
-                                        .with_reason("Prompt injection detected".to_string());
-                                        self.log_manager.log_audit(&audit_entry);
-
-                                        // Send error response
-                                        // Same JSON as `write_json_error`
-                                        // without a page for the status.
-                                        let refusal = handlers::ProxyError {
-                                            status,
-                                            message: Some(&message),
-                                            default_body: bytes::Bytes::from(format!(
-                                                r#"{{"error":"prompt_injection_blocked","message":"{}"}}"#,
-                                                message
-                                            )),
-                                            default_content_type: "application/json",
-                                            headers: Vec::new(),
-                                        };
-                                        self.write_proxy_error(session, ctx, refusal).await?;
-                                        return Ok(true);
-                                    }
-                                    PromptInjectionResult::Detected { detections } => {
-                                        // Log but allow
-                                        warn!(
-                                            correlation_id = %ctx.trace_id,
-                                            route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
-                                            detection_count = detections.len(),
-                                            "Prompt injection detected (logged only)"
-                                        );
-                                        ctx.guardrail_detection_categories =
-                                            detections.iter().map(|d| d.category.clone()).collect();
-                                    }
-                                    PromptInjectionResult::Warning { detections } => {
-                                        // Set flag for response header
-                                        ctx.guardrail_warning = true;
-                                        ctx.guardrail_detection_categories =
-                                            detections.iter().map(|d| d.category.clone()).collect();
-                                        debug!(
-                                            correlation_id = %ctx.trace_id,
-                                            "Prompt injection warning set"
-                                        );
-                                    }
-                                    PromptInjectionResult::Clean => {
-                                        trace!(
-                                            correlation_id = %ctx.trace_id,
-                                            "No prompt injection detected"
-                                        );
-                                    }
-                                    PromptInjectionResult::Error { message } => {
-                                        // Already logged in processor, just trace here
-                                        trace!(
-                                            correlation_id = %ctx.trace_id,
-                                            error = %message,
-                                            "Prompt injection check error (failure mode applied)"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // Geo filtering
         if let Some(route_id) = ctx.route_id.as_deref() {
             if let Some(ref route_config) = ctx.route_config {
@@ -1917,6 +1806,13 @@ impl ProxyHttp for ZentinelProxy {
                 };
                 return self.handle_builtin_route(session, ctx, &route_match).await;
             }
+        }
+
+        // Prompt check of an inference route. It needs the request body, so
+        // it runs once the checks that can refuse a request without reading
+        // one are done.
+        if self.check_prompt_guardrail(session, ctx).await? {
+            return Ok(true);
         }
 
         // API validation for API routes
@@ -4656,6 +4552,23 @@ fn body_too_large() -> Box<Error> {
     .into_down()
 }
 
+/// Whether a request declares a `Content-Encoding` other than `identity`.
+fn has_content_encoding(headers: &http::HeaderMap) -> bool {
+    headers
+        .get_all(http::header::CONTENT_ENCODING)
+        .iter()
+        .any(|value| {
+            value
+                .to_str()
+                .map(|v| {
+                    v.split(',').map(str::trim).any(|coding| {
+                        !coding.is_empty() && !coding.eq_ignore_ascii_case("identity")
+                    })
+                })
+                .unwrap_or(true)
+        })
+}
+
 /// The JSON body `fail_to_proxy` answers with: `{"error":"<code> <reason>",
 /// "trace_id":"..."}`.
 ///
@@ -5723,6 +5636,254 @@ impl ZentinelProxy {
         Ok(())
     }
 
+    /// Read the whole request body in `request_filter`, bounded by the
+    /// route's body-size limit (413 above it).
+    ///
+    /// Retry buffering keeps Pingora's body loop running after the body is
+    /// consumed here, so `request_body_filter` can hand it back (see
+    /// `validate_api_request`). `what` names the reader in the log.
+    async fn read_whole_request_body(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestContext,
+        what: &'static str,
+    ) -> Result<Bytes, Box<Error>> {
+        let global_limit = ctx
+            .config
+            .get_or_insert_with(|| self.config_manager.current())
+            .limits
+            .max_body_size_bytes;
+        let limit = ctx.max_body_size(global_limit);
+        session.enable_retry_buffering_with_limit(limit);
+        let mut body = Vec::new();
+        while let Some(chunk) = session.read_request_body().await.map_err(|e| {
+            Error::explain(
+                ErrorType::InternalError,
+                format!("Failed to read body: {e}"),
+            )
+        })? {
+            if body.len() + chunk.len() > limit {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    limit = limit,
+                    "Request body size limit exceeded ({what})"
+                );
+                self.metrics.record_blocked_request("body_size_exceeded");
+                return Err(Error::explain(
+                    ErrorType::HTTPStatus(413),
+                    "Request body exceeds the configured limit",
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Bytes::from(body))
+    }
+
+    /// The prompt check of an inference route: the `guardrails` block's
+    /// `prompt-injection` entry.
+    ///
+    /// The check is made on the request body, so the whole body is read
+    /// here, before an upstream is chosen, bounded by the route's body-size
+    /// limit (413 above it). It is kept in `validated_request_body`, which
+    /// is how `request_body_filter` hands it back to Pingora, and how API
+    /// schema validation and `request-body-mode "inspect-first"` get the
+    /// body they read next.
+    ///
+    /// A request without a body is not checked, nor is a WebSocket upgrade
+    /// or a proxied MCP tool call. A body the check cannot read content
+    /// from (not JSON, no message text, or a `Content-Encoding`, which is
+    /// not undone here) and a check that fails follow the guardrail's
+    /// `failure-mode`: `open` forwards the request, `closed` refuses it.
+    ///
+    /// Returns `Ok(true)` when the response has been written and the
+    /// request must not be forwarded.
+    async fn check_prompt_guardrail(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestContext,
+    ) -> Result<bool, Box<Error>> {
+        use zentinel_config::GuardrailFailureMode;
+
+        let Some(route_config) = ctx.route_config.clone() else {
+            return Ok(false);
+        };
+        let Some(pi_config) = route_config
+            .inference
+            .as_ref()
+            .and_then(|inference| inference.guardrails.as_ref())
+            .and_then(|guardrails| guardrails.prompt_injection.as_ref())
+            .filter(|pi_config| pi_config.enabled)
+        else {
+            return Ok(false);
+        };
+        // A WebSocket upgrade has no request body to check, and the body of
+        // a proxied MCP tool call has been read already.
+        if ctx.is_websocket_upgrade || ctx.mcp_proxied_call.is_some() {
+            return Ok(false);
+        }
+
+        let body = match &ctx.validated_request_body {
+            Some(body) => body.clone(),
+            None => {
+                self.read_whole_request_body(session, ctx, "prompt check")
+                    .await?
+            }
+        };
+        if body.is_empty() {
+            return Ok(false);
+        }
+        ctx.validated_request_body = Some(body.clone());
+        ctx.guardrails_enabled = true;
+
+        // A body with a `Content-Encoding` is not decompressed here, so it has
+        // no text to check.
+        let content = if has_content_encoding(&session.req_header().headers) {
+            None
+        } else {
+            extract_inference_content(&body)
+        };
+        let result = match content {
+            Some(content) => {
+                self.guardrail_processor
+                    .check_prompt_injection(
+                        pi_config,
+                        &content,
+                        ctx.inference_model.as_deref(),
+                        ctx.route_id.as_deref(),
+                        &ctx.trace_id,
+                    )
+                    .await
+            }
+            None => {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    failure_mode = ?pi_config.failure_mode,
+                    "No message content to check in the request body"
+                );
+                match pi_config.failure_mode {
+                    GuardrailFailureMode::Open => PromptInjectionResult::Clean,
+                    GuardrailFailureMode::Closed => PromptInjectionResult::Blocked {
+                        status: pi_config.block_status,
+                        message: "Request blocked: its content could not be read for the check"
+                            .to_string(),
+                        detections: vec![],
+                        cause: BlockCause::CheckFailed,
+                    },
+                }
+            }
+        };
+
+        match result {
+            PromptInjectionResult::Blocked {
+                status,
+                message,
+                detections,
+                cause,
+            } => {
+                // Told apart by the cause the check gave, not by what it
+                // listed: an agent may report a detection without listing any.
+                let check_failed = cause == BlockCause::CheckFailed;
+                if check_failed {
+                    warn!(
+                        correlation_id = %ctx.trace_id,
+                        route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                        status = status,
+                        "Prompt check did not complete, blocking request"
+                    );
+                    self.metrics.record_blocked_request("prompt_check_failed");
+                } else {
+                    warn!(
+                        correlation_id = %ctx.trace_id,
+                        route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                        detection_count = detections.len(),
+                        "Prompt injection detected, blocking request"
+                    );
+                    self.metrics.record_blocked_request("prompt_injection");
+                }
+
+                // Store detection categories for logging
+                ctx.guardrail_detection_categories =
+                    detections.iter().map(|d| d.category.clone()).collect();
+
+                // Audit log the block
+                let audit_entry = AuditLogEntry::new(
+                    &ctx.trace_id,
+                    AuditEventType::Blocked,
+                    &ctx.method,
+                    &ctx.path,
+                    &ctx.client_ip,
+                )
+                .with_route_id(ctx.route_id.as_deref().unwrap_or("unknown"))
+                .with_status_code(status)
+                .with_reason(
+                    if check_failed {
+                        "Prompt check did not complete"
+                    } else {
+                        "Prompt injection detected"
+                    }
+                    .to_string(),
+                );
+                self.log_manager.log_audit(&audit_entry);
+
+                // Send error response
+                // Same JSON as `write_json_error`
+                // without a page for the status.
+                let refusal = handlers::ProxyError {
+                    status,
+                    message: Some(&message),
+                    default_body: bytes::Bytes::from(
+                        serde_json::json!({
+                            "error": "prompt_injection_blocked",
+                            "message": message,
+                        })
+                        .to_string(),
+                    ),
+                    default_content_type: "application/json",
+                    headers: Vec::new(),
+                };
+                self.write_proxy_error(session, ctx, refusal).await?;
+                return Ok(true);
+            }
+            PromptInjectionResult::Detected { detections } => {
+                // Log but allow
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    detection_count = detections.len(),
+                    "Prompt injection detected (logged only)"
+                );
+                ctx.guardrail_detection_categories =
+                    detections.iter().map(|d| d.category.clone()).collect();
+            }
+            PromptInjectionResult::Warning { detections } => {
+                // Set flag for response header
+                ctx.guardrail_warning = true;
+                ctx.guardrail_detection_categories =
+                    detections.iter().map(|d| d.category.clone()).collect();
+                debug!(
+                    correlation_id = %ctx.trace_id,
+                    "Prompt injection warning set"
+                );
+            }
+            PromptInjectionResult::Clean => {
+                trace!(
+                    correlation_id = %ctx.trace_id,
+                    "No prompt injection detected"
+                );
+            }
+            PromptInjectionResult::Error { message } => {
+                // Already logged in processor, just trace here
+                trace!(
+                    correlation_id = %ctx.trace_id,
+                    error = %message,
+                    "Prompt injection check error (failure mode applied)"
+                );
+            }
+        }
+        Ok(false)
+    }
+
     /// Send buffered body to agents (buffer mode).
     /// `request-body-mode "inspect-first"` (#608): read the whole request
     /// body in `request_filter` and have the body agents decide on it
@@ -5748,42 +5909,13 @@ impl ZentinelProxy {
             return Ok(());
         }
 
-        // Already read whole for API schema validation, or read now.
+        // Already read whole for the prompt check or API schema validation,
+        // or read now.
         let body = match ctx.validated_request_body.take() {
             Some(body) => body,
             None => {
-                let global_limit = ctx
-                    .config
-                    .get_or_insert_with(|| self.config_manager.current())
-                    .limits
-                    .max_body_size_bytes;
-                let limit = ctx.max_body_size(global_limit);
-                // Retry buffering keeps Pingora's body loop running after the
-                // body is consumed here, so `request_body_filter` can hand it
-                // back (see `validate_api_request`, #531).
-                session.enable_retry_buffering_with_limit(limit);
-                let mut body = Vec::new();
-                while let Some(chunk) = session.read_request_body().await.map_err(|e| {
-                    Error::explain(
-                        ErrorType::InternalError,
-                        format!("Failed to read body: {e}"),
-                    )
-                })? {
-                    if body.len() + chunk.len() > limit {
-                        warn!(
-                            correlation_id = %ctx.trace_id,
-                            limit = limit,
-                            "Request body size limit exceeded (inspect-first)"
-                        );
-                        self.metrics.record_blocked_request("body_size_exceeded");
-                        return Err(Error::explain(
-                            ErrorType::HTTPStatus(413),
-                            "Request body exceeds the configured limit",
-                        ));
-                    }
-                    body.extend_from_slice(&chunk);
-                }
-                Bytes::from(body)
+                self.read_whole_request_body(session, ctx, "inspect-first")
+                    .await?
             }
         };
 
