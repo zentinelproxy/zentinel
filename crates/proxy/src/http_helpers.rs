@@ -101,13 +101,15 @@ pub fn extract_request_info(session: &Session) -> OwnedRequestInfo {
     let host = extract_request_host(req_header).to_string();
     let path = req_header.uri.path().to_string();
     let method = req_header.method.as_str().to_string();
+    // `path` carries no query string; the parameters come from the query.
+    let query_params = RequestInfo::parse_query_string(req_header.uri.query().unwrap_or(""));
 
     OwnedRequestInfo {
         method,
-        path: path.clone(),
+        path,
         host,
         headers,
-        query_params: RequestInfo::parse_query_params(&path),
+        query_params,
     }
 }
 

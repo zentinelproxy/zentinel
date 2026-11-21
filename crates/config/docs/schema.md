@@ -190,7 +190,26 @@ Request routing configuration.
 | `host` | `"api.example.com"` | Match Host header |
 | `header` | `name="X-Api-Key"` | Match header presence/value |
 | `method` | `["GET", "POST"]` | Match HTTP methods |
-| `query-param` | `name="version"` | Match query parameter |
+| `query-param` | `"version" "v2"` | Match query parameter |
+
+`query-param "name"` matches a request whose query string has a parameter of
+that name, with any value: `?name=1`, `?name=` and `?name` all count.
+`query-param "name" "value"` also requires the parameter's value to equal
+`value`. The comparison is exact and case-sensitive, after the request's names
+and values are percent-decoded (`+` is not read as a space). A name or value
+whose decoding is not valid UTF-8 is compared as it was written. A query string
+that repeats a name is compared on its last occurrence. The query string is not
+part of the path, so `path`, `path-prefix` and `path-regex` never see it.
+
+```kdl
+route "v2-api" {
+    matches {
+        path-prefix "/api"
+        query-param "version" "v2"
+    }
+    upstream "api-v2"
+}
+```
 
 ### ServiceType
 
