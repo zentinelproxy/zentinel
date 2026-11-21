@@ -2573,6 +2573,7 @@ mod tests {
                 content_types: vec![],
                 decompress: false,
                 max_decompression_ratio: 100.0,
+                inspect_untyped_bodies: true,
             },
         };
 

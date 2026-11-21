@@ -591,9 +591,19 @@ filter "geo-block" {
 Safe decompression with zip bomb protection.
 
 **Supported Encodings:**
-- gzip
-- deflate
-- brotli
+- gzip (`gzip`, `x-gzip`)
+- deflate (the zlib format of RFC 9110, or a raw deflate stream)
+- brotli (`br`; `brotli` is accepted for it too)
+
+**Request `Content-Encoding`:** `content_codings` reads every
+`Content-Encoding` header of a request as a comma-separated list, without
+regard to case or to spaces around a name, leaving out `identity`, and
+`BodyCoding::classify` decides what is done with the body. One supported
+coding is decoded for the body agents (`body-inspection { decompress }`).
+Anything else, several codings included, is not decoded, and the agents'
+`failure-mode` decides (415 for `closed`). `is_supported_encoding` and
+`parse_content_encoding` are not used for this. See
+[Content-coded request bodies](../../config/docs/schema.md#content-coded-request-bodies).
 
 **Key Function:**
 

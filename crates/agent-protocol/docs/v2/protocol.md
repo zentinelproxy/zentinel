@@ -395,7 +395,34 @@ An agent gets `RequestBodyChunk` events when it subscribes to them
 #false`, and `waf { body-inspection { inspect-request-body #false } }` is
 not set. No `waf` block is needed (one used to be, and without it no
 agent got a request body). Without a `waf` block, bodies of every content
-type are sent; with one, those in its `body-inspection { content-types }`.
+type are sent; with one, those in its `body-inspection { content-types }`
+(an entry also covers `type/<name>+subtype`, as `application/json` covers
+`application/vnd.api+json`), and those of a request that has a body and no
+usable `Content-Type` unless `inspect-untyped-bodies #false` is set there.
+
+In `request-body-mode "buffer"` an agent is sent the whole body in one
+`RequestBodyChunk` event with `is_last` set, or none of it. A body longer
+than `body-inspection { max-inspection-bytes }` (1 MiB by default, counted
+as received, before any decompression) is not sent in part: the filter's
+`failure-mode` applies, as for a body over the agent's own
+`max-request-body-bytes` -- `closed` refuses the request with 413, `open`
+skips the agent. A body of exactly `max-inspection-bytes` is sent whole.
+With `max-inspection-bytes 0` every body that is not empty is over the limit;
+`inspect-request-body #false` keeps bodies from the agents instead. The
+upgrade note and the ways to accept larger bodies are in the config
+reference ([BodyInspectionPolicy](../../../config/docs/schema.md#bodyinspectionpolicy)).
+
+A request body in a `Content-Encoding` is sent to the agent decoded, when
+it is in one supported coding (`gzip`, `deflate`, `br`),
+`body-inspection { decompress }` (on by default) is on, and the body is
+held whole: not with `request-body-mode "stream"`, and, with `"hybrid"`,
+not past its threshold. The `Content-Encoding` header in the request
+headers event is as the client sent it. Any other coded body cannot be
+inspected as sent, and the filter's `failure-mode` applies -- `closed`
+refuses the request with 415, `open` skips the agent, which is sent none of
+the body, with a warning. A body that cannot be decoded (invalid data, over
+the ratio or size limit) is refused with 400 or skipped the same way. See
+[Content-coded request bodies](../../../config/docs/schema.md#content-coded-request-bodies).
 
 #### What the upstream sees of a request refused on its body
 

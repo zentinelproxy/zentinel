@@ -2091,7 +2091,9 @@ impl ProxyHttp for ZentinelProxy {
     /// Used for body size enforcement and WAF/agent inspection.
     ///
     /// Supports two modes:
-    /// - **Buffer mode** (default): Buffer chunks until end of stream or limit, then send to agents
+    /// - **Buffer mode** (default): Buffer chunks until end of stream, then send to agents.
+    ///   A body longer than `max-inspection-bytes` is not sent; each agent's
+    ///   `failure-mode` decides (see `request_body_over_inspection_limit`)
     /// - **Stream mode**: Send each chunk immediately to agents as it arrives
     async fn request_body_filter(
         &self,
@@ -2325,10 +2327,20 @@ impl ProxyHttp for ZentinelProxy {
                         }
                     }
 
-                    // Send when complete or limit reached
-                    let should_send =
-                        end_of_stream || ctx.body_bytes_inspected >= max_inspection_bytes;
-                    if should_send && !ctx.body_buffer.is_empty() {
+                    // Send when complete, or once the body is known to be
+                    // longer than the limit. A body of exactly the limit is
+                    // not over it until more follows, so it is held until
+                    // the next call brings that or the end.
+                    let over_limit = undecided && ctx.request_body_bytes > max_inspection_bytes;
+                    let should_send = end_of_stream || over_limit;
+                    if over_limit {
+                        // Only the start of the body is buffered, and an
+                        // agent must not decide on it as if it were the
+                        // body: the agents' failure modes apply instead.
+                        ctx.body_buffer.clear();
+                        self.request_body_over_inspection_limit(ctx, max_inspection_bytes)
+                            .await?;
+                    } else if should_send && !ctx.body_buffer.is_empty() {
                         self.send_buffered_body_to_agents(end_of_stream, ctx)
                             .await?;
                         ctx.body_buffer.clear();
@@ -4656,6 +4668,17 @@ fn body_too_large() -> Box<Error> {
     .into_down()
 }
 
+/// A request body in a content coding the proxy does not decode for the
+/// agents, refused because they `fail closed`. Downstream, like
+/// [`body_too_large`]: it is the client's request that is refused.
+fn body_coding_not_decoded() -> Box<Error> {
+    Error::explain(
+        ErrorType::HTTPStatus(415),
+        "Request body content coding is not decoded for inspection",
+    )
+    .into_down()
+}
+
 /// The JSON body `fail_to_proxy` answers with: `{"error":"<code> <reason>",
 /// "trace_id":"..."}`.
 ///
@@ -5572,6 +5595,18 @@ impl ZentinelProxy {
     ) -> Result<(), Box<Error>> {
         // Clone the chunk data to avoid borrowing issues when mutating body later
         let chunk_data: Vec<u8> = body.as_ref().map(|b| b.to_vec()).unwrap_or_default();
+        // Chunks cannot be decoded.
+        ctx.body_goes_in_pieces();
+        if ctx.body_not_decoded.is_some() {
+            if !chunk_data.is_empty() {
+                self.apply_body_not_decoded(ctx)?;
+            }
+            if ctx.body_not_decoded_applied {
+                // Allowed (`open`): the agents are sent none of the body,
+                // and the chunk goes on as it is.
+                return Ok(());
+            }
+        }
         let chunk_index = ctx.request_body_chunk_index;
         ctx.request_body_chunk_index += 1;
         ctx.body_bytes_inspected += chunk_data.len() as u64;
@@ -5828,11 +5863,99 @@ impl ZentinelProxy {
         Ok(())
     }
 
+    /// A request body longer than `max_inspection_bytes` (buffer mode): the
+    /// body agents are not sent the part that was buffered. Each agent's
+    /// `failure-mode` decides, as for a body over its own limit: a `closed`
+    /// one refuses the request with 413 and an `open` one is skipped, with
+    /// a warning and a metric.
+    ///
+    /// Before, the agents were sent the buffered start of the body as if it
+    /// were the body, and the size check that applies the failure mode saw
+    /// only that part's length, so it never found the body over the limit.
+    async fn request_body_over_inspection_limit(
+        &self,
+        ctx: &mut RequestContext,
+        max_inspection_bytes: u64,
+    ) -> Result<(), Box<Error>> {
+        // No agent is called, so the request's id, for the logs, is all that
+        // is needed.
+        let correlation_id = zentinel_common::CorrelationId::from_string(&ctx.trace_id);
+        let decision = self
+            .agent_manager
+            .process_request_body_over_inspection_limit(
+                &correlation_id,
+                ctx.request_body_bytes as usize,
+                max_inspection_bytes as usize,
+                &ctx.body_inspection_agents,
+            )
+            .await;
+        // A refusal is answered by `fail_to_proxy`, as for any decision on
+        // the body.
+        self.refuse_on_agent_request_decision(
+            ctx,
+            &decision,
+            "request_body",
+            "agent_body_inspection",
+        )
+    }
+
+    /// A request body that is content-coded and is not decoded for the body
+    /// agents (`RequestContext::body_not_decoded`) cannot be inspected as
+    /// sent. Called when the first of its bytes is about to go to them: the
+    /// body agents' filters decide, as for a body that cannot be
+    /// decompressed. `closed` refuses the request with 415, before any of
+    /// the body reaches the upstream. `open` goes on, with a warning and a
+    /// `zentinel_decompression_total` count with the reason `not_decoded`;
+    /// the agents are sent none of the body, as for a body over
+    /// `max-inspection-bytes`, and the caller checks
+    /// `body_not_decoded_applied` to skip them.
+    ///
+    /// Decided once per request.
+    fn apply_body_not_decoded(&self, ctx: &mut RequestContext) -> Result<(), Box<Error>> {
+        if ctx.body_not_decoded_applied {
+            return Ok(());
+        }
+        let Some(undecoded) = ctx.body_not_decoded.clone() else {
+            return Ok(());
+        };
+        ctx.body_not_decoded_applied = true;
+        self.metrics
+            .record_decompression_failure(undecoded.label, "not_decoded");
+
+        if ctx.request_body_agents_fail_closed() {
+            error!(
+                correlation_id = %ctx.trace_id,
+                encoding = %undecoded.declared,
+                "Request body is not decoded for inspection, blocking (fail-closed)"
+            );
+            Err(body_coding_not_decoded())
+        } else {
+            warn!(
+                correlation_id = %ctx.trace_id,
+                encoding = %undecoded.declared,
+                "Request body is not decoded for inspection, not sending it to the agents (fail-open)"
+            );
+            Ok(())
+        }
+    }
+
     async fn send_buffered_body_to_agents(
         &self,
         end_of_stream: bool,
         ctx: &mut RequestContext,
     ) -> Result<(), Box<Error>> {
+        // Only a body that is whole can be decoded. `hybrid` mode sends
+        // what it has buffered when it reaches its threshold, with more to
+        // come: a start that is cut short is not decoded.
+        if !end_of_stream {
+            ctx.body_goes_in_pieces();
+        }
+        if ctx.body_not_decoded.is_some() && !ctx.body_buffer.is_empty() {
+            self.apply_body_not_decoded(ctx)?;
+            // Allowed (`open`): the agents are sent none of it.
+            return Ok(());
+        }
+
         debug!(
             correlation_id = %ctx.trace_id,
             buffer_size = ctx.body_buffer.len(),
@@ -5903,13 +6026,15 @@ impl ZentinelProxy {
                                 "Invalid compressed body",
                             ));
                         } else {
+                            // The agents are sent none of the body, as for
+                            // a body over `max-inspection-bytes`.
                             warn!(
                                 correlation_id = %ctx.trace_id,
                                 error = %e,
                                 encoding = %encoding,
-                                "Decompression failed, sending compressed body (fail-open)"
+                                "Decompression failed, not sending the body to the agents (fail-open)"
                             );
-                            ctx.body_buffer.clone()
+                            return Ok(());
                         }
                     }
                 }

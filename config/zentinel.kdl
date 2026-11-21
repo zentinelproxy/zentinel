@@ -360,6 +360,7 @@ waf {
         content-types "application/x-www-form-urlencoded" "multipart/form-data" "application/json" "application/xml" "text/xml"
         decompress #true
         max-decompression-ratio 100.0
+        inspect-untyped-bodies #true
     }
 }
 
