@@ -210,6 +210,30 @@ listeners {
 }
 ```
 
+#### Protocol and `tls`
+
+A listener serves TLS when its `protocol` is `https` (or `h2`), and then it needs a
+`tls` block. `protocol` is `http` when it is not written, and `http` and `h2c`
+serve cleartext, so a `tls` block on them would never be used. That is a load
+error rather than a listener that quietly serves plain HTTP:
+
+```
+Listener 'web': has a 'tls' block, but protocol "http" (the protocol when none is
+written) serves plain HTTP/1.1, so the block would not be used. Add protocol
+"https" to serve TLS, or remove the 'tls' block.
+```
+
+```kdl
+listener "web" {
+    address "0.0.0.0:443"
+    protocol "https"   // required for the tls block below
+    tls {
+        cert-file "/etc/ssl/certs/server.crt"
+        key-file "/etc/ssl/private/server.key"
+    }
+}
+```
+
 #### Per-listener route sets
 
 A listener without `namespace` serves the global top-level `routes`, together
@@ -728,6 +752,116 @@ matches {
 // Array of numbers
 ports 8080 8081 8082
 ```
+
+## Value Types
+
+A setting takes a value of one type: a string in quotes, an integer, a number,
+or `#true` / `#false`. A value of another type is a load error, at startup and on
+reload, instead of being read as if the setting were absent. The error names the
+setting, what it takes, the type that was written, and where it is. It does not
+repeat the value:
+
+```
+Wrong value type for 'max-connections-per-client' in limits: expected an integer
+(without quotes), found a string.
+```
+
+```kdl
+limits {
+    // Integer: no quotes
+    max-connections-per-client 100
+
+    // Error: a string where an integer is expected
+    // max-connections-per-client "100"
+}
+
+tls {
+    // String: in quotes
+    min-version "1.3"
+
+    // Error: a number where a string is expected
+    // min-version 1.3
+
+    // Boolean: #true or #false, no quotes
+    client-auth #true
+}
+```
+
+The same holds for each value of a list (`domains`, `cacheable-methods`,
+`filters`, `allow` and `deny`, ...), for a property such as `weight=2`, and for the
+value of a header in `set`, `add` and `rename`. A setting that is written with no
+value at all is an error too, and so is one written as `name=value` where it takes
+an argument (`failure-mode mode="closed"`, which has to be `failure-mode "closed"`),
+and an entry written as `name=value` in a list. Omit the node to get the default.
+`#null` is the one way to write "no value": the setting keeps its default.
+`tls-insecure` alone, with no value, means `#true`.
+
+A few settings take more than one type, and each of the forms below is accepted:
+
+| Setting | Accepted values |
+|---------|-----------------|
+| `policies { max-body-size }` | an integer number of bytes, or a size string such as `"10MB"` |
+| `shadow { percentage }` | a number, or a numeric string such as `"50"` |
+| `load-balancing "sticky" { cookie-ttl }` | an integer number of seconds, or a duration string such as `"1h"`, `"30m"` or `"3600"` |
+| `health-check { type "http" { expected-status } }` | an integer status code, or a string such as `"204"` |
+| `waf { body-inspection { max-decompression-ratio } }` | an integer or a number with a fraction |
+| `priority` on a route | an integer, or one of `"low"`, `"normal"`, `"high"`, `"critical"`; any other value is reported by `zentinel lint` and the route has normal priority |
+
+To fix a configuration that now fails, write the value with the type the error
+names: add the quotes around a string, or remove them from an integer or a
+boolean.
+
+An integer has to fit the setting too: `default-ttl-secs -1` and `port 70000` are
+errors, where they used to be stored as `18446744073709551615` and `4464`. See
+[Integer Ranges](validation.md#integer-ranges).
+
+## One Node, One Value
+
+A block reads each of its settings once, so a node that is written twice in the
+same block is a load error rather than a choice between the two. The error names
+the node and where it is:
+
+```
+Duplicate node 'filters' in routes > route "api": it is written 2 times, but only
+one of them would take effect. Combine them into a single 'filters' node, or
+remove the extra ones.
+```
+
+```kdl
+route "api" {
+    // One node lists every filter
+    filters "auth" "rate-limit"
+
+    // Error: 'filters' is written twice in this route
+    // filters "auth"
+    // filters "rate-limit"
+}
+```
+
+The same holds for a block (`matches`, `policies`, `timeouts`, `tls`, ...), for a
+header named twice inside `set`, `add` or `rename` (header names are compared
+without regard to case, so `X-A` and `x-a` are the same header), and for a
+`route`, `listener`, `upstream`, `filter` or `agent` whose id is already taken.
+
+To fix a configuration that now fails, merge the copies into one node, or remove
+the one that was not in effect. Which copy was in effect depended on the block:
+the first for most settings, the last for blocks that are read by walking their
+children (an agent's settings, `logging`, a namespace's blocks) and for ids and
+header names. Check the behavior you rely on before choosing which to keep.
+
+Inside a `namespace` or a `service`, `limits`, `listeners`, `upstreams`, `routes`,
+`agents` and `filters` are each one block, so a second `routes` block there is an
+error too. At the top level, `routes` blocks add up.
+
+Nodes that make a list by repeating are the exception, and each repetition adds
+to the list: `route`, `listener`, `upstream`, `filter` and `agent` (each with its
+own id), `target`, the conditions inside `matches`, an agent's `events`, a
+listener's `trusted-proxies`, and the `routes`, `upstreams`, `listeners`,
+`filters` and `agents` blocks at the top level.
+
+The top-level `system`, `limits`, `observability`, `rate-limits`, `cache` and
+`waf` blocks may also be written again, in another file or in an environment
+override; the later one replaces the earlier one.
 
 ## Multi-Line Strings
 

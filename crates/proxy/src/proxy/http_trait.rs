@@ -3816,8 +3816,8 @@ impl ProxyHttp for ZentinelProxy {
         let cache_meta = CacheMeta::new(
             fresh_until,
             now,
-            config.stale_while_revalidate_secs as u32,
-            config.stale_if_error_secs as u32,
+            crate::cache::grace_period_secs(config.stale_while_revalidate_secs),
+            crate::cache::grace_period_secs(config.stale_if_error_secs),
             header,
         );
 

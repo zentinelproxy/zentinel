@@ -1,10 +1,15 @@
 use anyhow::Result;
 use zentinel_common::types::RetryPolicy;
 
-use crate::kdl::helpers::extract_u32_with_limits;
+use crate::kdl::helpers::{extract_u32_with_limits, reject_repeated_names};
 
 pub fn parse_retry_policy(node: &kdl::KdlNode) -> Result<RetryPolicy> {
     let default_config = RetryPolicy::default();
+
+    // Each key sets one value; a repeated key would silently keep the last.
+    if let Some(children) = node.children() {
+        reject_repeated_names(children)?;
+    }
 
     fn rp_config_map(mut cfg: RetryPolicy, node: &kdl::KdlNode) -> Result<RetryPolicy> {
         match node.name().to_string().as_str() {
@@ -125,6 +130,11 @@ fn parse_short_duration(text: &str) -> Option<std::time::Duration> {
         "m" | "min" | "mins" => value * 60_000.0,
         _ => return None,
     };
+    // More milliseconds than a `u64` counts is not a duration; the cast would
+    // read it as the largest value.
+    if millis >= u64::MAX as f64 {
+        return None;
+    }
     Some(std::time::Duration::from_millis(millis as u64))
 }
 
@@ -149,6 +159,25 @@ mod tests {
         let rp = parse_retry_policy(rp_node).unwrap();
 
         assert_eq!(rp.max_attempts, 10);
+    }
+
+    /// A duration a `u64` of milliseconds cannot count is not a duration.
+    #[test]
+    fn a_backoff_too_long_to_count_in_milliseconds_is_an_error() {
+        let kdl = r#"
+            retry-policy {
+                backoff "99999999999999999999999999999m"
+            }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let rp_node = doc.get("retry-policy").unwrap();
+
+        let err_msg = parse_retry_policy(rp_node).unwrap_err().to_string();
+        assert!(
+            err_msg.contains("backoff has an invalid duration"),
+            "{err_msg}"
+        );
     }
 
     /// retry-policy stanza present, one key unrecognized, expect to Err and panic out
