@@ -105,7 +105,8 @@ pub use routes::{
     InferenceProvider, InferenceRouting, InferenceRoutingStrategy, MatchCondition,
     ModelRoutingConfig, ModelUpstreamMapping, PiiAction, PiiDetectionConfig, PromptInjectionConfig,
     RateLimitPolicy, RouteCacheConfig, RouteConfig, RoutePolicies, ServiceType, StaticFileConfig,
-    TokenEstimation, TokenRateLimit,
+    TokenEstimation, TokenRateLimit, DEFAULT_WEBSOCKET_MAX_FRAME_SIZE,
+    MAX_WEBSOCKET_MAX_FRAME_SIZE,
 };
 
 // Server
@@ -1055,6 +1056,7 @@ impl Config {
                 error_pages: None,
                 websocket: false,
                 websocket_inspection: false,
+                websocket_max_frame_size: crate::routes::DEFAULT_WEBSOCKET_MAX_FRAME_SIZE,
                 shadow: None,
                 fallback: None,
             }],

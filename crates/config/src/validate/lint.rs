@@ -28,6 +28,17 @@ pub fn lint_config(config: &Config) -> ValidationResult {
             )));
         }
 
+        // The frame size limit is only used where frames are inspected
+        if !route.websocket_inspection
+            && route.websocket_max_frame_size != crate::routes::DEFAULT_WEBSOCKET_MAX_FRAME_SIZE
+        {
+            result.add_warning(ValidationWarning::new(format!(
+                "Route '{}' sets websocket-max-frame-size but not websocket-inspection \
+                 (the limit is only used when the route inspects frames)",
+                route.id
+            )));
+        }
+
         // Check for missing upstream (skip for static and builtin service types)
         use crate::routes::ServiceType;
         if route.upstream.is_none()
@@ -311,6 +322,7 @@ mod tests {
             error_pages: None,
             websocket: false,
             websocket_inspection: false,
+            websocket_max_frame_size: crate::routes::DEFAULT_WEBSOCKET_MAX_FRAME_SIZE,
             inference: None,
             mcp: None,
             a2a: None,
@@ -399,6 +411,42 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.message.contains("no retry policy")));
+    }
+
+    #[test]
+    fn lint_warns_about_a_frame_size_limit_on_a_route_that_does_not_inspect_frames() {
+        let mut route = test_route_config();
+        route.websocket = true;
+        route.websocket_max_frame_size = 4 * 1024 * 1024;
+        let mut config = Config::default_for_testing();
+        config.routes = vec![route];
+
+        let result = lint_config(&config);
+
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("websocket-max-frame-size")));
+    }
+
+    #[test]
+    fn lint_does_not_warn_about_a_frame_size_limit_that_is_used_or_not_set() {
+        let mut inspecting = test_route_config();
+        inspecting.websocket = true;
+        inspecting.websocket_inspection = true;
+        inspecting.websocket_max_frame_size = 4 * 1024 * 1024;
+        let mut plain = test_route_config();
+        plain.id = "plain".to_string();
+        plain.websocket = true;
+        let mut config = Config::default_for_testing();
+        config.routes = vec![inspecting, plain];
+
+        let result = lint_config(&config);
+
+        assert!(!result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("websocket-max-frame-size")));
     }
 
     #[test]

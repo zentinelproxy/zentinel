@@ -71,8 +71,35 @@ pub struct WebSocketHandler<I: FrameInspector = WebSocketInspector> {
     client_buffer: Mutex<BytesMut>,
     /// Buffer for incomplete frames (server → client)
     server_buffer: Mutex<BytesMut>,
-    /// Whether the connection should be closed
-    should_close: Mutex<Option<CloseReason>>,
+    /// Whether the connection should be closed, and why
+    should_close: Mutex<Option<Closing>>,
+}
+
+/// Why the connection is closing.
+#[derive(Debug, Clone)]
+enum Closing {
+    /// An agent asked for it.
+    Agent(CloseReason),
+    /// A frame could not be decoded.
+    Undecodable(CloseReason),
+}
+
+impl Closing {
+    fn reason(&self) -> &CloseReason {
+        match self {
+            Self::Agent(reason) | Self::Undecodable(reason) => reason,
+        }
+    }
+
+    fn into_result(self) -> ProcessResult {
+        match self {
+            Self::Agent(reason) => ProcessResult::Close(reason),
+            Self::Undecodable(reason) => ProcessResult::Undecodable {
+                reason,
+                forward: Bytes::new(),
+            },
+        }
+    }
 }
 
 /// Reason for closing the WebSocket connection
@@ -87,8 +114,20 @@ pub struct CloseReason {
 pub enum ProcessResult {
     /// Forward the (possibly modified) data
     Forward(Option<Bytes>),
-    /// Close the connection with the given code and reason
+    /// Close the connection with the given code and reason, because an agent
+    /// asked for it
     Close(CloseReason),
+    /// Close the connection with the given code and reason, because a frame
+    /// could not be decoded. Nothing of the undecodable frame, or of what
+    /// follows it, is to be forwarded.
+    Undecodable {
+        /// Why, and with which status, the connection is closed.
+        reason: CloseReason,
+        /// The frames that came before the undecodable one in the same data
+        /// and were allowed: they are forwarded first. Empty after the first
+        /// result.
+        forward: Bytes,
+    },
 }
 
 impl<I: FrameInspector> WebSocketHandler<I> {
@@ -123,8 +162,8 @@ impl<I: FrameInspector> WebSocketHandler<I> {
     /// Returns the data to forward (may be modified or None if all frames were dropped)
     pub async fn process_client_data(&self, data: Option<Bytes>) -> ProcessResult {
         // Check if we should close
-        if let Some(reason) = self.should_close.lock().await.clone() {
-            return ProcessResult::Close(reason);
+        if let Some(closing) = self.should_close.lock().await.clone() {
+            return closing.into_result();
         }
 
         let Some(data) = data else {
@@ -140,8 +179,8 @@ impl<I: FrameInspector> WebSocketHandler<I> {
     /// Returns the data to forward (may be modified or None if all frames were dropped)
     pub async fn process_server_data(&self, data: Option<Bytes>) -> ProcessResult {
         // Check if we should close
-        if let Some(reason) = self.should_close.lock().await.clone() {
-            return ProcessResult::Close(reason);
+        if let Some(closing) = self.should_close.lock().await.clone() {
+            return closing.into_result();
         }
 
         let Some(data) = data else {
@@ -205,10 +244,10 @@ impl<I: FrameInspector> WebSocketHandler<I> {
                             );
 
                             // Store close reason
-                            *self.should_close.lock().await = Some(CloseReason {
+                            *self.should_close.lock().await = Some(Closing::Agent(CloseReason {
                                 code,
                                 reason: reason.clone(),
-                            });
+                            }));
 
                             // Create and forward a close frame
                             let close_frame = WebSocketFrame::close(code, &reason);
@@ -232,16 +271,28 @@ impl<I: FrameInspector> WebSocketHandler<I> {
                     break;
                 }
                 Err(e) => {
+                    // The frame cannot be read, so neither can anything
+                    // after it, and no agent has seen it. Neither it nor
+                    // what follows is forwarded: the connection is closed,
+                    // whatever the agents' failure mode. The frames before
+                    // it in this data were allowed, and go first.
+                    let reason = CloseReason {
+                        code: e.close_code(),
+                        reason: e.close_reason().to_string(),
+                    };
                     warn!(
                         correlation_id = %self.inspector.correlation_id(),
                         error = %e,
-                        "WebSocket frame decode error"
+                        code = reason.code,
+                        direction = if client_to_server { "c2s" } else { "s2c" },
+                        "WebSocket frame could not be decoded, closing the connection"
                     );
-                    // On decode error, forward the data as-is and clear buffer
-                    // This allows the connection to continue (fail-open)
-                    output.extend_from_slice(&buf);
+                    *self.should_close.lock().await = Some(Closing::Undecodable(reason.clone()));
                     buf.clear();
-                    break;
+                    return ProcessResult::Undecodable {
+                        reason,
+                        forward: output.freeze(),
+                    };
                 }
             }
         }
@@ -272,7 +323,24 @@ impl<I: FrameInspector> WebSocketHandler<I> {
 
     /// Check if the connection should be closed
     pub async fn should_close(&self) -> Option<CloseReason> {
-        self.should_close.lock().await.clone()
+        self.should_close
+            .lock()
+            .await
+            .as_ref()
+            .map(|closing| closing.reason().clone())
+    }
+
+    /// The bytes of a close frame carrying `reason`.
+    ///
+    /// Control frames are small, so they are not held to the maximum frame
+    /// size of data frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the frame cannot be encoded.
+    pub fn close_frame(&self, reason: &CloseReason, masked: bool) -> std::io::Result<Vec<u8>> {
+        let frame = WebSocketFrame::close(reason.code, &reason.reason);
+        WebSocketCodec::new(usize::MAX).encode_frame(&frame, masked)
     }
 
     /// Get the correlation ID
@@ -610,5 +678,192 @@ mod tests {
 
         assert_eq!(inspector.client_frames_inspected(), 1);
         assert_eq!(inspector.server_frames_inspected(), 1);
+    }
+
+    /// The header of a frame that announces `len` payload bytes, and `sent` of
+    /// them.
+    fn frame_prefix(first_byte: u8, len: usize, sent: usize) -> Bytes {
+        let mut data = vec![first_byte, 127];
+        data.extend_from_slice(&(len as u64).to_be_bytes());
+        data.extend(std::iter::repeat_n(b'x', sent));
+        Bytes::from(data)
+    }
+
+    fn undecodable_with_forward(result: ProcessResult) -> (CloseReason, Bytes) {
+        match result {
+            ProcessResult::Undecodable { reason, forward } => (reason, forward),
+            other => panic!("expected Undecodable, got {other:?}"),
+        }
+    }
+
+    fn undecodable(result: ProcessResult) -> CloseReason {
+        undecodable_with_forward(result).0
+    }
+
+    #[tokio::test]
+    async fn a_frame_over_the_limit_closes_with_1009_in_both_directions() {
+        for client_to_server in [true, false] {
+            let inspector = Arc::new(MockInspector::allowing());
+            let handler = WebSocketHandler::with_inspector(inspector.clone(), 1024);
+
+            let data = frame_prefix(0x82, 1025, 10);
+            let result = if client_to_server {
+                handler.process_client_data(Some(data)).await
+            } else {
+                handler.process_server_data(Some(data)).await
+            };
+
+            let reason = undecodable(result);
+            assert_eq!(reason.code, 1009, "client_to_server: {client_to_server}");
+            assert_eq!(reason.reason, "frame too large");
+            assert_eq!(inspector.client_frames_inspected(), 0);
+            assert_eq!(inspector.server_frames_inspected(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_frame_with_an_rsv_bit_closes_with_1002_in_both_directions() {
+        for client_to_server in [true, false] {
+            let inspector = Arc::new(MockInspector::allowing());
+            let handler = WebSocketHandler::with_inspector(inspector.clone(), 1024);
+
+            // RSV1 set, as in a compressed text frame.
+            let data = Bytes::from_static(&[0xC1, 0x02, b'h', b'i']);
+            let result = if client_to_server {
+                handler.process_client_data(Some(data)).await
+            } else {
+                handler.process_server_data(Some(data)).await
+            };
+
+            let reason = undecodable(result);
+            assert_eq!(reason.code, 1002, "client_to_server: {client_to_server}");
+            assert_eq!(reason.reason, "unsupported RSV bits");
+            assert_eq!(inspector.client_frames_inspected(), 0);
+            assert_eq!(inspector.server_frames_inspected(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn after_an_undecodable_frame_nothing_is_forwarded_or_inspected() {
+        let inspector = Arc::new(MockInspector::allowing());
+        let handler = WebSocketHandler::with_inspector(inspector.clone(), 1024);
+
+        undecodable(
+            handler
+                .process_client_data(Some(frame_prefix(0x82, 2048, 16)))
+                .await,
+        );
+
+        // What follows, in either direction, is not read as frames: the
+        // rest of the oversized payload would parse as arbitrary headers.
+        for _ in 0..2 {
+            let reason = undecodable(
+                handler
+                    .process_client_data(Some(make_text_frame("after", true)))
+                    .await,
+            );
+            assert_eq!(reason.code, 1009);
+            let reason = undecodable(
+                handler
+                    .process_server_data(Some(make_text_frame("after", false)))
+                    .await,
+            );
+            assert_eq!(reason.code, 1009);
+        }
+        assert_eq!(inspector.client_frames_inspected(), 0);
+        assert_eq!(inspector.server_frames_inspected(), 0);
+        assert_eq!(handler.should_close().await.map(|r| r.code), Some(1009));
+    }
+
+    #[tokio::test]
+    async fn frames_before_an_undecodable_frame_are_inspected_and_forwarded_first() {
+        let inspector = Arc::new(MockInspector::allowing());
+        let handler = WebSocketHandler::with_inspector(inspector.clone(), 1024);
+
+        let good = make_text_frame("fine", true);
+        let mut data = good.to_vec();
+        data.extend_from_slice(&[0xC1, 0x00]);
+        data.extend_from_slice(&make_text_frame("after", true));
+        let result = handler.process_client_data(Some(Bytes::from(data))).await;
+
+        let (reason, forward) = undecodable_with_forward(result);
+        assert_eq!(reason.code, 1002);
+        assert_eq!(forward, good, "only the frame before the undecodable one");
+        assert_eq!(inspector.client_frames_inspected(), 1);
+
+        // Nothing is forwarded after that.
+        let (_, forward) = undecodable_with_forward(
+            handler
+                .process_client_data(Some(make_text_frame("later", true)))
+                .await,
+        );
+        assert!(forward.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_frame_before_an_undecodable_frame_that_an_agent_dropped_is_not_forwarded() {
+        let inspector = Arc::new(MockInspector::dropping_client());
+        let handler = WebSocketHandler::with_inspector(inspector.clone(), 1024);
+
+        let mut data = make_text_frame("dropped", true).to_vec();
+        data.extend_from_slice(&[0xC1, 0x00]);
+        let result = handler.process_client_data(Some(Bytes::from(data))).await;
+
+        let (_, forward) = undecodable_with_forward(result);
+        assert!(forward.is_empty());
+        assert_eq!(inspector.client_frames_inspected(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_undecodable_frame_split_across_chunks_is_reported_once_its_header_is_read() {
+        let inspector = Arc::new(MockInspector::allowing());
+        let handler = WebSocketHandler::with_inspector(inspector, 1024);
+
+        // One byte of a header cannot be judged yet.
+        let result = handler
+            .process_client_data(Some(Bytes::from_static(&[0xC1])))
+            .await;
+        assert!(matches!(result, ProcessResult::Forward(Some(ref data)) if data.is_empty()));
+
+        let result = handler
+            .process_client_data(Some(Bytes::from_static(&[0x80])))
+            .await;
+        assert_eq!(undecodable(result).code, 1002);
+    }
+
+    #[tokio::test]
+    async fn a_frame_of_exactly_the_limit_is_inspected_and_forwarded() {
+        let inspector = Arc::new(MockInspector::allowing());
+        let handler = WebSocketHandler::with_inspector(inspector.clone(), 5);
+
+        let frame = make_text_frame("Hello", false);
+        let result = handler.process_client_data(Some(frame.clone())).await;
+
+        assert!(matches!(result, ProcessResult::Forward(Some(ref data)) if *data == frame));
+        assert_eq!(inspector.client_frames_inspected(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_close_frame_is_not_held_to_the_frame_size_limit() {
+        let inspector = Arc::new(MockInspector::allowing());
+        let handler = WebSocketHandler::with_inspector(inspector, 1);
+        let reason = CloseReason {
+            code: 1009,
+            reason: "frame too large".to_string(),
+        };
+
+        let bytes = handler.close_frame(&reason, false).unwrap();
+
+        let codec = WebSocketCodec::new(1024);
+        let (frame, consumed) = codec
+            .decode_frame(&BytesMut::from(&bytes[..]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(frame.opcode, Opcode::Close);
+        assert_eq!(
+            frame.close_code_and_reason(),
+            Some((1009, "frame too large".to_string()))
+        );
     }
 }

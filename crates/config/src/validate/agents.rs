@@ -223,6 +223,7 @@ mod tests {
             error_pages: None,
             websocket: false,
             websocket_inspection: false,
+            websocket_max_frame_size: crate::routes::DEFAULT_WEBSOCKET_MAX_FRAME_SIZE,
             inference: None,
             mcp: None,
             a2a: None,

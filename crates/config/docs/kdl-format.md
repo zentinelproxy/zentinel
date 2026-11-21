@@ -331,6 +331,20 @@ routes {
         }
     }
 
+    // WebSocket route whose frames are inspected by agents. No WebSocket
+    // extension is negotiated on it, and a frame larger than
+    // websocket-max-frame-size (default 1MB) closes the connection.
+    route "chat" {
+        matches {
+            path-prefix "/chat"
+        }
+        upstream "chat-backend"
+        websocket #true
+        websocket-inspection #true
+        websocket-max-frame-size "4MB"
+        filters "ws-filter"
+    }
+
     // Route with policies
     route "api-protected" {
         matches {

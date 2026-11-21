@@ -10,6 +10,51 @@ use tracing::trace;
 /// Maximum allowed frame size (1MB default)
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 1024 * 1024;
 
+/// Why [`WebSocketCodec::decode_frame`] could not decode a frame.
+///
+/// Neither is recoverable: the frame cannot be read, so the position of the
+/// next one in the stream is unknown. The connection has to be closed, with
+/// the status [`FrameError::close_code`] gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FrameError {
+    /// The payload is larger than the maximum frame size.
+    #[error("Frame size {size} exceeds maximum {max}")]
+    TooLarge {
+        /// The payload size the frame header announced.
+        size: usize,
+        /// The maximum frame size.
+        max: usize,
+    },
+    /// An RSV bit is set. The proxy negotiates no extension, so none may be.
+    #[error("Non-zero RSV bits without extension")]
+    ReservedBits,
+}
+
+impl FrameError {
+    /// The close status code (RFC 6455, section 7.4.1) for this error:
+    /// 1009 (message too big) or 1002 (protocol error).
+    pub fn close_code(&self) -> u16 {
+        match self {
+            Self::TooLarge { .. } => 1009,
+            Self::ReservedBits => 1002,
+        }
+    }
+
+    /// A short reason for the close frame.
+    pub fn close_reason(&self) -> &'static str {
+        match self {
+            Self::TooLarge { .. } => "frame too large",
+            Self::ReservedBits => "unsupported RSV bits",
+        }
+    }
+}
+
+impl From<FrameError> for io::Error {
+    fn from(error: FrameError) -> Self {
+        io::Error::new(io::ErrorKind::InvalidData, error)
+    }
+}
+
 /// WebSocket frame opcode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opcode {
@@ -231,10 +276,17 @@ impl WebSocketCodec {
     ///
     /// This is a non-mutating version for use with the proxy handler.
     /// Returns `Ok(None)` if more data is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::ReservedBits`] if an RSV bit is set, and
+    /// [`FrameError::TooLarge`] if the header announces a payload larger than
+    /// the maximum frame size. Both are reported as soon as the header is
+    /// read, before the payload has arrived.
     pub fn decode_frame(
         &self,
         src: &BytesMut,
-    ) -> Result<Option<(WebSocketFrame, usize)>, std::io::Error> {
+    ) -> Result<Option<(WebSocketFrame, usize)>, FrameError> {
         // Need at least 2 bytes for the header
         if src.len() < 2 {
             return Ok(None);
@@ -252,10 +304,7 @@ impl WebSocketCodec {
 
         // Check RSV bits (must be 0 unless extension negotiated)
         if rsv != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Non-zero RSV bits without extension",
-            ));
+            return Err(FrameError::ReservedBits);
         }
 
         // Calculate header size and payload length
@@ -274,21 +323,19 @@ impl WebSocketCodec {
                 }
                 let len = u64::from_be_bytes([
                     src[2], src[3], src[4], src[5], src[6], src[7], src[8], src[9],
-                ]) as usize;
-                (10, len)
+                ]);
+                // A length that does not fit in usize is over any limit.
+                (10, usize::try_from(len).unwrap_or(usize::MAX))
             }
             _ => unreachable!(),
         };
 
         // Check frame size limit
         if payload_len > self.max_frame_size {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Frame size {} exceeds maximum {}",
-                    payload_len, self.max_frame_size
-                ),
-            ));
+            return Err(FrameError::TooLarge {
+                size: payload_len,
+                max: self.max_frame_size,
+            });
         }
 
         // Calculate total frame size
@@ -703,6 +750,66 @@ mod tests {
 
         let result = codec.decode(&mut buf);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_frame_reports_a_frame_over_the_limit_from_its_header_alone() {
+        let codec = WebSocketCodec::new(10);
+
+        // A header that announces 100 bytes, and none of them yet.
+        let buf = BytesMut::from(&[0x81, 0x64][..]);
+        let error = codec.decode_frame(&buf).unwrap_err();
+
+        assert_eq!(error, FrameError::TooLarge { size: 100, max: 10 });
+        assert_eq!(error.close_code(), 1009);
+        assert_eq!(error.to_string(), "Frame size 100 exceeds maximum 10");
+    }
+
+    #[test]
+    fn decode_frame_reports_the_largest_64_bit_length_as_too_large() {
+        let codec = WebSocketCodec::new(DEFAULT_MAX_FRAME_SIZE);
+
+        let mut header = vec![0x82, 127];
+        header.extend_from_slice(&u64::MAX.to_be_bytes());
+        let error = codec
+            .decode_frame(&BytesMut::from(&header[..]))
+            .unwrap_err();
+
+        assert!(matches!(error, FrameError::TooLarge { .. }), "{error:?}");
+        assert_eq!(error.close_code(), 1009);
+    }
+
+    #[test]
+    fn decode_frame_accepts_a_frame_of_exactly_the_limit() {
+        let codec = WebSocketCodec::new(5);
+
+        let buf = BytesMut::from(&[0x81, 0x05, b'H', b'e', b'l', b'l', b'o'][..]);
+        let (frame, consumed) = codec.decode_frame(&buf).unwrap().unwrap();
+
+        assert_eq!(frame.payload, b"Hello");
+        assert_eq!(consumed, 7);
+    }
+
+    #[test]
+    fn decode_frame_reports_each_rsv_bit_as_a_protocol_error() {
+        let codec = WebSocketCodec::new(DEFAULT_MAX_FRAME_SIZE);
+
+        // RSV1 is what a compressed frame sets; RSV2 and RSV3 are reserved.
+        for first_byte in [0xC1u8, 0xA1, 0x91] {
+            let buf = BytesMut::from(&[first_byte, 0x00][..]);
+            let error = codec.decode_frame(&buf).unwrap_err();
+
+            assert_eq!(error, FrameError::ReservedBits, "{first_byte:#x}");
+            assert_eq!(error.close_code(), 1002);
+        }
+    }
+
+    #[test]
+    fn frame_error_becomes_an_invalid_data_io_error_with_its_message() {
+        let error = io::Error::from(FrameError::ReservedBits);
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "Non-zero RSV bits without extension");
     }
 
     #[test]

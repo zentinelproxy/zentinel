@@ -593,6 +593,22 @@ fn validate_routes(
         }
     }
 
+    // The frame size limit must leave room for a frame and stay bounded: a
+    // frame is buffered whole before it is inspected.
+    for route in &config.routes {
+        let size = route.websocket_max_frame_size;
+        if size == 0 || size > crate::routes::MAX_WEBSOCKET_MAX_FRAME_SIZE {
+            errors.push(format!(
+                "Route '{}' has websocket-max-frame-size {} bytes, which must be between 1 and {} bytes.\n\
+                 Hint: the default is {} bytes (1MB).",
+                route.id,
+                size,
+                crate::routes::MAX_WEBSOCKET_MAX_FRAME_SIZE,
+                crate::routes::DEFAULT_WEBSOCKET_MAX_FRAME_SIZE
+            ));
+        }
+    }
+
     // Validate routes have at least one match condition
     for route in &config.routes {
         if route.matches.is_empty() && route.priority != Priority::LOW {
@@ -1709,6 +1725,7 @@ mod tests {
             error_pages: None,
             websocket: false,
             websocket_inspection: false,
+            websocket_max_frame_size: crate::routes::DEFAULT_WEBSOCKET_MAX_FRAME_SIZE,
             inference: None,
             mcp: None,
             a2a: None,
@@ -2312,6 +2329,37 @@ mod tests {
     }
 
     #[test]
+    fn websocket_max_frame_size_must_be_at_least_one_and_at_most_the_maximum() {
+        use crate::routes::{DEFAULT_WEBSOCKET_MAX_FRAME_SIZE, MAX_WEBSOCKET_MAX_FRAME_SIZE};
+
+        let cases = [
+            (0, false),
+            (1, true),
+            (DEFAULT_WEBSOCKET_MAX_FRAME_SIZE, true),
+            (MAX_WEBSOCKET_MAX_FRAME_SIZE, true),
+            (MAX_WEBSOCKET_MAX_FRAME_SIZE + 1, false),
+        ];
+        for (size, valid) in cases {
+            let mut config = Config::default_for_testing();
+            config.routes[0].websocket_max_frame_size = size;
+            let route_ids: HashSet<&str> = config.routes.iter().map(|r| r.id.as_str()).collect();
+            let upstream_ids: HashSet<&str> = config.upstreams.keys().map(|s| s.as_str()).collect();
+            let filter_ids: HashSet<&str> = config.filters.keys().map(|s| s.as_str()).collect();
+
+            let mut errors = Vec::new();
+            validate_routes(&config, &route_ids, &upstream_ids, &filter_ids, &mut errors);
+
+            let rejected = errors
+                .iter()
+                .any(|e| e.contains("websocket-max-frame-size"));
+            assert_eq!(
+                rejected, !valid,
+                "websocket-max-frame-size {size}: errors {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn server_pid_file_produces_no_warnings() {
         let mut config = Config::default_for_testing();
         config.server.pid_file = Some("/run/zentinel.pid".into());
@@ -2490,6 +2538,7 @@ mod tests {
             error_pages: None,
             websocket: false,
             websocket_inspection: false,
+            websocket_max_frame_size: crate::routes::DEFAULT_WEBSOCKET_MAX_FRAME_SIZE,
             shadow: None,
             fallback: None,
         };

@@ -355,8 +355,13 @@ pub struct RequestContext {
     // === WebSocket Inspection ===
     /// Whether WebSocket frame inspection is enabled for this connection
     pub(crate) websocket_inspection_enabled: bool,
-    /// Whether to skip inspection (e.g., due to compression negotiation)
-    pub(crate) websocket_skip_inspection: bool,
+    /// The route's largest WebSocket frame, in bytes
+    /// (`websocket-max-frame-size`)
+    pub(crate) websocket_max_frame_size: usize,
+    /// Whether the proxy has closed the WebSocket itself, because a frame
+    /// could not be decoded: the client has been sent a close frame, and no
+    /// HTTP error response is to follow
+    pub(crate) websocket_closed_by_proxy: bool,
     /// Agent IDs for WebSocket frame inspection
     pub(crate) websocket_inspection_agents: Vec<String>,
     /// WebSocket frame handler (created after 101 upgrade)
@@ -673,7 +678,8 @@ impl RequestContext {
             connection_reused: false,
             is_websocket_upgrade: false,
             websocket_inspection_enabled: false,
-            websocket_skip_inspection: false,
+            websocket_max_frame_size: zentinel_config::DEFAULT_WEBSOCKET_MAX_FRAME_SIZE,
+            websocket_closed_by_proxy: false,
             websocket_inspection_agents: Vec::new(),
             websocket_handler: None,
             cache_eligible: false,
