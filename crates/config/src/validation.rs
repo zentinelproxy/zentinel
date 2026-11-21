@@ -16,7 +16,7 @@ use tracing::{debug, trace, warn};
 use crate::{
     Config, Filter, ListenerProtocol, NamespaceConfig, ServiceConfig, ServiceType, WafMode,
 };
-use zentinel_common::ids::Scope;
+use zentinel_common::ids::{QualifiedId, Scope};
 use zentinel_common::types::Priority;
 
 /// Whether checks that look at the local disk can run.
@@ -309,9 +309,17 @@ impl ValidationContext {
     }
 
     /// Check if a filter reference can be resolved from the given scope.
+    ///
+    /// A qualified reference (`ns:name`, `ns:svc:name`) must name a filter of
+    /// that scope, as lowering resolves it. `all_ids` also holds the ids of
+    /// agents, upstreams and routes, which a route's filter list cannot name.
     pub fn can_resolve_filter(&self, reference: &str, from_scope: &Scope) -> bool {
         if reference.contains(':') {
-            return self.all_ids.contains(reference);
+            let qualified = QualifiedId::parse(reference);
+            return self
+                .filters_by_scope
+                .get(&qualified.scope)
+                .is_some_and(|filters| filters.contains(&qualified.name));
         }
 
         for scope in from_scope.chain() {
@@ -1788,6 +1796,144 @@ mod tests {
             err.to_string().contains("Duplicate agent ID 'waf'"),
             "expected duplicate agent ID error, got: {err}"
         );
+    }
+
+    /// A namespace holding an agent `auth`, an upstream `backend` and a
+    /// filter `check`, and a route in it listing `route_filter`.
+    fn namespace_route_listing(route_filter: &str) -> String {
+        format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 1 }}
+            listeners {{
+                listener "public" {{ address "127.0.0.1:19480"; }}
+            }}
+            namespace "api" {{
+                upstreams {{
+                    upstream "backend" {{ target "127.0.0.1:3001"; }}
+                }}
+                agents {{
+                    agent "auth" {{
+                        type "auth"
+                        grpc address="http://127.0.0.1:50052"
+                        events "request_headers"
+                    }}
+                }}
+                filters {{
+                    filter "check" {{ type "agent"; agent "auth"; }}
+                }}
+                routes {{
+                    route "main" {{
+                        matches {{ path-prefix "/api/"; }}
+                        upstream "backend"
+                        filters "{route_filter}"
+                    }}
+                }}
+            }}
+            "#
+        )
+    }
+
+    /// As [`namespace_route_listing`], with the route in a service.
+    fn service_route_listing(route_filter: &str) -> String {
+        format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 1 }}
+            listeners {{
+                listener "public" {{ address "127.0.0.1:19480"; }}
+            }}
+            namespace "api" {{
+                service "users" {{
+                    upstreams {{
+                        upstream "backend" {{ target "127.0.0.1:3001"; }}
+                    }}
+                    filters {{
+                        filter "check" {{ type "rate-limit"; max-rps 5; }}
+                    }}
+                    routes {{
+                        route "main" {{
+                            matches {{ path-prefix "/users/"; }}
+                            upstream "backend"
+                            filters "{route_filter}"
+                        }}
+                    }}
+                }}
+            }}
+            "#
+        )
+    }
+
+    /// Parse and validate `kdl`, as loading a configuration file does.
+    fn validated(kdl: &str) -> Result<(), String> {
+        let config = crate::Config::from_kdl(kdl).expect("the configuration parses");
+        config.validate().map_err(|e| e.to_string())
+    }
+
+    /// The error of validating `kdl`, which is expected to be refused.
+    fn validation_error(kdl: &str) -> String {
+        match validated(kdl) {
+            Ok(()) => panic!("the configuration is valid, but a route lists an undefined filter"),
+            Err(message) => message,
+        }
+    }
+
+    #[test]
+    fn namespace_route_may_list_a_qualified_filter_that_is_defined() {
+        assert_eq!(validated(&namespace_route_listing("api:check")), Ok(()));
+    }
+
+    #[test]
+    fn namespace_route_listing_a_qualified_agent_as_a_filter_fails_validation() {
+        // `api:auth` is an agent. It is a defined id, but not a filter, so
+        // lowering leaves the route's reference unresolved.
+        let message = validation_error(&namespace_route_listing("api:auth"));
+        assert!(
+            message.contains("filter 'api:auth' which cannot be resolved"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn namespace_route_listing_a_qualified_upstream_as_a_filter_fails_validation() {
+        let message = validation_error(&namespace_route_listing("api:backend"));
+        assert!(
+            message.contains("filter 'api:backend' which cannot be resolved"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn service_route_may_list_a_qualified_filter_that_is_defined() {
+        assert_eq!(validated(&service_route_listing("api:users:check")), Ok(()));
+    }
+
+    #[test]
+    fn service_route_listing_a_qualified_upstream_as_a_filter_fails_validation() {
+        let message = validation_error(&service_route_listing("api:users:backend"));
+        assert!(
+            message.contains("filter 'api:users:backend' which cannot be resolved"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn qualified_filter_reference_names_a_filter_not_any_id() {
+        let mut config = Config::default_for_testing();
+        let mut ns = NamespaceConfig::new("api");
+        ns.upstreams
+            .insert("backend".to_string(), test_upstream("backend"));
+        ns.routes.push(test_route("main", Some("backend")));
+        config.namespaces.push(ns);
+
+        let ctx = ValidationContext::from_config(&config);
+
+        // `api:backend` and `api:main` are defined ids, of an upstream and a
+        // route.
+        assert!(ctx.all_ids.contains("api:backend"));
+        assert!(ctx.all_ids.contains("api:main"));
+        assert!(!ctx.can_resolve_filter("api:backend", &Scope::Global));
+        assert!(!ctx.can_resolve_filter("api:main", &Scope::Global));
     }
 
     #[test]

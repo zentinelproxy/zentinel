@@ -261,8 +261,10 @@ The routes served on one listener are matched together, by priority and then
 specificity, as if they were one `routes` block. Inside a namespace or service,
 a route's `upstream`, `filters` and agent references resolve in the scope
 first, then the namespace, then other namespaces' exports, then the top level;
-`ns:name` and `ns:svc:name` name a resource directly. Scoped routes appear in
-logs and metrics under their qualified id (`api:main`, `api:users:list`).
+`ns:name` and `ns:svc:name` name a resource directly; in a route's `filters`
+such a qualified name must be a filter, and a configuration where it is an
+agent, an upstream or a route is rejected. Scoped routes appear in logs and metrics under
+their qualified id (`api:main`, `api:users:list`).
 
 ### Routes Block
 

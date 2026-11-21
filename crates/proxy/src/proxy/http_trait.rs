@@ -189,6 +189,19 @@ impl ZentinelProxy {
         Ok(true)
     }
 
+    /// Record the route a request matched, and the configuration it is served
+    /// under: the current one, taken now that the matcher has been read, and
+    /// checked against the route's filters (see
+    /// [`super::filters::decide_route`]). Both places that match a route call
+    /// this, so a request never has a route without that snapshot.
+    fn decide_route(
+        &self,
+        ctx: &mut RequestContext,
+        route_match: &crate::routing::RouteMatch,
+    ) -> Result<(), Box<Error>> {
+        super::filters::decide_route(ctx, route_match, self.config_manager.current())
+    }
+
     /// Record the namespace and service of the route a request matched, from
     /// the (lowered) configuration: their `limits` apply to the request, and
     /// the access log reports them. A global route leaves both unset.
@@ -520,8 +533,7 @@ impl ProxyHttp for ZentinelProxy {
             }
         };
 
-        ctx.route_id = Some(route_match.route_id.to_string());
-        ctx.route_config = Some(route_match.config.clone());
+        self.decide_route(ctx, &route_match)?;
         // The route's namespace and service: their `limits` apply to the
         // request (#542, #548), and the access log reports them.
         self.set_route_scope(ctx);
@@ -720,8 +732,7 @@ impl ProxyHttp for ZentinelProxy {
                 (route_match, route_duration)
             };
 
-            ctx.route_id = Some(match_result.route_id.to_string());
-            ctx.route_config = Some(match_result.config.clone());
+            self.decide_route(ctx, &match_result)?;
             self.set_route_scope(ctx);
 
             // Set trace_id if not already set by early_request_filter

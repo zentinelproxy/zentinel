@@ -223,6 +223,32 @@ one:
 | `waf`, `limits` | Reconciled: read from the current configuration per request / connection |
 | `listeners`, `system`, `observability`, `cache` | **Restart required.** A reload that changes one logs a warning naming the block |
 
+#### Requests that arrive during a reload
+
+A reload (or a rollback) stores the configuration first and swaps in the route
+matcher afterwards, once the routes' agents and components are ready. A request
+that arrives in between is matched by the previous matcher, so its route may
+list a filter id that the stored configuration no longer defines (a filter that
+was renamed or removed). Each configuration is valid on its own (validation
+rejects a route that lists an undefined filter), so the mismatch exists only in
+that interval.
+
+Where a request's route is decided, the proxy takes the configuration
+snapshot the request is served under, and checks that every filter id the
+route lists is defined in it. Every later filter lookup of the request reads
+the same snapshot. If an id is not defined, the route's `failure-mode`
+decides:
+
+| `failure-mode` | The request |
+|----------------|-------------|
+| `closed` (default) | Is answered with `503`. The log names the route and the undefined filter ids |
+| `open` | Continues with the filters that are defined. The log names the route and the undefined filter ids |
+
+Both are counted in `zentinel_route_filters_undefined_total`, labelled
+`action="refused"` or `action="continued"`. Each affected request logs a
+warning, and each refused one an error as well, so a burst of log lines is
+expected while the interval lasts.
+
 ### Agent Processing Pipeline
 
 ```
