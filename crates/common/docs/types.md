@@ -184,8 +184,8 @@ let config = CircuitBreakerConfig {
 |-------|------|---------|-------------|
 | `failure_threshold` | u32 | 5 | Consecutive failures to open |
 | `success_threshold` | u32 | 2 | Consecutive successes to close |
-| `timeout_seconds` | u64 | 30 | Time in open state before half-open |
-| `half_open_max_requests` | u32 | 1 | Requests allowed in half-open |
+| `timeout_seconds` | u64 | 30 | Time in open state before half-open. Also how long a half-open period whose slots are all taken lasts, counted from its start (or last restart), before the next request starts it over as a new period |
+| `half_open_max_requests` | u32 | 1 | Trial slots in half-open, besides the request that ends the open period. A trial that ends without a result gives its slot back |
 
 ### CircuitBreakerState
 

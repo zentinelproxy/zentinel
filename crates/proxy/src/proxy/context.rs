@@ -300,6 +300,11 @@ pub struct RequestContext {
     /// The pool the peer was selected from, for `fail_to_connect`, which is
     /// synchronous and so cannot look it up in the registry.
     pub(crate) selected_pool: Option<Arc<crate::upstream::UpstreamPool>>,
+    /// The half-open trial slot the current attempt holds, when the target's
+    /// circuit breaker let it through as a trial. `logging` gives it back if
+    /// the request ends without a result, and so does a retry for the attempt
+    /// before it.
+    pub(crate) half_open_trial: Option<crate::upstream::TrialTicket>,
     /// Number of upstream attempts
     pub(crate) upstream_attempts: u32,
     /// Times the request itself has been sent upstream.
@@ -657,6 +662,7 @@ impl RequestContext {
             upstream: None,
             selected_upstream_address: None,
             selected_pool: None,
+            half_open_trial: None,
             upstream_attempts: 0,
             request_attempts: 0,
             namespace: None,

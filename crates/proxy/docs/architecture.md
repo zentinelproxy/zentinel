@@ -448,7 +448,33 @@ one:
   - failure_threshold: 5 (consecutive failures to open)
   - success_threshold: 2 (consecutive successes to close)
   - timeout_secs: 30 (time in open state before half-open)
+  - half_open_max_requests: 1 (trial requests let through in half-open)
 ```
+
+### What a request tells the breaker
+
+What `logging` reports to the breaker of the target a finished request was sent to:
+
+| Outcome | Reported as |
+|---------|-------------|
+| Status below 500 | Success |
+| Status of 500 or more | Failure |
+| Connection failure, upstream timeout, upstream read or write error | Failure |
+| Client went away, client body over its limit, request or response refused by an agent or filter | No result |
+
+A request with no result is neither a success nor a failure: it does not
+reset the run of failures, count towards closing the breaker, or reach the
+load balancer's health and latency accounting. When it was a half-open trial,
+it gives its trial slot back so another request can take its place; so does
+the attempt before a retry, if it reported nothing. Shadow requests are never
+half-open trials: while a target's breaker is open or half-open it receives no
+shadow traffic.
+
+If a trial is lost altogether (the request was dropped before it could report
+or give its slot back), the half-open period does not wait for it forever.
+When the period began (or last started over) at least `timeout_secs` ago and
+every slot is still taken, the next request starts it over and is let through
+as a new trial. No setting controls this; it reuses `timeout_secs`.
 
 ## Scoped Configuration
 
