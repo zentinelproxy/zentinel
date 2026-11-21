@@ -66,7 +66,15 @@ zentinel bundle install --prefix /opt/zentinel
 | `--force, -f` | Reinstall even if already up to date |
 | `--systemd` | Also write a systemd unit per agent |
 | `--prefix PATH` | Custom installation prefix |
-| `--skip-verify` | Skip SHA256 checksum verification |
+| `--skip-verify` | Install without checking the archive's SHA256 checksum |
+
+**Checksum verification:** each archive is checked against the SHA256 digest
+published next to it (`<archive>.sha256`) before it is extracted. If that file
+cannot be downloaded, or does not start with a 64-digit hexadecimal digest,
+the agent is not installed and the command exits non-zero, naming the agent
+and the checksum URL. A digest that does not match the archive stops that
+agent's install in the same way. With `--skip-verify` the checksum is not
+requested and the agent is reported as `unverified`.
 
 ### `zentinel bundle status`
 

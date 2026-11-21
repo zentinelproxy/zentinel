@@ -4,6 +4,7 @@
 
 use crate::bundle::lock::AgentInfo;
 use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use tar::Archive;
@@ -23,6 +24,16 @@ pub enum FetchError {
 
     #[error("Checksum verification failed for {agent}")]
     ChecksumMismatch { agent: String },
+
+    #[error(
+        "Cannot verify {agent}: the checksum at {url} is unavailable ({reason}); \
+         pass --skip-verify to install without verifying the archive"
+    )]
+    ChecksumUnavailable {
+        agent: String,
+        url: String,
+        reason: String,
+    },
 
     #[error("Failed to extract archive: {0}")]
     Extract(String),
@@ -90,6 +101,17 @@ pub fn detect_arch() -> &'static str {
 /// Download an agent binary to a temporary directory
 ///
 /// Returns the path to the extracted binary.
+///
+/// With `verify_checksum`, the archive is only extracted once it matches the
+/// SHA-256 digest published next to it. A checksum that cannot be fetched or
+/// read stops the download just as a mismatch does; without `verify_checksum`
+/// the checksum is not requested and the result reports it as unverified.
+///
+/// # Errors
+///
+/// Returns `FetchError::ChecksumUnavailable` when the checksum file cannot be
+/// downloaded or does not start with a SHA-256 digest, and
+/// `FetchError::ChecksumMismatch` when the digest differs from the archive's.
 pub async fn download_agent(
     agent: &AgentInfo,
     temp_dir: &Path,
@@ -136,27 +158,24 @@ pub async fn download_agent(
     let archive_bytes = response.bytes().await?;
     let archive_size = archive_bytes.len() as u64;
 
-    // Verify checksum if requested
+    // Verify checksum if requested. A checksum that cannot be obtained is an
+    // error, not a reason to install the archive unchecked.
     let checksum_verified = if verify_checksum {
-        match verify_sha256(&client, &checksum_url, &archive_bytes).await {
-            Ok(true) => {
-                tracing::debug!(agent = %agent.name, "Checksum verified");
-                true
-            }
-            Ok(false) => {
-                return Err(FetchError::ChecksumMismatch {
-                    agent: agent.name.clone(),
-                });
-            }
-            Err(e) => {
-                tracing::warn!(
-                    agent = %agent.name,
-                    error = %e,
-                    "Checksum verification skipped (file not available)"
-                );
-                false
-            }
+        let expected = fetch_expected_checksum(&client, &checksum_url)
+            .await
+            .map_err(|reason| FetchError::ChecksumUnavailable {
+                agent: agent.name.clone(),
+                url: checksum_url.clone(),
+                reason,
+            })?;
+        let actual = hex::encode(Sha256::digest(&archive_bytes));
+        if expected != actual {
+            return Err(FetchError::ChecksumMismatch {
+                agent: agent.name.clone(),
+            });
         }
+        tracing::debug!(agent = %agent.name, "Checksum verified");
+        true
     } else {
         false
     };
@@ -171,39 +190,50 @@ pub async fn download_agent(
     })
 }
 
-/// Verify SHA256 checksum of downloaded data
-async fn verify_sha256(
+/// Fetch the published SHA-256 digest of an archive.
+///
+/// The file is `sha256sum` output (`<hex digest>  <file name>`); only the
+/// digest is used. Returns the lowercase digest, or the reason it could not
+/// be obtained: the request failed, the server did not answer with a success
+/// status, or the content does not start with a SHA-256 digest.
+async fn fetch_expected_checksum(
     client: &reqwest::Client,
     checksum_url: &str,
-    data: &[u8],
-) -> Result<bool, FetchError> {
-    use sha2::{Digest, Sha256};
+) -> Result<String, String> {
+    let response = client
+        .get(checksum_url)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
 
-    // Download checksum file
-    let response = client.get(checksum_url).send().await?;
-
-    if !response.status().is_success() {
-        return Err(FetchError::DownloadFailed {
-            url: checksum_url.to_string(),
-            status: response.status().as_u16(),
-        });
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP status {}", status.as_u16()));
     }
 
-    let checksum_content = response.text().await?;
+    let content = response
+        .text()
+        .await
+        .map_err(|e| format!("could not read the response: {e}"))?;
 
-    // Parse expected checksum (format: "sha256hash  filename")
-    let expected = checksum_content
+    parse_sha256_digest(&content)
+}
+
+/// The digest at the start of a `sha256sum`-style line, in lowercase.
+fn parse_sha256_digest(content: &str) -> Result<String, String> {
+    let digest = content
         .split_whitespace()
         .next()
-        .ok_or_else(|| FetchError::Extract("Invalid checksum file format".to_string()))?
-        .to_lowercase();
+        .ok_or_else(|| "the checksum file is empty".to_string())?;
 
-    // Calculate actual checksum
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let actual = hex::encode(hasher.finalize());
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(
+            "the checksum file does not start with a 64-digit hexadecimal SHA-256 digest"
+                .to_string(),
+        );
+    }
 
-    Ok(expected == actual)
+    Ok(digest.to_ascii_lowercase())
 }
 
 /// Extract a tarball and find the binary
@@ -320,7 +350,11 @@ impl Iterator for WalkDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::lock::Transport;
+    use std::collections::HashMap;
     use std::io::Write;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_detect_platform() {
@@ -486,5 +520,242 @@ mod tests {
             status: 404,
         };
         assert!(err.to_string().contains("404"));
+    }
+
+    const TEST_BINARY: &str = "test-agent";
+
+    fn test_archive() -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let content = b"#!/bin/sh\n";
+        let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, TEST_BINARY, &content[..])
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        hex::encode(Sha256::digest(data))
+    }
+
+    /// An agent whose release for this platform is served at `base`.
+    ///
+    /// The URL is set through `precomputed_urls`, so the tests do not depend
+    /// on process-wide environment variables.
+    fn test_agent(base: &str) -> AgentInfo {
+        let mut precomputed_urls = HashMap::new();
+        precomputed_urls.insert(
+            AgentInfo::platform_key(detect_os(), detect_arch()),
+            format!("{base}/agent.tar.gz"),
+        );
+        AgentInfo {
+            name: "waf".to_string(),
+            version: "1.0.0".to_string(),
+            repository: "example/agent-waf".to_string(),
+            binary_name: TEST_BINARY.to_string(),
+            precomputed_urls,
+            platforms: Vec::new(),
+            transport: Transport::Uds,
+            required_file: None,
+        }
+    }
+
+    /// Serve `archive` at `/agent.tar.gz`. `/agent.tar.gz.sha256` answers
+    /// with `checksum`, or is not served at all (404) when that is `None`.
+    async fn serve_release(
+        archive: &[u8],
+        checksum: Option<ResponseTemplate>,
+    ) -> (MockServer, AgentInfo) {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/agent.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive.to_vec()))
+            .mount(&server)
+            .await;
+        if let Some(response) = checksum {
+            Mock::given(method("GET"))
+                .and(path("/agent.tar.gz.sha256"))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+        }
+        let agent = test_agent(&server.uri());
+        (server, agent)
+    }
+
+    /// Run `download_agent` and return its error, asserting that nothing was
+    /// extracted.
+    async fn download_error(
+        archive: &[u8],
+        checksum: Option<ResponseTemplate>,
+    ) -> (FetchError, String) {
+        let (server, agent) = serve_release(archive, checksum).await;
+        let temp = tempfile::tempdir().unwrap();
+
+        let result = download_agent(&agent, temp.path(), true).await;
+
+        let err = match result {
+            Ok(done) => panic!(
+                "download_agent succeeded without a verified checksum (checksum_verified: {})",
+                done.checksum_verified
+            ),
+            Err(err) => err,
+        };
+        assert!(
+            !temp.path().join(TEST_BINARY).exists(),
+            "the archive must not be extracted when verification fails"
+        );
+        (err, format!("{}/agent.tar.gz.sha256", server.uri()))
+    }
+
+    fn assert_names_agent_url_and_skip_option(err: &FetchError, checksum_url: &str) {
+        let message = err.to_string();
+        assert!(message.contains("waf"), "{message}");
+        assert!(message.contains(checksum_url), "{message}");
+        assert!(message.contains("--skip-verify"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn download_agent_rejects_a_missing_checksum_file() {
+        let (err, checksum_url) = download_error(&test_archive(), None).await;
+
+        assert_names_agent_url_and_skip_option(&err, &checksum_url);
+        assert!(err.to_string().contains("404"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn download_agent_rejects_a_checksum_request_that_fails() {
+        let (err, checksum_url) =
+            download_error(&test_archive(), Some(ResponseTemplate::new(500))).await;
+
+        assert_names_agent_url_and_skip_option(&err, &checksum_url);
+        assert!(err.to_string().contains("500"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn download_agent_rejects_an_empty_checksum_file() {
+        let (err, checksum_url) = download_error(
+            &test_archive(),
+            Some(ResponseTemplate::new(200).set_body_string("")),
+        )
+        .await;
+
+        assert_names_agent_url_and_skip_option(&err, &checksum_url);
+    }
+
+    #[tokio::test]
+    async fn download_agent_rejects_a_checksum_file_without_a_digest() {
+        let archive = test_archive();
+        let truncated = sha256_hex(&archive)[..63].to_string();
+        for body in [
+            "<html>not found</html>",
+            "not-a-digest  agent.tar.gz\n",
+            &truncated,
+        ] {
+            let (err, checksum_url) = download_error(
+                &archive,
+                Some(ResponseTemplate::new(200).set_body_string(body)),
+            )
+            .await;
+
+            assert_names_agent_url_and_skip_option(&err, &checksum_url);
+        }
+    }
+
+    #[tokio::test]
+    async fn download_agent_rejects_a_checksum_that_does_not_match() {
+        let archive = test_archive();
+        let other = sha256_hex(b"some other archive");
+        let (err, _) = download_error(
+            &archive,
+            Some(ResponseTemplate::new(200).set_body_string(format!("{other}  agent.tar.gz\n"))),
+        )
+        .await;
+
+        assert!(
+            matches!(err, FetchError::ChecksumMismatch { ref agent } if agent == "waf"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_agent_installs_when_the_checksum_matches() {
+        let archive = test_archive();
+        // sha256sum output, with the digest in upper case.
+        let body = format!("{}  agent.tar.gz\n", sha256_hex(&archive).to_uppercase());
+        let (_server, agent) = serve_release(
+            &archive,
+            Some(ResponseTemplate::new(200).set_body_string(body)),
+        )
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+
+        let done = download_agent(&agent, temp.path(), true).await.unwrap();
+
+        assert!(done.checksum_verified);
+        assert_eq!(done.archive_size, archive.len() as u64);
+        assert!(done.binary_path.exists());
+    }
+
+    #[tokio::test]
+    async fn download_agent_without_verification_does_not_need_a_checksum_file() {
+        let archive = test_archive();
+        let (server, agent) = serve_release(&archive, None).await;
+        // The checksum file must not even be requested.
+        Mock::given(path("/agent.tar.gz.sha256"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().unwrap();
+
+        let done = download_agent(&agent, temp.path(), false).await.unwrap();
+
+        assert!(!done.checksum_verified);
+        assert!(done.binary_path.exists());
+    }
+
+    #[test]
+    fn parse_sha256_digest_takes_the_first_field_in_lowercase() {
+        let digest = "0123456789ABCDEFabcdef0123456789ABCDEFabcdef0123456789ABCDEFabcd";
+
+        assert_eq!(
+            parse_sha256_digest(&format!("{digest}  agent.tar.gz\n")).unwrap(),
+            digest.to_ascii_lowercase()
+        );
+        assert_eq!(
+            parse_sha256_digest(&format!("{digest} *agent.tar.gz")).unwrap(),
+            digest.to_ascii_lowercase()
+        );
+        assert_eq!(
+            parse_sha256_digest(digest).unwrap(),
+            digest.to_ascii_lowercase()
+        );
+    }
+
+    #[test]
+    fn parse_sha256_digest_rejects_anything_else() {
+        let digest = sha256_hex(b"archive");
+
+        for content in [
+            String::new(),
+            "  \n".to_string(),
+            digest[..63].to_string(),
+            format!("{digest}0"),
+            format!("sha256:{digest}"),
+            format!("{}g", &digest[..63]),
+            "404 page not found".to_string(),
+        ] {
+            assert!(
+                parse_sha256_digest(&content).is_err(),
+                "accepted {content:?}"
+            );
+        }
     }
 }

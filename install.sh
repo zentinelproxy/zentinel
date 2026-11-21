@@ -15,6 +15,10 @@
 # and start zentinel.service after install. Pass --skip-service to skip
 # all systemd setup.
 #
+# The download is checked against the SHA-256 checksum published with it.
+# The install stops when that checksum cannot be downloaded or checked;
+# pass --skip-verify to continue with a warning instead.
+#
 # After installation, use `zentinel bundle install` to install bundled
 # agents (WAF, rate limiter, denylist).
 # See https://docs.zentinelproxy.io/deployment/bundle/
@@ -24,6 +28,8 @@
 #   --enable-service    Enable and start zentinel.service after install
 #   --skip-service      Skip systemd unit, sysusers, and starter config
 #   --binary-only       Alias for --skip-service
+#   --skip-verify       Continue, with a warning, when the checksum file cannot
+#                       be downloaded or no checksum tool is installed
 
 set -e
 
@@ -42,6 +48,7 @@ CONFIG_FILE="${CONFIG_DIR}/zentinel.kdl"
 # Flags
 ENABLE_SERVICE=0
 SKIP_SERVICE=0
+SKIP_VERIFY=0
 
 # Colors for output
 RED='\033[0;31m'
@@ -159,22 +166,26 @@ download_binary() {
         cd "$tmp_dir"
         if command -v sha256sum >/dev/null 2>&1; then
             if ! sha256sum -c "${artifact}.sha256" >/dev/null 2>&1; then
-                error "Checksum verification failed!"
+                error "Checksum verification failed! ${artifact} does not match its published checksum; --skip-verify does not override this."
             fi
         elif command -v shasum >/dev/null 2>&1; then
             expected=$(cat "${artifact}.sha256" | awk '{print $1}')
             actual=$(shasum -a 256 "${artifact}" | awk '{print $1}')
             if [ "$expected" != "$actual" ]; then
-                error "Checksum verification failed!"
+                error "Checksum verification failed! ${artifact} does not match its published checksum; --skip-verify does not override this."
             fi
-        else
+        elif [ "$SKIP_VERIFY" = 1 ]; then
             warn "No checksum tool available (sha256sum or shasum)"
             warn "Skipping verification - binary integrity cannot be confirmed"
             warn "Consider installing coreutils for checksum verification"
+        else
+            error "No checksum tool available (sha256sum or shasum), so ${artifact} cannot be verified. Install one, or re-run with --skip-verify to install without verification."
         fi
         cd - >/dev/null
-    else
+    elif [ "$SKIP_VERIFY" = 1 ]; then
         warn "Checksum file not available, skipping verification"
+    else
+        error "Could not download the checksum file ${checksum_url}, so ${artifact} cannot be verified. Re-run with --skip-verify to install without verification."
     fi
 
     # Extract the tarball
@@ -436,6 +447,14 @@ Options:
                         (also accepts ZENTINEL_ENABLE_SERVICE=1)
     --skip-service      Skip systemd unit, sysusers, and starter config
     --binary-only       Alias for --skip-service
+    --skip-verify       Continue, with a warning, when the checksum file cannot
+                        be downloaded or no checksum tool is installed
+
+Verification:
+    The download is checked against the SHA-256 checksum published with it.
+    The install stops when that checksum cannot be downloaded or checked,
+    unless --skip-verify is given. A checksum that is found and does not
+    match always stops the install.
 
 Default behavior on systemd hosts:
     Installs the systemd unit, sysusers snippet, and starter config at
@@ -471,6 +490,9 @@ parse_args() {
                 ;;
             --skip-service|--binary-only)
                 SKIP_SERVICE=1
+                ;;
+            --skip-verify)
+                SKIP_VERIFY=1
                 ;;
             *)
                 warn "Unknown option: $1"
