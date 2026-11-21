@@ -8,12 +8,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::grpc_v2::{self, agent_service_v2_client::AgentServiceV2Client, ProxyToAgent};
 use crate::headers::iter_flat;
+use crate::v2::pending::{PendingCalls, WaitError};
 use crate::v2::pool::CHANNEL_BUFFER_SIZE;
 use crate::v2::{AgentCapabilities, PROTOCOL_VERSION_2};
 use crate::{AgentProtocolError, AgentResponse, Decision, EventType, HeaderOp};
@@ -83,6 +84,14 @@ pub type ConfigUpdateCallback = Arc<
 /// - **Flow control**: Backpressure handling when agent is overloaded
 /// - **Health tracking**: Monitor agent health status
 /// - **Metrics collection**: Receive and forward agent metrics
+///
+/// # Cancel Safety
+///
+/// Every `send_*` method that waits for a response is cancel safe. A call that
+/// is dropped before the agent has answered, for example by an outer timeout,
+/// removes its entry from the calls waiting for a response. A response that
+/// arrives afterwards is discarded. `send_configure`, `send_shutdown` and
+/// `send_drain` do not wait for a response.
 pub struct AgentClientV2 {
     /// Agent identifier
     agent_id: String,
@@ -97,8 +106,8 @@ pub struct AgentClientV2 {
     capabilities: RwLock<Option<AgentCapabilities>>,
     /// Negotiated protocol version
     protocol_version: AtomicU64,
-    /// Pending requests by correlation ID
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<AgentResponse>>>>,
+    /// Calls waiting for a response, by correlation ID
+    pending: Arc<PendingCalls>,
     /// Sender for outbound messages
     outbound_tx: Mutex<Option<mpsc::Sender<ProxyToAgent>>>,
     /// Sequence counter for pings
@@ -257,7 +266,7 @@ impl AgentClientV2 {
             connect_timeout: crate::v2::uds::DEFAULT_CONNECT_TIMEOUT,
             capabilities: RwLock::new(None),
             protocol_version: AtomicU64::new(1), // Default to v1 until handshake
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(PendingCalls::new()),
             outbound_tx: Mutex::new(None),
             ping_sequence: AtomicU64::new(0),
             connected: Arc::new(RwLock::new(false)),
@@ -517,14 +526,14 @@ impl AgentClientV2 {
                 match msg.message {
                     Some(grpc_v2::agent_to_proxy::Message::Response(resp)) => {
                         let correlation_id = resp.correlation_id.clone();
-                        if let Some(sender) = pending.lock().await.remove(&correlation_id) {
-                            let response = convert_response_from_grpc(resp);
-                            let _ = sender.send(response);
-                        } else {
-                            warn!(
+                        let response = convert_response_from_grpc(resp);
+                        if !pending.complete(&correlation_id, response) {
+                            // The call timed out or was dropped by its caller
+                            // before the agent answered.
+                            debug!(
                                 agent_id = %agent_id,
                                 correlation_id = %correlation_id,
-                                "Received response for unknown correlation ID"
+                                "Discarded response: no call is waiting for this correlation ID"
                             );
                         }
                     }
@@ -610,7 +619,7 @@ impl AgentClientV2 {
             // still waiting for a response instead of leaving them to time
             // out: dropping their senders wakes them with an error.
             *connected.write().await = false;
-            pending.lock().await.clear();
+            pending.clear();
             warn!(agent_id = %agent_id, "Agent stream ended; connection marked disconnected");
         });
 
@@ -775,14 +784,9 @@ impl AgentClientV2 {
             return Err(AgentProtocolError::ConnectionClosed);
         }
 
-        // Create response channel
-        let (tx, rx) = oneshot::channel();
-
-        // Register pending request
-        self.pending
-            .lock()
-            .await
-            .insert(correlation_id.to_string(), tx);
+        // Register the call. Dropping `call` removes the registration, whether
+        // the call returns early, times out or is dropped by its caller.
+        let call = self.pending.register(correlation_id);
 
         // Send message
         {
@@ -799,18 +803,12 @@ impl AgentClientV2 {
         }
 
         // Wait for response with timeout
-        match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => {
-                self.pending.lock().await.remove(correlation_id);
-                Err(AgentProtocolError::ConnectionFailed(
-                    "Response channel closed".to_string(),
-                ))
-            }
-            Err(_) => {
-                self.pending.lock().await.remove(correlation_id);
-                Err(AgentProtocolError::Timeout(self.timeout))
-            }
+        match call.wait(self.timeout).await {
+            Ok(response) => Ok(response),
+            Err(WaitError::Closed) => Err(AgentProtocolError::ConnectionFailed(
+                "Response channel closed".to_string(),
+            )),
+            Err(WaitError::TimedOut) => Err(AgentProtocolError::Timeout(self.timeout)),
         }
     }
 
@@ -871,7 +869,7 @@ impl AgentClientV2 {
         reason: CancelReason,
     ) -> Result<(), AgentProtocolError> {
         // Remove from pending (will cause the waiter to receive an error)
-        self.pending.lock().await.remove(correlation_id);
+        self.pending.remove(correlation_id);
 
         // Send cancel message to agent
         let msg = ProxyToAgent {
@@ -907,10 +905,7 @@ impl AgentClientV2 {
     ///
     /// Used during shutdown or when the upstream connection fails.
     pub async fn cancel_all(&self, reason: CancelReason) -> Result<usize, AgentProtocolError> {
-        let correlation_ids: Vec<String> = {
-            let pending = self.pending.lock().await;
-            pending.keys().cloned().collect()
-        };
+        let correlation_ids = self.pending.correlation_ids();
 
         let count = correlation_ids.len();
         for cid in correlation_ids {
@@ -1518,5 +1513,109 @@ mod tests {
         };
 
         assert_eq!(extract_correlation_id(&event), "test-123");
+    }
+
+    /// A call that cannot be sent leaves no entry in the table of calls
+    /// waiting for a response.
+    mod unsent_calls {
+        use super::*;
+        use crate::v2::server::{AgentHandlerV2, GrpcAgentServerV2};
+        use crate::{RequestHeadersEvent, RequestMetadata};
+
+        struct Handler;
+
+        #[async_trait::async_trait]
+        impl AgentHandlerV2 for Handler {
+            fn capabilities(&self) -> AgentCapabilities {
+                AgentCapabilities::new("agent-a", "Agent A", "1.0.0")
+            }
+        }
+
+        async fn connected_client() -> AgentClientV2 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let service = GrpcAgentServerV2::new("agent-a", Box::new(Handler)).into_service();
+            tokio::spawn(async move {
+                let _ = tonic::transport::Server::builder()
+                    .add_service(service)
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                    .await;
+            });
+
+            let client =
+                AgentClientV2::new("agent-a", format!("http://{addr}"), Duration::from_secs(30))
+                    .await
+                    .unwrap();
+            client.connect().await.unwrap();
+            client
+        }
+
+        fn request_headers(correlation_id: &str) -> RequestHeadersEvent {
+            RequestHeadersEvent {
+                metadata: RequestMetadata {
+                    correlation_id: correlation_id.to_string(),
+                    request_id: "req-1".to_string(),
+                    client_ip: "127.0.0.1".to_string(),
+                    client_port: 40000,
+                    server_name: Some("a.example".to_string()),
+                    protocol: "HTTP/1.1".to_string(),
+                    tls_version: None,
+                    tls_cipher: None,
+                    route_id: None,
+                    upstream_id: None,
+                    timestamp: "2026-01-01T00:00:00Z".to_string(),
+                    traceparent: None,
+                },
+                method: "GET".to_string(),
+                uri: "/".to_string(),
+                headers: HashMap::new(),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_call_with_no_stream_to_send_on_leaves_nothing_registered() {
+            let client = connected_client().await;
+            // The real sender stays alive, so the stream is not closed and the
+            // connection still counts as connected.
+            let stream = client.outbound_tx.lock().await.take();
+
+            let result = client
+                .send_request_headers("cid-1", &request_headers("cid-1"))
+                .await;
+
+            assert!(matches!(
+                result,
+                Err(AgentProtocolError::ConnectionFailed(_))
+            ));
+            assert_eq!(
+                client.cancel_all(CancelReason::Manual).await.unwrap(),
+                0,
+                "the call that was never sent is still registered as waiting"
+            );
+            drop(stream);
+        }
+
+        #[tokio::test]
+        async fn a_call_whose_send_fails_leaves_nothing_registered() {
+            let client = connected_client().await;
+            let (closed, receiver) = mpsc::channel(1);
+            drop(receiver);
+            let stream = client.outbound_tx.lock().await.replace(closed);
+
+            let result = client
+                .send_request_headers("cid-2", &request_headers("cid-2"))
+                .await;
+
+            assert!(matches!(
+                result,
+                Err(AgentProtocolError::ConnectionFailed(_))
+            ));
+            assert_eq!(
+                client.cancel_all(CancelReason::Manual).await.unwrap(),
+                0,
+                "the call that failed to send is still registered as waiting"
+            );
+            drop(stream);
+        }
     }
 }

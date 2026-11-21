@@ -22,6 +22,7 @@ use crate::v2::client::{
 };
 use crate::v2::control::ConfigUpdateType;
 use crate::v2::observability::{ConfigPusher, ConfigUpdateHandler, MetricsCollector};
+use crate::v2::pending::InFlight;
 use crate::v2::protocol_metrics::ProtocolMetrics;
 use crate::v2::reverse::ReverseConnectionClient;
 use crate::v2::uds::{AgentClientV2Uds, DEFAULT_CONNECT_TIMEOUT};
@@ -259,6 +260,11 @@ impl StickySession {
 /// Transport layer for v2 agent connections.
 ///
 /// Supports gRPC, Unix Domain Socket, and reverse connections.
+///
+/// # Cancel Safety
+///
+/// Every `send_*` method is cancel safe, as it is on the client each variant
+/// wraps.
 pub enum V2Transport {
     /// gRPC over HTTP/2
     Grpc(AgentClientV2),
@@ -660,6 +666,16 @@ impl AgentEntry {
 /// without contention. Connection selection uses cached health state to avoid
 /// async I/O per request.
 ///
+/// # Cancel Safety
+///
+/// Every `send_*` method is cancel safe. A call that is dropped before the
+/// agent has answered, for example by an outer timeout, gives back its
+/// concurrency permit, its connection's in-flight count and its share of the
+/// `in_flight_requests` gauge, and its transport removes its entry from the
+/// calls waiting for a response. A response that arrives afterwards is
+/// discarded. The outcome of a dropped call is not recorded in the connection's
+/// request and error counts.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -995,6 +1011,11 @@ impl AgentPool {
     /// # Returns
     ///
     /// A tuple of (response, used_sticky_session).
+    ///
+    /// # Cancel Safety
+    ///
+    /// Cancel safe: a call dropped before the agent has answered releases what it
+    /// holds. See [`AgentPool`].
     pub async fn send_request_headers_with_sticky_session(
         &self,
         session_id: &str,
@@ -1005,7 +1026,7 @@ impl AgentPool {
         let start = Instant::now();
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.protocol_metrics.inc_requests();
-        self.protocol_metrics.inc_in_flight();
+        let gauge = self.protocol_metrics.track_in_flight();
 
         // Try sticky session first
         let (conn, used_sticky) =
@@ -1019,23 +1040,20 @@ impl AgentPool {
         match self.check_flow_control(&conn, agent_id).await {
             Ok(true) => {}
             Ok(false) => {
-                self.protocol_metrics.dec_in_flight();
                 return Ok((AgentResponse::default_allow(), used_sticky));
             }
             Err(e) => {
-                self.protocol_metrics.dec_in_flight();
                 return Err(e);
             }
         }
 
         // Acquire concurrency permit
         let _permit = conn.concurrency_limiter.acquire().await.map_err(|_| {
-            self.protocol_metrics.dec_in_flight();
             self.protocol_metrics.inc_connection_errors();
             AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
         })?;
 
-        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        let conn_in_flight = InFlight::enter(&conn.in_flight);
         conn.touch();
 
         // Store correlation affinity
@@ -1046,9 +1064,9 @@ impl AgentPool {
             .send_request_headers(correlation_id, event)
             .await;
 
-        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        drop(conn_in_flight);
         conn.request_count.fetch_add(1, Ordering::Relaxed);
-        self.protocol_metrics.dec_in_flight();
+        drop(gauge);
         self.protocol_metrics
             .record_request_duration(start.elapsed());
 
@@ -1471,6 +1489,11 @@ impl AgentPool {
     /// - Lock-free agent lookup via `DashMap`
     /// - Cached health state (no async I/O for health check)
     /// - Atomic last_used tracking (no RwLock)
+    ///
+    /// # Cancel Safety
+    ///
+    /// Cancel safe: a call dropped before the agent has answered releases what it
+    /// holds. See [`AgentPool`].
     pub async fn send_request_headers(
         &self,
         agent_id: &str,
@@ -1480,7 +1503,7 @@ impl AgentPool {
         let start = Instant::now();
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.protocol_metrics.inc_requests();
-        self.protocol_metrics.inc_in_flight();
+        let gauge = self.protocol_metrics.track_in_flight();
 
         let conn = self.select_connection(agent_id)?;
 
@@ -1489,23 +1512,20 @@ impl AgentPool {
             Ok(true) => {} // Proceed normally
             Ok(false) => {
                 // FailOpen mode: skip agent, return allow response
-                self.protocol_metrics.dec_in_flight();
                 return Ok(AgentResponse::default_allow());
             }
             Err(e) => {
-                self.protocol_metrics.dec_in_flight();
                 return Err(e);
             }
         }
 
         // Acquire concurrency permit
         let _permit = conn.concurrency_limiter.acquire().await.map_err(|_| {
-            self.protocol_metrics.dec_in_flight();
             self.protocol_metrics.inc_connection_errors();
             AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
         })?;
 
-        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        let conn_in_flight = InFlight::enter(&conn.in_flight);
         conn.touch(); // Atomic, no lock
 
         // Store connection affinity for body chunk routing
@@ -1516,9 +1536,9 @@ impl AgentPool {
             .send_request_headers(correlation_id, event)
             .await;
 
-        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        drop(conn_in_flight);
         conn.request_count.fetch_add(1, Ordering::Relaxed);
-        self.protocol_metrics.dec_in_flight();
+        drop(gauge);
         self.protocol_metrics
             .record_request_duration(start.elapsed());
 
@@ -1560,6 +1580,11 @@ impl AgentPool {
     ///
     /// The pool uses correlation_id to route the chunk to the same connection
     /// that received the request headers (connection affinity).
+    ///
+    /// # Cancel Safety
+    ///
+    /// Cancel safe: a call dropped before the agent has answered releases what it
+    /// holds. See [`AgentPool`].
     pub async fn send_request_body_chunk(
         &self,
         agent_id: &str,
@@ -1592,7 +1617,7 @@ impl AgentPool {
             AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
         })?;
 
-        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        let conn_in_flight = InFlight::enter(&conn.in_flight);
         conn.touch();
 
         let result = conn
@@ -1600,7 +1625,7 @@ impl AgentPool {
             .send_request_body_chunk(correlation_id, event)
             .await;
 
-        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        drop(conn_in_flight);
         conn.request_count.fetch_add(1, Ordering::Relaxed);
 
         match &result {
@@ -1624,6 +1649,11 @@ impl AgentPool {
     ///
     /// Called when upstream response headers are received, allowing the agent
     /// to inspect/modify response headers before they're sent to the client.
+    ///
+    /// # Cancel Safety
+    ///
+    /// Cancel safe: a call dropped before the agent has answered releases what it
+    /// holds. See [`AgentPool`].
     pub async fn send_response_headers(
         &self,
         agent_id: &str,
@@ -1638,7 +1668,7 @@ impl AgentPool {
             AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
         })?;
 
-        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        let conn_in_flight = InFlight::enter(&conn.in_flight);
         conn.touch();
 
         let result = conn
@@ -1646,7 +1676,7 @@ impl AgentPool {
             .send_response_headers(correlation_id, event)
             .await;
 
-        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        drop(conn_in_flight);
         conn.request_count.fetch_add(1, Ordering::Relaxed);
 
         match &result {
@@ -1670,6 +1700,11 @@ impl AgentPool {
     ///
     /// For streaming response body inspection, chunks are sent sequentially.
     /// The agent can inspect and optionally modify response body data.
+    ///
+    /// # Cancel Safety
+    ///
+    /// Cancel safe: a call dropped before the agent has answered releases what it
+    /// holds. See [`AgentPool`].
     pub async fn send_response_body_chunk(
         &self,
         agent_id: &str,
@@ -1694,7 +1729,7 @@ impl AgentPool {
             AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
         })?;
 
-        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        let conn_in_flight = InFlight::enter(&conn.in_flight);
         conn.touch();
 
         let result = conn
@@ -1702,7 +1737,7 @@ impl AgentPool {
             .send_response_body_chunk(correlation_id, event)
             .await;
 
-        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        drop(conn_in_flight);
         conn.request_count.fetch_add(1, Ordering::Relaxed);
 
         match &result {
@@ -1723,6 +1758,11 @@ impl AgentPool {
     }
 
     /// Notify an agent that a request has completed (logging/audit terminator).
+    ///
+    /// # Cancel Safety
+    ///
+    /// Cancel safe: a call dropped before the agent has answered releases what it
+    /// holds. See [`AgentPool`].
     pub async fn send_request_complete(
         &self,
         agent_id: &str,
@@ -1737,7 +1777,7 @@ impl AgentPool {
             AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
         })?;
 
-        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        let conn_in_flight = InFlight::enter(&conn.in_flight);
         conn.touch();
 
         let result = conn
@@ -1745,7 +1785,7 @@ impl AgentPool {
             .send_request_complete(correlation_id, event)
             .await;
 
-        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        drop(conn_in_flight);
         conn.request_count.fetch_add(1, Ordering::Relaxed);
 
         match &result {
@@ -1769,6 +1809,11 @@ impl AgentPool {
     ///
     /// Frames of one connection are sent one at a time, in order; the agent
     /// answers each with a WebSocket decision.
+    ///
+    /// # Cancel Safety
+    ///
+    /// Cancel safe: a call dropped before the agent has answered releases what it
+    /// holds. See [`AgentPool`].
     pub async fn send_websocket_frame(
         &self,
         agent_id: &str,
@@ -1792,7 +1837,7 @@ impl AgentPool {
             AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
         })?;
 
-        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        let conn_in_flight = InFlight::enter(&conn.in_flight);
         conn.touch();
 
         let result = conn
@@ -1800,7 +1845,7 @@ impl AgentPool {
             .send_websocket_frame(correlation_id, event)
             .await;
 
-        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        drop(conn_in_flight);
         conn.request_count.fetch_add(1, Ordering::Relaxed);
 
         match &result {
@@ -1825,6 +1870,11 @@ impl AgentPool {
     /// The pool selects the best connection based on the load balancing strategy.
     /// Guardrail events are one-shot (no body follow-up), so no correlation
     /// affinity is stored.
+    ///
+    /// # Cancel Safety
+    ///
+    /// Cancel safe: a call dropped before the agent has answered releases what it
+    /// holds. See [`AgentPool`].
     pub async fn send_guardrail_inspect(
         &self,
         agent_id: &str,
@@ -1833,29 +1883,26 @@ impl AgentPool {
     ) -> Result<AgentResponse, AgentProtocolError> {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.protocol_metrics.inc_requests();
-        self.protocol_metrics.inc_in_flight();
+        let gauge = self.protocol_metrics.track_in_flight();
 
         let conn = self.select_connection(agent_id)?;
 
         match self.check_flow_control(&conn, agent_id).await {
             Ok(true) => {}
             Ok(false) => {
-                self.protocol_metrics.dec_in_flight();
                 return Ok(AgentResponse::default_allow());
             }
             Err(e) => {
-                self.protocol_metrics.dec_in_flight();
                 return Err(e);
             }
         }
 
         let _permit = conn.concurrency_limiter.acquire().await.map_err(|_| {
-            self.protocol_metrics.dec_in_flight();
             self.protocol_metrics.inc_connection_errors();
             AgentProtocolError::ConnectionFailed("Concurrency limit reached".to_string())
         })?;
 
-        conn.in_flight.fetch_add(1, Ordering::Relaxed);
+        let conn_in_flight = InFlight::enter(&conn.in_flight);
         conn.touch();
 
         let result = conn
@@ -1863,9 +1910,9 @@ impl AgentPool {
             .send_guardrail_inspect(correlation_id, event)
             .await;
 
-        conn.in_flight.fetch_sub(1, Ordering::Relaxed);
+        drop(conn_in_flight);
         conn.request_count.fetch_add(1, Ordering::Relaxed);
-        self.protocol_metrics.dec_in_flight();
+        drop(gauge);
 
         match &result {
             Ok(_) => {

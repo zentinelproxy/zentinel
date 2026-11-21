@@ -14,6 +14,7 @@ mod control;
 mod health;
 mod metrics;
 pub mod observability;
+mod pending;
 pub mod pool;
 pub mod protocol_metrics;
 pub mod reverse;

@@ -34,10 +34,11 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::v2::client::FlowState;
+use crate::v2::pending::{InFlight, PendingCalls, WaitError};
 use crate::v2::pool::CHANNEL_BUFFER_SIZE;
 use crate::v2::uds::{read_message, write_message, MessageType, UdsCapabilities};
 use crate::v2::{AgentCapabilities, AgentPool, PROTOCOL_VERSION_2};
@@ -446,11 +447,18 @@ impl Drop for ReverseConnectionListener {
 ///
 /// This wraps an accepted connection and provides the same interface
 /// as AgentClientV2Uds but for inbound connections.
+///
+/// # Cancel Safety
+///
+/// Every `send_*` method is cancel safe. A call that is dropped before the
+/// agent has answered, for example by an outer timeout, removes its entry from
+/// the calls waiting for a response and stops counting in [`Self::in_flight`].
+/// A response that arrives afterwards is discarded.
 pub struct ReverseConnectionClient {
     agent_id: String,
     connection_id: String,
     capabilities: RwLock<Option<AgentCapabilities>>,
-    pending: Arc<Mutex<std::collections::HashMap<String, oneshot::Sender<AgentResponse>>>>,
+    pending: Arc<PendingCalls>,
     #[allow(clippy::type_complexity)]
     outbound_tx: Mutex<Option<mpsc::Sender<(MessageType, Vec<u8>)>>>,
     connected: RwLock<bool>,
@@ -474,8 +482,7 @@ impl ReverseConnectionClient {
         R: AsyncReadExt + Unpin + Send + 'static,
         W: AsyncWriteExt + Unpin + Send + 'static,
     {
-        let pending: Arc<Mutex<std::collections::HashMap<String, oneshot::Sender<AgentResponse>>>> =
-            Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let pending = Arc::new(PendingCalls::new());
 
         // Create message channel
         let (tx, mut rx) = mpsc::channel::<(MessageType, Vec<u8>)>(CHANNEL_BUFFER_SIZE);
@@ -514,11 +521,9 @@ impl ReverseConnectionClient {
                                     .unwrap_or("")
                                     .to_string();
 
-                                if let Some(sender) =
-                                    pending_clone.lock().await.remove(&correlation_id)
-                                {
-                                    let _ = sender.send(response);
-                                }
+                                // A response whose call has gone (timed out, or
+                                // dropped by its caller) is discarded.
+                                pending_clone.complete(&correlation_id, response);
                             }
                         }
                     }
@@ -668,13 +673,11 @@ impl ReverseConnectionClient {
         let payload_bytes = serde_json::to_vec(&payload)
             .map_err(|e| AgentProtocolError::Serialization(e.to_string()))?;
 
-        let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .await
-            .insert(correlation_id.to_string(), tx);
+        // Register the call. Dropping `call` removes the registration, whether
+        // the call returns early, times out or is dropped by its caller.
+        let call = self.pending.register(correlation_id);
 
-        // Send message; on failure remove the pending entry we just registered
+        // Send message
         {
             let outbound = self.outbound_tx.lock().await;
             let send_result = match outbound.as_ref() {
@@ -685,32 +688,16 @@ impl ReverseConnectionClient {
                 None => Err(AgentProtocolError::ConnectionClosed),
             };
             drop(outbound);
-            if let Err(e) = send_result {
-                self.pending.lock().await.remove(correlation_id);
-                return Err(e);
-            }
+            send_result?;
         }
 
-        self.in_flight
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let _in_flight = InFlight::enter(&self.in_flight);
 
-        // Wait for response with timeout. Every exit path below must remove
-        // the pending entry and decrement in_flight, or the map leaks and the
-        // gauge drifts.
-        let result = match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(AgentProtocolError::ConnectionClosed),
-            Err(_) => Err(AgentProtocolError::Timeout(self.timeout)),
-        };
-
-        self.in_flight
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-
-        if result.is_err() {
-            self.pending.lock().await.remove(correlation_id);
-        }
-
-        result
+        // Wait for response with timeout
+        call.wait(self.timeout).await.map_err(|e| match e {
+            WaitError::TimedOut => AgentProtocolError::Timeout(self.timeout),
+            WaitError::Closed => AgentProtocolError::ConnectionClosed,
+        })
     }
 
     /// Cancel a specific request.
@@ -735,7 +722,7 @@ impl ReverseConnectionClient {
                 .map_err(|_| AgentProtocolError::ConnectionClosed)?;
         }
 
-        self.pending.lock().await.remove(correlation_id);
+        self.pending.remove(correlation_id);
         Ok(())
     }
 
@@ -744,7 +731,7 @@ impl ReverseConnectionClient {
         &self,
         reason: super::client::CancelReason,
     ) -> Result<usize, AgentProtocolError> {
-        let pending_ids: Vec<String> = self.pending.lock().await.keys().cloned().collect();
+        let pending_ids = self.pending.correlation_ids();
         let count = pending_ids.len();
 
         for correlation_id in pending_ids {
@@ -947,5 +934,86 @@ mod tests {
 
         assert!(parsed.success);
         assert_eq!(parsed.connection_id, "conn-123");
+    }
+
+    /// A call that its caller drops while it waits for the agent must leave
+    /// nothing registered and nothing counted as in flight.
+    mod dropped_calls {
+        use super::*;
+        use crate::v2::client::CancelReason;
+        use crate::RequestCompleteEvent;
+
+        fn request_complete(correlation_id: &str) -> RequestCompleteEvent {
+            RequestCompleteEvent {
+                correlation_id: correlation_id.to_string(),
+                status: 200,
+                duration_ms: 1,
+                request_body_size: 0,
+                response_body_size: 0,
+                upstream_attempts: 1,
+                upstream: None,
+                from_cache: false,
+                error: None,
+            }
+        }
+
+        #[tokio::test]
+        async fn a_call_dropped_while_waiting_leaves_nothing_registered() {
+            let (client_io, agent_io) = tokio::io::duplex(64 * 1024);
+            let (client_read, client_write) = tokio::io::split(client_io);
+            let client = ReverseConnectionClient::new(
+                "agent-a".to_string(),
+                "conn-1".to_string(),
+                AgentCapabilities::new("agent-a", "Agent A", "1.0.0"),
+                BufReader::new(client_read),
+                BufWriter::new(client_write),
+                Duration::from_secs(30),
+            )
+            .await;
+
+            // The agent reads the event and never answers.
+            let (mut agent_read, _agent_write) = tokio::io::split(agent_io);
+            let event = request_complete("cid-1");
+            tokio::select! {
+                _ = client.send_request_complete("cid-1", &event) => {
+                    panic!("the agent does not answer, so the call cannot finish")
+                }
+                received = read_message(&mut agent_read) => {
+                    let (msg_type, _) = received.expect("the agent reads the event");
+                    assert_eq!(msg_type, MessageType::RequestComplete);
+                }
+            }
+
+            assert_eq!(client.in_flight(), 0, "the dropped call is still in flight");
+            assert_eq!(
+                client.cancel_all(CancelReason::Manual).await.unwrap(),
+                0,
+                "the dropped call is still registered as waiting for a response"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_call_that_times_out_is_no_longer_in_flight() {
+            let (client_io, agent_io) = tokio::io::duplex(64 * 1024);
+            let (client_read, client_write) = tokio::io::split(client_io);
+            let client = ReverseConnectionClient::new(
+                "agent-a".to_string(),
+                "conn-1".to_string(),
+                AgentCapabilities::new("agent-a", "Agent A", "1.0.0"),
+                BufReader::new(client_read),
+                BufWriter::new(client_write),
+                Duration::from_millis(50),
+            )
+            .await;
+            let (_agent_read, _agent_write) = tokio::io::split(agent_io);
+
+            let result = client
+                .send_request_complete("cid-2", &request_complete("cid-2"))
+                .await;
+
+            assert!(matches!(result, Err(AgentProtocolError::Timeout(_))));
+            assert_eq!(client.in_flight(), 0);
+            assert_eq!(client.cancel_all(CancelReason::Manual).await.unwrap(), 0);
+        }
     }
 }
