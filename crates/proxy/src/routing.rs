@@ -494,6 +494,15 @@ impl CompiledMatcher {
 ///   Both sides are normalized, so neither a mixed-case request nor a
 ///   mixed-case config silently matches nothing.
 fn normalize_host(host: &str) -> String {
+    host_without_port_and_dot(host).to_ascii_lowercase()
+}
+
+/// `host` without its port and without a trailing dot, not yet lowercased.
+///
+/// This is the part of [`normalize_host`] that only trims, so it can borrow.
+/// The route cache key is built from it to avoid allocating on every request,
+/// which keeps the key and the host match on one rule.
+fn host_without_port_and_dot(host: &str) -> &str {
     // An IPv6 literal is bracketed and full of colons, so its port is
     // whatever follows the closing bracket. Splitting on the first colon
     // would reduce `[::1]:8080` to `[`.
@@ -506,8 +515,7 @@ fn normalize_host(host: &str) -> String {
         host.split(':').next().unwrap_or(host)
     };
 
-    let without_dot = without_port.strip_suffix('.').unwrap_or(without_port);
-    without_dot.to_ascii_lowercase()
+    without_port.strip_suffix('.').unwrap_or(without_port)
 }
 
 impl HostMatcher {
@@ -671,6 +679,20 @@ pub struct RequestInfo<'a> {
     query_params: Option<HashMap<String, String>>,
 }
 
+/// Append `value` to a route cache key as `<byte length>:<value>`.
+fn push_key_value(key: &mut String, value: &str) {
+    use std::fmt::Write;
+    let _ = write!(key, "{}:{}", value.len(), value);
+}
+
+/// Append a header or query parameter to a route cache key: the `tag` that
+/// says which it is, then the name and the value.
+fn push_key_entry(key: &mut String, tag: char, name: &str, value: &str) {
+    key.push(tag);
+    push_key_value(key, name);
+    push_key_value(key, value);
+}
+
 impl<'a> RequestInfo<'a> {
     /// Create a new RequestInfo with borrowed references (zero-copy for common case)
     #[inline]
@@ -718,6 +740,20 @@ impl<'a> RequestInfo<'a> {
 
     /// Generate a cache key for this request using a thread-local buffer
     /// to avoid per-request heap allocation.
+    ///
+    /// The key is built from the inputs a route match depends on: the method,
+    /// the host as [`normalize_host`] would compare it (so `Example.com:8080`
+    /// and `example.com` share an entry), the path, and the headers and query
+    /// parameters when they were supplied. Two requests have the same key only
+    /// if the matcher cannot tell them apart.
+    ///
+    /// Every value is written as `<byte length>:<value>`, and a header or
+    /// query parameter as a tag (`h` or `q`) followed by two such values, so
+    /// `GET` `example.com` `/x` is `3:GET11:example.com2:/x`. Lengths rather
+    /// than a separator character, because no character is safe to use as
+    /// one: the host and the path can both contain `:`, and query parameters
+    /// are percent-decoded, so their names and values can contain any
+    /// character at all.
     fn with_cache_key<R>(&self, f: impl FnOnce(&str) -> R) -> R {
         use std::cell::RefCell;
         use std::fmt::Write;
@@ -726,17 +762,36 @@ impl<'a> RequestInfo<'a> {
             static BUF: RefCell<String> = RefCell::new(String::with_capacity(128));
         }
 
+        // Every field is named, so a field added to `RequestInfo` fails to
+        // compile here until it is either written into the key or bound to
+        // `_` with a reason.
+        let RequestInfo {
+            method,
+            path,
+            host,
+            headers,
+            query_params,
+        } = self;
+
         BUF.with(|buf| {
             let mut buf = buf.borrow_mut();
             buf.clear();
-            let _ = write!(buf, "{}:{}:{}", self.method, self.host, self.path);
+            push_key_value(&mut buf, method);
+            // The host, normalized into the buffer itself. Lowercasing does
+            // not change the length, so the length can be written first.
+            let host = host_without_port_and_dot(host);
+            let _ = write!(buf, "{}:", host.len());
+            let start = buf.len();
+            buf.push_str(host);
+            buf[start..].make_ascii_lowercase();
+            push_key_value(&mut buf, path);
             // Include headers in cache key when header-based routing is active,
             // otherwise different header combinations can poison the cache.
-            if let Some(ref headers) = self.headers {
+            if let Some(headers) = headers {
                 let mut pairs: Vec<_> = headers.iter().collect();
                 pairs.sort_by_key(|(k, _)| k.as_str());
                 for (k, v) in pairs {
-                    let _ = write!(buf, "\n{k}={v}");
+                    push_key_entry(&mut buf, 'h', k, v);
                 }
             }
             // Query parameters, for the same reason. `path` here comes from
@@ -745,14 +800,14 @@ impl<'a> RequestInfo<'a> {
             // `/api?version=v2` is cached, `/api?version=v1` is served the v2
             // route and reaches the wrong upstream.
             //
-            // The separator differs from the header one so a header and a
+            // The tag differs from the header one so a header and a
             // query parameter with the same name and value cannot produce the
             // same key.
-            if let Some(ref params) = self.query_params {
+            if let Some(params) = query_params {
                 let mut pairs: Vec<_> = params.iter().collect();
                 pairs.sort_by_key(|(k, _)| k.as_str());
                 for (k, v) in pairs {
-                    let _ = write!(buf, "\t{k}={v}");
+                    push_key_entry(&mut buf, 'q', k, v);
                 }
             }
             f(&buf)
@@ -1889,5 +1944,367 @@ mod route_matching_edges {
             vec![MatchCondition::PathPrefix("/api".into())],
         )]);
         assert_eq!(hit(&m, "GET", "/other", "h").as_deref(), None);
+    }
+
+    // -- Route cache key --------------------------------------------------
+
+    fn route_of(m: &RouteMatcher, req: &RequestInfo<'_>) -> Option<String> {
+        m.match_request(req).map(|r| r.route_id.to_string())
+    }
+
+    /// Whatever other requests went through the matcher first, a request is
+    /// routed exactly as it is on a matcher whose cache is empty.
+    fn assert_cache_is_transparent(
+        make_matcher: impl Fn() -> RouteMatcher,
+        requests: &[RequestInfo<'_>],
+    ) {
+        for (i, req) in requests.iter().enumerate() {
+            let cold = route_of(&make_matcher(), req);
+            for (j, earlier) in requests.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                let m = make_matcher();
+                route_of(&m, earlier);
+                assert_eq!(
+                    route_of(&m, req),
+                    cold,
+                    "{req:?} was routed differently once {earlier:?} had been matched \
+                     (requests {i} and {j})"
+                );
+            }
+        }
+    }
+
+    /// Every string over `alphabet` with at most `max_len` characters.
+    fn strings_up_to(alphabet: &[char], max_len: usize) -> Vec<String> {
+        let mut all = vec![String::new()];
+        let mut previous_len = vec![String::new()];
+        for _ in 0..max_len {
+            previous_len = previous_len
+                .iter()
+                .flat_map(|s| alphabet.iter().map(move |c| format!("{s}{c}")))
+                .collect();
+            all.extend(previous_len.iter().cloned());
+        }
+        all
+    }
+
+    fn cache_key(req: &RequestInfo<'_>) -> String {
+        req.with_cache_key(|key| key.to_string())
+    }
+
+    /// The host and the path are written into one key. A `:` can occur in
+    /// both (a port, an IPv6 literal, a path segment), so two different
+    /// host/path pairs must not run together into the same string.
+    #[test]
+    fn a_host_and_path_that_run_together_do_not_share_a_cache_entry() {
+        let make_matcher = || {
+            matcher(vec![
+                route("exact", vec![MatchCondition::Path("/c".into())]),
+                route("catchall", vec![MatchCondition::PathPrefix("/".into())]),
+            ])
+        };
+        // `a:/b` normalizes to `a`, so this is host `a`, path `/c`.
+        let first = RequestInfo::new("GET", "/c", "a:/b");
+        // Host `a`, path `/b:/c`.
+        let second = RequestInfo::new("GET", "/b:/c", "a");
+        assert_eq!(route_of(&make_matcher(), &first).as_deref(), Some("exact"));
+        assert_eq!(
+            route_of(&make_matcher(), &second).as_deref(),
+            Some("catchall")
+        );
+        assert_cache_is_transparent(make_matcher, &[first, second]);
+    }
+
+    /// A host that starts with `[` and has no `]` keeps its colons when
+    /// normalized, so `[x:/a` and `[x` are different hosts even after
+    /// normalization, and the path that follows must not blur them.
+    #[test]
+    fn an_unterminated_bracket_host_and_a_path_do_not_share_a_cache_entry() {
+        let make_matcher = || {
+            matcher(vec![
+                route("exact", vec![MatchCondition::Path("/b".into())]),
+                route("catchall", vec![MatchCondition::PathPrefix("/".into())]),
+            ])
+        };
+        // Host `[x:/a`, path `/b`.
+        let first = RequestInfo::new("GET", "/b", "[x:/a");
+        // Host `[x`, path `/a:/b`.
+        let second = RequestInfo::new("GET", "/a:/b", "[x");
+        assert_eq!(route_of(&make_matcher(), &first).as_deref(), Some("exact"));
+        assert_eq!(
+            route_of(&make_matcher(), &second).as_deref(),
+            Some("catchall")
+        );
+        assert_cache_is_transparent(make_matcher, &[first, second]);
+    }
+
+    /// Query parameters are percent-decoded before they reach the matcher, so
+    /// a name or value can contain any character, including whatever was
+    /// used to separate one parameter from the next.
+    #[test]
+    fn query_parameters_that_run_together_do_not_share_a_cache_entry() {
+        let make_matcher = || {
+            matcher(vec![
+                route(
+                    "has-b",
+                    vec![
+                        MatchCondition::PathPrefix("/q".into()),
+                        MatchCondition::QueryParam {
+                            name: "b".into(),
+                            value: Some("2".into()),
+                        },
+                    ],
+                ),
+                route(
+                    "a-is-b-eq-c",
+                    vec![
+                        MatchCondition::PathPrefix("/q".into()),
+                        MatchCondition::QueryParam {
+                            name: "a".into(),
+                            value: Some("b=c".into()),
+                        },
+                    ],
+                ),
+                route("catchall", vec![MatchCondition::PathPrefix("/q".into())]),
+            ])
+        };
+        let requests = [
+            // `?a=1&b=2`
+            RequestInfo::new("GET", "/q", "h").with_query_params(pairs(&[("a", "1"), ("b", "2")])),
+            // `?a=1%09b=2`: one parameter whose value contains a tab.
+            RequestInfo::new("GET", "/q", "h").with_query_params(pairs(&[("a", "1\tb=2")])),
+            // `?a=b%3Dc`: name `a`, value `b=c`.
+            RequestInfo::new("GET", "/q", "h").with_query_params(pairs(&[("a", "b=c")])),
+            // `?a%3Db=c`: name `a=b`, value `c`.
+            RequestInfo::new("GET", "/q", "h").with_query_params(pairs(&[("a=b", "c")])),
+        ];
+        assert_cache_is_transparent(make_matcher, &requests);
+    }
+
+    /// Headers and query parameters are both part of the key. A header value
+    /// may contain a tab, and a decoded query value anything, so where the
+    /// headers end and the query begins must not be a guess.
+    #[test]
+    fn headers_and_query_parameters_that_run_together_do_not_share_a_cache_entry() {
+        let make_matcher = || {
+            matcher(vec![
+                route(
+                    "header-and-query",
+                    vec![
+                        MatchCondition::PathPrefix("/x".into()),
+                        MatchCondition::Header {
+                            name: "x".into(),
+                            value: Some("1".into()),
+                        },
+                        MatchCondition::QueryParam {
+                            name: "q".into(),
+                            value: Some("2".into()),
+                        },
+                    ],
+                ),
+                route(
+                    "two-headers",
+                    vec![
+                        MatchCondition::PathPrefix("/x".into()),
+                        MatchCondition::Header {
+                            name: "a".into(),
+                            value: Some("1".into()),
+                        },
+                        MatchCondition::Header {
+                            name: "b".into(),
+                            value: Some("2".into()),
+                        },
+                    ],
+                ),
+                route("catchall", vec![MatchCondition::PathPrefix("/x".into())]),
+            ])
+        };
+        let requests = [
+            // Header `x: 1` and query `?q=2`.
+            RequestInfo::new("GET", "/x", "h")
+                .with_headers(pairs(&[("x", "1")]))
+                .with_query_params(pairs(&[("q", "2")])),
+            // A single header, `x: 1<TAB>q=2`, and no query.
+            RequestInfo::new("GET", "/x", "h").with_headers(pairs(&[("x", "1\tq=2")])),
+            // Headers `a: 1` and `b: 2`.
+            RequestInfo::new("GET", "/x", "h").with_headers(pairs(&[("a", "1"), ("b", "2")])),
+            // A single header `a: 1<TAB>b=2`.
+            RequestInfo::new("GET", "/x", "h").with_headers(pairs(&[("a", "1\tb=2")])),
+        ];
+        assert_cache_is_transparent(make_matcher, &requests);
+    }
+
+    /// Hosts that the matcher treats as the same host (case, port, trailing
+    /// dot) are one request as far as the cache is concerned.
+    #[test]
+    fn hosts_that_normalize_alike_share_one_cache_entry() {
+        let m = matcher(vec![route(
+            "h",
+            vec![MatchCondition::Host("example.com".into())],
+        )]);
+        for host in [
+            "example.com",
+            "EXAMPLE.com",
+            "example.com:8080",
+            "example.com.",
+            "Example.COM.:443",
+        ] {
+            assert_eq!(hit(&m, "GET", "/", host).as_deref(), Some("h"), "{host}");
+        }
+        assert_eq!(
+            m.cache_stats().entries,
+            1,
+            "hosts that differ only in case, port or trailing dot used separate entries"
+        );
+
+        let m = matcher(vec![route("all", vec![])]);
+        for host in ["[::1]", "[::1]:8080", "[::1]:443"] {
+            hit(&m, "GET", "/", host);
+        }
+        assert_eq!(m.cache_stats().entries, 1);
+        hit(&m, "GET", "/", "[::2]");
+        assert_eq!(
+            m.cache_stats().entries,
+            2,
+            "a different IPv6 host must not reuse the entry"
+        );
+    }
+
+    /// The key stands for the method, the normalized host and the path, and
+    /// for nothing else: two requests have the same key exactly when those
+    /// three are equal. Every host and path up to three characters over an
+    /// alphabet of the characters that matter is compared.
+    #[test]
+    fn the_cache_key_identifies_the_method_normalized_host_and_path() {
+        let strings = strings_up_to(&['a', 'A', ':', '/', '[', ']', '.', '1'], 3);
+        let mut inputs_of_key: HashMap<String, (&str, String, &str)> = HashMap::new();
+        let mut key_of_inputs: HashMap<(&str, String, &str), String> = HashMap::new();
+
+        for method in ["GET", "POST"] {
+            for host in &strings {
+                for path in &strings {
+                    let key = cache_key(&RequestInfo::new(method, path, host));
+                    let inputs = (method, normalize_host(host), path.as_str());
+
+                    if let Some(seen) = inputs_of_key.insert(key.clone(), inputs.clone()) {
+                        assert_eq!(
+                            seen, inputs,
+                            "key {key:?} stands for two different requests"
+                        );
+                    }
+                    if let Some(seen) = key_of_inputs.insert(inputs.clone(), key.clone()) {
+                        assert_eq!(
+                            seen, key,
+                            "{inputs:?} has two keys, so it would miss the cache"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Likewise for the headers and the query parameters: two requests have
+    /// the same key exactly when they have the same headers and the same
+    /// query parameters, whatever order the maps were filled in.
+    ///
+    /// The names and values are drawn from the characters the key itself is
+    /// made of, and from the ones a separator could have been. Maps of up to
+    /// two entries are crossed with maps of up to one entry, and every
+    /// single entry up to two characters long is tried on its own.
+    #[test]
+    fn the_cache_key_identifies_the_headers_and_query_parameters() {
+        use std::collections::BTreeMap;
+
+        type Entries = BTreeMap<String, String>;
+        let alphabet = ['a', '=', '\t', '\n', ':', '1', 'h', 'q'];
+
+        // Every map of up to two entries over the one-character strings. The
+        // first `ones` of them have no entry or one.
+        let short = strings_up_to(&alphabet, 1);
+        let mut maps = vec![Entries::new()];
+        for k in &short {
+            for v in &short {
+                maps.push(Entries::from([(k.clone(), v.clone())]));
+            }
+        }
+        let ones = maps.len();
+        for (i, k1) in short.iter().enumerate() {
+            for k2 in &short[i + 1..] {
+                for v1 in &short {
+                    for v2 in &short {
+                        maps.push(Entries::from([
+                            (k1.clone(), v1.clone()),
+                            (k2.clone(), v2.clone()),
+                        ]));
+                    }
+                }
+            }
+        }
+
+        // Every single entry over the strings of up to two characters.
+        let long = strings_up_to(&alphabet, 2);
+        let mut long_ones = vec![Entries::new()];
+        for k in &long {
+            for v in &long {
+                long_ones.push(Entries::from([(k.clone(), v.clone())]));
+            }
+        }
+
+        let empty = Entries::new();
+        let mut combinations: Vec<(&Entries, &Entries)> = vec![];
+        for map in &maps {
+            for one in &maps[..ones] {
+                combinations.push((map, one));
+                combinations.push((one, map));
+            }
+        }
+        for one in &long_ones {
+            combinations.push((one, &empty));
+            combinations.push((&empty, one));
+        }
+
+        // The same entries, inserted in the given order. Each map has its own
+        // hasher, so two maps with the same entries can iterate differently.
+        let build = |entries: &Entries, reversed: bool| {
+            let mut map = HashMap::new();
+            let mut insert = |(k, v): (&String, &String)| {
+                map.insert(k.clone(), v.clone());
+            };
+            if reversed {
+                entries.iter().rev().for_each(&mut insert);
+            } else {
+                entries.iter().for_each(&mut insert);
+            }
+            map
+        };
+        let key_of = |headers: &Entries, query: &Entries, reversed: bool| {
+            let mut req = RequestInfo::new("GET", "/", "h");
+            if !headers.is_empty() {
+                req = req.with_headers(build(headers, reversed));
+            }
+            if !query.is_empty() {
+                req = req.with_query_params(build(query, reversed));
+            }
+            cache_key(&req)
+        };
+
+        let mut inputs_of_key: HashMap<String, (&Entries, &Entries)> = HashMap::new();
+        for (headers, query) in combinations {
+            let key = key_of(headers, query, false);
+            assert_eq!(
+                key,
+                key_of(headers, query, true),
+                "the key of {headers:?} and {query:?} depends on insertion order"
+            );
+            if let Some(seen) = inputs_of_key.insert(key.clone(), (headers, query)) {
+                assert_eq!(
+                    seen,
+                    (headers, query),
+                    "key {key:?} stands for two different requests"
+                );
+            }
+        }
     }
 }
