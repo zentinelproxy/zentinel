@@ -104,6 +104,19 @@ max_attempts: 3
 | GRPCRoute | Planned |
 | TLSRoute | Planned |
 
+### Text values
+
+Text taken from a route or an Ingress (a path, a header name or value, a query
+parameter, a hostname, a backend name) is written to the generated KDL as a
+quoted string, so quotes and backslashes in a value are kept as part of that
+value. A resource with a Unicode control character (U+0000 to U+001F or U+007F
+to U+009F, which includes line breaks) in one of these values is left out of the
+generated configuration, and the controller logs a warning that names the
+resource and the field. Other resources are not affected. A horizontal tab is
+accepted in a header value. The `Accepted` condition of an HTTPRoute, GRPCRoute
+or TLSRoute is not changed for such a resource, and an Ingress has no status, so
+the log is the only place the reason appears.
+
 ## Reporting Conformance
 
 Once all core tests pass, conformance can be reported upstream:
