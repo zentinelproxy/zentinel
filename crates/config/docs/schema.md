@@ -162,7 +162,8 @@ Request routing configuration.
 | `inference` | `InferenceConfig` | - | Inference config (for `inference` type) |
 | `error-pages` | `ErrorPageConfig` | - | Custom error pages |
 | `websocket` | `bool` | `false` | Enable WebSocket upgrade |
-| `websocket-inspection` | `bool` | `false` | Inspect WebSocket frames |
+| `websocket-inspection` | `bool` | `false` | Inspect WebSocket frames. No WebSocket extension (such as `permessage-deflate`) is negotiated on the route, and a frame that cannot be decoded closes the connection. See [WebSocket inspection](../../proxy/docs/websocket.md) |
+| `websocket-max-frame-size` | `bytes` | `1MB` | Largest WebSocket frame payload the route's inspection decodes, as a byte count or a size such as `"4MB"`. Between 1 byte and 16MB. A larger frame closes the connection with status 1009. A frame too large for an agent's transport to carry in one message fails the call to the agent and follows its filter's `failure-mode`. Only used with `websocket-inspection`, and `zentinel lint` warns when it is set without |
 | `shadow` | `ShadowConfig` | - | Traffic mirroring config |
 | `fallback` | `FallbackConfig` | - | Fallback routing config |
 

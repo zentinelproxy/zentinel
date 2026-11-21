@@ -386,6 +386,10 @@ route "/ws" {
 }
 ```
 
+See [WebSocket Inspection](websocket.md) for what a route with
+`websocket-inspection #true` does with extensions, the frame size limit, and
+frames that cannot be decoded.
+
 ---
 
 ## Traffic Management

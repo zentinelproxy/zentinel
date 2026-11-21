@@ -293,6 +293,9 @@ limit); on response headers the upstream response is replaced by that
 refusal; on the response body the response is aborted as above. WebSocket
 frames follow the same rule: only the route's agents see them, and a
 fail-closed failure closes the connection with 1011 (#586).
+A frame the proxy cannot decode is never sent to an agent, so no `failure-mode`
+applies to it: the connection closes (see
+[WebSocket Inspection](websocket.md)).
 
 The agent's own `failure-mode` (`agents { agent "x" { failure-mode ... } }`)
 is **deprecated and has no effect**. `zentinel test` and the startup log

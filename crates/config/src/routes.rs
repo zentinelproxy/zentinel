@@ -17,6 +17,21 @@ use crate::filters::RateLimitKey;
 // Route Configuration
 // ============================================================================
 
+/// Default `websocket-max-frame-size`: 1 MiB.
+pub const DEFAULT_WEBSOCKET_MAX_FRAME_SIZE: usize = 1024 * 1024;
+
+/// Largest accepted `websocket-max-frame-size`: 16 MiB.
+///
+/// This is the largest message the agent protocol carries over a Unix
+/// socket in one piece. The proxy also buffers a frame whole before
+/// inspecting it, so the limit is the memory one frame can take, several
+/// times over, per direction and connection.
+pub const MAX_WEBSOCKET_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+
+fn default_websocket_max_frame_size() -> usize {
+    DEFAULT_WEBSOCKET_MAX_FRAME_SIZE
+}
+
 /// Route configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct RouteConfig {
@@ -95,9 +110,22 @@ pub struct RouteConfig {
     /// When enabled, individual WebSocket frames are sent to agents for inspection.
     /// Agents can allow, drop, or close the connection based on frame content.
     /// Requires `websocket: true` to have any effect.
-    /// Note: If `permessage-deflate` compression is negotiated, inspection is skipped.
+    /// The proxy decodes the frames itself, so no WebSocket extension (such as
+    /// `permessage-deflate`) is negotiated on the route: the `Sec-WebSocket-Extensions`
+    /// offer is not passed to the upstream. A frame it cannot decode closes the
+    /// connection instead of being forwarded.
     #[serde(default)]
     pub websocket_inspection: bool,
+
+    /// Largest WebSocket frame payload, in bytes, that the route's frame inspection
+    /// decodes (default: 1 MiB, see [`DEFAULT_WEBSOCKET_MAX_FRAME_SIZE`]).
+    /// A larger frame closes the connection with status 1009. Has no effect unless
+    /// `websocket_inspection` is enabled. Each connection may buffer one frame of
+    /// this size per direction, and a frame is sent to agents base64-encoded, so
+    /// one too large for the agent's transport to carry in one message fails the
+    /// call to the agent and follows its filter's `failure-mode`.
+    #[serde(default = "default_websocket_max_frame_size")]
+    pub websocket_max_frame_size: usize,
 
     /// Traffic mirroring / shadowing configuration
     /// Mirrors requests to a shadow upstream for safe canary testing

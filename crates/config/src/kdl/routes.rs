@@ -34,6 +34,7 @@ pub(crate) const RECOGNIZED_ROUTE_CHILDREN: &[&str] = &[
     "waf-enabled",
     "websocket",
     "websocket-inspection",
+    "websocket-max-frame-size",
     "fallback",
     "policies",
     "service-type",
@@ -160,6 +161,8 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     failure_mode: settings.failure_mode,
                 };
 
+                let websocket_max_frame_size = parse_websocket_max_frame_size(child, &id)?;
+
                 routes.push(RouteConfig {
                     id,
                     priority,
@@ -180,6 +183,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     websocket: get_bool_entry(child, "websocket").unwrap_or(false),
                     websocket_inspection: get_bool_entry(child, "websocket-inspection")
                         .unwrap_or(false),
+                    websocket_max_frame_size,
                     shadow,
                     fallback: parse_fallback_config_opt(child)?,
                 });
@@ -957,6 +961,35 @@ fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettin
         rate_limit,
         failure_mode,
     })
+}
+
+/// Parse a route's `websocket-max-frame-size`: a byte count (`4194304`) or a
+/// size string (`"4MB"`), as for `max-body-size`. Absent means the default.
+///
+/// Whether the value is within bounds is checked in validation, so that a
+/// route built in code is checked the same way.
+fn parse_websocket_max_frame_size(route: &kdl::KdlNode, route_id: &str) -> Result<usize> {
+    let Some(node) = route
+        .children()
+        .and_then(|children| children.get("websocket-max-frame-size"))
+    else {
+        return Ok(DEFAULT_WEBSOCKET_MAX_FRAME_SIZE);
+    };
+    let value = node.entries().first().map(|entry| entry.value());
+    if let Some(text) = value.and_then(|v| v.as_string()) {
+        return text.parse::<ByteSize>().map(|size| size.0).map_err(|e| {
+            anyhow::anyhow!("Route '{route_id}': invalid websocket-max-frame-size '{text}': {e}")
+        });
+    }
+    value
+        .and_then(|v| v.as_integer())
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Route '{route_id}': websocket-max-frame-size must be a byte count or a \
+                 size such as \"4MB\", e.g. websocket-max-frame-size \"4MB\""
+            )
+        })
 }
 
 /// Parse a route-level `rate-limit` block.
@@ -2428,6 +2461,84 @@ mod tests {
             config.routes.iter().any(|r| r.websocket_inspection),
             "the example advertises frame inspection and should enable it on at least one route"
         );
+    }
+
+    mod websocket_max_frame_size {
+        fn config_with(line: &str) -> anyhow::Result<crate::Config> {
+            crate::Config::from_kdl(&format!(
+                r#"
+                system {{ worker-threads 2 }}
+                listeners {{
+                    listener "http" {{
+                        address "127.0.0.1:8080"
+                        protocol "http"
+                    }}
+                }}
+                upstreams {{
+                    upstream "backend" {{
+                        target "127.0.0.1:9000"
+                    }}
+                }}
+                routes {{
+                    route "ws" {{
+                        matches {{ path-prefix "/ws" }}
+                        upstream "backend"
+                        websocket #true
+                        websocket-inspection #true
+                        {line}
+                    }}
+                }}
+                "#
+            ))
+        }
+
+        #[test]
+        fn defaults_to_one_mebibyte() {
+            let config = config_with("").unwrap();
+            assert_eq!(config.routes[0].websocket_max_frame_size, 1024 * 1024);
+        }
+
+        #[test]
+        fn takes_a_byte_count_or_a_size() {
+            let config = config_with("websocket-max-frame-size 65536").unwrap();
+            assert_eq!(config.routes[0].websocket_max_frame_size, 65536);
+
+            let config = config_with(r#"websocket-max-frame-size "4MB""#).unwrap();
+            assert_eq!(config.routes[0].websocket_max_frame_size, 4 * 1024 * 1024);
+        }
+
+        #[test]
+        fn refuses_a_value_that_is_not_a_size() {
+            for line in [
+                r#"websocket-max-frame-size "lots""#,
+                "websocket-max-frame-size -1",
+                "websocket-max-frame-size #true",
+                "websocket-max-frame-size",
+            ] {
+                let error = config_with(line).unwrap_err().to_string();
+                assert!(
+                    error.contains("websocket-max-frame-size"),
+                    "{line}: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn zero_and_values_above_the_maximum_are_refused_by_validation() {
+            for line in [
+                "websocket-max-frame-size 0",
+                r#"websocket-max-frame-size "32MB""#,
+            ] {
+                let config = config_with(line).unwrap();
+                let error = crate::validation::validate_config_semantics(&config)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("websocket-max-frame-size"),
+                    "{line}: {error}"
+                );
+            }
+        }
     }
 
     /// The whole point of this week: a config block that parses but never
