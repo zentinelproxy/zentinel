@@ -30,7 +30,7 @@ use zentinel_config::{
     TlsConfig, UpstreamConfig, UpstreamTarget, UpstreamTimeouts, UrlRewriteFilter,
 };
 
-use crate::config_writer::ConfigWriter;
+use crate::config_writer::{check_values, ConfigWriter};
 use crate::error::GatewayError;
 use crate::reconcilers::gateway_class::CONTROLLER_NAME;
 use crate::reconcilers::ingress::translate_ingresses;
@@ -198,6 +198,16 @@ impl ConfigTranslator {
             let (route_configs, upstream_configs, filter_configs) = self
                 .translate_httproute(route, &listener_hostnames, client)
                 .await?;
+            if !is_writable(
+                "HTTPRoute",
+                &route_ns,
+                &route.name_any(),
+                &route_configs,
+                &upstream_configs,
+                &filter_configs,
+            ) {
+                continue;
+            }
             routes.extend(route_configs);
             upstreams.extend(upstream_configs);
             filters.extend(filter_configs);
@@ -225,6 +235,16 @@ impl ConfigTranslator {
             }
 
             let (route_configs, upstream_configs) = self.translate_grpcroute(route)?;
+            if !is_writable(
+                "GRPCRoute",
+                &route_ns,
+                &route.name_any(),
+                &route_configs,
+                &upstream_configs,
+                &HashMap::new(),
+            ) {
+                continue;
+            }
             routes.extend(route_configs);
             upstreams.extend(upstream_configs);
         }
@@ -258,6 +278,16 @@ impl ConfigTranslator {
             }
 
             let (route_configs, upstream_configs) = self.translate_tlsroute(route)?;
+            if !is_writable(
+                "TLSRoute",
+                &route_ns,
+                &route.name_any(),
+                &route_configs,
+                &upstream_configs,
+                &HashMap::new(),
+            ) {
+                continue;
+            }
             routes.extend(route_configs);
             upstreams.extend(upstream_configs);
         }
@@ -271,9 +301,22 @@ impl ConfigTranslator {
                 vec![]
             }
         };
-        let (ingress_routes, ingress_upstreams) = translate_ingresses(&ingress_items);
-        routes.extend(ingress_routes);
-        upstreams.extend(ingress_upstreams);
+        for ingress in &ingress_items {
+            let (ingress_routes, ingress_upstreams) =
+                translate_ingresses(std::slice::from_ref(ingress));
+            if !is_writable(
+                "Ingress",
+                &ingress.namespace().unwrap_or_else(|| "default".into()),
+                &ingress.name_any(),
+                &ingress_routes,
+                &ingress_upstreams,
+                &HashMap::new(),
+            ) {
+                continue;
+            }
+            routes.extend(ingress_routes);
+            upstreams.extend(ingress_upstreams);
+        }
 
         if listeners.is_empty() {
             debug!("No listeners produced, keeping existing config");
@@ -1521,6 +1564,40 @@ impl ConfigTranslator {
     }
 }
 
+/// Whether the items translated from one resource can be written to the proxy
+/// configuration.
+///
+/// A resource with a value that cannot (see [`check_values`]) is left out of
+/// the configuration and the reason is logged, so one resource does not stop
+/// the others from being applied.
+fn is_writable(
+    kind: &str,
+    namespace: &str,
+    name: &str,
+    routes: &[RouteConfig],
+    upstreams: &HashMap<String, UpstreamConfig>,
+    filters: &HashMap<String, FilterConfig>,
+) -> bool {
+    match check_values(
+        &format!("{kind} {namespace}/{name}"),
+        routes,
+        upstreams,
+        filters,
+    ) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(
+                kind = kind,
+                namespace = namespace,
+                name = name,
+                error = %e,
+                "Skipping resource: a value cannot be written to the proxy configuration"
+            );
+            false
+        }
+    }
+}
+
 /// Count the number of match entries in a rule's matches array.
 fn match_sets_count(matches: &Option<Vec<HttpRouteRulesMatches>>) -> usize {
     matches.as_ref().map_or(1, |m| m.len().max(1))
@@ -1601,5 +1678,65 @@ fn hostname_match(a: &str, b: &str) -> Option<String> {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn translated_ingress(path: &str) -> (Vec<RouteConfig>, HashMap<String, UpstreamConfig>) {
+        let ingress: k8s_openapi::api::networking::v1::Ingress =
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "Ingress",
+                "metadata": { "name": "web", "namespace": "shop" },
+                "spec": {
+                    "ingressClassName": "zentinel",
+                    "rules": [{
+                        "host": "a.example",
+                        "http": {
+                            "paths": [{
+                                "path": path,
+                                "pathType": "ImplementationSpecific",
+                                "backend": {
+                                    "service": { "name": "api", "port": { "number": 8080 } }
+                                }
+                            }]
+                        }
+                    }]
+                }
+            }))
+            .expect("valid Ingress");
+        translate_ingresses(std::slice::from_ref(&ingress))
+    }
+
+    #[test]
+    fn is_writable_is_false_for_a_value_with_a_control_character() {
+        let (routes, upstreams) = translated_ingress("/a\nb");
+
+        assert!(!is_writable(
+            "Ingress",
+            "shop",
+            "web",
+            &routes,
+            &upstreams,
+            &HashMap::new()
+        ));
+    }
+
+    #[test]
+    fn is_writable_is_true_for_a_value_with_a_quote_and_a_backslash() {
+        let (routes, upstreams) = translated_ingress("/a\"b\\c");
+
+        assert_eq!(routes.len(), 1);
+        assert!(is_writable(
+            "Ingress",
+            "shop",
+            "web",
+            &routes,
+            &upstreams,
+            &HashMap::new()
+        ));
     }
 }
