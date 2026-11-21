@@ -3,10 +3,10 @@
 // This file is dropped by the installer at /etc/zentinel/zentinel.kdl.
 // It is preserved across re-installs once you edit it.
 //
-// Out of the box it returns a JSON status page on :8080 and exposes
-// /health and /metrics on :9090. To turn this into a real reverse proxy,
-// uncomment the "backend" route and upstream below and point them at
-// your service.
+// Out of the box it returns a JSON status page on :8080 and serves /health
+// and /metrics on 127.0.0.1:9090. To turn this into a real reverse proxy,
+// uncomment the "backend" route and upstream below and point them at your
+// service.
 //
 // Documentation: https://docs.zentinelproxy.io
 // KDL reference: https://kdl.dev
@@ -30,17 +30,11 @@ listeners {
         keepalive-timeout-secs 75
         default-route "status"
     }
-
-    // Admin listener. Bind to localhost in production.
-    listener "admin" {
-        address "127.0.0.1:9090"
-        protocol "http"
-        request-timeout-secs 5
-        keepalive-timeout-secs 30
-        default-route "health"
-    }
 }
 
+// Routes written in this block are served on every listener that has no
+// namespace of its own, which is the public listener above. The admin routes
+// are in the "admin" namespace below.
 routes {
     // JSON status response on the public listener.
     //
@@ -65,22 +59,39 @@ routes {
     //     }
     // }
 
-    route "health" {
-        priority "high"
-        matches {
-            path "/health"
-            path "/healthz"
-            path "/ready"
+}
+
+// Admin surface. A namespace with a listener of its own is served only on that
+// listener, and that listener serves only the namespace's routes, so neither
+// route below answers on the public listener. The listener is bound to
+// localhost; to scrape it from another host, change the address.
+//
+// The conditions of a route must all hold, so the three health paths are one
+// regex rather than three `path` lines.
+namespace "admin" {
+    listeners {
+        listener "http" {
+            address "127.0.0.1:9090"
+            protocol "http"
+            request-timeout-secs 5
+            keepalive-timeout-secs 30
         }
-        service-type "builtin"
-        builtin-handler "health"
     }
 
-    route "metrics" {
-        priority "high"
-        matches { path "/metrics" }
-        service-type "builtin"
-        builtin-handler "metrics"
+    routes {
+        route "health" {
+            priority "high"
+            matches { path-regex "^/(health|healthz|ready)$" }
+            service-type "builtin"
+            builtin-handler "health"
+        }
+
+        route "metrics" {
+            priority "high"
+            matches { path "/metrics" }
+            service-type "builtin"
+            builtin-handler "metrics"
+        }
     }
 }
 
@@ -108,9 +119,9 @@ limits {
 }
 
 // Metrics are served by the "metrics" builtin route on the admin listener, so
-// the standalone metrics server stays off. Both default to port 9090: leaving it
-// enabled makes the proxy fight itself for the port, and the admin listener
-// retries forever without ever starting.
+// the standalone metrics server stays off. Both use 127.0.0.1:9090 (the metrics
+// server's default address): turning it on makes the admin listener be ignored
+// (`zentinel test` reports it), and its routes answer nowhere.
 observability {
     metrics {
         enabled #false

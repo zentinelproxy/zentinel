@@ -214,6 +214,13 @@ Request routing configuration.
 | `cache-purge` | Cache purge (admin) |
 | `cache-stats` | Cache statistics (admin) |
 
+A builtin route is served on the listeners that serve the route, like any
+other: written at the top level, it answers on every listener without a
+`namespace`. Declare `metrics` and the handlers marked "admin" in a namespace
+whose listener is bound to loopback, as the embedded default configuration does
+for `metrics` (see
+[Builtin routes and listeners](kdl-format.md#builtin-routes-and-listeners)).
+
 ### RoutePolicies
 
 | Property | Type | Default | Description |
@@ -592,7 +599,7 @@ Metrics, logging, and tracing configuration.
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable metrics |
-| `address` | `string` | `"0.0.0.0:9090"` | Metrics endpoint address |
+| `address` | `string` | `"127.0.0.1:9090"` | Metrics endpoint address (loopback only; set e.g. `"0.0.0.0:9090"` to scrape from another host) |
 | `path` | `string` | `"/metrics"` | Metrics path |
 | `high-cardinality` | `bool` | `false` | Include high-cardinality metrics |
 

@@ -1891,3 +1891,73 @@ mod route_matching_edges {
         assert_eq!(hit(&m, "GET", "/other", "h").as_deref(), None);
     }
 }
+
+/// Which listener of the default configurations answers which path, with the
+/// route matchers the proxy builds for them.
+#[cfg(test)]
+mod default_configuration_routes {
+    use super::*;
+    use zentinel_common::ids::Scope;
+    use zentinel_config::Config;
+
+    fn matcher(config: &Config, scope: &Scope) -> RouteMatcher {
+        let (_, routes) = route_sets(config)
+            .into_iter()
+            .find(|(s, _)| s == scope)
+            .unwrap_or_else(|| panic!("no route set for {scope}"));
+        compile_route_set(config, scope, routes).expect("the route set compiles")
+    }
+
+    fn hit(m: &RouteMatcher, path: &str) -> Option<String> {
+        m.match_request(&RequestInfo::new("GET", path, "example.com"))
+            .map(|r| r.route_id.to_string())
+    }
+
+    /// `/metrics` is answered on the admin listener (`127.0.0.1:9090`) and
+    /// nowhere else; the main listener has the status page for every path.
+    #[test]
+    fn metrics_and_health_are_answered_on_the_admin_listener_only() {
+        let starter = include_str!("../../../deploy/zentinel.starter.kdl");
+        for (name, config) in [
+            ("embedded default", Config::default_embedded().unwrap()),
+            ("starter", Config::from_kdl(starter).unwrap()),
+        ] {
+            let config = config.lower_scopes();
+            let main = matcher(&config, &Scope::Global);
+            let admin = matcher(&config, &Scope::Namespace("admin".to_string()));
+
+            for path in [
+                "/",
+                "/metrics",
+                "/health",
+                "/ready",
+                "/config",
+                "/upstreams",
+                "/cache/stats",
+            ] {
+                assert_eq!(hit(&main, path).as_deref(), Some("status"), "{name} {path}");
+            }
+
+            assert_eq!(hit(&admin, "/metrics").as_deref(), Some("admin:metrics"));
+            for path in ["/health", "/healthz", "/ready"] {
+                assert_eq!(
+                    hit(&admin, path).as_deref(),
+                    Some("admin:health"),
+                    "{name} {path}"
+                );
+            }
+            for path in [
+                "/",
+                "/healthy",
+                "/health/x",
+                "/config",
+                "/admin/config",
+                "/upstreams",
+                "/cache/stats",
+                "/cache/purge/x",
+            ] {
+                assert_eq!(hit(&admin, path), None, "{name} {path}");
+            }
+        }
+    }
+}

@@ -269,7 +269,7 @@ Configuration validation failed:
 | Property | Default | Rationale |
 |----------|---------|-----------|
 | `metrics.enabled` | `true` | Observability by default |
-| `metrics.address` | `0.0.0.0:9090` | Standard metrics port |
+| `metrics.address` | `127.0.0.1:9090` | Standard metrics port, on loopback only |
 | `metrics.path` | `/metrics` | Standard Prometheus path |
 | `logging.level` | `info` | Balanced verbosity |
 | `logging.format` | `json` | Structured logging |

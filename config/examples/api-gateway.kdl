@@ -89,16 +89,9 @@ routes {
         builtin-handler "health"
     }
 
-    // Metrics endpoint
-    route "metrics" {
-        priority "critical"
-
-        matches {
-            path "/metrics"
-        }
-
-        builtin-handler "metrics"
-    }
+    // There is no /metrics route here: a route is served on every listener,
+    // so one written in this block would answer on the public ports. Metrics
+    // are served by the metrics server in the observability block below.
 
     // API v2 - current version
     route "api-v2" {

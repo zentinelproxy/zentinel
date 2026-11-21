@@ -37,7 +37,11 @@ pub struct MetricsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Metrics endpoint address
+    /// Metrics endpoint address.
+    ///
+    /// Defaults to `127.0.0.1:9090`, loopback only. Set it to an address the
+    /// scraper can reach (for example `0.0.0.0:9090`) to serve metrics to
+    /// other hosts.
     #[serde(default = "default_metrics_address")]
     pub address: String,
 
@@ -338,7 +342,7 @@ fn default_true() -> bool {
 }
 
 fn default_metrics_address() -> String {
-    "0.0.0.0:9090".to_string()
+    "127.0.0.1:9090".to_string()
 }
 
 fn default_metrics_path() -> String {
@@ -387,4 +391,57 @@ fn default_sample_rate() -> f64 {
 
 fn default_service_name() -> String {
     "zentinel".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Config;
+
+    /// The metrics server is not a client-facing listener, so without an
+    /// `address` it binds loopback only. Scraping from another host needs the
+    /// address spelled out.
+    #[test]
+    fn metrics_server_binds_loopback_unless_an_address_is_configured() {
+        assert_eq!(MetricsConfig::default().address, "127.0.0.1:9090");
+
+        let kdl = |observability: &str| {
+            format!(
+                r#"
+system {{
+    worker-threads 0
+}}
+listeners {{
+    listener "http" {{
+        address "127.0.0.1:8080"
+        protocol "http"
+    }}
+}}
+routes {{
+    route "r" {{
+        matches {{ path "/" }}
+        service-type "builtin"
+        builtin-handler "status"
+    }}
+}}
+{observability}
+"#
+            )
+        };
+
+        for observability in [
+            "",
+            "observability {\n    metrics {\n        enabled #true\n    }\n}",
+        ] {
+            let config = Config::from_kdl(&kdl(observability)).expect("parses");
+            assert!(config.observability.metrics.enabled);
+            assert_eq!(config.observability.metrics.address, "127.0.0.1:9090");
+        }
+
+        let config = Config::from_kdl(&kdl(
+            "observability {\n    metrics {\n        address \"0.0.0.0:9090\"\n    }\n}",
+        ))
+        .expect("parses");
+        assert_eq!(config.observability.metrics.address, "0.0.0.0:9090");
+    }
 }

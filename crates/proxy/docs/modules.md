@@ -779,6 +779,14 @@ Built-in endpoints for operations.
 - `/upstreams` - Upstream health status
 - `/config` - Current configuration
 
+A builtin route answers on every listener that serves it, and a route written
+at the top level is served on every listener without a `namespace`. The
+embedded default configuration therefore declares `/metrics` and the
+`/health`, `/healthz` and `/ready` probes in an `admin` namespace whose
+listener is bound to `127.0.0.1:9090`, and only the status page on the main
+listener. See `crates/config/docs/kdl-format.md` (Builtin routes and
+listeners).
+
 **Key Struct:** `BuiltinHandlerState`
 
 ```rust

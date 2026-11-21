@@ -192,9 +192,9 @@ let config = MultiFileLoader::new("config/").load()?;
 
 When no configuration file is provided, Zentinel uses an embedded default:
 
-- HTTP listener on `0.0.0.0:8080`
-- Admin listener on `0.0.0.0:9090`
-- Built-in status, health, and metrics endpoints
+- HTTP listener on `0.0.0.0:8080`, answering every path with a JSON status page
+- Admin listener on `127.0.0.1:9090` (the `admin` namespace), the only listener
+  that serves `/metrics` and the `/health`, `/healthz` and `/ready` probes
 - Sensible resource limits
 
 ## Validation
