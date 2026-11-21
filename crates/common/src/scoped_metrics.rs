@@ -32,6 +32,7 @@ use prometheus::{
 use std::time::Duration;
 
 use crate::ids::Scope;
+use crate::observability::RequestMetrics;
 
 /// Scope-aware metrics collector.
 ///
@@ -140,6 +141,10 @@ impl ScopedMetrics {
     }
 
     /// Record a completed request with scope information.
+    ///
+    /// `method` is the request method as received; it is reduced with
+    /// [`RequestMetrics::bounded_method_label`] before it becomes a label, so a
+    /// method outside the standard set is counted under `<other>`.
     pub fn record_request(
         &self,
         route: &str,
@@ -149,6 +154,7 @@ impl ScopedMetrics {
         scope: &Scope,
     ) {
         let (namespace, service) = Self::scope_labels(scope);
+        let method = RequestMetrics::bounded_method_label(method);
 
         self.request_duration
             .with_label_values(&[namespace, service, route, method])

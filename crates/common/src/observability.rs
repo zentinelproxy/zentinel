@@ -439,8 +439,47 @@ impl RequestMetrics {
         })
     }
 
-    /// Record a completed request
+    /// Label value used for every request method outside the standard set.
+    ///
+    /// `<` cannot appear in an HTTP method, which is a token (RFC 9110 section
+    /// 5.6.2), so this value is never the same as a method a client sent.
+    pub const METHOD_OTHER: &'static str = "<other>";
+
+    /// Reduce a request method to a value that is safe to use as a label.
+    ///
+    /// HTTP accepts any token as a method, so the methods a proxy sees are not
+    /// a fixed set. This returns the method itself when it is one of the nine
+    /// methods defined by RFC 9110 and RFC 5789 (`GET`, `HEAD`, `POST`, `PUT`,
+    /// `DELETE`, `CONNECT`, `OPTIONS`, `TRACE`, `PATCH`), and
+    /// [`Self::METHOD_OTHER`] for anything else, so a metric has at most ten
+    /// `method` values. Methods are case-sensitive, so `get` is not `GET`.
+    ///
+    /// Does not allocate. It only affects metric labels: logs, traces and the
+    /// access log keep the method as received.
+    #[must_use]
+    pub fn bounded_method_label(method: &str) -> &'static str {
+        match method {
+            "GET" => "GET",
+            "HEAD" => "HEAD",
+            "POST" => "POST",
+            "PUT" => "PUT",
+            "DELETE" => "DELETE",
+            "CONNECT" => "CONNECT",
+            "OPTIONS" => "OPTIONS",
+            "TRACE" => "TRACE",
+            "PATCH" => "PATCH",
+            _ => Self::METHOD_OTHER,
+        }
+    }
+
+    /// Record a completed request.
+    ///
+    /// `method` is the request method as received; it is reduced with
+    /// [`Self::bounded_method_label`] before it becomes a label, so a method
+    /// outside the standard set is counted under `<other>`.
     pub fn record_request(&self, route: &str, method: &str, status: u16, duration: Duration) {
+        let method = Self::bounded_method_label(method);
+
         self.request_duration
             .with_label_values(&[route, method])
             .observe(duration.as_secs_f64());
@@ -946,6 +985,37 @@ mod tests {
 
         // Record upstream attempt
         metrics.record_upstream_attempt("backend1", "test_route");
+    }
+
+    #[test]
+    fn bounded_method_label_keeps_standard_methods() {
+        for method in [
+            "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH",
+        ] {
+            assert_eq!(RequestMetrics::bounded_method_label(method), method);
+        }
+    }
+
+    #[test]
+    fn bounded_method_label_maps_other_methods_to_one_value() {
+        for method in ["PURGE", "PROPFIND", "X-Custom", "GETX", "GE", ""] {
+            assert_eq!(
+                RequestMetrics::bounded_method_label(method),
+                RequestMetrics::METHOD_OTHER,
+                "{method:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_method_label_is_case_sensitive() {
+        for method in ["get", "Get", "post", "patch", "Options"] {
+            assert_eq!(
+                RequestMetrics::bounded_method_label(method),
+                RequestMetrics::METHOD_OTHER,
+                "{method:?}"
+            );
+        }
     }
 
     #[test]

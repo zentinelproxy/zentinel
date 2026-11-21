@@ -79,6 +79,14 @@ zentinel_requests_total{route="api", method="GET", status="200"}
 zentinel_active_requests
 ```
 
+The `method` label takes one of ten values: `GET`, `HEAD`, `POST`, `PUT`,
+`DELETE`, `CONNECT`, `OPTIONS`, `TRACE`, `PATCH`, or `<other>`. A request whose
+method is not one of the first nine is counted under `method="<other>"`.
+Methods are case-sensitive, so `get` is counted as `<other>`. Logs, traces and
+the access log keep the method as it was received; only the metric label is
+reduced. `zentinel_scoped_requests_total` and
+`zentinel_scoped_request_duration_seconds` use the same values.
+
 ### Upstream Metrics
 
 ```rust
@@ -341,8 +349,8 @@ zentinel_scoped_circuit_breaker_state{namespace="production", service="payments"
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `zentinel_request_duration_seconds` | Histogram | route, method | Request latency |
-| `zentinel_requests_total` | Counter | route, method, status | Request count |
+| `zentinel_request_duration_seconds` | Histogram | route, method (standard methods, or `<other>`) | Request latency |
+| `zentinel_requests_total` | Counter | route, method (standard methods, or `<other>`), status | Request count |
 | `zentinel_active_requests` | Gauge | - | Current in-flight |
 | `zentinel_upstream_attempts_total` | Counter | upstream, route | Upstream attempts |
 | `zentinel_upstream_failures_total` | Counter | upstream, route, reason | Upstream failures |
