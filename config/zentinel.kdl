@@ -16,7 +16,6 @@ listeners {
         protocol "http"
         request-timeout-secs 60
         keepalive-timeout-secs 75
-        max-concurrent-streams 100
         default-route "fallback"
     }
 
@@ -128,7 +127,6 @@ routes {
 
         // Filter chain: executed in order
         filters "auth" "rate-limit"
-        waf-enabled #true
 
         // max-attempts counts request retries, not peer selections. Nothing is
         // retried on a status code unless retryable-status-codes says so, and
@@ -232,10 +230,7 @@ upstreams {
         }
 
         connection-pool {
-            max-connections 100
-            max-idle 20
             idle-timeout-secs 60
-            max-lifetime-secs 300
         }
 
         timeouts {
@@ -355,7 +350,6 @@ waf {
 
     body-inspection {
         inspect-request-body #true
-        inspect-response-body #false
         max-inspection-bytes 1048576  // 1MB
         content-types "application/x-www-form-urlencoded" "multipart/form-data" "application/json" "application/xml" "text/xml"
         decompress #true
@@ -395,9 +389,6 @@ observability {
     }
 
     logging {
-        level "info"  // "trace", "debug", "info", "warn", "error"
-        format "json"  // "json" or "pretty"
-
         // Access log - all HTTP requests with trace_id for correlation
         access-log {
             enabled #true

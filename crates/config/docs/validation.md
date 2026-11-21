@@ -166,7 +166,7 @@ Configuration validation failed:
 |----------|---------|-----------|
 | `request-timeout-secs` | `60` | Standard HTTP timeout |
 | `keepalive-timeout-secs` | `75` | Slightly longer than typical client |
-| `max-concurrent-streams` | `100` | Reasonable HTTP/2 limit |
+| `max-concurrent-streams` | `100` | Not applied ([details](schema.md#accepted-but-not-applied)) |
 
 ### TLS Defaults
 
@@ -184,7 +184,7 @@ Configuration validation failed:
 | `priority` | `normal` | Standard priority |
 | `service-type` | `web` | Traditional web proxy |
 | `failure-mode` | `closed` | Security-first (fail-closed) |
-| `waf-enabled` | `false` | WAF opt-in |
+| `waf-enabled` | `false` | Not applied ([details](schema.md#accepted-but-not-applied)) |
 | `websocket` | `false` | WebSocket opt-in |
 
 ### Upstream Defaults
@@ -193,8 +193,8 @@ Configuration validation failed:
 |----------|---------|-----------|
 | `load-balancing` | `round-robin` | Simple, fair distribution |
 | `targets[].weight` | `1` | Equal weight by default |
-| `connection-pool.max-connections` | `100` | Reasonable pool size |
-| `connection-pool.max-idle` | `20` | Balance memory vs latency |
+| `connection-pool.max-connections` | `100` | Not applied ([details](schema.md#accepted-but-not-applied)) |
+| `connection-pool.max-idle` | `20` | Not applied ([details](schema.md#accepted-but-not-applied)) |
 | `connection-pool.idle-timeout-secs` | `60` | Reclaim idle connections |
 | `timeouts.connect-secs` | `10` | Reasonable connect timeout |
 | `timeouts.request-secs` | `60` | Standard request timeout |
@@ -266,7 +266,7 @@ Configuration validation failed:
 | `ruleset.paranoia-level` | `1` | Low false positives |
 | `ruleset.anomaly-threshold` | `5` | Standard CRS threshold |
 | `body-inspection.inspect-request-body` | `true` | Inspect requests |
-| `body-inspection.inspect-response-body` | `false` | Response inspection opt-in |
+| `body-inspection.inspect-response-body` | `false` | Not applied ([details](schema.md#accepted-but-not-applied)) |
 | `body-inspection.max-inspection-bytes` | `1048576` | 1MB inspection limit |
 
 ### Observability Defaults
@@ -308,7 +308,6 @@ Zentinel follows a **security-first** design philosophy:
 |---------|---------|-----------------|
 | `failure-mode` | `closed` | Block on failure (not fail-open) |
 | `tls.min-version` | `tls1.2` | No legacy TLS |
-| `waf-enabled` | `false` | WAF must be explicitly enabled |
 | `agent.timeout-ms` | `1000` | Bounded agent calls |
 | `limits.*` | Bounded | Prevent resource exhaustion |
 

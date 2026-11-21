@@ -177,6 +177,10 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
 
         trace!(upstream_id = %id, "Parsing upstream");
 
+        for problem in super::unapplied::upstream_settings(child, &id) {
+            warn!("{}", problem);
+        }
+
         // Parse targets (accepts every supported syntax; see
         // `parse_upstream_targets`).
         let targets = parse_upstream_targets(child)?;
@@ -687,15 +691,13 @@ fn check_http_version_transport(
 /// Example KDL:
 /// ```kdl
 /// connection-pool {
-///     max-connections 100
-///     max-idle 20
 ///     idle-timeout-secs 60
-///     max-lifetime-secs 3600
 /// }
 /// ```
 ///
-/// `idle-timeout` and `max-lifetime` are accepted as aliases for the two
-/// `-secs` names.
+/// `max-connections`, `max-idle` and `max-lifetime-secs` are read and not
+/// applied (see `unapplied`). `idle-timeout` and `max-lifetime` are accepted as
+/// aliases for the two `-secs` names.
 fn parse_connection_pool(node: &kdl::KdlNode) -> Result<ConnectionPoolConfig> {
     let max_connections = get_int_entry(node, "max-connections")?
         .map(|v| v as usize)
@@ -1398,30 +1400,6 @@ mod tests {
             let pool = pool_of(&with_pool("max-connections 10"));
             assert_eq!(pool.idle_timeout_secs, 60);
             assert_eq!(pool.max_lifetime_secs, None);
-        }
-
-        /// Pins the regression to the file it actually broke: the shipped
-        /// default config asks for a 300s lifetime cap and used to get none.
-        #[test]
-        fn shipped_default_config_gets_the_lifetime_it_asks_for() {
-            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/zentinel.kdl");
-            let text = std::fs::read_to_string(path).expect("shipped config should be readable");
-            let config = crate::Config::from_kdl(&text).expect("shipped config should parse");
-
-            // Only `api-backend` declares a connection-pool in the shipped
-            // config; the rest take pool defaults, where an absent lifetime
-            // legitimately means unbounded.
-            let api = config
-                .upstreams
-                .get("api-backend")
-                .expect("shipped config should define the api-backend upstream");
-
-            assert_eq!(
-                api.connection_pool.max_lifetime_secs,
-                Some(300),
-                "api-backend asks for max-lifetime-secs 300 and must get it"
-            );
-            assert_eq!(api.connection_pool.idle_timeout_secs, 60);
         }
     }
 

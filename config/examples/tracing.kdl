@@ -137,9 +137,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         // Include trace ID in all logs for correlation
         access-log {
             enabled #true

@@ -4,7 +4,7 @@
 //! configuration structure from KDL format.
 
 use anyhow::{Context, Result};
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
 use crate::ListenerConfig;
@@ -253,6 +253,10 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
         .context("Failed to parse TLS config")?;
 
     crate::kdl::server::check_listener_tls(&id, protocol, tls.is_some())?;
+
+    for problem in super::unapplied::listener_settings(node, &id) {
+        warn!("{}", problem);
+    }
 
     let trusted_proxies = crate::kdl::server::parse_trusted_proxies(node, &id)?;
 

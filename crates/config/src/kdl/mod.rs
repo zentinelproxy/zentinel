@@ -21,6 +21,9 @@ pub(crate) mod namespace;
 mod retrypolicy_helper;
 pub(crate) mod routes;
 pub(crate) mod server;
+pub(crate) mod unapplied;
+#[cfg(test)]
+mod unapplied_tests;
 pub(crate) mod upstreams;
 #[cfg(test)]
 mod wrong_type_tests;
@@ -877,7 +880,6 @@ fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
 ///
 ///     body-inspection {
 ///         inspect-request-body true
-///         inspect-response-body false
 ///         max-inspection-bytes 1048576
 ///         content-types "application/json" "application/xml"
 ///         decompress false
@@ -1097,6 +1099,10 @@ fn parse_rule_exclusion(node: &kdl::KdlNode) -> Result<crate::waf::RuleExclusion
 /// Parse body inspection policy
 fn parse_body_inspection_policy(node: &kdl::KdlNode) -> Result<crate::waf::BodyInspectionPolicy> {
     use crate::waf::BodyInspectionPolicy;
+
+    for problem in unapplied::body_inspection_settings(node) {
+        warn!("{}", problem);
+    }
 
     let inspect_request_body = get_bool_entry(node, "inspect-request-body")?.unwrap_or(true);
     let inspect_response_body = get_bool_entry(node, "inspect-response-body")?.unwrap_or(false);
@@ -1601,6 +1607,10 @@ fn parse_logging_config(node: &kdl::KdlNode) -> Result<crate::observability::Log
     use crate::observability::LoggingConfig;
 
     let mut config = LoggingConfig::default();
+
+    for problem in unapplied::logging_settings(node) {
+        warn!("{}", problem);
+    }
 
     // Parse direct properties
     if let Some(level) = get_string_entry(node, "level")? {

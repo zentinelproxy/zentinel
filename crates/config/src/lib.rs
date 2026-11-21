@@ -52,6 +52,8 @@ pub mod resolution;
 pub mod routes;
 pub mod scopes;
 pub mod server;
+#[cfg(test)]
+mod test_log;
 pub mod upstreams;
 pub mod validate;
 pub mod validation;
@@ -755,13 +757,26 @@ impl Config {
     /// Parse configuration from JSON format
     pub fn from_json(content: &str) -> Result<Self> {
         trace!(content_length = content.len(), "Parsing JSON configuration");
-        serde_json::from_str(content).context("Failed to parse JSON configuration")
+        let config: Self =
+            serde_json::from_str(content).context("Failed to parse JSON configuration")?;
+        config.warn_unapplied_values();
+        Ok(config)
     }
 
     /// Parse configuration from TOML format
     pub fn from_toml(content: &str) -> Result<Self> {
         trace!(content_length = content.len(), "Parsing TOML configuration");
-        toml::from_str(content).context("Failed to parse TOML configuration")
+        let config: Self = toml::from_str(content).context("Failed to parse TOML configuration")?;
+        config.warn_unapplied_values();
+        Ok(config)
+    }
+
+    /// Log the values that a configuration with no KDL source carries and the
+    /// proxy does not apply. A KDL file is reported from its source.
+    fn warn_unapplied_values(&self) {
+        for warning in validation::unapplied_value_warnings(self) {
+            warn!("Unwired feature: {}", warning);
+        }
     }
 
     /// Check schema version compatibility

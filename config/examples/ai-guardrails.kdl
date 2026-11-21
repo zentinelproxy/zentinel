@@ -139,7 +139,7 @@ routes {
                     action "redact"  // log, redact, block
 
                     // PII types to detect
-                    detect-types "ssn" "credit_card" "email" "phone" "address"
+                    categories "ssn" "credit_card" "email" "phone" "address"
 
                     // Agent timeout
                     timeout-ms 300
@@ -184,7 +184,7 @@ routes {
                     enabled #true
                     agent "pii-detector"
                     action "log"
-                    detect-types "ssn" "credit_card"
+                    categories "ssn" "credit_card"
                     timeout-ms 300
                     failure-mode "open"
                 }
@@ -228,7 +228,7 @@ routes {
                     enabled #true
                     agent "pii-detector"
                     action "block"  // Block instead of redact
-                    detect-types "ssn" "credit_card" "email" "phone" "address" "dob"
+                    categories "ssn" "credit_card" "email" "phone" "address" "dob"
                     timeout-ms 500
                     failure-mode "closed"
                 }
@@ -330,9 +330,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         // Audit log for security events
         audit-log {
             enabled #true

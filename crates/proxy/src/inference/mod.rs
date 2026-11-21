@@ -20,7 +20,7 @@
 //!         budget {
 //!             period "daily"
 //!             limit 1000000
-//!             enforce true
+//!             enforce #true
 //!         }
 //!         cost-attribution {
 //!             pricing {
@@ -30,11 +30,16 @@
 //!                 }
 //!             }
 //!         }
-//!         routing {
-//!             strategy "least-tokens-queued"
-//!         }
 //!     }
-//!     upstream "llm-pool" { ... }
+//!     upstream "llm-pool"
+//! }
+//!
+//! upstreams {
+//!     upstream "llm-pool" {
+//!         target "10.0.1.10:8000"
+//!         // The strategy is a setting of the upstream
+//!         load-balancing "least_tokens_queued"
+//!     }
 //! }
 //! ```
 

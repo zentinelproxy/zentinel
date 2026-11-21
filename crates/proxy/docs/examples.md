@@ -123,8 +123,6 @@ upstreams {
         }
 
         connection-pool {
-            max-connections 100
-            max-idle 20
             idle-timeout-secs 60
         }
     }
@@ -295,7 +293,6 @@ routes {
             host "admin.example.com"
         }
         upstream "admin-backend"
-        waf-enabled #true
     }
 
     route "main" {
@@ -352,7 +349,6 @@ routes {
         }
         upstream "api-backend"
         filters "waf"
-        waf-enabled #true
     }
 }
 
@@ -471,8 +467,8 @@ routes {
             }
 
             budget {
-                daily-limit 1000000
-                monthly-limit 10000000
+                period "daily"
+                limit 1000000
                 enforce #true
             }
 
@@ -481,20 +477,20 @@ routes {
                 model "claude-*" upstream="anthropic" provider="anthropic"
                 default-upstream "openai"
             }
+        }
 
-            fallback {
-                upstreams {
-                    upstream "anthropic" provider="anthropic" {
-                        model-mapping {
-                            "gpt-4" "claude-3-opus"
-                            "gpt-3.5-turbo" "claude-3-sonnet"
-                        }
-                    }
-                }
-                triggers {
-                    on-health-failure #true
-                    on-budget-exhausted #true
-                    on-error-codes 429 503
+        // `fallback` is a block of the route, beside `inference`
+        fallback {
+            triggers {
+                on-health-failure #true
+                on-budget-exhausted #true
+                on-error-codes 429 503
+            }
+            fallback-upstream "anthropic" {
+                provider "anthropic"
+                model-mapping {
+                    "gpt-4" "claude-3-opus"
+                    "gpt-3.5-turbo" "claude-3-sonnet"
                 }
             }
         }
@@ -642,16 +638,15 @@ routes {
             path-prefix "/api"
         }
         upstream "api-backend"
-        policies {
-            cache {
-                enabled #true
-                default-ttl-secs 300
-                cacheable-methods "GET" "HEAD"
-                cacheable-status-codes 200 203 204 206 300 301
-                stale-while-revalidate-secs 60
-                stale-if-error-secs 300
-                vary-headers "Accept" "Accept-Encoding"
-            }
+        // Request headers are not part of the cache key: cache only a route whose
+        // response does not vary by a request header
+        cache {
+            enabled #true
+            default-ttl-secs 300
+            cacheable-methods "GET" "HEAD"
+            cacheable-status-codes 200 203 204 206 300 301
+            stale-while-revalidate-secs 60
+            stale-if-error-secs 300
         }
     }
 }
@@ -672,9 +667,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         access-log {
             enabled #true
             file "/var/log/zentinel/access.log"
@@ -718,7 +710,6 @@ schema-version "1.0"
 
 server {
     worker-threads 0
-    max-connections 50000
     graceful-shutdown-timeout-secs 60
     trace-id-format "tinyflake"
 }

@@ -553,6 +553,9 @@ const CLOSED_BLOCKS: &[ClosedBlock] = &[
         keys: &[
             "request-headers",
             "response-headers",
+            // Not read here, and reported by `kdl::unapplied`: a route's cache
+            // is the route's own `cache` block. Listed so the report is the
+            // one message about it, not that and an unknown-key warning.
             "cache",
             "timeout-secs",
             "max-body-size",
@@ -828,9 +831,15 @@ fn check_values(
                     }
                 }
             }
+            for problem in crate::kdl::unapplied::route_settings(node, route_id) {
+                report(Some(problem));
+            }
         }
         ("pages", _) if parent == Some("error-pages") => check_error_page_keys(node, result),
         ("upstream", Some(upstream_id)) => {
+            for problem in crate::kdl::unapplied::upstream_settings(node, upstream_id) {
+                report(Some(problem));
+            }
             if let Some((algorithm, problem)) = or_report(
                 crate::kdl::upstreams::resolve_load_balancing(node, upstream_id),
                 &mut report,
@@ -927,6 +936,26 @@ fn check_values(
                 for problem in problems {
                     report(Some(problem));
                 }
+            }
+        }
+        // A listener of `listeners`, or a service's own `listener` block, whose
+        // id is a setting of the block rather than its argument.
+        ("listener", _) if matches!(parent, Some("listeners" | "service")) => {
+            let listener_id = id
+                .or_else(|| child_value(node, "id"))
+                .unwrap_or("service-listener");
+            for problem in crate::kdl::unapplied::listener_settings(node, listener_id) {
+                report(Some(problem));
+            }
+        }
+        ("logging", _) if parent == Some("observability") => {
+            for problem in crate::kdl::unapplied::logging_settings(node) {
+                report(Some(problem));
+            }
+        }
+        ("body-inspection", _) if parent == Some("waf") => {
+            for problem in crate::kdl::unapplied::body_inspection_settings(node) {
+                report(Some(problem));
             }
         }
         ("matches", _) if parent == Some("route") => check_run_together_matches(node, result),
@@ -1312,6 +1341,20 @@ mod tests {
         result.warnings.into_iter().map(|w| w.message).collect()
     }
 
+    /// What every report of a known setting that is not applied says.
+    const NOT_APPLIED: &str = "is not applied and is being ignored";
+
+    /// [`warnings_for`] without the reports of settings that are known and not
+    /// applied, for the tests about which keys a block *knows*: a key can be
+    /// known and still be reported as unapplied, and those reports are tested
+    /// in `settings_nothing_applies`.
+    fn warnings_about_keys_for(kdl: &str) -> Vec<String> {
+        warnings_for(kdl)
+            .into_iter()
+            .filter(|w| !w.contains(NOT_APPLIED))
+            .collect()
+    }
+
     #[test]
     fn a_valid_block_produces_no_warnings() {
         let kdl = r#"
@@ -1326,7 +1369,7 @@ mod tests {
                 }
             }
         "#;
-        assert!(warnings_for(kdl).is_empty());
+        assert!(warnings_about_keys_for(kdl).is_empty());
     }
 
     /// The bug this check exists for: a name one hyphen away from the real one.
@@ -1508,7 +1551,11 @@ mod tests {
                 }
             }
         "#;
-        assert!(warnings_for(kdl).is_empty(), "{:?}", warnings_for(kdl));
+        assert!(
+            warnings_about_keys_for(kdl).is_empty(),
+            "{:?}",
+            warnings_about_keys_for(kdl)
+        );
     }
 
     /// The same trap in an MCP health check: written on one line,
@@ -1619,12 +1666,10 @@ mod tests {
                 }
             }
         "#;
-        let mut result = ValidationResult::default();
-        check_unknown_keys(kdl, &mut result);
         assert!(
-            result.warnings.is_empty(),
+            warnings_about_keys_for(kdl).is_empty(),
             "a value list is not a run-together line: {:?}",
-            warning_texts(&result)
+            warnings_about_keys_for(kdl)
         );
     }
 
@@ -1741,9 +1786,9 @@ mod tests {
             }
         "#;
         assert!(
-            warnings_for(per_route).is_empty(),
+            warnings_about_keys_for(per_route).is_empty(),
             "{:?}",
-            warnings_for(per_route)
+            warnings_about_keys_for(per_route)
         );
     }
 
@@ -1925,7 +1970,11 @@ mod tests {
                 circuit-breaker { failure-threshold 5 }
             }
         "#;
-        assert!(warnings_for(kdl).is_empty(), "{:?}", warnings_for(kdl));
+        assert!(
+            warnings_about_keys_for(kdl).is_empty(),
+            "{:?}",
+            warnings_about_keys_for(kdl)
+        );
     }
 
     #[test]
@@ -1959,7 +2008,11 @@ mod tests {
                 }
             }
         "#;
-        assert!(warnings_for(valid).is_empty(), "{:?}", warnings_for(valid));
+        assert!(
+            warnings_about_keys_for(valid).is_empty(),
+            "{:?}",
+            warnings_about_keys_for(valid)
+        );
 
         // `cert-file` is a *listener* TLS key and does nothing on an upstream.
         let wrong = r#"
@@ -2513,7 +2566,11 @@ mod tests {
                 }
             }
         "#;
-        assert!(warnings_for(kdl).is_empty(), "{:?}", warnings_for(kdl));
+        assert!(
+            warnings_about_keys_for(kdl).is_empty(),
+            "{:?}",
+            warnings_about_keys_for(kdl)
+        );
     }
 
     /// The access log takes `format`, the error log takes `level`. The two
@@ -2988,13 +3045,268 @@ mod tests {
         assert!(warnings[0].contains("'max-connections' in the 'system' block"));
         assert!(warnings[0].contains("is being ignored"));
 
-        // The upstream connection pool's setting of the same name is applied.
+        // The upstream connection pool has a setting of the same name. It is
+        // reported by its own message, not this one.
         let pool = r#"upstreams { upstream "b" { connection-pool { max-connections 5; } } }"#;
-        assert_eq!(warnings_for(pool), Vec::<String>::new());
+        let warnings = warnings_for(pool);
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("'max-connections' in 'connection-pool'"));
+        assert!(!warnings[0].contains("'system' block"));
     }
 
     fn warning_texts(result: &ValidationResult) -> Vec<String> {
         result.warnings.iter().map(|w| w.to_string()).collect()
+    }
+
+    /// Settings the parsers read and the proxy never applies: `lint` and
+    /// `test --strict` find them in the source, whatever value is written.
+    mod settings_nothing_applies {
+        use super::*;
+
+        /// The warnings for `kdl` that are about a setting being unapplied or
+        /// a key the parser does not read.
+        fn unapplied(kdl: &str) -> Vec<String> {
+            warnings_for(kdl)
+                .into_iter()
+                .filter(|w| {
+                    w.contains("is not applied and is being ignored")
+                        || w.contains("is not read and is being ignored")
+                })
+                .collect()
+        }
+
+        fn route(body: &str) -> String {
+            format!("routes {{\nroute \"api\" {{\nmatches {{ path \"/\" }}\nupstream \"u\"\n{body}\n}}\n}}")
+        }
+
+        fn upstream(body: &str) -> String {
+            format!("upstreams {{\nupstream \"u\" {{\ntarget \"127.0.0.1:9000\"\n{body}\n}}\n}}")
+        }
+
+        #[track_caller]
+        fn assert_one_for(kdl: &str, setting: &str, place: &str) {
+            let found = unapplied(kdl);
+            assert_eq!(found.len(), 1, "{found:#?}\n{kdl}");
+            assert!(found[0].contains(&format!("'{setting}'")), "{}", found[0]);
+            assert!(found[0].contains(place), "{}", found[0]);
+        }
+
+        #[test]
+        fn a_cache_block_inside_policies_is_reported() {
+            assert_one_for(
+                &route("policies { cache { enabled #true; ttl-secs 300 } }"),
+                "cache",
+                "route 'api'",
+            );
+            assert!(unapplied(&route("cache { enabled #true; default-ttl-secs 300 }")).is_empty());
+        }
+
+        #[test]
+        fn waf_enabled_is_reported() {
+            assert_one_for(&route("waf-enabled #true"), "waf-enabled", "route 'api'");
+            assert_one_for(&route("waf-enabled #false"), "waf-enabled", "route 'api'");
+        }
+
+        #[test]
+        fn cache_settings_that_never_reach_the_cache_key_are_reported() {
+            assert_one_for(
+                &route(r#"cache { enabled #true; vary-headers "Accept" }"#),
+                "vary-headers",
+                "route 'api'",
+            );
+            assert_one_for(
+                &route(r#"cache { enabled #true; ignore-query-params "a" }"#),
+                "ignore-query-params",
+                "route 'api'",
+            );
+        }
+
+        #[test]
+        fn a_fallback_and_a_model_routing_block_are_checked_against_what_the_parser_reads() {
+            assert_one_for(
+                &route(r#"fallback { upstream "u" }"#),
+                "upstream",
+                "route 'api'",
+            );
+            assert_one_for(
+                &route(r#"fallback { fallback-upstream "u"; model-mapping { "a" "b" } }"#),
+                "model-mapping",
+                "route 'api'",
+            );
+            assert_one_for(
+                &route(
+                    r#"inference { model-routing { mappings { mapping "m*" { upstream "u" } } } }"#,
+                ),
+                "mappings",
+                "route 'api'",
+            );
+            assert_one_for(
+                &route(r#"inference { model-header "X-Model" }"#),
+                "model-header",
+                "route 'api'",
+            );
+            assert!(unapplied(&route(
+                r#"fallback { max-attempts 2; triggers { on-error-codes 502 }
+                   fallback-upstream "u" { provider "openai"; model-mapping { "a" "b" } } }"#
+            ))
+            .is_empty());
+            assert!(unapplied(&route(
+                r#"inference { model-routing { model "m*" upstream="u"; default-upstream "u" } }"#
+            ))
+            .is_empty());
+        }
+
+        #[test]
+        fn the_blocks_of_an_inference_route_are_checked_against_what_the_parser_reads() {
+            for (body, setting) in [
+                (
+                    r#"inference { rate-limit { tokens-per-minute 1; key "x" } }"#,
+                    "key",
+                ),
+                (r#"inference { budget { limit 1; key "x" } }"#, "key"),
+                (
+                    r#"inference { budget { limit 1; daily-limit 1 } }"#,
+                    "daily-limit",
+                ),
+                (
+                    r#"inference { cost-attribution { models { model "m" { input-cost-per-1k 1 } } } }"#,
+                    "models",
+                ),
+                (
+                    r#"inference { guardrails { prompt-injection { agent "g"; severity "high" } } }"#,
+                    "severity",
+                ),
+                (
+                    r#"fallback { fallback-upstream "u" provider="anthropic" }"#,
+                    "provider",
+                ),
+                (
+                    r#"inference { model-routing { model "m" upstream="u" weight=2 } }"#,
+                    "weight",
+                ),
+                (
+                    r#"inference { routing { strategy "least_latency" } }"#,
+                    "routing",
+                ),
+            ] {
+                assert_one_for(&route(body), setting, "route 'api'");
+            }
+            assert!(unapplied(&route(
+                r#"inference { rate-limit { tokens-per-minute 1; estimation-method "words" }
+                   budget { limit 1; period "daily"; alert-thresholds 0.5 }
+                   cost-attribution { pricing { model "m" { input-cost-per-million 1; output-cost-per-million 2 } } }
+                   guardrails { pii-detection { agent "p"; categories "ssn" } } }"#
+            ))
+            .is_empty());
+        }
+
+        #[test]
+        fn an_upstream_ca_cert_is_reported() {
+            assert_one_for(
+                &upstream(r#"tls { sni "a.example"; ca-cert "/ca.pem" }"#),
+                "ca-cert",
+                "upstream 'u'",
+            );
+            assert!(unapplied(&upstream(r#"tls { sni "a.example" }"#)).is_empty());
+        }
+
+        #[test]
+        fn connection_pool_settings_nothing_reads_are_reported() {
+            for key in [
+                "max-connections",
+                "max-idle",
+                "max-lifetime-secs",
+                "max-lifetime",
+            ] {
+                assert_one_for(
+                    &upstream(&format!("connection-pool {{ {key} 5 }}")),
+                    key,
+                    "upstream 'u'",
+                );
+            }
+            for key in ["idle-timeout-secs", "idle-timeout"] {
+                assert!(
+                    unapplied(&upstream(&format!("connection-pool {{ {key} 5 }}"))).is_empty(),
+                    "{key} is applied"
+                );
+            }
+        }
+
+        #[test]
+        fn a_system_max_connections_is_still_reported_once_by_its_own_message() {
+            let found = warnings_for("system { max-connections 100 }");
+            assert_eq!(found.len(), 1, "{found:#?}");
+            assert!(found[0].contains("'system' block"), "{}", found[0]);
+        }
+
+        #[test]
+        fn a_listener_max_concurrent_streams_is_reported() {
+            let listener = |body: &str| {
+                format!(
+                    "listeners {{\nlistener \"l\" {{\naddress \"127.0.0.1:8080\"\n{body}\n}}\n}}"
+                )
+            };
+            assert_one_for(
+                &listener("max-concurrent-streams 100"),
+                "max-concurrent-streams",
+                "listener 'l'",
+            );
+            assert!(unapplied(&listener("request-timeout-secs 30")).is_empty());
+            // A service's own listener block is read by another parser with
+            // the same setting.
+            assert_one_for(
+                r#"namespace "n" { service "s" { listener { id "sl"; address "127.0.0.1:8081"; max-concurrent-streams 10 } } }"#,
+                "max-concurrent-streams",
+                "listener 'sl'",
+            );
+        }
+
+        #[test]
+        fn the_logging_level_and_format_are_reported_and_the_log_files_are_not() {
+            assert_one_for(
+                r#"observability { logging { level "debug" } }"#,
+                "level",
+                "'logging'",
+            );
+            assert_one_for(
+                r#"observability { logging { format "pretty" } }"#,
+                "format",
+                "'logging'",
+            );
+            assert!(unapplied(
+                r#"observability { logging {
+                    timestamps #false
+                    access-log { format "combined" }
+                    error-log { level "error" } } }"#
+            )
+            .is_empty());
+        }
+
+        #[test]
+        fn inspect_response_body_is_reported_and_the_request_side_is_not() {
+            assert_one_for(
+                r#"waf { mode "off"; body-inspection { inspect-response-body #true } }"#,
+                "inspect-response-body",
+                "'body-inspection'",
+            );
+            assert!(unapplied(
+                r#"waf { mode "off"; body-inspection { inspect-request-body #true } }"#
+            )
+            .is_empty());
+        }
+
+        #[test]
+        fn in_a_set_of_files_each_report_names_its_file() {
+            let sources = vec![(
+                std::path::PathBuf::from("routes.kdl"),
+                route("waf-enabled #true"),
+            )];
+            let mut result = ValidationResult::new();
+            check_unknown_keys_in_files(&sources, &mut result);
+            let texts = warning_texts(&result);
+            assert_eq!(texts.len(), 1, "{texts:#?}");
+            assert!(texts[0].starts_with("routes.kdl: "), "{}", texts[0]);
+        }
     }
 
     #[test]
@@ -3003,7 +3315,7 @@ mod tests {
         let mut checked = 0;
         let mut complaints = Vec::new();
 
-        for dir in ["config", "config/examples"] {
+        for dir in ["config", "config/examples", "config/docker", "deploy"] {
             let path = std::path::Path::new(root).join(dir);
             let Ok(entries) = std::fs::read_dir(&path) else {
                 continue;

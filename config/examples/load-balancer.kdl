@@ -96,8 +96,6 @@ upstreams {
         }
 
         connection-pool {
-            max-connections 100
-            max-idle 20
             idle-timeout-secs 60
         }
 
@@ -193,11 +191,6 @@ observability {
         // - zentinel_upstream_requests_total
         // - zentinel_upstream_latency_seconds
         // - zentinel_circuit_breaker_state
-    }
-
-    logging {
-        level "info"
-        format "json"
     }
 }
 

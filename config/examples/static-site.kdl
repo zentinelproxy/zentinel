@@ -84,10 +84,11 @@ routes {
 
         policies {
             timeout-secs 10
-            cache {
-                enabled #true
-                ttl-secs 31536000  // 1 year
-            }
+        }
+
+        cache {
+            enabled #true
+            default-ttl-secs 31536000  // 1 year
         }
     }
 
@@ -104,10 +105,11 @@ routes {
 
         policies {
             timeout-secs 10
-            cache {
-                enabled #true
-                ttl-secs 86400  // 1 day
-            }
+        }
+
+        cache {
+            enabled #true
+            default-ttl-secs 86400  // 1 day
         }
     }
 
@@ -124,10 +126,11 @@ routes {
 
         policies {
             timeout-secs 10
-            cache {
-                enabled #true
-                ttl-secs 3600  // 1 hour
-            }
+        }
+
+        cache {
+            enabled #true
+            default-ttl-secs 3600  // 1 hour
         }
     }
 
@@ -225,9 +228,6 @@ observability {
     }
 
     logging {
-        level "info"
-        format "json"
-
         access-log {
             enabled #true
             file "/var/log/zentinel/static-site-access.log"

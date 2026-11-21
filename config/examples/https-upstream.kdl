@@ -60,7 +60,6 @@ upstreams {
     //         sni "secure.internal"
     //         client-cert "/etc/zentinel/certs/client.crt"
     //         client-key "/etc/zentinel/certs/client.key"
-    //         ca-cert "/etc/zentinel/certs/backend-ca.crt"
     //     }
     // }
 }
@@ -69,9 +68,5 @@ observability {
     metrics {
         enabled #true
         address "0.0.0.0:9090"
-    }
-    logging {
-        level "info"
-        format "json"
     }
 }

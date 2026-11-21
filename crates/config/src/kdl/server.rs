@@ -247,6 +247,10 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
 
                 check_listener_tls(&id, protocol, tls.is_some())?;
 
+                for problem in super::unapplied::listener_settings(child, &id) {
+                    warn!("{}", problem);
+                }
+
                 trace!(
                     listener_id = %id,
                     address = %address,

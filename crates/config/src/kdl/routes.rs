@@ -60,6 +60,10 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
 
                 trace!(route_id = %id, "Parsing route");
 
+                for problem in super::unapplied::route_settings(child, &id) {
+                    warn!("{}", problem);
+                }
+
                 // Parse matches
                 let matches = parse_match_conditions(child)?;
 
@@ -1114,10 +1118,11 @@ fn parse_cache_config_opt(node: &kdl::KdlNode) -> Result<Option<RouteCacheConfig
 ///     stale-if-error-secs 300
 ///     cacheable-methods "GET" "HEAD"
 ///     cacheable-status-codes 200 203 204 206 300 301 308 404 410
-///     vary-headers "Accept" "Accept-Encoding"
-///     ignore-query-params "utm_source" "utm_medium"
 /// }
 /// ```
+///
+/// `vary-headers` and `ignore-query-params` are read and not applied: the cache
+/// key is the request URI (see `unapplied`).
 fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     let enabled = get_bool_entry(node, "enabled")?.unwrap_or(false);
     let default_ttl_secs = get_int_entry(node, "default-ttl-secs")?.unwrap_or(3600) as u64;
@@ -1502,6 +1507,104 @@ fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
     })
 }
 
+/// Every child node `parse_inference_config` reads.
+pub(crate) const RECOGNIZED_INFERENCE_KEYS: &[&str] = &[
+    "provider",
+    "model-header",
+    "rate-limit",
+    "routing",
+    "budget",
+    "cost-attribution",
+    "model-routing",
+    "guardrails",
+];
+
+/// Every child node `parse_token_rate_limit` reads.
+pub(crate) const RECOGNIZED_TOKEN_RATE_LIMIT_KEYS: &[&str] = &[
+    "tokens-per-minute",
+    "requests-per-minute",
+    "burst-tokens",
+    "estimation-method",
+];
+
+/// Every child node `parse_inference_routing` reads.
+pub(crate) const RECOGNIZED_INFERENCE_ROUTING_KEYS: &[&str] = &["strategy", "queue-depth-header"];
+
+/// Every child node `parse_token_budget` reads.
+pub(crate) const RECOGNIZED_TOKEN_BUDGET_KEYS: &[&str] = &[
+    "period",
+    "limit",
+    "alert-thresholds",
+    "enforce",
+    "rollover",
+    "burst-allowance",
+    "max-tenants",
+];
+
+/// Every child node `parse_cost_attribution` reads.
+pub(crate) const RECOGNIZED_COST_ATTRIBUTION_KEYS: &[&str] = &[
+    "enabled",
+    "default-input-cost",
+    "default-output-cost",
+    "currency",
+    "pricing",
+];
+
+/// Every child node `parse_model_pricing_list` reads in a `model` node.
+pub(crate) const RECOGNIZED_MODEL_PRICING_KEYS: &[&str] = &[
+    "input-cost-per-million",
+    "output-cost-per-million",
+    "currency",
+];
+
+/// Every child node `parse_guardrails_config` reads.
+pub(crate) const RECOGNIZED_GUARDRAILS_KEYS: &[&str] = &["prompt-injection", "pii-detection"];
+
+/// Every child node `parse_prompt_injection_config` reads.
+pub(crate) const RECOGNIZED_PROMPT_INJECTION_KEYS: &[&str] = &[
+    "enabled",
+    "agent",
+    "action",
+    "block-status",
+    "block-message",
+    "timeout-ms",
+    "failure-mode",
+];
+
+/// Every child node `parse_pii_detection_config` reads.
+pub(crate) const RECOGNIZED_PII_DETECTION_KEYS: &[&str] = &[
+    "enabled",
+    "agent",
+    "action",
+    "categories",
+    "timeout-ms",
+    "failure-mode",
+];
+
+/// Every property `parse_model_upstream_mapping` reads from a `model` node.
+pub(crate) const RECOGNIZED_MODEL_RULE_PROPERTIES: &[&str] = &["upstream", "provider"];
+
+/// Every child node `parse_fallback_config` reads.
+pub(crate) const RECOGNIZED_FALLBACK_KEYS: &[&str] =
+    &["max-attempts", "triggers", "fallback-upstream"];
+
+/// Every child node `parse_fallback_triggers` reads.
+pub(crate) const RECOGNIZED_FALLBACK_TRIGGER_KEYS: &[&str] = &[
+    "on-health-failure",
+    "on-budget-exhausted",
+    "on-latency-threshold-ms",
+    "on-error-codes",
+    "on-connection-error",
+];
+
+/// Every child node `parse_fallback_upstreams` reads inside a
+/// `fallback-upstream` block.
+pub(crate) const RECOGNIZED_FALLBACK_UPSTREAM_KEYS: &[&str] =
+    &["provider", "skip-if-unhealthy", "model-mapping"];
+
+/// Every child node `parse_model_routing_config` reads.
+pub(crate) const RECOGNIZED_MODEL_ROUTING_KEYS: &[&str] = &["default-upstream", "model"];
+
 /// Parse optional fallback configuration from a route
 fn parse_fallback_config_opt(node: &kdl::KdlNode) -> Result<Option<FallbackConfig>> {
     if let Some(route_children) = node.children() {
@@ -1828,7 +1931,6 @@ fn parse_inference_config_opt(node: &kdl::KdlNode) -> Result<Option<InferenceCon
 /// ```kdl
 /// inference {
 ///     provider "openai"
-///     model-header "x-model"
 ///
 ///     rate-limit {
 ///         tokens-per-minute 100000
@@ -1836,13 +1938,10 @@ fn parse_inference_config_opt(node: &kdl::KdlNode) -> Result<Option<InferenceCon
 ///         burst-tokens 10000
 ///         estimation-method "chars"
 ///     }
-///
-///     routing {
-///         strategy "least-tokens-queued"
-///         queue-depth-header "x-queue-depth"
-///     }
 /// }
 /// ```
+///
+/// `model-header` and `routing` are read and not applied (see `unapplied`).
 fn parse_inference_config(node: &kdl::KdlNode) -> Result<InferenceConfig> {
     // Parse provider
     let provider = match get_string_entry(node, "provider")?.as_deref() {

@@ -102,8 +102,6 @@ upstreams {
         }
 
         connection-pool {
-            max-connections 100
-            max-idle 20
             idle-timeout-secs 60
         }
 
@@ -147,11 +145,6 @@ observability {
         enabled #true
         address "0.0.0.0:9090"
         path "/metrics"
-    }
-
-    logging {
-        level "info"
-        format "json"
     }
 }
 

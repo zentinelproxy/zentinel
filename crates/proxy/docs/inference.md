@@ -151,17 +151,17 @@ Cumulative token usage limits over time periods.
 route "/v1/chat/completions" {
     inference {
         budget {
-            // Daily budget (resets at midnight UTC)
-            daily-limit 1000000
+            // "hourly", "daily", "monthly", or a number of seconds
+            period "daily"
 
-            // Monthly budget (resets on 1st)
-            monthly-limit 10000000
+            // Tokens allowed in the period
+            limit 1000000
 
             // Enforce budget (reject requests when exhausted)
             enforce #true
 
-            // Alert when reaching threshold
-            alert-threshold 0.8
+            // Alert when reaching these fractions of the limit
+            alert-thresholds 0.8 0.9
         }
     }
 }
@@ -247,10 +247,6 @@ route "/v1/chat/completions" {
                     output-cost-per-million 15.0
                 }
             }
-
-            // Add cost header to response
-            include-header #true
-            header-name "X-Inference-Cost"
         }
     }
 }
@@ -306,8 +302,8 @@ route "/v1/chat/completions" {
                 enabled #true
                 agent "pii-agent"
                 action "redact"
-                // Types: ssn, credit-card, email, phone, etc.
-                types "ssn" "credit-card"
+                // Categories: ssn, credit-card, email, phone, etc.
+                categories "ssn" "credit-card"
             }
         }
     }
@@ -359,22 +355,20 @@ Map models between providers when falling back:
 
 ```kdl
 route "/v1/chat/completions" {
-    inference {
-        fallback {
-            upstreams {
-                upstream "anthropic" provider="anthropic" {
-                    model-mapping {
-                        "gpt-4" "claude-3-opus"
-                        "gpt-4-turbo" "claude-3-opus"
-                        "gpt-3.5-turbo" "claude-3-sonnet"
-                    }
-                }
-            }
+    // `fallback` is a block of the route, beside `inference`
+    fallback {
+        triggers {
+            on-health-failure #true
+            on-budget-exhausted #true
+            on-error-codes 429 503
+        }
 
-            triggers {
-                on-health-failure #true
-                on-budget-exhausted #true
-                on-error-codes 429 503
+        fallback-upstream "anthropic" {
+            provider "anthropic"
+            model-mapping {
+                "gpt-4" "claude-3-opus"
+                "gpt-4-turbo" "claude-3-opus"
+                "gpt-3.5-turbo" "claude-3-sonnet"
             }
         }
     }
@@ -560,10 +554,10 @@ routes {
             }
 
             budget {
-                daily-limit 1000000
-                monthly-limit 10000000
+                period "daily"
+                limit 1000000
                 enforce #true
-                alert-threshold 0.8
+                alert-thresholds 0.8
             }
 
             cost-attribution {
@@ -593,20 +587,20 @@ routes {
                 model "claude-*" upstream="anthropic" provider="anthropic"
                 default-upstream "openai"
             }
+        }
 
-            fallback {
-                upstreams {
-                    upstream "anthropic" provider="anthropic" {
-                        model-mapping {
-                            "gpt-4" "claude-3-opus"
-                            "gpt-3.5-turbo" "claude-3-sonnet"
-                        }
-                    }
-                }
-                triggers {
-                    on-health-failure #true
-                    on-budget-exhausted #true
-                    on-error-codes 429 503
+        // `fallback` is a block of the route, beside `inference`
+        fallback {
+            triggers {
+                on-health-failure #true
+                on-budget-exhausted #true
+                on-error-codes 429 503
+            }
+            fallback-upstream "anthropic" {
+                provider "anthropic"
+                model-mapping {
+                    "gpt-4" "claude-3-opus"
+                    "gpt-3.5-turbo" "claude-3-sonnet"
                 }
             }
         }
