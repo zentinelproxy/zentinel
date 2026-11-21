@@ -47,6 +47,7 @@ pub mod agents;
 pub mod app;
 pub mod builtin_handlers;
 pub mod cache;
+pub(crate) mod cache_policy;
 pub mod connection_limit;
 #[cfg(unix)]
 pub mod daemon;

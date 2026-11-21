@@ -680,7 +680,7 @@ route "api" {
         cache {
             enabled #true
             default-ttl-secs 300
-            vary-headers "Accept" "Accept-Encoding"
+            vary-headers "Accept" "Accept-Encoding"  // not read at present; the response's Vary decides
             stale-while-revalidate-secs 60
 
             // Exclude specific file extensions from caching
@@ -694,6 +694,27 @@ route "api" {
 ```
 
 The `exclude-extensions` and `exclude-paths` options are useful when a broad route pattern (e.g., `path-prefix "/"`) should cache most content but skip certain dynamic paths or file types.
+
+#### What the Response Cache Stores
+
+The response cache is shared by every client of a route, so it follows the shared-cache rules of [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111) sections 3.5 and 4.1. In addition to those rules, Zentinel does not store a response with `Set-Cookie`. All of this applies on top of the route's `cacheable-methods` and `cacheable-status-codes` and the response's own `Cache-Control` (`no-store`, `no-cache` and `private` are read by directive name on every `Cache-Control` line):
+
+| Request or response | Stored? |
+|---------------------|---------|
+| Response to a request with `Authorization` | Only if the response's `Cache-Control` has `public`, `s-maxage` or `must-revalidate` |
+| Response with `Set-Cookie` | No |
+| Response with `Vary: *` | No |
+| Response with any other `Vary` | Yes, once per value of the request headers it names. It answers only requests with the same values |
+
+`Authorization` is judged as the client sent it, even if an agent removes it before the request goes upstream.
+
+Each `Vary` variant is a separate entry, bounded by the cache's size and eviction limits like any other. Header values are compared as sent, after joining repeated lines with `, `: `Accept-Encoding: gzip, br` and `Accept-Encoding: br, gzip` are different variants. A request without a named header shares a variant only with requests that send it empty.
+
+To have a response to a request with `Authorization` stored, the upstream returns `Cache-Control: public` (or `s-maxage`). To have a response that sets a cookie stored, it must not send `Set-Cookie` on that response. A request with a `Cookie` header is cached like any other: if the response depends on the cookie, the upstream returns `Vary: Cookie`, or the route excludes the path with `exclude-paths`. To avoid per-value entries on a path, the upstream can stop sending `Vary` on it, but only if the response does not depend on that header.
+
+Entries that an earlier version wrote to a `disk` or `hybrid` cache are still served until they expire. To stop that, stop Zentinel and empty `disk-path`.
+
+Responses refused under these rules are counted in `zentinel_cache_not_stored_total{route, reason}`; see [Observability](../../common/docs/observability.md).
 
 ## Property Naming
 

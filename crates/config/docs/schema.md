@@ -239,12 +239,14 @@ Per-route cache configuration, nested under `policies.cache`.
 | `cacheable-status-codes` | `[u16]` | `[200, 203, 204, 206, 300, 301]` | Status codes to cache |
 | `stale-while-revalidate-secs` | `u64` | - | Serve stale while refreshing |
 | `stale-if-error-secs` | `u64` | - | Serve stale on upstream error |
-| `vary-headers` | `[string]` | `[]` | Headers to vary cache key by |
+| `vary-headers` | `[string]` | `[]` | Not read by the proxy at present. The response's `Vary` decides which request headers keep entries apart |
 | `ignore-query-params` | `[string]` | `[]` | Query params to exclude from cache key |
 | `exclude-extensions` | `[string]` | `[]` | File extensions to exclude from caching (without dot, e.g., `"php"`, `"html"`) |
 | `exclude-paths` | `[string]` | `[]` | Path patterns to exclude from caching (glob: `*`, `**`, `?`) |
 | `respect-cache-control` | `bool` | `true` | Honor upstream Cache-Control headers |
 | `ignore-no-cache` | `bool` | `false` | Cache even if upstream returns no-cache |
+
+Responses to requests with `Authorization` (unless `Cache-Control` has `public`, `s-maxage` or `must-revalidate`), responses with `Set-Cookie`, and responses with `Vary: *` are not stored. Any other `Vary` keeps one entry per value of the request headers it names. See [What the Response Cache Stores](kdl-format.md#what-the-response-cache-stores).
 
 ### InferenceConfig
 
