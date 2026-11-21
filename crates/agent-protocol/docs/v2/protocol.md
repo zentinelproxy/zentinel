@@ -397,6 +397,18 @@ not set. No `waf` block is needed (one used to be, and without it no
 agent got a request body). Without a `waf` block, bodies of every content
 type are sent; with one, those in its `body-inspection { content-types }`.
 
+In `request-body-mode "buffer"` an agent is sent the whole body in one
+`RequestBodyChunk` event with `is_last` set, or none of it. A body longer
+than `body-inspection { max-inspection-bytes }` (1 MiB by default, counted
+as received, before any decompression) is not sent in part: the filter's
+`failure-mode` applies, as for a body over the agent's own
+`max-request-body-bytes` -- `closed` refuses the request with 413, `open`
+skips the agent. A body of exactly `max-inspection-bytes` is sent whole.
+With `max-inspection-bytes 0` every body that is not empty is over the limit;
+`inspect-request-body #false` keeps bodies from the agents instead. The
+upgrade note and the ways to accept larger bodies are in the config
+reference ([BodyInspectionPolicy](../../../config/docs/schema.md#bodyinspectionpolicy)).
+
 #### What the upstream sees of a request refused on its body
 
 The proxy connects to the upstream and sends the request line and headers
