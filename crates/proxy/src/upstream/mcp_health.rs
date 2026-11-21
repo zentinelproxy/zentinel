@@ -237,7 +237,7 @@ impl McpHealthCheck {
         }
 
         let session_id = header_value(&text, "mcp-session-id");
-        let body = body_of(&text)?;
+        let body = body_of(&response)?;
         Ok((body, session_id))
     }
 }
@@ -302,21 +302,24 @@ fn header_value(response: &str, name: &str) -> Option<String> {
 /// The probe sends `Connection: close` and HTTP/1.1, so a server may still
 /// answer chunked; and a Streamable HTTP server may wrap the response in an
 /// SSE event. Both are unwrapped here so the caller sees JSON either way.
-fn body_of(response: &str) -> std::result::Result<String, String> {
-    let body = response
-        .split_once("\r\n\r\n")
-        .map(|(_, b)| b)
-        .ok_or_else(|| "could not find response body".to_string())?;
+///
+/// Framing is read from the raw bytes: chunk sizes count bytes, and a
+/// multi-byte character may be split across two chunks. The body becomes text
+/// only once it has been reassembled.
+fn body_of(response: &[u8]) -> std::result::Result<String, String> {
+    let head_end =
+        find(response, b"\r\n\r\n").ok_or_else(|| "could not find response body".to_string())?;
+    let body = &response[head_end + 4..];
 
-    let head = response.split("\r\n\r\n").next().unwrap_or_default();
+    let head = String::from_utf8_lossy(&response[..head_end]);
     let chunked = head
         .lines()
         .any(|l| l.to_ascii_lowercase().starts_with("transfer-encoding:") && l.contains("chunked"));
 
     let unchunked = if chunked {
-        dechunk(body)
+        String::from_utf8_lossy(&dechunk(body)).into_owned()
     } else {
-        body.to_string()
+        String::from_utf8_lossy(body).into_owned()
     };
 
     // SSE: the JSON-RPC response is the payload of a `data:` field.
@@ -335,22 +338,35 @@ fn body_of(response: &str) -> std::result::Result<String, String> {
     Ok(unchunked)
 }
 
+/// The offset of the first occurrence of `needle` in `haystack`.
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
 /// Reassemble a chunked body.
-fn dechunk(body: &str) -> String {
-    let mut out = String::new();
+///
+/// A chunk that is cut short, or a size line that is not a hexadecimal number,
+/// ends the body there.
+fn dechunk(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
     let mut rest = body;
-    while let Some((size_line, tail)) = rest.split_once("\r\n") {
-        let size = match usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16)
-        {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-        if tail.len() < size {
-            out.push_str(tail);
+    while let Some(line_end) = find(rest, b"\r\n") {
+        let (size_line, tail) = (&rest[..line_end], &rest[line_end + 2..]);
+        let size = std::str::from_utf8(size_line).ok().and_then(|line| {
+            usize::from_str_radix(line.trim().split(';').next().unwrap_or(""), 16).ok()
+        });
+        let Some(size @ 1..) = size else {
             break;
-        }
-        out.push_str(&tail[..size]);
-        rest = tail[size..].strip_prefix("\r\n").unwrap_or(&tail[size..]);
+        };
+        let Some(chunk) = tail.get(..size) else {
+            out.extend_from_slice(tail);
+            break;
+        };
+        out.extend_from_slice(chunk);
+        let after = &tail[size..];
+        rest = after.strip_prefix(b"\r\n").unwrap_or(after);
     }
     out
 }
@@ -430,6 +446,11 @@ mod tests {
     /// Serve canned responses in order, one per connection, and return the
     /// address to probe.
     async fn serve(responses: Vec<String>) -> String {
+        serve_bytes(responses.into_iter().map(String::into_bytes).collect()).await
+    }
+
+    /// As [`serve`], for responses that are not necessarily valid UTF-8.
+    async fn serve_bytes(responses: Vec<Vec<u8>>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr").to_string();
 
@@ -441,7 +462,7 @@ mod tests {
                 // Read the request head so the client's write completes.
                 let mut buf = [0u8; 4096];
                 let _ = sock.read(&mut buf).await;
-                let _ = sock.write_all(body.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
                 let _ = sock.shutdown().await;
             }
         });
@@ -593,8 +614,9 @@ mod tests {
 
     #[test]
     fn chunked_bodies_reassemble() {
-        assert_eq!(dechunk("5\r\nhello\r\n0\r\n\r\n"), "hello");
-        assert_eq!(dechunk("3\r\nfoo\r\n3\r\nbar\r\n0\r\n\r\n"), "foobar");
+        assert_eq!(dechunk(b"5\r\nhello\r\n0\r\n\r\n"), b"hello");
+        assert_eq!(dechunk(b"3\r\nfoo\r\n3\r\nbar\r\n0\r\n\r\n"), b"foobar");
+        assert_eq!(dechunk(b"3;name=value\r\nfoo\r\n0\r\n\r\n"), b"foo");
     }
 
     #[test]
@@ -616,5 +638,79 @@ mod tests {
     fn the_error_preview_does_not_split_a_character() {
         let body = "天".repeat(300);
         assert!(!preview(&body).is_empty());
+    }
+
+    // === Chunk framing is read from bytes ===
+
+    fn chunked_response(body: &[u8]) -> Vec<u8> {
+        [
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"[..],
+            body,
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn a_character_split_across_chunks_is_restored() {
+        // The two bytes of "\u{e9}" (C3 A9) arrive in separate chunks.
+        let response = chunked_response(b"4\r\ncaf\xC3\r\n1\r\n\xA9\r\n0\r\n\r\n");
+        assert_eq!(body_of(&response), Ok("caf\u{e9}".to_string()));
+    }
+
+    #[test]
+    fn a_chunk_holding_whole_multi_byte_characters_reassembles() {
+        // "caf\u{e9}" is five bytes, so the chunk size is 5.
+        assert_eq!(
+            body_of(&chunked_response("5\r\ncaf\u{e9}\r\n0\r\n\r\n".as_bytes())),
+            Ok("caf\u{e9}".to_string())
+        );
+        assert_eq!(
+            body_of(&chunked_response(
+                "2\r\n\u{e9}\r\n3\r\nabc\r\n0\r\n\r\n".as_bytes()
+            )),
+            Ok("\u{e9}abc".to_string())
+        );
+    }
+
+    #[test]
+    fn a_chunk_size_that_does_not_match_the_body_does_not_panic() {
+        // Larger than what follows: what is there is kept.
+        assert_eq!(
+            body_of(&chunked_response(b"ff\r\nabc")),
+            Ok("abc".to_string())
+        );
+        // Not a number, or too large for a number: the body ends there.
+        assert_eq!(
+            body_of(&chunked_response(b"zz\r\nabc\r\n0\r\n\r\n")),
+            Ok(String::new())
+        );
+        assert_eq!(
+            body_of(&chunked_response(b"ffffffffffffffffffff\r\nabc")),
+            Ok(String::new())
+        );
+        assert_eq!(body_of(&chunked_response(b"\r\nabc")), Ok(String::new()));
+        // A size that stops after the first byte of "\u{e9}" cuts there.
+        assert_eq!(
+            body_of(&chunked_response(b"3\r\nabc\r\n1\r\n\xC3\xA9\r\n0\r\n\r\n")),
+            Ok("abc\u{fffd}".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_answered_with_a_character_split_across_chunks_is_healthy() {
+        let init = INIT_OK.replace(r#""name":"t""#, "\"name\":\"caf\u{e9}\"");
+        let bytes = init.as_bytes();
+        let split = init.find('\u{e9}').expect("character") + 1;
+        let (first, second) = bytes.split_at(split);
+
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
+        response.extend_from_slice(format!("{:x}\r\n", first.len()).as_bytes());
+        response.extend_from_slice(first);
+        response.extend_from_slice(format!("\r\n{:x}\r\n", second.len()).as_bytes());
+        response.extend_from_slice(second);
+        response.extend_from_slice(b"\r\n0\r\n\r\n");
+
+        let addr = serve_bytes(vec![response]).await;
+        assert_eq!(check(&[]).check_backend(&addr).await, Ok(()));
     }
 }
