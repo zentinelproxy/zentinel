@@ -70,6 +70,24 @@ systemctl status zentinel
 journalctl -u zentinel -f
 ```
 
+### Restart after a failure
+
+The unit has `Restart=on-failure` and `RestartSec=5s`, and no start rate limit (`StartLimitIntervalSec=0`). When the process exits with a non-zero status or is killed by a signal such as SIGABRT or SIGKILL, systemd starts it again 5 s later, and it keeps doing so for as long as the process keeps failing. It does not give up on its own. The echo and rate limit agent units in `deploy/` use the same settings.
+
+A process that fails on every start, for example because the configuration is invalid, is therefore started every 5 s and never reaches the `failed` state. `systemctl status zentinel` shows `activating (auto-restart)` and `systemctl show zentinel --property=NRestarts` (systemd 235 and later) counts the automatic restarts, so alert on those rather than on the `failed` state. The reason for each exit is in `journalctl -u zentinel`; `zentinel test --config /etc/zentinel/zentinel.kdl` checks the configuration. Once the cause is fixed, `sudo systemctl restart zentinel` starts the proxy at once instead of waiting for the next automatic restart.
+
+Keep local changes in a drop-in (`sudo systemctl edit zentinel`) rather than in the unit file, because running the installer again replaces `/etc/systemd/system/zentinel.service`. A drop-in can lengthen the delay with `RestartSec=`, or bring a limit back:
+
+```ini
+[Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=3
+```
+
+With that limit, after three failed starts within 60 s the unit stays in the `failed` state until someone starts it again, which works once 60 s have passed or after `systemctl reset-failed`. Write both keys: with only `StartLimitIntervalSec=60` the burst is systemd's default of 5, and with only `StartLimitBurst=3` there is still no limit, because the interval stays 0.
+
+A unit installed by an earlier release keeps its old start limit until the file is replaced. Run the installer again (it runs `systemctl daemon-reload` itself), or copy `deploy/zentinel.service` over `/etc/systemd/system/zentinel.service` and run `sudo systemctl daemon-reload`. A unit that has already hit the old limit and stopped also needs `sudo systemctl reset-failed zentinel` before it is started.
+
 ## Binding privileged ports (80, 443)
 
 The shipped unit grants `AmbientCapabilities=CAP_NET_BIND_SERVICE` and bounds the capability set to the same. To bind 80 or 443, edit the listener address in `/etc/zentinel/zentinel.kdl`:
