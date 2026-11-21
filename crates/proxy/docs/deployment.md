@@ -112,6 +112,18 @@ RUST_LOG=zentinel=debug,pingora=info
 
 Restart the service after editing.
 
+## Choosing the configuration file
+
+The proxy reads its configuration from the path given with `--config` (`-c`) or, when that is absent, from the `ZENTINEL_CONFIG` environment variable. The path is a file, or a directory of KDL files read as one configuration. The shipped unit passes `--config /etc/zentinel/zentinel.kdl` and sets `ZENTINEL_CONFIG` to the same path.
+
+A path that was given must exist and be readable. When it does not, the proxy exits with a non-zero status and an error that names the path and the reason (`No such file or directory`, `Permission denied`, and so on). It does not write a file at that path and does not fall back to the embedded default configuration. `zentinel test`, `zentinel validate` and `zentinel lint` report the same condition as an error.
+
+An empty value is a path too, and it is refused the same way. A Compose file's `${ZENTINEL_CONFIG:-}`, or an `env` file line with nothing after the `=`, produces one. To use the embedded default configuration, remove the variable instead of leaving it empty.
+
+When neither `--config` nor `ZENTINEL_CONFIG` is set, the proxy starts with the embedded default configuration.
+
+No command writes `zentinel.kdl` for you. (`zentinel bundle install` writes `agents.kdl` for the agents it installs, not the proxy's configuration.) To start from a file, copy `deploy/zentinel.starter.kdl`, the file the install script puts at `/etc/zentinel/zentinel.kdl`, to the path you will pass, then edit it. `config/zentinel.kdl` and `config/examples/` hold fuller examples. These files are in the repository; they are not part of the binary or the container image, so fetch them from the repository (the install script does, for the release it installs) or write your own.
+
 ## Validating the config
 
 ```bash

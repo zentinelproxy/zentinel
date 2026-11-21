@@ -471,12 +471,12 @@ jobs:
 
           ### Supply Chain Security
 
-          All release archives are signed with [Sigstore cosign](https://docs.sigstore.dev/) using keyless signing tied to GitHub Actions OIDC identity. SLSA v1.0 provenance is attached to this release.
+          All release archives are signed with [Sigstore cosign](https://docs.sigstore.dev/) using keyless signing tied to GitHub Actions OIDC identity. The archives are signed by this repository's \`release.yml\` workflow and the container image by its \`_docker.yml\` workflow, in the run for this release's tag. SLSA v1.0 provenance is attached to this release.
 
           #### Verify a binary
           \`\`\`bash
           cosign verify-blob --bundle zentinel-${CALVER}-linux-amd64.tar.gz.bundle \\
-            --certificate-identity-regexp "github.com/zentinelproxy/zentinel" \\
+            --certificate-identity "https://github.com/zentinelproxy/zentinel/.github/workflows/release.yml@refs/tags/${CALVER}" \\
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \\
             zentinel-${CALVER}-linux-amd64.tar.gz
           \`\`\`
@@ -484,7 +484,7 @@ jobs:
           #### Verify the container image
           \`\`\`bash
           cosign verify ghcr.io/zentinelproxy/zentinel:${CALVER} \\
-            --certificate-identity-regexp "github.com/zentinelproxy/zentinel" \\
+            --certificate-identity "https://github.com/zentinelproxy/zentinel/.github/workflows/_docker.yml@refs/tags/${CALVER}" \\
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           \`\`\`
 
