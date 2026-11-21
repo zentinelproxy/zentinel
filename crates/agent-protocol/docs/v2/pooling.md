@@ -333,6 +333,27 @@ match health.circuit_breaker_state {
      │   CircuitOpen     │                     │
 ```
 
+### Call Dropped by the Caller
+
+A caller can drop a call before the agent has answered: an outer
+`tokio::time::timeout` expires, or the request is cancelled. Every `send_*`
+method of `AgentPool`, `AgentClientV2`, `AgentClientV2Uds` and
+`ReverseConnectionClient` that waits for the agent's response is cancel safe
+(the gRPC client's `send_configure`, `send_shutdown` and `send_drain` do not
+wait for one). When its future is dropped, at any point:
+
+- the call's entry in the connection's table of calls waiting for a response is
+  removed;
+- the call stops counting toward the connection's in-flight count, which
+  `LeastConnections` and the drain at shutdown read, and toward the
+  `in_flight_requests` gauge;
+- a response that arrives later is discarded (the gRPC client logs it at
+  `debug` level).
+
+The pool records the outcome of a call (request count, error count, health) when
+the call finishes, so a dropped call is not recorded. The event may already have
+reached the agent; use `cancel_request` to tell the agent to stop working on it.
+
 ---
 
 ## Metrics

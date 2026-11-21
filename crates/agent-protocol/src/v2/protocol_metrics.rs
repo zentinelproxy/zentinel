@@ -11,6 +11,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use super::pending::InFlight;
+
 /// Protocol-level metrics for the agent pool.
 #[derive(Debug, Default)]
 pub struct ProtocolMetrics {
@@ -141,15 +143,30 @@ impl ProtocolMetrics {
     }
 
     /// Increment in-flight requests.
+    ///
+    /// The pool counts its requests with a guard (`track_in_flight`) that gives
+    /// the count back itself. Do not pair it with `inc_in_flight` or
+    /// `dec_in_flight` for the same request: the count would be wrong.
     #[inline]
     pub fn inc_in_flight(&self) {
         self.in_flight_requests.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Decrement in-flight requests.
+    ///
+    /// See [`Self::inc_in_flight`]: do not mix it with the pool's guard.
     #[inline]
     pub fn dec_in_flight(&self) {
         self.in_flight_requests.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Count a request as in flight until the returned guard is dropped.
+    ///
+    /// The count is given back on every way out of the request, including the
+    /// caller dropping it while it waits.
+    #[inline]
+    pub(crate) fn track_in_flight(&self) -> InFlight<'_> {
+        InFlight::enter(&self.in_flight_requests)
     }
 
     /// Set buffer utilization percentage.

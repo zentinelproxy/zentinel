@@ -35,14 +35,13 @@
 //! - 0x41: Ping
 //! - 0x42: Pong
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::UnixStream;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::v2::pool::CHANNEL_BUFFER_SIZE;
@@ -50,6 +49,7 @@ use crate::v2::{AgentCapabilities, AgentFeatures, AgentLimits, HealthConfig, PRO
 use crate::{AgentProtocolError, AgentResponse, EventType};
 
 use super::client::{ConfigUpdateCallback, FlowState, MetricsCallback};
+use super::pending::{InFlight, PendingCalls, WaitError};
 
 /// Maximum message size for UDS transport (16 MB).
 pub const MAX_UDS_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
@@ -328,6 +328,13 @@ fn event_type_from_i32(value: i32) -> Option<EventType> {
 ///
 /// This client maintains a single connection and multiplexes multiple requests
 /// over it using correlation IDs, similar to the gRPC client.
+///
+/// # Cancel Safety
+///
+/// Every `send_*` method is cancel safe. A call that is dropped before the
+/// agent has answered, for example by an outer timeout, removes its entry from
+/// the calls waiting for a response and stops counting in [`Self::in_flight`].
+/// A response that arrives afterwards is discarded.
 pub struct AgentClientV2Uds {
     /// Agent identifier
     agent_id: String,
@@ -344,8 +351,8 @@ pub struct AgentClientV2Uds {
     protocol_version: AtomicU64,
     /// Negotiated payload encoding
     encoding: RwLock<UdsEncoding>,
-    /// Pending requests by correlation ID
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<AgentResponse>>>>,
+    /// Calls waiting for a response, by correlation ID
+    pending: Arc<PendingCalls>,
     /// Sender for outbound messages
     #[allow(clippy::type_complexity)]
     outbound_tx: Mutex<Option<mpsc::Sender<(MessageType, Vec<u8>)>>>,
@@ -427,7 +434,7 @@ impl AgentClientV2Uds {
             capabilities: RwLock::new(None),
             protocol_version: AtomicU64::new(0),
             encoding: RwLock::new(UdsEncoding::Json),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(PendingCalls::new()),
             outbound_tx: Mutex::new(None),
             ping_sequence: AtomicU64::new(0),
             connected: Arc::new(RwLock::new(false)),
@@ -643,17 +650,16 @@ impl AgentClientV2Uds {
                                     Ok(response) => {
                                         // Extract correlation ID from the response
                                         // For UDS, we include correlation_id in the response
-                                        if let Some(sender) = pending.lock().await.remove(
-                                            &response
-                                                .audit
-                                                .custom
-                                                .get("correlation_id")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("")
-                                                .to_string(),
-                                        ) {
-                                            let _ = sender.send(response);
-                                        }
+                                        let correlation_id = response
+                                            .audit
+                                            .custom
+                                            .get("correlation_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        // A response whose call has gone (timed out,
+                                        // or dropped by its caller) is discarded.
+                                        pending.complete(&correlation_id, response);
                                     }
                                     Err(e) => {
                                         warn!(
@@ -737,7 +743,7 @@ impl AgentClientV2Uds {
             // See the gRPC client: mark the connection dead so the pool
             // replaces it, and fail requests still waiting on it.
             *connected.write().await = false;
-            pending.lock().await.clear();
+            pending.clear();
             warn!(agent_id = %agent_id, "Agent socket closed; connection marked disconnected");
         });
 
@@ -990,12 +996,9 @@ impl AgentClientV2Uds {
         bytes_received: Option<usize>,
         bytes_sent: Option<usize>,
     ) -> Result<AgentResponse, AgentProtocolError> {
-        // Create response channel
-        let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .await
-            .insert(correlation_id.to_string(), tx);
+        // Register the call. Dropping `call` removes the registration, whether
+        // the call returns early, times out or is dropped by its caller.
+        let call = self.pending.register(correlation_id);
 
         // Get the current encoding
         let encoding = *self.encoding.read().await;
@@ -1058,23 +1061,12 @@ impl AgentClientV2Uds {
             }
         }
 
-        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        let _in_flight = InFlight::enter(&self.in_flight);
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(self.timeout, rx)
+        call.wait(self.timeout)
             .await
-            .map_err(|_| {
-                self.pending
-                    .try_lock()
-                    .ok()
-                    .map(|mut p| p.remove(correlation_id));
-                AgentProtocolError::Timeout(self.timeout)
-            })?
-            .map_err(|_| AgentProtocolError::ConnectionClosed)?;
-
-        self.in_flight.fetch_sub(1, Ordering::Relaxed);
-
-        Ok(response)
+            .map_err(|e| wait_error(e, self.timeout))
     }
 
     /// Send an event and wait for response.
@@ -1102,12 +1094,9 @@ impl AgentClientV2Uds {
             return Err(AgentProtocolError::ConnectionClosed);
         }
 
-        // Create response channel
-        let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .await
-            .insert(correlation_id.to_string(), tx);
+        // Register the call. Dropping `call` removes the registration, whether
+        // the call returns early, times out or is dropped by its caller.
+        let call = self.pending.register(correlation_id);
 
         // Get the current encoding
         let encoding = *self.encoding.read().await;
@@ -1155,23 +1144,10 @@ impl AgentClientV2Uds {
             }
         }
 
-        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        let _in_flight = InFlight::enter(&self.in_flight);
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(timeout, rx)
-            .await
-            .map_err(|_| {
-                self.pending
-                    .try_lock()
-                    .ok()
-                    .map(|mut p| p.remove(correlation_id));
-                AgentProtocolError::Timeout(timeout)
-            })?
-            .map_err(|_| AgentProtocolError::ConnectionClosed)?;
-
-        self.in_flight.fetch_sub(1, Ordering::Relaxed);
-
-        Ok(response)
+        call.wait(timeout).await.map_err(|e| wait_error(e, timeout))
     }
 
     /// Send a cancel request for a specific correlation ID.
@@ -1197,7 +1173,7 @@ impl AgentClientV2Uds {
         }
 
         // Remove pending request
-        self.pending.lock().await.remove(correlation_id);
+        self.pending.remove(correlation_id);
 
         Ok(())
     }
@@ -1207,7 +1183,7 @@ impl AgentClientV2Uds {
         &self,
         reason: super::client::CancelReason,
     ) -> Result<usize, AgentProtocolError> {
-        let pending_ids: Vec<String> = self.pending.lock().await.keys().cloned().collect();
+        let pending_ids = self.pending.correlation_ids();
         let count = pending_ids.len();
 
         for correlation_id in pending_ids {
@@ -1268,6 +1244,14 @@ impl AgentClientV2Uds {
     /// Returns false if the agent has requested a flow control pause.
     pub async fn can_accept_requests(&self) -> bool {
         !self.is_paused().await
+    }
+}
+
+/// The error for a call that ended without a response.
+fn wait_error(error: WaitError, timeout: Duration) -> AgentProtocolError {
+    match error {
+        WaitError::TimedOut => AgentProtocolError::Timeout(timeout),
+        WaitError::Closed => AgentProtocolError::ConnectionClosed,
     }
 }
 
