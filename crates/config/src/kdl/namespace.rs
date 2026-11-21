@@ -9,7 +9,7 @@ use tracing::trace;
 use crate::namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
 use crate::ListenerConfig;
 
-use super::helpers::get_first_arg_string;
+use super::helpers::{get_first_arg_string, reject_repeated};
 use super::{parse_filter_definitions, parse_listeners, parse_routes, parse_upstreams};
 
 // ============================================================================
@@ -47,6 +47,9 @@ pub fn parse_namespace(node: &kdl::KdlNode) -> Result<NamespaceConfig> {
         )
     })?;
 
+    // `service` blocks add up. Every other block is read once, and a repeat
+    // would replace what the first one set.
+    reject_repeated(children, |name| name != "service")?;
     for child in children.nodes() {
         let child_name = child.name().value();
         trace!(namespace = %id, block = child_name, "Parsing namespace child block");
@@ -134,6 +137,7 @@ pub fn parse_service(node: &kdl::KdlNode) -> Result<ServiceConfig> {
         )
     })?;
 
+    reject_repeated(children, |_| true)?;
     for child in children.nodes() {
         let child_name = child.name().value();
         trace!(service = %id, block = child_name, "Parsing service child block");
@@ -214,18 +218,19 @@ pub(crate) const RECOGNIZED_SERVICE_LISTENER_KEYS: &[&str] = &[
 /// }
 /// ```
 fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
-    use super::helpers::{get_int_entry, get_string_entry};
+    use super::helpers::{get_int_entry, get_string_entry, get_unique_child};
     use crate::server::ListenerProtocol;
 
     // Get ID from first argument or from 'id' property in node
-    let id = get_first_arg_string(node)
-        .or_else(|| get_string_entry(node, "id"))
-        .unwrap_or_else(|| "service-listener".to_string());
+    let id = match get_first_arg_string(node) {
+        Some(id) => id,
+        None => get_string_entry(node, "id")?.unwrap_or_else(|| "service-listener".to_string()),
+    };
 
-    let address = get_string_entry(node, "address")
+    let address = get_string_entry(node, "address")?
         .ok_or_else(|| anyhow::anyhow!("Listener '{}' requires an 'address'", id))?;
 
-    let protocol_str = get_string_entry(node, "protocol").unwrap_or_else(|| "http".to_string());
+    let protocol_str = get_string_entry(node, "protocol")?.unwrap_or_else(|| "http".to_string());
     let protocol = match protocol_str.to_lowercase().as_str() {
         "http" => ListenerProtocol::Http,
         "https" => ListenerProtocol::Https,
@@ -242,17 +247,10 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
     };
 
     // Parse TLS config if present
-    let tls = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "tls")
-            .map(|n| super::server::parse_tls_config(n, &id))
-            .transpose()
-            .context("Failed to parse TLS config")?
-    } else {
-        None
-    };
+    let tls = get_unique_child(node, "tls")?
+        .map(|n| super::server::parse_tls_config(n, &id))
+        .transpose()
+        .context("Failed to parse TLS config")?;
 
     crate::kdl::server::check_listener_tls(&id, protocol, tls.is_some())?;
 
@@ -264,18 +262,18 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
         address,
         protocol,
         tls,
-        default_route: get_string_entry(node, "default-route"),
-        namespace: get_string_entry(node, "namespace"),
-        request_timeout_secs: get_int_entry(node, "request-timeout-secs")
+        default_route: get_string_entry(node, "default-route")?,
+        namespace: get_string_entry(node, "namespace")?,
+        request_timeout_secs: get_int_entry(node, "request-timeout-secs")?
             .map(|v| v as u64)
             .unwrap_or(60),
-        keepalive_timeout_secs: get_int_entry(node, "keepalive-timeout-secs")
+        keepalive_timeout_secs: get_int_entry(node, "keepalive-timeout-secs")?
             .map(|v| v as u64)
             .unwrap_or(75),
-        max_concurrent_streams: get_int_entry(node, "max-concurrent-streams")
+        max_concurrent_streams: get_int_entry(node, "max-concurrent-streams")?
             .map(|v| v as u32)
             .unwrap_or(100),
-        keepalive_max_requests: get_int_entry(node, "keepalive-max-requests").map(|v| v as u32),
+        keepalive_max_requests: get_int_entry(node, "keepalive-max-requests")?.map(|v| v as u32),
         trusted_proxies,
     })
 }
@@ -303,6 +301,7 @@ fn parse_exports(node: &kdl::KdlNode) -> Result<ExportConfig> {
         None => return Ok(exports), // Empty exports block is valid
     };
 
+    reject_repeated(children, |_| true)?;
     for child in children.nodes() {
         let child_name = child.name().value();
 

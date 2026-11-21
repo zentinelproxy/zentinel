@@ -328,6 +328,16 @@ Configuration validation failed:
 ```
 
 ```
+Duplicate node 'timeouts' in upstreams > upstream "backend": it is written 2 times,
+but only one of them would take effect. Combine them into a single 'timeouts' node,
+or remove the extra ones.
+```
+
+```
+Duplicate upstream ID 'backend' found. Each upstream ID must be unique.
+```
+
+```
 KDL configuration parse error:
 
   Expected closing brace

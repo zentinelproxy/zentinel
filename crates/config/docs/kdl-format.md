@@ -729,6 +729,54 @@ matches {
 ports 8080 8081 8082
 ```
 
+## One Node, One Value
+
+A block reads each of its settings once, so a node that is written twice in the
+same block is a load error rather than a choice between the two. The error names
+the node and where it is:
+
+```
+Duplicate node 'filters' in routes > route "api": it is written 2 times, but only
+one of them would take effect. Combine them into a single 'filters' node, or
+remove the extra ones.
+```
+
+```kdl
+route "api" {
+    // One node lists every filter
+    filters "auth" "rate-limit"
+
+    // Error: 'filters' is written twice in this route
+    // filters "auth"
+    // filters "rate-limit"
+}
+```
+
+The same holds for a block (`matches`, `policies`, `timeouts`, `tls`, ...), for a
+header named twice inside `set`, `add` or `rename` (header names are compared
+without regard to case, so `X-A` and `x-a` are the same header), and for a
+`route`, `listener`, `upstream`, `filter` or `agent` whose id is already taken.
+
+To fix a configuration that now fails, merge the copies into one node, or remove
+the one that was not in effect. Which copy was in effect depended on the block:
+the first for most settings, the last for blocks that are read by walking their
+children (an agent's settings, `logging`, a namespace's blocks) and for ids and
+header names. Check the behavior you rely on before choosing which to keep.
+
+Inside a `namespace` or a `service`, `limits`, `listeners`, `upstreams`, `routes`,
+`agents` and `filters` are each one block, so a second `routes` block there is an
+error too. At the top level, `routes` blocks add up.
+
+Nodes that make a list by repeating are the exception, and each repetition adds
+to the list: `route`, `listener`, `upstream`, `filter` and `agent` (each with its
+own id), `target`, the conditions inside `matches`, an agent's `events`, a
+listener's `trusted-proxies`, and the `routes`, `upstreams`, `listeners`,
+`filters` and `agents` blocks at the top level.
+
+The top-level `system`, `limits`, `observability`, `rate-limits`, `cache` and
+`waf` blocks may also be written again, in another file or in an environment
+override; the later one replaces the earlier one.
+
 ## Multi-Line Strings
 
 For long values, use a multi-line raw string. The `#` prefix means the contents

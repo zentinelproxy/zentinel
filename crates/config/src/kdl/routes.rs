@@ -16,6 +16,8 @@ use zentinel_common::types::ByteSize;
 
 use super::helpers::{
     get_bool_entry, get_first_arg_string, get_float_entry, get_int_entry, get_string_entry,
+    get_unique, get_unique_child, reject_repeated, reject_repeated_header_names,
+    reject_repeated_names,
 };
 
 /// Recognized child node names inside a `route` block.
@@ -61,13 +63,13 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 let matches = parse_match_conditions(child)?;
 
                 // Parse priority
-                let (priority, problem) = resolve_priority(child, &id);
+                let (priority, problem) = resolve_priority(child, &id)?;
                 if let Some(problem) = problem {
                     warn!("{}", problem);
                 }
 
                 // Parse upstream
-                let upstream = parse_upstream_ref(child);
+                let upstream = parse_upstream_ref(child)?;
 
                 // Parse static-files
                 let static_files = parse_static_file_config_opt(child)?;
@@ -81,18 +83,12 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 // Parse filters
                 let filters = parse_route_filter_refs(child)?;
 
-                let retry_policy = child
-                    .children()
-                    .and_then(|c| {
-                        c.nodes()
-                            .iter()
-                            .find(|n| n.name().value() == "retry-policy")
-                    })
+                let retry_policy = get_unique_child(child, "retry-policy")?
                     .map(parse_retry_policy)
                     .transpose()?;
 
                 // Parse builtin-handler
-                let (builtin_handler, problem) = resolve_builtin_handler(child, &id);
+                let (builtin_handler, problem) = resolve_builtin_handler(child, &id)?;
                 if let Some(problem) = problem {
                     warn!("{}", problem);
                 }
@@ -104,7 +100,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 let shadow = parse_shadow_config_opt(child)?;
 
                 // Determine service type
-                let (service_type, problem) = resolve_service_type(child, &id);
+                let (service_type, problem) = resolve_service_type(child, &id)?;
                 if let Some(problem) = problem {
                     warn!("{}", problem);
                 }
@@ -119,7 +115,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                 );
 
                 let (error_pages, problems) =
-                    super::error_pages::resolve_error_pages(child, &id, &service_type);
+                    super::error_pages::resolve_error_pages(child, &id, &service_type)?;
                 for problem in problems {
                     warn!("{}", problem);
                 }
@@ -169,7 +165,7 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     policies,
                     filters,
                     builtin_handler,
-                    waf_enabled: get_bool_entry(child, "waf-enabled").unwrap_or(false),
+                    waf_enabled: get_bool_entry(child, "waf-enabled")?.unwrap_or(false),
                     retry_policy,
                     static_files,
                     api_schema,
@@ -177,8 +173,8 @@ pub fn parse_routes(node: &kdl::KdlNode) -> Result<Vec<RouteConfig>> {
                     mcp: parse_optional_block(child, "mcp", parse_mcp_config)?,
                     a2a: parse_optional_block(child, "a2a", parse_a2a_config)?,
                     error_pages,
-                    websocket: get_bool_entry(child, "websocket").unwrap_or(false),
-                    websocket_inspection: get_bool_entry(child, "websocket-inspection")
+                    websocket: get_bool_entry(child, "websocket")?.unwrap_or(false),
+                    websocket_inspection: get_bool_entry(child, "websocket-inspection")?
                         .unwrap_or(false),
                     shadow,
                     fallback: parse_fallback_config_opt(child)?,
@@ -265,7 +261,7 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
     let route_id = get_first_arg_string(node).unwrap_or_else(|| "<unnamed>".to_string());
 
     if let Some(route_children) = node.children() {
-        if let Some(matches_node) = route_children.get("matches") {
+        if let Some(matches_node) = get_unique(route_children, "matches")? {
             if let Some(match_children) = matches_node.children() {
                 for match_node in match_children.nodes() {
                     let name = match_node.name().value();
@@ -381,24 +377,27 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
 /// value have been loading and must keep doing so, but the value comes back as
 /// a problem for `zentinel lint` (through `validate::unknown_keys`) instead of
 /// vanishing: a route meant to win over its neighbours silently did not.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `priority` is
+/// written more than once.
 pub(crate) fn resolve_priority(
     node: &kdl::KdlNode,
     route_id: &str,
-) -> (zentinel_common::types::Priority, Option<String>) {
+) -> Result<(zentinel_common::types::Priority, Option<String>)> {
     use zentinel_common::types::Priority;
 
-    let Some(value) = node
-        .children()
-        .and_then(|c| c.get("priority"))
+    let Some(value) = get_unique_child(node, "priority")?
         .and_then(|n| n.entries().first())
         .map(|e| e.value())
     else {
-        return (Priority::NORMAL, None);
+        return Ok((Priority::NORMAL, None));
     };
 
     // Integer form: `priority 100`
     if let Some(n) = value.as_integer() {
-        return (Priority(n as i32), None);
+        return Ok((Priority(n as i32), None));
     }
 
     // Named string alias: `priority "high"`
@@ -408,7 +407,7 @@ pub(crate) fn resolve_priority(
         Some(s) => format!("\"{s}\""),
         None => value.to_string(),
     };
-    match alias.as_deref() {
+    Ok(match alias.as_deref() {
         Some("critical") => (Priority::CRITICAL, None),
         Some("high") => (Priority::HIGH, None),
         Some("low") => (Priority::LOW, None),
@@ -421,19 +420,19 @@ pub(crate) fn resolve_priority(
                 written, route_id
             )),
         ),
-    }
+    })
 }
 
-fn parse_upstream_ref(node: &kdl::KdlNode) -> Option<String> {
+fn parse_upstream_ref(node: &kdl::KdlNode) -> Result<Option<String>> {
     if let Some(route_children) = node.children() {
-        if let Some(upstream_node) = route_children.get("upstream") {
+        if let Some(upstream_node) = get_unique(route_children, "upstream")? {
             let entry = upstream_node.entries().first();
             if let Some(s) = entry.and_then(|e| e.value().as_string()) {
-                return Some(s.to_string());
+                return Ok(Some(s.to_string()));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// Every name `parse_builtin_handler` accepts, for messages and suggestions.
@@ -455,20 +454,25 @@ const BUILTIN_HANDLER_NAMES: &[&str] = &[
 /// as a plain web route — usually with no upstream, so every request fails.
 /// Loading such a config keeps working, as it always has; the problem goes to
 /// `zentinel lint` through `validate::unknown_keys`.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `builtin-handler` is
+/// written more than once.
 pub(crate) fn resolve_builtin_handler(
     node: &kdl::KdlNode,
     route_id: &str,
-) -> (Option<BuiltinHandler>, Option<String>) {
-    let Some(name) = get_string_entry(node, "builtin-handler") else {
-        return (None, None);
+) -> Result<(Option<BuiltinHandler>, Option<String>)> {
+    let Some(name) = get_string_entry(node, "builtin-handler")? else {
+        return Ok((None, None));
     };
     if let Some(handler) = parse_builtin_handler(&name) {
-        return (Some(handler), None);
+        return Ok((Some(handler), None));
     }
     let suggestion = super::helpers::did_you_mean(&name, BUILTIN_HANDLER_NAMES)
         .map(|s| format!(" Did you mean '{}'?", s))
         .unwrap_or_default();
-    (
+    Ok((
         None,
         Some(format!(
             "'builtin-handler \"{}\"' on route '{}' is not a builtin handler ({}) and is \
@@ -478,7 +482,7 @@ pub(crate) fn resolve_builtin_handler(
             BUILTIN_HANDLER_NAMES.join(", "),
             suggestion
         )),
-    )
+    ))
 }
 
 fn parse_builtin_handler(name: &str) -> Option<BuiltinHandler> {
@@ -508,14 +512,24 @@ fn parse_builtin_handler(name: &str) -> Option<BuiltinHandler> {
 /// as a problem: logged at load, and reported by `zentinel lint` through
 /// `validate::unknown_keys`. It is not an error, because configs that carried
 /// such a value have been loading fine and must keep doing so.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `service-type` or
+/// `builtin-handler` is written more than once.
 pub(crate) fn resolve_service_type(
     node: &kdl::KdlNode,
     route_id: &str,
-) -> (ServiceType, Option<String>) {
-    let has = |name: &str| node.children().and_then(|c| c.get(name)).is_some();
+) -> Result<(ServiceType, Option<String>)> {
+    // Only whether the block is there; a block written twice is refused where
+    // its own parser reads it.
+    let has = |name: &str| {
+        node.children()
+            .is_some_and(|c| c.nodes().iter().any(|n| n.name().value() == name))
+    };
     let implied = if has("static-files") {
         ServiceType::Static
-    } else if get_string_entry(node, "builtin-handler")
+    } else if get_string_entry(node, "builtin-handler")?
         .and_then(|s| parse_builtin_handler(&s))
         .is_some()
     {
@@ -528,8 +542,8 @@ pub(crate) fn resolve_service_type(
         ServiceType::Web
     };
 
-    let Some(value) = get_string_entry(node, "service-type") else {
-        return (implied, None);
+    let Some(value) = get_string_entry(node, "service-type")? else {
+        return Ok((implied, None));
     };
 
     let explicit = match value.as_str() {
@@ -539,19 +553,19 @@ pub(crate) fn resolve_service_type(
         "builtin" => ServiceType::Builtin,
         "inference" => ServiceType::Inference,
         _ => {
-            return (
+            return Ok((
                 implied,
                 Some(format!(
                     "'service-type \"{}\"' on route '{}' is not a service type (web, api, \
                      static, builtin, inference) and is being ignored.",
                     value, route_id
                 )),
-            )
+            ))
         }
     };
 
     if explicit == implied || (explicit == ServiceType::Api && implied == ServiceType::Web) {
-        return (explicit, None);
+        return Ok((explicit, None));
     }
 
     let requirement = match explicit {
@@ -570,12 +584,12 @@ pub(crate) fn resolve_service_type(
         requirement,
         format!("{:?}", implied).to_lowercase()
     );
-    (implied, Some(problem))
+    Ok((implied, Some(problem)))
 }
 
 fn parse_static_file_config_opt(node: &kdl::KdlNode) -> Result<Option<StaticFileConfig>> {
     if let Some(route_children) = node.children() {
-        if let Some(static_node) = route_children.get("static-files") {
+        if let Some(static_node) = get_unique(route_children, "static-files")? {
             return Ok(Some(parse_static_file_config(static_node)?));
         }
     }
@@ -586,7 +600,7 @@ fn parse_route_filter_refs(node: &kdl::KdlNode) -> Result<Vec<String>> {
     let mut filter_ids = Vec::new();
 
     if let Some(route_children) = node.children() {
-        if let Some(filters_node) = route_children.get("filters") {
+        if let Some(filters_node) = get_unique(route_children, "filters")? {
             for entry in filters_node.entries() {
                 if let Some(id) = entry.value().as_string() {
                     filter_ids.push(id.to_string());
@@ -642,10 +656,7 @@ fn parse_optional_block<T>(
     name: &str,
     parse: impl Fn(&kdl::KdlNode) -> Result<T>,
 ) -> Result<Option<T>> {
-    node.children()
-        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == name))
-        .map(parse)
-        .transpose()
+    get_unique_child(node, name)?.map(parse).transpose()
 }
 
 /// A node's `name=value` property, as a string.
@@ -745,21 +756,21 @@ fn parse_mcp_upstreams(node: &kdl::KdlNode) -> Result<Vec<McpUpstream>> {
 fn parse_mcp_config(node: &kdl::KdlNode) -> Result<McpConfig> {
     let mut config = McpConfig::default();
 
-    if let Some(value) = get_bool_entry(node, "require-validated-version") {
+    if let Some(value) = get_bool_entry(node, "require-validated-version")? {
         config.require_validated_version = value;
     }
 
-    if let Some(value) = get_bool_entry(node, "validate-param-headers") {
+    if let Some(value) = get_bool_entry(node, "validate-param-headers")? {
         config.validate_param_headers = value;
     }
 
-    if let Some(value) = get_bool_entry(node, "filter-tool-list") {
+    if let Some(value) = get_bool_entry(node, "filter-tool-list")? {
         config.filter_tool_list = value;
     }
 
-    config.session_key = get_string_entry(node, "session-key");
+    config.session_key = get_string_entry(node, "session-key")?;
 
-    config.on_uninspectable_body = match get_string_entry(node, "on-uninspectable-body").as_deref()
+    config.on_uninspectable_body = match get_string_entry(node, "on-uninspectable-body")?.as_deref()
     {
         None => UninspectableBody::default(),
         Some("deny") => UninspectableBody::Deny,
@@ -772,6 +783,9 @@ fn parse_mcp_config(node: &kdl::KdlNode) -> Result<McpConfig> {
     };
 
     if let Some(children) = node.children() {
+        reject_repeated(children, |name| {
+            matches!(name, "methods" | "tools" | "upstreams")
+        })?;
         for child in children.nodes() {
             match child.name().value() {
                 "methods" => {
@@ -824,11 +838,11 @@ fn parse_mcp_config(node: &kdl::KdlNode) -> Result<McpConfig> {
 fn parse_a2a_config(node: &kdl::KdlNode) -> Result<A2aConfig> {
     let mut config = A2aConfig::default();
 
-    if let Some(value) = get_bool_entry(node, "deny-uninspectable-body") {
+    if let Some(value) = get_bool_entry(node, "deny-uninspectable-body")? {
         config.deny_uninspectable_body = value;
     }
 
-    config.unknown_methods = match get_string_entry(node, "unknown-methods").as_deref() {
+    config.unknown_methods = match get_string_entry(node, "unknown-methods")?.as_deref() {
         None => UnknownMethods::default(),
         Some("allow") => UnknownMethods::Allow,
         Some("deny") => UnknownMethods::Deny,
@@ -840,6 +854,7 @@ fn parse_a2a_config(node: &kdl::KdlNode) -> Result<A2aConfig> {
     };
 
     if let Some(children) = node.children() {
+        reject_repeated(children, |name| name == "methods")?;
         for child in children.nodes() {
             match child.name().value() {
                 "methods" => {
@@ -911,10 +926,7 @@ fn parse_allow_deny(node: &kdl::KdlNode) -> Result<(Vec<String>, Vec<String>)> {
 }
 
 fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettings> {
-    let Some(policies) = route
-        .children()
-        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "policies"))
-    else {
+    let Some(policies) = get_unique_child(route, "policies")? else {
         return Ok(RoutePolicySettings {
             timeout_secs: None,
             max_body_size: None,
@@ -923,18 +935,18 @@ fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettin
         });
     };
 
-    let timeout_secs = get_int_entry(policies, "timeout-secs").map(|v| v as u64);
+    let timeout_secs = get_int_entry(policies, "timeout-secs")?.map(|v| v as u64);
 
     // Accepts both `max-body-size "10MB"` and a plain byte count.
-    let max_body_size = match get_string_entry(policies, "max-body-size") {
+    let max_body_size = match get_string_entry(policies, "max-body-size")? {
         Some(s) => Some(
             s.parse::<ByteSize>()
                 .map_err(|e| anyhow::anyhow!("Invalid max-body-size '{s}': {e}"))?,
         ),
-        None => get_int_entry(policies, "max-body-size").map(|v| ByteSize(v as usize)),
+        None => get_int_entry(policies, "max-body-size")?.map(|v| ByteSize(v as usize)),
     };
 
-    let failure_mode = match get_string_entry(policies, "failure-mode").as_deref() {
+    let failure_mode = match get_string_entry(policies, "failure-mode")?.as_deref() {
         Some("open") => FailureMode::Open,
         Some("closed") => FailureMode::Closed,
         None => FailureMode::default(),
@@ -945,9 +957,7 @@ fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettin
         }
     };
 
-    let rate_limit = policies
-        .children()
-        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "rate-limit"))
+    let rate_limit = get_unique_child(policies, "rate-limit")?
         .map(parse_route_rate_limit)
         .transpose()?;
 
@@ -961,7 +971,7 @@ fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettin
 
 /// Parse a route-level `rate-limit` block.
 fn parse_route_rate_limit(node: &kdl::KdlNode) -> Result<RateLimitPolicy> {
-    let requests_per_second = get_int_entry(node, "requests-per-second")
+    let requests_per_second = get_int_entry(node, "requests-per-second")?
         .map(|v| v as u32)
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -971,11 +981,11 @@ fn parse_route_rate_limit(node: &kdl::KdlNode) -> Result<RateLimitPolicy> {
 
     // A burst below the sustained rate would throttle below the configured
     // rate, which is never what an operator means by "burst".
-    let burst = get_int_entry(node, "burst")
+    let burst = get_int_entry(node, "burst")?
         .map(|v| v as u32)
         .unwrap_or(requests_per_second);
 
-    let key = match get_string_entry(node, "key").as_deref() {
+    let key = match get_string_entry(node, "key")?.as_deref() {
         None => RateLimitKey::default(),
         // Both separators are accepted: the shipped config writes
         // `key "client_ip"` while the filter-level parser documents
@@ -1016,12 +1026,12 @@ fn parse_route_header_policies(
     let mut response_headers = HeaderModifications::default();
 
     if let Some(route_children) = node.children() {
-        if let Some(policies_node) = route_children.get("policies") {
+        if let Some(policies_node) = get_unique(route_children, "policies")? {
             if let Some(policy_children) = policies_node.children() {
-                if let Some(req_node) = policy_children.get("request-headers") {
+                if let Some(req_node) = get_unique(policy_children, "request-headers")? {
                     request_headers = parse_header_modifications(req_node)?;
                 }
-                if let Some(resp_node) = policy_children.get("response-headers") {
+                if let Some(resp_node) = get_unique(policy_children, "response-headers")? {
                     response_headers = parse_header_modifications(resp_node)?;
                 }
             }
@@ -1039,8 +1049,9 @@ fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications
     let mut remove = Vec::new();
 
     if let Some(children) = node.children() {
-        if let Some(rename_node) = children.get("rename") {
+        if let Some(rename_node) = get_unique(children, "rename")? {
             if let Some(rename_children) = rename_node.children() {
+                reject_repeated_header_names(rename_children)?;
                 for entry_node in rename_children.nodes() {
                     let old_name = entry_node.name().value().to_string();
                     if let Some(new_name) = get_first_arg_string(entry_node) {
@@ -1049,8 +1060,9 @@ fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications
                 }
             }
         }
-        if let Some(set_node) = children.get("set") {
+        if let Some(set_node) = get_unique(children, "set")? {
             if let Some(set_children) = set_node.children() {
+                reject_repeated_header_names(set_children)?;
                 for entry_node in set_children.nodes() {
                     let name = entry_node.name().value().to_string();
                     if let Some(value) = get_first_arg_string(entry_node) {
@@ -1059,8 +1071,9 @@ fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications
                 }
             }
         }
-        if let Some(add_node) = children.get("add") {
+        if let Some(add_node) = get_unique(children, "add")? {
             if let Some(add_children) = add_node.children() {
+                reject_repeated_header_names(add_children)?;
                 for entry_node in add_children.nodes() {
                     let name = entry_node.name().value().to_string();
                     if let Some(value) = get_first_arg_string(entry_node) {
@@ -1069,7 +1082,7 @@ fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications
                 }
             }
         }
-        if let Some(remove_node) = children.get("remove") {
+        if let Some(remove_node) = get_unique(children, "remove")? {
             for entry in remove_node.entries() {
                 if let Some(name) = entry.value().as_string() {
                     remove.push(name.to_string());
@@ -1088,7 +1101,7 @@ fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications
 
 /// Parse static file configuration block
 pub fn parse_static_file_config(node: &kdl::KdlNode) -> Result<StaticFileConfig> {
-    let root = get_string_entry(node, "root").ok_or_else(|| {
+    let root = get_string_entry(node, "root")?.ok_or_else(|| {
         anyhow::anyhow!(
             "Static files configuration requires a 'root' directory, e.g., root \"/var/www/html\""
         )
@@ -1096,20 +1109,20 @@ pub fn parse_static_file_config(node: &kdl::KdlNode) -> Result<StaticFileConfig>
 
     Ok(StaticFileConfig {
         root: PathBuf::from(root),
-        index: get_string_entry(node, "index").unwrap_or_else(|| "index.html".to_string()),
-        directory_listing: get_bool_entry(node, "directory-listing").unwrap_or(false),
-        cache_control: get_string_entry(node, "cache-control")
+        index: get_string_entry(node, "index")?.unwrap_or_else(|| "index.html".to_string()),
+        directory_listing: get_bool_entry(node, "directory-listing")?.unwrap_or(false),
+        cache_control: get_string_entry(node, "cache-control")?
             .unwrap_or_else(|| "public, max-age=3600".to_string()),
-        compress: get_bool_entry(node, "compress").unwrap_or(true),
+        compress: get_bool_entry(node, "compress")?.unwrap_or(true),
         mime_types: HashMap::new(),
-        fallback: get_string_entry(node, "fallback"),
+        fallback: get_string_entry(node, "fallback")?,
     })
 }
 
 /// Parse optional cache configuration from a route
 fn parse_cache_config_opt(node: &kdl::KdlNode) -> Result<Option<RouteCacheConfig>> {
     if let Some(route_children) = node.children() {
-        if let Some(cache_node) = route_children.get("cache") {
+        if let Some(cache_node) = get_unique(route_children, "cache")? {
             return Ok(Some(parse_cache_config(cache_node)?));
         }
     }
@@ -1134,17 +1147,18 @@ fn parse_cache_config_opt(node: &kdl::KdlNode) -> Result<Option<RouteCacheConfig
 /// }
 /// ```
 fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
-    let enabled = get_bool_entry(node, "enabled").unwrap_or(false);
-    let default_ttl_secs = get_int_entry(node, "default-ttl-secs").unwrap_or(3600) as u64;
-    let max_size_bytes = get_int_entry(node, "max-size-bytes").unwrap_or(10 * 1024 * 1024) as usize;
-    let cache_private = get_bool_entry(node, "cache-private").unwrap_or(false);
+    let enabled = get_bool_entry(node, "enabled")?.unwrap_or(false);
+    let default_ttl_secs = get_int_entry(node, "default-ttl-secs")?.unwrap_or(3600) as u64;
+    let max_size_bytes =
+        get_int_entry(node, "max-size-bytes")?.unwrap_or(10 * 1024 * 1024) as usize;
+    let cache_private = get_bool_entry(node, "cache-private")?.unwrap_or(false);
     let stale_while_revalidate_secs =
-        get_int_entry(node, "stale-while-revalidate-secs").unwrap_or(60) as u64;
-    let stale_if_error_secs = get_int_entry(node, "stale-if-error-secs").unwrap_or(300) as u64;
+        get_int_entry(node, "stale-while-revalidate-secs")?.unwrap_or(60) as u64;
+    let stale_if_error_secs = get_int_entry(node, "stale-if-error-secs")?.unwrap_or(300) as u64;
 
     // Parse cacheable methods (string arguments)
     let cacheable_methods = if let Some(children) = node.children() {
-        if let Some(methods_node) = children.get("cacheable-methods") {
+        if let Some(methods_node) = get_unique(children, "cacheable-methods")? {
             methods_node
                 .entries()
                 .iter()
@@ -1159,7 +1173,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
 
     // Parse cacheable status codes (integer arguments)
     let cacheable_status_codes = if let Some(children) = node.children() {
-        if let Some(codes_node) = children.get("cacheable-status-codes") {
+        if let Some(codes_node) = get_unique(children, "cacheable-status-codes")? {
             codes_node
                 .entries()
                 .iter()
@@ -1174,7 +1188,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
 
     // Parse vary headers
     let vary_headers = if let Some(children) = node.children() {
-        if let Some(vary_node) = children.get("vary-headers") {
+        if let Some(vary_node) = get_unique(children, "vary-headers")? {
             vary_node
                 .entries()
                 .iter()
@@ -1189,7 +1203,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
 
     // Parse ignore query params
     let ignore_query_params = if let Some(children) = node.children() {
-        if let Some(ignore_node) = children.get("ignore-query-params") {
+        if let Some(ignore_node) = get_unique(children, "ignore-query-params")? {
             ignore_node
                 .entries()
                 .iter()
@@ -1204,7 +1218,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
 
     // Parse exclude extensions (file extensions to skip caching)
     let exclude_extensions = if let Some(children) = node.children() {
-        if let Some(ext_node) = children.get("exclude-extensions") {
+        if let Some(ext_node) = get_unique(children, "exclude-extensions")? {
             ext_node
                 .entries()
                 .iter()
@@ -1219,7 +1233,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
 
     // Parse exclude paths (glob patterns to skip caching)
     let exclude_paths = if let Some(children) = node.children() {
-        if let Some(paths_node) = children.get("exclude-paths") {
+        if let Some(paths_node) = get_unique(children, "exclude-paths")? {
             paths_node
                 .entries()
                 .iter()
@@ -1258,7 +1272,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
 /// Parse optional API schema configuration from a route
 fn parse_api_schema_config_opt(node: &kdl::KdlNode) -> Result<Option<ApiSchemaConfig>> {
     if let Some(route_children) = node.children() {
-        if let Some(api_schema_node) = route_children.get("api-schema") {
+        if let Some(api_schema_node) = get_unique(route_children, "api-schema")? {
             return Ok(Some(parse_api_schema_config(api_schema_node)?));
         }
     }
@@ -1365,11 +1379,11 @@ fn normalize_schema_arrays(schema: &mut serde_json::Value) {
 }
 
 fn parse_api_schema_config(node: &kdl::KdlNode) -> Result<ApiSchemaConfig> {
-    let schema_file = get_string_entry(node, "schema-file").map(PathBuf::from);
-    let schema_content = get_string_entry(node, "schema-content");
-    let validate_requests = get_bool_entry(node, "validate-requests").unwrap_or(true);
-    let validate_responses = get_bool_entry(node, "validate-responses").unwrap_or(false);
-    let strict_mode = get_bool_entry(node, "strict-mode").unwrap_or(false);
+    let schema_file = get_string_entry(node, "schema-file")?.map(PathBuf::from);
+    let schema_content = get_string_entry(node, "schema-content")?;
+    let validate_requests = get_bool_entry(node, "validate-requests")?.unwrap_or(true);
+    let validate_responses = get_bool_entry(node, "validate-responses")?.unwrap_or(false);
+    let strict_mode = get_bool_entry(node, "strict-mode")?.unwrap_or(false);
 
     // Validate mutually exclusive options
     if schema_file.is_some() && schema_content.is_some() {
@@ -1380,7 +1394,7 @@ fn parse_api_schema_config(node: &kdl::KdlNode) -> Result<ApiSchemaConfig> {
 
     // Parse inline request schema if present
     let request_schema = if let Some(children) = node.children() {
-        if let Some(schema_node) = children.get("request-schema") {
+        if let Some(schema_node) = get_unique(children, "request-schema")? {
             Some(schema_from_kdl(schema_node)?)
         } else {
             None
@@ -1391,7 +1405,7 @@ fn parse_api_schema_config(node: &kdl::KdlNode) -> Result<ApiSchemaConfig> {
 
     // Parse inline response schema if present
     let response_schema = if let Some(children) = node.children() {
-        if let Some(schema_node) = children.get("response-schema") {
+        if let Some(schema_node) = get_unique(children, "response-schema")? {
             Some(schema_from_kdl(schema_node)?)
         } else {
             None
@@ -1425,7 +1439,7 @@ fn parse_api_schema_config(node: &kdl::KdlNode) -> Result<ApiSchemaConfig> {
 /// Parse optional shadow (traffic mirroring) configuration from a route
 fn parse_shadow_config_opt(node: &kdl::KdlNode) -> Result<Option<ShadowConfig>> {
     if let Some(route_children) = node.children() {
-        if let Some(shadow_node) = route_children.get("shadow") {
+        if let Some(shadow_node) = get_unique(route_children, "shadow")? {
             return Ok(Some(parse_shadow_config(shadow_node)?));
         }
     }
@@ -1447,7 +1461,7 @@ fn parse_shadow_config_opt(node: &kdl::KdlNode) -> Result<Option<ShadowConfig>> 
 /// ```
 fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
     // Upstream is required
-    let upstream = get_string_entry(node, "upstream").ok_or_else(|| {
+    let upstream = get_string_entry(node, "upstream")?.ok_or_else(|| {
         anyhow::anyhow!(
             "Shadow configuration requires an 'upstream' field, e.g., upstream \"canary\""
         )
@@ -1457,7 +1471,7 @@ fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
     // numeric string (`percentage "50"`). Invalid values are hard errors —
     // silently falling back to the 100% default would mirror far more traffic
     // than intended.
-    let percentage = if let Some(pct_str) = get_string_entry(node, "percentage") {
+    let percentage = if let Some(pct_str) = get_string_entry(node, "percentage")? {
         pct_str.parse::<f64>().map_err(|_| {
             anyhow::anyhow!(
                 "Shadow 'percentage' has invalid value \"{}\". \
@@ -1466,7 +1480,7 @@ fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
             )
         })?
     } else {
-        get_float_entry(node, "percentage").unwrap_or(100.0)
+        get_float_entry(node, "percentage")?.unwrap_or(100.0)
     };
     if !(0.0..=100.0).contains(&percentage) {
         return Err(anyhow::anyhow!(
@@ -1475,13 +1489,13 @@ fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
         ));
     }
 
-    let timeout_ms = get_int_entry(node, "timeout-ms").unwrap_or(5000) as u64;
-    let buffer_body = get_bool_entry(node, "buffer-body").unwrap_or(false);
-    let max_body_bytes = get_int_entry(node, "max-body-bytes").unwrap_or(1048576) as usize;
+    let timeout_ms = get_int_entry(node, "timeout-ms")?.unwrap_or(5000) as u64;
+    let buffer_body = get_bool_entry(node, "buffer-body")?.unwrap_or(false);
+    let max_body_bytes = get_int_entry(node, "max-body-bytes")?.unwrap_or(1048576) as usize;
 
     // Parse sample-header if present (tuple of name, value)
     let sample_header = if let Some(children) = node.children() {
-        if let Some(header_node) = children.get("sample-header") {
+        if let Some(header_node) = get_unique(children, "sample-header")? {
             let entries: Vec<_> = header_node.entries().iter().collect();
             if entries.len() >= 2 {
                 let name = entries[0]
@@ -1526,7 +1540,7 @@ fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
 /// Parse optional fallback configuration from a route
 fn parse_fallback_config_opt(node: &kdl::KdlNode) -> Result<Option<FallbackConfig>> {
     if let Some(route_children) = node.children() {
-        if let Some(fallback_node) = route_children.get("fallback") {
+        if let Some(fallback_node) = get_unique(route_children, "fallback")? {
             return Ok(Some(parse_fallback_config(fallback_node)?));
         }
     }
@@ -1560,11 +1574,11 @@ fn parse_fallback_config_opt(node: &kdl::KdlNode) -> Result<Option<FallbackConfi
 /// }
 /// ```
 fn parse_fallback_config(node: &kdl::KdlNode) -> Result<FallbackConfig> {
-    let max_attempts = get_int_entry(node, "max-attempts").unwrap_or(3) as u32;
+    let max_attempts = get_int_entry(node, "max-attempts")?.unwrap_or(3) as u32;
 
     // Parse triggers
     let triggers = if let Some(children) = node.children() {
-        if let Some(triggers_node) = children.get("triggers") {
+        if let Some(triggers_node) = get_unique(children, "triggers")? {
             parse_fallback_triggers(triggers_node)?
         } else {
             FallbackTriggers::default()
@@ -1593,14 +1607,14 @@ fn parse_fallback_config(node: &kdl::KdlNode) -> Result<FallbackConfig> {
 
 /// Parse fallback triggers block
 fn parse_fallback_triggers(node: &kdl::KdlNode) -> Result<FallbackTriggers> {
-    let on_health_failure = get_bool_entry(node, "on-health-failure").unwrap_or(true);
-    let on_budget_exhausted = get_bool_entry(node, "on-budget-exhausted").unwrap_or(false);
-    let on_latency_threshold_ms = get_int_entry(node, "on-latency-threshold-ms").map(|v| v as u64);
-    let on_connection_error = get_bool_entry(node, "on-connection-error").unwrap_or(true);
+    let on_health_failure = get_bool_entry(node, "on-health-failure")?.unwrap_or(true);
+    let on_budget_exhausted = get_bool_entry(node, "on-budget-exhausted")?.unwrap_or(false);
+    let on_latency_threshold_ms = get_int_entry(node, "on-latency-threshold-ms")?.map(|v| v as u64);
+    let on_connection_error = get_bool_entry(node, "on-connection-error")?.unwrap_or(true);
 
     // Parse error codes (integer arguments)
     let on_error_codes = if let Some(children) = node.children() {
-        if let Some(codes_node) = children.get("on-error-codes") {
+        if let Some(codes_node) = get_unique(children, "on-error-codes")? {
             codes_node
                 .entries()
                 .iter()
@@ -1611,8 +1625,7 @@ fn parse_fallback_triggers(node: &kdl::KdlNode) -> Result<FallbackTriggers> {
         }
     } else {
         // Also check for inline arguments
-        node.children()
-            .and_then(|c| c.get("on-error-codes"))
+        get_unique_child(node, "on-error-codes")?
             .map(|n| {
                 n.entries()
                     .iter()
@@ -1644,8 +1657,9 @@ fn parse_fallback_upstreams(node: &kdl::KdlNode) -> Result<Vec<FallbackUpstream>
                     )
                 })?;
 
-                let provider = parse_inference_provider(child);
-                let skip_if_unhealthy = get_bool_entry(child, "skip-if-unhealthy").unwrap_or(false);
+                let provider = parse_inference_provider(child)?;
+                let skip_if_unhealthy =
+                    get_bool_entry(child, "skip-if-unhealthy")?.unwrap_or(false);
                 let model_mapping = parse_model_mapping(child)?;
 
                 trace!(
@@ -1682,8 +1696,9 @@ fn parse_model_mapping(node: &kdl::KdlNode) -> Result<HashMap<String, String>> {
     let mut mapping = HashMap::new();
 
     if let Some(children) = node.children() {
-        if let Some(mapping_node) = children.get("model-mapping") {
+        if let Some(mapping_node) = get_unique(children, "model-mapping")? {
             if let Some(mapping_children) = mapping_node.children() {
+                reject_repeated_names(mapping_children)?;
                 for entry_node in mapping_children.nodes() {
                     // Each node is like: "gpt-4" "claude-3-opus"
                     let entries: Vec<_> = entry_node
@@ -1711,6 +1726,12 @@ fn parse_model_mapping(node: &kdl::KdlNode) -> Result<HashMap<String, String>> {
             // Process pairs
             for chunk in entries.chunks(2) {
                 if chunk.len() == 2 {
+                    if mapping.contains_key(&chunk[0]) {
+                        return Err(anyhow::anyhow!(
+                            "Duplicate model-mapping entry '{}'. Each model is mapped once.",
+                            chunk[0]
+                        ));
+                    }
                     mapping.insert(chunk[0].clone(), chunk[1].clone());
                 }
             }
@@ -1721,12 +1742,12 @@ fn parse_model_mapping(node: &kdl::KdlNode) -> Result<HashMap<String, String>> {
 }
 
 /// Parse inference provider from node
-fn parse_inference_provider(node: &kdl::KdlNode) -> InferenceProvider {
-    match get_string_entry(node, "provider").as_deref() {
+fn parse_inference_provider(node: &kdl::KdlNode) -> Result<InferenceProvider> {
+    Ok(match get_string_entry(node, "provider")?.as_deref() {
         Some("openai") => InferenceProvider::OpenAi,
         Some("anthropic") => InferenceProvider::Anthropic,
         _ => InferenceProvider::Generic,
-    }
+    })
 }
 
 /// Parse optional model routing configuration from an inference block.
@@ -1742,7 +1763,7 @@ fn parse_inference_provider(node: &kdl::KdlNode) -> InferenceProvider {
 /// ```
 fn parse_model_routing_config_opt(node: &kdl::KdlNode) -> Result<Option<ModelRoutingConfig>> {
     if let Some(children) = node.children() {
-        if let Some(routing_node) = children.get("model-routing") {
+        if let Some(routing_node) = get_unique(children, "model-routing")? {
             return Ok(Some(parse_model_routing_config(routing_node)?));
         }
     }
@@ -1755,14 +1776,14 @@ fn parse_model_routing_config(node: &kdl::KdlNode) -> Result<ModelRoutingConfig>
     let mut default_upstream = None;
 
     // Get default-upstream if present (as entry or child)
-    if let Some(def) = get_string_entry(node, "default-upstream") {
+    if let Some(def) = get_string_entry(node, "default-upstream")? {
         default_upstream = Some(def);
     }
 
     // Parse children
     if let Some(children) = node.children() {
         // Check for default-upstream as a child node
-        if let Some(def_node) = children.get("default-upstream") {
+        if let Some(def_node) = get_unique(children, "default-upstream")? {
             if let Some(first_entry) = def_node.entries().first() {
                 if let Some(val) = first_entry.value().as_string() {
                     default_upstream = Some(val.to_string());
@@ -1853,7 +1874,7 @@ fn parse_model_upstream_mapping(node: &kdl::KdlNode) -> Result<Option<ModelUpstr
 /// Parse optional inference configuration from a route
 fn parse_inference_config_opt(node: &kdl::KdlNode) -> Result<Option<InferenceConfig>> {
     if let Some(route_children) = node.children() {
-        if let Some(inference_node) = route_children.get("inference") {
+        if let Some(inference_node) = get_unique(route_children, "inference")? {
             return Ok(Some(parse_inference_config(inference_node)?));
         }
     }
@@ -1883,7 +1904,7 @@ fn parse_inference_config_opt(node: &kdl::KdlNode) -> Result<Option<InferenceCon
 /// ```
 fn parse_inference_config(node: &kdl::KdlNode) -> Result<InferenceConfig> {
     // Parse provider
-    let provider = match get_string_entry(node, "provider").as_deref() {
+    let provider = match get_string_entry(node, "provider")?.as_deref() {
         Some("openai") | Some("open-ai") | Some("open_ai") => InferenceProvider::OpenAi,
         Some("anthropic") => InferenceProvider::Anthropic,
         Some("generic") | None => InferenceProvider::Generic,
@@ -1895,11 +1916,11 @@ fn parse_inference_config(node: &kdl::KdlNode) -> Result<InferenceConfig> {
         }
     };
 
-    let model_header = get_string_entry(node, "model-header");
+    let model_header = get_string_entry(node, "model-header")?;
 
     // Parse rate-limit sub-block
     let rate_limit = if let Some(children) = node.children() {
-        if let Some(rl_node) = children.get("rate-limit") {
+        if let Some(rl_node) = get_unique(children, "rate-limit")? {
             Some(parse_token_rate_limit(rl_node)?)
         } else {
             None
@@ -1910,7 +1931,7 @@ fn parse_inference_config(node: &kdl::KdlNode) -> Result<InferenceConfig> {
 
     // Parse routing sub-block
     let routing = if let Some(children) = node.children() {
-        if let Some(routing_node) = children.get("routing") {
+        if let Some(routing_node) = get_unique(children, "routing")? {
             Some(parse_inference_routing(routing_node)?)
         } else {
             None
@@ -1921,7 +1942,7 @@ fn parse_inference_config(node: &kdl::KdlNode) -> Result<InferenceConfig> {
 
     // Parse budget sub-block
     let budget = if let Some(children) = node.children() {
-        if let Some(budget_node) = children.get("budget") {
+        if let Some(budget_node) = get_unique(children, "budget")? {
             Some(parse_token_budget(budget_node)?)
         } else {
             None
@@ -1932,7 +1953,7 @@ fn parse_inference_config(node: &kdl::KdlNode) -> Result<InferenceConfig> {
 
     // Parse cost-attribution sub-block
     let cost_attribution = if let Some(children) = node.children() {
-        if let Some(cost_node) = children.get("cost-attribution") {
+        if let Some(cost_node) = get_unique(children, "cost-attribution")? {
             Some(parse_cost_attribution(cost_node)?)
         } else {
             None
@@ -1970,15 +1991,15 @@ fn parse_inference_config(node: &kdl::KdlNode) -> Result<InferenceConfig> {
 
 /// Parse token rate limit configuration
 fn parse_token_rate_limit(node: &kdl::KdlNode) -> Result<TokenRateLimit> {
-    let tokens_per_minute = get_int_entry(node, "tokens-per-minute")
+    let tokens_per_minute = get_int_entry(node, "tokens-per-minute")?
         .ok_or_else(|| anyhow::anyhow!("Token rate limit requires 'tokens-per-minute'"))?
         as u64;
 
-    let requests_per_minute = get_int_entry(node, "requests-per-minute").map(|v| v as u64);
+    let requests_per_minute = get_int_entry(node, "requests-per-minute")?.map(|v| v as u64);
 
-    let burst_tokens = get_int_entry(node, "burst-tokens").unwrap_or(10000) as u64;
+    let burst_tokens = get_int_entry(node, "burst-tokens")?.unwrap_or(10000) as u64;
 
-    let estimation_method = match get_string_entry(node, "estimation-method").as_deref() {
+    let estimation_method = match get_string_entry(node, "estimation-method")?.as_deref() {
         Some("chars") | Some("characters") | None => TokenEstimation::Chars,
         Some("words") => TokenEstimation::Words,
         Some("tiktoken") => TokenEstimation::Tiktoken,
@@ -2000,7 +2021,7 @@ fn parse_token_rate_limit(node: &kdl::KdlNode) -> Result<TokenRateLimit> {
 
 /// Parse inference routing configuration
 fn parse_inference_routing(node: &kdl::KdlNode) -> Result<InferenceRouting> {
-    let strategy = match get_string_entry(node, "strategy").as_deref() {
+    let strategy = match get_string_entry(node, "strategy")?.as_deref() {
         Some("least-tokens-queued") | Some("least_tokens_queued") | None => {
             InferenceRoutingStrategy::LeastTokensQueued
         }
@@ -2014,7 +2035,7 @@ fn parse_inference_routing(node: &kdl::KdlNode) -> Result<InferenceRouting> {
         }
     };
 
-    let queue_depth_header = get_string_entry(node, "queue-depth-header");
+    let queue_depth_header = get_string_entry(node, "queue-depth-header")?;
 
     Ok(InferenceRouting {
         strategy,
@@ -2036,7 +2057,7 @@ fn parse_inference_routing(node: &kdl::KdlNode) -> Result<InferenceRouting> {
 /// }
 /// ```
 fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
-    let period = match get_string_entry(node, "period").as_deref() {
+    let period = match get_string_entry(node, "period")?.as_deref() {
         Some("hourly") => BudgetPeriod::Hourly,
         Some("daily") | None => BudgetPeriod::Daily,
         Some("monthly") => BudgetPeriod::Monthly,
@@ -2053,12 +2074,12 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
         }
     };
 
-    let limit = get_int_entry(node, "limit")
+    let limit = get_int_entry(node, "limit")?
         .ok_or_else(|| anyhow::anyhow!("Token budget requires 'limit'"))? as u64;
 
     // Parse alert-thresholds as a list of floats from arguments
     let alert_thresholds = if let Some(children) = node.children() {
-        if let Some(threshold_node) = children.get("alert-thresholds") {
+        if let Some(threshold_node) = get_unique(children, "alert-thresholds")? {
             threshold_node
                 .entries()
                 .iter()
@@ -2075,10 +2096,10 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
         vec![0.80, 0.90, 0.95]
     };
 
-    let enforce = get_bool_entry(node, "enforce").unwrap_or(true);
-    let rollover = get_bool_entry(node, "rollover").unwrap_or(false);
-    let burst_allowance = get_float_entry(node, "burst-allowance");
-    let max_tenants = get_int_entry(node, "max-tenants")
+    let enforce = get_bool_entry(node, "enforce")?.unwrap_or(true);
+    let rollover = get_bool_entry(node, "rollover")?.unwrap_or(false);
+    let burst_allowance = get_float_entry(node, "burst-allowance")?;
+    let max_tenants = get_int_entry(node, "max-tenants")?
         .map(|v| v as usize)
         .unwrap_or_else(zentinel_common::budget::default_max_tenants);
 
@@ -2127,14 +2148,14 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
 /// }
 /// ```
 fn parse_cost_attribution(node: &kdl::KdlNode) -> Result<CostAttributionConfig> {
-    let enabled = get_bool_entry(node, "enabled").unwrap_or(true);
-    let default_input_cost = get_float_entry(node, "default-input-cost").unwrap_or(1.0);
-    let default_output_cost = get_float_entry(node, "default-output-cost").unwrap_or(2.0);
-    let currency = get_string_entry(node, "currency").unwrap_or_else(|| "USD".to_string());
+    let enabled = get_bool_entry(node, "enabled")?.unwrap_or(true);
+    let default_input_cost = get_float_entry(node, "default-input-cost")?.unwrap_or(1.0);
+    let default_output_cost = get_float_entry(node, "default-output-cost")?.unwrap_or(2.0);
+    let currency = get_string_entry(node, "currency")?.unwrap_or_else(|| "USD".to_string());
 
     // Parse pricing sub-block
     let pricing = if let Some(children) = node.children() {
-        if let Some(pricing_node) = children.get("pricing") {
+        if let Some(pricing_node) = get_unique(children, "pricing")? {
             parse_model_pricing_list(pricing_node)?
         } else {
             Vec::new()
@@ -2172,16 +2193,16 @@ fn parse_model_pricing_list(node: &kdl::KdlNode) -> Result<Vec<ModelPricing>> {
                     .ok_or_else(|| anyhow::anyhow!("Model pricing requires a pattern argument"))?;
 
                 let input_cost =
-                    get_float_entry(child, "input-cost-per-million").ok_or_else(|| {
+                    get_float_entry(child, "input-cost-per-million")?.ok_or_else(|| {
                         anyhow::anyhow!("Model pricing requires 'input-cost-per-million'")
                     })?;
 
                 let output_cost =
-                    get_float_entry(child, "output-cost-per-million").ok_or_else(|| {
+                    get_float_entry(child, "output-cost-per-million")?.ok_or_else(|| {
                         anyhow::anyhow!("Model pricing requires 'output-cost-per-million'")
                     })?;
 
-                let currency = get_string_entry(child, "currency");
+                let currency = get_string_entry(child, "currency")?;
 
                 pricing.push(ModelPricing {
                     model_pattern: pattern,
@@ -2227,7 +2248,7 @@ fn parse_model_pricing_list(node: &kdl::KdlNode) -> Result<Vec<ModelPricing>> {
 /// ```
 fn parse_guardrails_config_opt(node: &kdl::KdlNode) -> Result<Option<GuardrailsConfig>> {
     if let Some(children) = node.children() {
-        if let Some(guardrails_node) = children.get("guardrails") {
+        if let Some(guardrails_node) = get_unique(children, "guardrails")? {
             return Ok(Some(parse_guardrails_config(guardrails_node)?));
         }
     }
@@ -2238,7 +2259,7 @@ fn parse_guardrails_config_opt(node: &kdl::KdlNode) -> Result<Option<GuardrailsC
 fn parse_guardrails_config(node: &kdl::KdlNode) -> Result<GuardrailsConfig> {
     // Parse prompt-injection sub-block
     let prompt_injection = if let Some(children) = node.children() {
-        if let Some(pi_node) = children.get("prompt-injection") {
+        if let Some(pi_node) = get_unique(children, "prompt-injection")? {
             Some(parse_prompt_injection_config(pi_node)?)
         } else {
             None
@@ -2249,7 +2270,7 @@ fn parse_guardrails_config(node: &kdl::KdlNode) -> Result<GuardrailsConfig> {
 
     // Parse pii-detection sub-block
     let pii_detection = if let Some(children) = node.children() {
-        if let Some(pii_node) = children.get("pii-detection") {
+        if let Some(pii_node) = get_unique(children, "pii-detection")? {
             Some(parse_pii_detection_config(pii_node)?)
         } else {
             None
@@ -2272,12 +2293,12 @@ fn parse_guardrails_config(node: &kdl::KdlNode) -> Result<GuardrailsConfig> {
 
 /// Parse prompt injection detection configuration.
 fn parse_prompt_injection_config(node: &kdl::KdlNode) -> Result<PromptInjectionConfig> {
-    let enabled = get_bool_entry(node, "enabled").unwrap_or(false);
+    let enabled = get_bool_entry(node, "enabled")?.unwrap_or(false);
 
-    let agent = get_string_entry(node, "agent")
+    let agent = get_string_entry(node, "agent")?
         .ok_or_else(|| anyhow::anyhow!("Prompt injection config requires 'agent' field"))?;
 
-    let action = match get_string_entry(node, "action").as_deref() {
+    let action = match get_string_entry(node, "action")?.as_deref() {
         Some("block") => GuardrailAction::Block,
         Some("log") | None => GuardrailAction::Log,
         Some("warn") => GuardrailAction::Warn,
@@ -2289,11 +2310,11 @@ fn parse_prompt_injection_config(node: &kdl::KdlNode) -> Result<PromptInjectionC
         }
     };
 
-    let block_status = get_int_entry(node, "block-status").unwrap_or(400) as u16;
-    let block_message = get_string_entry(node, "block-message");
-    let timeout_ms = get_int_entry(node, "timeout-ms").unwrap_or(500) as u64;
+    let block_status = get_int_entry(node, "block-status")?.unwrap_or(400) as u16;
+    let block_message = get_string_entry(node, "block-message")?;
+    let timeout_ms = get_int_entry(node, "timeout-ms")?.unwrap_or(500) as u64;
 
-    let failure_mode = match get_string_entry(node, "failure-mode").as_deref() {
+    let failure_mode = match get_string_entry(node, "failure-mode")?.as_deref() {
         Some("open") | None => GuardrailFailureMode::Open,
         Some("closed") => GuardrailFailureMode::Closed,
         Some(other) => {
@@ -2327,12 +2348,12 @@ fn parse_prompt_injection_config(node: &kdl::KdlNode) -> Result<PromptInjectionC
 
 /// Parse PII detection configuration.
 fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig> {
-    let enabled = get_bool_entry(node, "enabled").unwrap_or(false);
+    let enabled = get_bool_entry(node, "enabled")?.unwrap_or(false);
 
-    let agent = get_string_entry(node, "agent")
+    let agent = get_string_entry(node, "agent")?
         .ok_or_else(|| anyhow::anyhow!("PII detection config requires 'agent' field"))?;
 
-    let action = match get_string_entry(node, "action").as_deref() {
+    let action = match get_string_entry(node, "action")?.as_deref() {
         Some("log") | None => PiiAction::Log,
         Some("redact") => PiiAction::Redact,
         Some("block") => PiiAction::Block,
@@ -2346,7 +2367,7 @@ fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig>
 
     // Parse categories as string arguments
     let categories = if let Some(children) = node.children() {
-        if let Some(cat_node) = children.get("categories") {
+        if let Some(cat_node) = get_unique(children, "categories")? {
             cat_node
                 .entries()
                 .iter()
@@ -2359,9 +2380,9 @@ fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig>
         Vec::new()
     };
 
-    let timeout_ms = get_int_entry(node, "timeout-ms").unwrap_or(1000) as u64;
+    let timeout_ms = get_int_entry(node, "timeout-ms")?.unwrap_or(1000) as u64;
 
-    let failure_mode = match get_string_entry(node, "failure-mode").as_deref() {
+    let failure_mode = match get_string_entry(node, "failure-mode")?.as_deref() {
         Some("open") | None => GuardrailFailureMode::Open,
         Some("closed") => GuardrailFailureMode::Closed,
         Some(other) => {
@@ -2893,7 +2914,7 @@ mod tests {
     fn parse_priority_from(kdl: &str) -> Priority {
         let doc: ::kdl::KdlDocument = kdl.parse().expect("KDL parses");
         let route_node = doc.get("route").expect("route node present");
-        resolve_priority(route_node, "r").0
+        resolve_priority(route_node, "r").unwrap().0
     }
 
     #[test]
@@ -3361,7 +3382,11 @@ mod tests {
         let problems: Vec<_> = doc
             .nodes()
             .iter()
-            .map(|n| resolve_service_type(n, &get_first_arg_string(n).unwrap()).1)
+            .map(|n| {
+                resolve_service_type(n, &get_first_arg_string(n).unwrap())
+                    .unwrap()
+                    .1
+            })
             .collect();
         let assets = problems[0].as_deref().unwrap();
         assert!(assets.contains("needs a static-files block"), "{assets}");
@@ -3523,7 +3548,7 @@ mod tests {
         #[test]
         fn an_unknown_priority_keeps_normal_and_is_reported() {
             let doc = route_node(r#"priority "urgent""#);
-            let (priority, problem) = resolve_priority(doc.nodes().first().unwrap(), "r");
+            let (priority, problem) = resolve_priority(doc.nodes().first().unwrap(), "r").unwrap();
             assert_eq!(priority, Priority::NORMAL);
             let problem = problem.expect("an unknown priority should be reported");
             assert!(problem.contains("\"urgent\""), "{problem}");
@@ -3534,16 +3559,27 @@ mod tests {
         fn known_priorities_are_not_reported() {
             for value in ["100", "\"high\"", "\"LOW\"", "-5"] {
                 let doc = route_node(&format!("priority {value}"));
-                assert_eq!(resolve_priority(doc.nodes().first().unwrap(), "r").1, None);
+                assert_eq!(
+                    resolve_priority(doc.nodes().first().unwrap(), "r")
+                        .unwrap()
+                        .1,
+                    None
+                );
             }
             let doc = route_node("upstream \"b\"");
-            assert_eq!(resolve_priority(doc.nodes().first().unwrap(), "r").1, None);
+            assert_eq!(
+                resolve_priority(doc.nodes().first().unwrap(), "r")
+                    .unwrap()
+                    .1,
+                None
+            );
         }
 
         #[test]
         fn an_unknown_builtin_handler_is_reported_with_a_suggestion() {
             let doc = route_node(r#"builtin-handler "helth""#);
-            let (handler, problem) = resolve_builtin_handler(doc.nodes().first().unwrap(), "r");
+            let (handler, problem) =
+                resolve_builtin_handler(doc.nodes().first().unwrap(), "r").unwrap();
             assert_eq!(handler, None);
             let problem = problem.expect("an unknown handler should be reported");
             assert!(problem.contains("is being ignored"), "{problem}");
@@ -3560,7 +3596,8 @@ mod tests {
         #[test]
         fn known_builtin_handlers_are_not_reported() {
             let doc = route_node(r#"builtin-handler "cache_purge""#);
-            let (handler, problem) = resolve_builtin_handler(doc.nodes().first().unwrap(), "r");
+            let (handler, problem) =
+                resolve_builtin_handler(doc.nodes().first().unwrap(), "r").unwrap();
             assert_eq!(handler, Some(BuiltinHandler::CachePurge));
             assert_eq!(problem, None);
         }
