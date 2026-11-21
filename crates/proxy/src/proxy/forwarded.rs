@@ -12,25 +12,40 @@
 //!
 //! A client can send any `X-Forwarded-*` it likes. Passing that on would let it
 //! choose the IP address that backends log and rate-limit by, and that agents
-//! doing IP reputation see. So by default nothing a client sends survives:
+//! doing IP reputation see. So by default none of the forwarding headers a
+//! client sends survives:
 //!
 //! * `X-Forwarded-For` is **replaced** by the TCP peer's address;
 //! * `X-Forwarded-Proto` is replaced by what the listener observed (`https`
 //!   when the connection is TLS, else `http`);
 //! * `X-Forwarded-Host` is replaced by the request's own host.
 //!
-//! * `Forwarded` (RFC 7239) and `X-Real-IP` are **removed**. Zentinel does
-//!   not produce either, but backends that read them could be told any
-//!   address. Removing them, rather than writing our own client IP, keeps
-//!   Zentinel from inventing headers a backend never asked for; the backend
-//!   falls back to `X-Forwarded-For` or the connection, both of which are
-//!   ours. A `request-headers` policy can still `set` either one.
+//! Header names are compared whole, ignoring case and treating `-` and `_` as
+//! the same character, because some servers read `X_Real_IP` as `X-Real-IP`.
+//! A copy of one of the three headers above spelled that way is removed too.
+//!
+//! * Every header in [`REMOVED_FROM_UNTRUSTED_PEERS`] is **removed**:
+//!   `Forwarded` (RFC 7239), `X-Real-IP`, the other client-address headers
+//!   (`True-Client-IP`, `CF-Connecting-IP`, ...), the other scheme and port
+//!   headers (`X-Forwarded-Port`, `X-Forwarded-Ssl`, ...) and the original-URL
+//!   and host headers (`X-Original-URL`, `X-Forwarded-Prefix`, ...). Zentinel
+//!   produces none of them, so a value from the client would be the only one
+//!   a backend sees. Removing them, rather than writing values of our own,
+//!   keeps Zentinel from inventing headers a backend never asked for: the
+//!   backend falls back to `X-Forwarded-For`, `-Proto` and `-Host`, or to the
+//!   connection, all of which are ours. `X-Forwarded-Port` in particular is
+//!   not rebuilt: the port Zentinel listens on is often not the port the
+//!   client used (a published container port, a NAT), whereas
+//!   `X-Forwarded-Host` carries the client's own port when the `Host` header
+//!   has one. A `request-headers`
+//!   policy can still `set` any of them, and can `remove` headers that are
+//!   not in the list.
 //!
 //! Only when the TCP peer is inside the listener's `trusted-proxies` (a load
 //! balancer or CDN in front of Zentinel) is the incoming chain believed: the
 //! peer is appended to `X-Forwarded-For`, an incoming `X-Forwarded-Proto`
-//! or `-Host` is kept (and set as above when absent), and an incoming
-//! `Forwarded` or `X-Real-IP` is passed on unchanged.
+//! or `-Host` is kept (and set as above when absent), and every header in
+//! [`REMOVED_FROM_UNTRUSTED_PEERS`] is passed on unchanged.
 //!
 //! The client IP Zentinel itself uses (rate-limit key `client-ip`, geo
 //! filters, agents' `client_ip`, access logs, `ip-hash`) follows the same
@@ -49,9 +64,83 @@ use super::listener_addr::canonical_ip;
 pub(crate) const X_FORWARDED_FOR: &str = "X-Forwarded-For";
 pub(crate) const X_FORWARDED_PROTO: &str = "X-Forwarded-Proto";
 pub(crate) const X_FORWARDED_HOST: &str = "X-Forwarded-Host";
-/// Removed from untrusted peers; see the module docs.
-const FORWARDED: &str = "Forwarded";
-const X_REAL_IP: &str = "X-Real-IP";
+/// Headers removed from a request whose peer is not in `trusted-proxies`; see
+/// the module docs. They say where a request came from, which scheme and port
+/// it used, or which URL and host it was first sent to. The three that
+/// Zentinel writes itself are not listed: they are rebuilt, not removed.
+///
+/// Names are matched whole, ignoring case and treating `-` and `_` as the same
+/// character (see [`same_header_name`]), and every line of a repeated header
+/// goes. The list is documented in `crates/proxy/docs/forwarded-headers.md`;
+/// keep the two in step.
+pub(crate) const REMOVED_FROM_UNTRUSTED_PEERS: &[&str] = &[
+    // Client address.
+    "Forwarded",
+    "X-Real-IP",
+    "X-Client-IP",
+    "X-Cluster-Client-IP",
+    "True-Client-IP",
+    "CF-Connecting-IP",
+    "Fastly-Client-IP",
+    "Client-IP",
+    "X-Originating-IP",
+    "X-Envoy-External-Address",
+    "X-Azure-ClientIP",
+    "X-Appengine-User-IP",
+    // Scheme and port.
+    "X-Forwarded-Port",
+    "X-Forwarded-Ssl",
+    "X-Forwarded-Scheme",
+    "X-Forwarded-Protocol",
+    "X-Scheme",
+    "X-Url-Scheme",
+    "Front-End-Https",
+    "CF-Visitor",
+    // Original URL, host and prefix.
+    "X-Forwarded-Prefix",
+    "X-Forwarded-Server",
+    "X-Forwarded-Uri",
+    "X-Forwarded-Path",
+    "X-Original-URL",
+    "X-Original-URI",
+    "X-Original-Host",
+    "X-Rewrite-URL",
+];
+
+/// The three headers Zentinel writes for an untrusted peer. A copy of one
+/// that differs only in case or in `-` versus `_` is removed along with the
+/// list above, so it cannot sit next to Zentinel's own.
+const REBUILT_FOR_UNTRUSTED_PEERS: [&str; 3] =
+    [X_FORWARDED_FOR, X_FORWARDED_PROTO, X_FORWARDED_HOST];
+
+/// One byte of a header name, folded for comparison: case is ignored, and `_`
+/// counts as `-`, because some servers read the two as the same character
+/// (`X_Real_IP` is `X-Real-IP` to them).
+fn fold_name_byte(byte: u8) -> u8 {
+    if byte == b'_' {
+        b'-'
+    } else {
+        byte.to_ascii_lowercase()
+    }
+}
+
+/// Whether `name` is `listed` once case and `-` versus `_` are ignored.
+fn same_header_name(listed: &str, name: &str) -> bool {
+    listed.len() == name.len()
+        && listed
+            .bytes()
+            .zip(name.bytes())
+            .all(|(a, b)| fold_name_byte(a) == fold_name_byte(b))
+}
+
+/// Whether a header of an untrusted peer's request is dropped before the
+/// three rebuilt headers are written.
+fn dropped_for_untrusted_peer(name: &str) -> bool {
+    REMOVED_FROM_UNTRUSTED_PEERS
+        .iter()
+        .chain(REBUILT_FOR_UNTRUSTED_PEERS.iter())
+        .any(|listed| same_header_name(listed, name))
+}
 
 fn is_trusted(ip: IpAddr, trusted: &[IpCidr]) -> bool {
     trusted.iter().any(|cidr| cidr.contains(ip))
@@ -123,18 +212,23 @@ pub(crate) fn apply_forwarded_headers(
     let scheme = if tls { "https" } else { "http" };
 
     if !is_trusted(peer, trusted) {
+        let host = request_host(req);
+        // Every header name is looked at, so the cost here grows with the
+        // number of headers; it is paid for untrusted peers only.
+        let dropped: Vec<_> = req
+            .headers
+            .keys()
+            .filter(|name| dropped_for_untrusted_peer(name.as_str()))
+            .cloned()
+            .collect();
+        for name in &dropped {
+            req.remove_header(name);
+        }
         req.insert_header(X_FORWARDED_FOR, peer.to_string()).ok();
         req.insert_header(X_FORWARDED_PROTO, scheme).ok();
-        match request_host(req) {
-            Some(host) => {
-                req.insert_header(X_FORWARDED_HOST, host).ok();
-            }
-            None => {
-                req.remove_header(X_FORWARDED_HOST);
-            }
+        if let Some(host) = host {
+            req.insert_header(X_FORWARDED_HOST, host).ok();
         }
-        req.remove_header(FORWARDED);
-        req.remove_header(X_REAL_IP);
         return peer;
     }
 
@@ -262,6 +356,205 @@ mod tests {
         apply_forwarded_headers(&mut r, ip("203.0.113.9"), false, &[]);
         assert_eq!(get(&r, "forwarded"), None);
         assert_eq!(get(&r, "x-real-ip"), None);
+    }
+
+    /// Headers that say where a request came from, which scheme and port it
+    /// used, or which URL and host it was first sent to. Listed by hand, and
+    /// not from `REMOVED_FROM_UNTRUSTED_PEERS`, so a name dropped from that
+    /// list fails here.
+    const FORWARDING_HEADERS: &[&str] = &[
+        "Forwarded",
+        "X-Real-IP",
+        "X-Client-IP",
+        "X-Cluster-Client-IP",
+        "True-Client-IP",
+        "CF-Connecting-IP",
+        "Fastly-Client-IP",
+        "Client-IP",
+        "X-Originating-IP",
+        "X-Envoy-External-Address",
+        "X-Azure-ClientIP",
+        "X-Appengine-User-IP",
+        "X-Forwarded-Port",
+        "X-Forwarded-Ssl",
+        "X-Forwarded-Scheme",
+        "X-Forwarded-Protocol",
+        "X-Scheme",
+        "X-Url-Scheme",
+        "Front-End-Https",
+        "CF-Visitor",
+        "X-Forwarded-Prefix",
+        "X-Forwarded-Server",
+        "X-Forwarded-Uri",
+        "X-Forwarded-Path",
+        "X-Original-URL",
+        "X-Original-URI",
+        "X-Original-Host",
+        "X-Rewrite-URL",
+    ];
+
+    /// A request from a peer outside `trusted-proxies` reaches the upstream
+    /// without any of the headers above, whatever the client put in them.
+    #[test]
+    fn untrusted_peer_loses_client_supplied_forwarding_headers() {
+        let mut headers = vec![("Host", "a.example")];
+        headers.extend(
+            FORWARDING_HEADERS
+                .iter()
+                .map(|name| (*name, "198.51.100.7")),
+        );
+        let mut r = req(&headers);
+        let client = apply_forwarded_headers(&mut r, ip("203.0.113.9"), false, &[]);
+        assert_eq!(client, ip("203.0.113.9"));
+        for name in FORWARDING_HEADERS {
+            assert_eq!(get(&r, name), None, "{name} was passed on");
+        }
+        // The three headers Zentinel writes are still its own.
+        assert_eq!(get(&r, "x-forwarded-for").as_deref(), Some("203.0.113.9"));
+        assert_eq!(get(&r, "x-forwarded-proto").as_deref(), Some("http"));
+        assert_eq!(get(&r, "x-forwarded-host").as_deref(), Some("a.example"));
+    }
+
+    /// Names are case-insensitive (HTTP/2 sends them lowercase) and a header
+    /// sent on several lines is removed whole.
+    #[test]
+    fn untrusted_peer_forwarding_headers_go_in_any_case_and_on_every_line() {
+        let mut r = req(&[
+            ("true-client-ip", "198.51.100.7"),
+            ("TRUE-CLIENT-IP", "198.51.100.8"),
+            ("x-original-url", "/a"),
+            ("X-Forwarded-Port", "8443"),
+            ("x-forwarded-port", "9443"),
+        ]);
+        apply_forwarded_headers(&mut r, ip("203.0.113.9"), false, &[]);
+        assert_eq!(get(&r, "true-client-ip"), None);
+        assert_eq!(get(&r, "x-original-url"), None);
+        assert_eq!(get(&r, "x-forwarded-port"), None);
+    }
+
+    /// Only the headers in the list go; everything else is the client's to
+    /// send.
+    #[test]
+    fn untrusted_peer_other_headers_are_untouched() {
+        let mut r = req(&[
+            ("Host", "a.example"),
+            ("Accept", "text/html"),
+            ("Cookie", "k=v"),
+            ("X-Request-Id", "req-1"),
+            ("X-Custom", "kept"),
+            ("Via", "1.1 a.example"),
+            ("X-Real-IP-Extra", "kept"),
+            ("X-Forwarded-Foo", "kept"),
+            ("Real-IP", "kept"),
+        ]);
+        apply_forwarded_headers(&mut r, ip("203.0.113.9"), false, &[]);
+        assert_eq!(get(&r, "accept").as_deref(), Some("text/html"));
+        assert_eq!(get(&r, "cookie").as_deref(), Some("k=v"));
+        assert_eq!(get(&r, "x-request-id").as_deref(), Some("req-1"));
+        assert_eq!(get(&r, "x-custom").as_deref(), Some("kept"));
+        assert_eq!(get(&r, "via").as_deref(), Some("1.1 a.example"));
+        // Whole names are compared, not prefixes or suffixes.
+        assert_eq!(get(&r, "x-real-ip-extra").as_deref(), Some("kept"));
+        assert_eq!(get(&r, "x-forwarded-foo").as_deref(), Some("kept"));
+        assert_eq!(get(&r, "real-ip").as_deref(), Some("kept"));
+    }
+
+    /// Some servers read `-` and `_` in a header name as the same character
+    /// (`X_Real_IP` is `X-Real-IP` to them), so a name written with
+    /// underscores is removed like the hyphenated one.
+    #[test]
+    fn untrusted_peer_forwarding_headers_go_with_underscores_in_the_name() {
+        let mut headers = vec![("Host", "a.example")];
+        let underscored: Vec<String> = FORWARDING_HEADERS
+            .iter()
+            .map(|name| name.replace('-', "_"))
+            .collect();
+        headers.extend(
+            underscored
+                .iter()
+                .map(|name| (name.as_str(), "198.51.100.7")),
+        );
+        let mut r = req(&headers);
+        apply_forwarded_headers(&mut r, ip("203.0.113.9"), false, &[]);
+        for name in &underscored {
+            assert_eq!(get(&r, name), None, "{name} was passed on");
+        }
+        for name in FORWARDING_HEADERS {
+            assert_eq!(get(&r, name), None, "{name} was passed on");
+        }
+    }
+
+    /// The same holds for the three headers Zentinel writes itself: a copy
+    /// spelled with underscores would otherwise sit next to ours.
+    #[test]
+    fn untrusted_peer_underscore_forms_of_rebuilt_headers_are_replaced() {
+        let mut r = req(&[
+            ("Host", "a.example"),
+            ("X_Forwarded_For", "198.51.100.7"),
+            ("x_forwarded_proto", "https"),
+            ("X_FORWARDED_HOST", "b.example"),
+        ]);
+        apply_forwarded_headers(&mut r, ip("203.0.113.9"), false, &[]);
+        assert_eq!(get(&r, "x_forwarded_for"), None);
+        assert_eq!(get(&r, "x_forwarded_proto"), None);
+        assert_eq!(get(&r, "x_forwarded_host"), None);
+        assert_eq!(get(&r, "x-forwarded-for").as_deref(), Some("203.0.113.9"));
+        assert_eq!(get(&r, "x-forwarded-proto").as_deref(), Some("http"));
+        assert_eq!(get(&r, "x-forwarded-host").as_deref(), Some("a.example"));
+    }
+
+    /// For a peer in `trusted-proxies` nothing is renamed or removed, however
+    /// the name is spelled.
+    #[test]
+    fn trusted_peer_keeps_headers_whatever_their_spelling() {
+        let mut r = req(&[
+            ("X_Real_IP", "198.51.100.7"),
+            ("true_client_ip", "198.51.100.8"),
+        ]);
+        apply_forwarded_headers(&mut r, ip("10.0.0.2"), false, &cidrs(&["10.0.0.0/8"]));
+        assert_eq!(get(&r, "x_real_ip").as_deref(), Some("198.51.100.7"));
+        assert_eq!(get(&r, "true_client_ip").as_deref(), Some("198.51.100.8"));
+    }
+
+    /// The documented list and the one in the code are the same.
+    #[test]
+    fn docs_list_every_removed_header() {
+        let docs = include_str!("../../docs/forwarded-headers.md");
+        for name in REMOVED_FROM_UNTRUSTED_PEERS {
+            assert!(
+                docs.contains(&format!("`{name}`")),
+                "{name} is not documented"
+            );
+        }
+        for name in FORWARDING_HEADERS {
+            assert!(
+                REMOVED_FROM_UNTRUSTED_PEERS
+                    .iter()
+                    .any(|listed| listed.eq_ignore_ascii_case(name)),
+                "{name} is not in REMOVED_FROM_UNTRUSTED_PEERS"
+            );
+        }
+    }
+
+    /// A peer in `trusted-proxies` vouches for what it sends, so the same
+    /// headers reach the upstream unchanged.
+    #[test]
+    fn trusted_peer_keeps_other_forwarding_headers() {
+        let mut headers = vec![("Host", "internal:8080")];
+        headers.extend(
+            FORWARDING_HEADERS
+                .iter()
+                .map(|name| (*name, "198.51.100.7")),
+        );
+        let mut r = req(&headers);
+        apply_forwarded_headers(&mut r, ip("10.0.0.2"), false, &cidrs(&["10.0.0.0/8"]));
+        for name in FORWARDING_HEADERS {
+            assert_eq!(
+                get(&r, name).as_deref(),
+                Some("198.51.100.7"),
+                "{name} was changed"
+            );
+        }
     }
 
     #[test]
