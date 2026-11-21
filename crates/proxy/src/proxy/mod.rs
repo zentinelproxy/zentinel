@@ -947,9 +947,21 @@ impl ZentinelProxy {
 
             if cache_config.enabled {
                 enabled_count += 1;
+                // `CacheManager::calculate_ttl` applies at most this lifetime.
+                let applied_ttl_secs = cache_config
+                    .default_ttl_secs
+                    .min(crate::cache::MAX_FRESHNESS_LIFETIME_SECS);
+                if applied_ttl_secs != cache_config.default_ttl_secs {
+                    warn!(
+                        route_id = %route.id,
+                        configured_ttl_secs = cache_config.default_ttl_secs,
+                        applied_ttl_secs = applied_ttl_secs,
+                        "default-ttl-secs is longer than the cache applies; the longest lifetime is used"
+                    );
+                }
                 info!(
                     route_id = %route.id,
-                    default_ttl_secs = cache_config.default_ttl_secs,
+                    default_ttl_secs = applied_ttl_secs,
                     from_config = route.policies.cache.is_some(),
                     "HTTP caching enabled for route"
                 );
@@ -2259,5 +2271,108 @@ mod reload_rollback_tests {
             h.agents.is_loaded("one").await
         })
         .await;
+    }
+}
+
+/// What the startup log says about a route's `default-ttl-secs`.
+#[cfg(test)]
+mod cache_default_ttl_log_tests {
+    use super::*;
+
+    /// What `tracing` writes while a test runs.
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = LogBuffer;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The log lines written while the cache manager is initialized for a
+    /// route with caching on and the given `default-ttl-secs`.
+    fn startup_log(default_ttl_secs: &str) -> String {
+        let kdl = format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{
+                listener "http" {{ address "127.0.0.1:19292" protocol "http" }}
+            }}
+            routes {{
+                route "cached" {{
+                    matches {{ path-prefix "/" }}
+                    upstream "backend"
+                    cache {{
+                        enabled #true
+                        default-ttl-secs {default_ttl_secs}
+                    }}
+                }}
+            }}
+            upstreams {{
+                upstream "backend" {{ target "127.0.0.1:19293" }}
+            }}
+            "#
+        );
+        let config = Config::from_kdl(&kdl).expect("config parses");
+        let buffer = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            ZentinelProxy::initialize_cache_manager(&config);
+        });
+        let logged = buffer.0.lock().unwrap().clone();
+        String::from_utf8(logged).expect("the log is UTF-8")
+    }
+
+    #[test]
+    fn a_default_ttl_above_the_longest_lifetime_is_logged_with_the_value_applied() {
+        // A negative value is read as `u64::MAX`.
+        for configured in ["-1", "18446744073709551615", "2147483649"] {
+            let log = startup_log(configured);
+            let warning = log
+                .lines()
+                .find(|line| line.contains("WARN") && line.contains("default-ttl-secs"))
+                .unwrap_or_else(|| panic!("no warning for {configured}: {log}"));
+            assert!(
+                warning.contains("route_id=cached")
+                    && warning.contains("applied_ttl_secs=2147483648"),
+                "{warning}"
+            );
+            // The line that reports caching as on shows the value applied.
+            assert!(
+                log.lines().any(|line| line.contains("HTTP caching enabled")
+                    && line.contains("default_ttl_secs=2147483648")),
+                "{log}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_default_ttl_up_to_the_longest_lifetime_is_not_warned_about() {
+        for configured in ["3600", "2147483647", "2147483648"] {
+            let log = startup_log(configured);
+            assert!(!log.contains("WARN"), "{configured}: {log}");
+            assert!(
+                log.lines().any(|line| line.contains("HTTP caching enabled")
+                    && line.contains(&format!("default_ttl_secs={configured}"))),
+                "{log}"
+            );
+        }
     }
 }

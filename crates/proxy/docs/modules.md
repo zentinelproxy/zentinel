@@ -270,10 +270,26 @@ impl CacheManager {
 **Features:**
 - Per-route cache configuration
 - Cache-Control header parsing
-- TTL calculation with defaults
+- TTL calculation with defaults. A lifetime from `max-age`, `s-maxage` or `default-ttl-secs` is at most `MAX_FRESHNESS_LIFETIME_SECS` (2^31 seconds, the value RFC 9111 section 1.2.2 allows for a delta-seconds value a cache cannot represent); a longer one, or a `max-age` that is a number too large for `u64`, is applied as that. `calculate_ttl` returns the capped value, so `response_cache_filter` can add it to the current time
 - Stale-while-revalidate support
 - Stale-if-error support
 - Path and extension-based cache exclusions (`exclude-extensions`, `exclude-paths`)
+
+### `cache_policy`
+
+Shared-cache rules for the response cache (RFC 9111). The rules work on header maps only.
+
+```rust
+pub fn check_storable(authorization: RequestAuthorization, response: &HeaderMap) -> Result<(), NotStorable>;
+pub fn cache_control_forbids_storing(response: &HeaderMap) -> bool;
+pub fn variance(response: &HeaderMap, request: &HeaderMap) -> Option<HashBinary>;
+pub fn record_not_stored(route_id: &str, reason: NotStorable);
+```
+
+- `check_storable` is called from `response_cache_filter`. A response to a request with `Authorization` is stored only if its `Cache-Control` has `public`, `s-maxage` or `must-revalidate`; a response with `Set-Cookie` or `Vary: *` is not stored. `Authorization` is judged as the client sent it: `request_filter` notes it in `ctx.client_authorization` before agents can change the headers, and the request's headers at response time are also checked.
+- A refusal is counted with `record_not_stored` (`zentinel_cache_not_stored_total{route, reason}`), logged at `debug` as `reason`, and returned to Pingora as `NoCacheReason::Custom`. The reason is one of `authorization`, `set_cookie`, `vary_any`, `vary_invalid`.
+- `cache_control_forbids_storing` finds `no-store`, `no-cache` and `private` by directive name on every `Cache-Control` line.
+- `variance` is called from `cache_vary_filter`. It hashes the values of the request headers that the response's `Vary` names, so a response is kept once per combination of values. `None` means the response has no `Vary`.
 
 ### `memory_cache`
 

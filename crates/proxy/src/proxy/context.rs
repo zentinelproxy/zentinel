@@ -367,6 +367,9 @@ pub struct RequestContext {
     pub(crate) cache_eligible: bool,
     /// Cache status for Cache-Status response header (RFC 9211)
     pub(crate) cache_status: Option<CacheStatus>,
+    /// Whether the client's request had `Authorization`, noted before agents
+    /// can change the request's headers.
+    pub(crate) client_authorization: crate::cache_policy::RequestAuthorization,
 
     // === Body Inspection ===
     /// Whether body inspection is enabled for this request
@@ -678,6 +681,7 @@ impl RequestContext {
             websocket_handler: None,
             cache_eligible: false,
             cache_status: None,
+            client_authorization: crate::cache_policy::RequestAuthorization::Absent,
             body_inspection_enabled: false,
             body_bytes_inspected: 0,
             body_buffer: Vec::new(),
