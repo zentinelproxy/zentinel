@@ -1049,6 +1049,19 @@ impl ProxyHttp for ZentinelProxy {
         const PEER_SELECTION_ATTEMPTS: u32 = 2;
         let max_retries = PEER_SELECTION_ATTEMPTS;
 
+        // A call that finds an earlier attempt's target is a retry: that
+        // attempt is over, and the selection below replaces its target. If it
+        // was a half-open trial that reported nothing, give its slot back
+        // first. (Where it did report a failure the breaker has moved on, and
+        // the slot is no longer there to give back.)
+        if let (Some(pool), Some(ticket)) = (ctx.selected_pool.clone(), ctx.half_open_trial.take())
+        {
+            pool.release_half_open_slot(ticket).await;
+        }
+        // The mark `error_while_proxy` sets belongs to one attempt: clear it
+        // for the attempt that starts here.
+        ctx.attempt_failure_reported = false;
+
         // Delay before this attempt at the *request*, from the route's policy.
         // upstream_peer is re-entered by Pingora's retry loop, so this is where
         // the backoff belongs.
@@ -1098,7 +1111,7 @@ impl ProxyHttp for ZentinelProxy {
             );
 
             match pool.select_peer_with_metadata(Some(&selection_ctx)).await {
-                Ok((mut peer, metadata)) => {
+                Ok((mut peer, metadata, trial)) => {
                     let selection_duration = selection_start.elapsed();
                     // Track active request for drain lifecycle. Once per
                     // request: Pingora re-enters upstream_peer on a retry, and
@@ -1110,6 +1123,7 @@ impl ProxyHttp for ZentinelProxy {
                     let peer_addr = peer.address().to_string();
                     ctx.selected_upstream_address = Some(peer_addr.clone());
                     ctx.selected_pool = Some(pool.clone());
+                    ctx.half_open_trial = trial;
 
                     // Copy sticky session metadata to context for response_filter
                     if metadata.contains_key("sticky_session_new") {
@@ -2819,11 +2833,6 @@ impl ProxyHttp for ZentinelProxy {
                 .record_outcome(upstream, success, error_msg.as_deref())
                 .await;
 
-            // Report to upstream pool
-            if let Some(pool) = self.upstream_pools.get(upstream).await {
-                pool.report_result(upstream, success).await;
-            }
-
             if !success {
                 warn!(
                     correlation_id = %ctx.trace_id,
@@ -4163,16 +4172,19 @@ impl ProxyHttp for ZentinelProxy {
         // Record failure with circuit breaker via upstream pool
         // This is done asynchronously since we can't await in a sync fn.
         //
+        // Only for an error of the upstream itself (its connection, a
+        // timeout, a read or write error), not one raised by a filter or the
+        // proxy.
+        //
         // Not for an error the client caused -- an oversized body refused
         // mid-stream, a client that went away. The peer did nothing wrong,
         // and counting these let a client trip the circuit breaker on a
         // healthy upstream. The same goes for a request an agent refused on
         // its body: the upstream request is abandoned because of the
         // refusal, not because the peer failed (#610).
-        if *e.esource() != pingora::ErrorSource::Downstream
-            && !ctx.response_blocked
-            && !ctx.request_refused_by_agent
-        {
+        if is_upstream_error(&e) && !ctx.response_blocked && !ctx.request_refused_by_agent {
+            // Counted here, once for this attempt; `logging` leaves it out.
+            ctx.attempt_failure_reported = true;
             let peer_address = peer.address().to_string();
             let upstream_pools = self.upstream_pools.clone();
             let upstream_id_owned = upstream_id.to_string();
@@ -4295,28 +4307,44 @@ impl ProxyHttp for ZentinelProxy {
         if let (Some(ref peer_addr), Some(ref upstream_id)) =
             (&ctx.selected_upstream_address, &ctx.upstream)
         {
-            // Success = status code < 500 (client errors are not upstream failures)
-            let success = status > 0 && status < 500;
+            let outcome = target_outcome(
+                error,
+                status,
+                ctx.request_refused_by_agent || ctx.response_blocked,
+            );
+            let success = outcome == TargetOutcome::Success;
 
             if let Some(pool) = self.upstream_pools.get(upstream_id).await {
-                // A request an agent refused says nothing about the target,
-                // either way: its status is the agent's, and its latency is
-                // the agent's decision time (#610). Counting it as a success
-                // would also reset the breaker's run of real failures.
-                if !ctx.request_refused_by_agent {
-                    pool.report_result_with_latency(peer_addr, success, Some(duration))
-                        .await;
+                // `error_while_proxy` reports an upstream error when it
+                // happens. That attempt is already counted: reporting it
+                // here too would count one failure twice.
+                if !ctx.attempt_failure_reported {
+                    match outcome {
+                        TargetOutcome::Success | TargetOutcome::Failure => {
+                            pool.report_result_with_latency(peer_addr, success, Some(duration))
+                                .await;
+                        }
+                        // Neither a success, which would also reset the
+                        // breaker's run of real failures, nor a failure. If
+                        // the request was a half-open trial, it gives its
+                        // slot back: nothing else will.
+                        TargetOutcome::NoResult => {
+                            if let Some(ticket) = ctx.half_open_trial.take() {
+                                pool.release_half_open_slot(ticket).await;
+                            }
+                        }
+                    }
+                    trace!(
+                        correlation_id = %ctx.trace_id,
+                        upstream = %upstream_id,
+                        peer_address = %peer_addr,
+                        outcome = ?outcome,
+                        duration_ms = duration.as_millis(),
+                        status = status,
+                        "Reported result to adaptive load balancer"
+                    );
                 }
                 pool.decrement_active();
-                trace!(
-                    correlation_id = %ctx.trace_id,
-                    upstream = %upstream_id,
-                    peer_address = %peer_addr,
-                    success = success,
-                    duration_ms = duration.as_millis(),
-                    status = status,
-                    "Reported result to adaptive load balancer"
-                );
             }
 
             // Track warmth for inference routes (cold model detection)
@@ -4639,6 +4667,45 @@ fn rate_limit_refusal<'a>(
         default_content_type: "text/plain; charset=utf-8",
         headers,
         ..handlers::ProxyError::text(status, body)
+    }
+}
+
+/// What a finished request says about the upstream target it was sent to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetOutcome {
+    /// The target answered: a status below 500.
+    Success,
+    /// The target failed: its connection, a timeout, a read or write error,
+    /// or a status of 500 or more.
+    Failure,
+    /// The request ended for a reason of its own, which says nothing about
+    /// the target: the client went away or sent a body over its limit, a
+    /// filter or an agent refused the request or its response.
+    NoResult,
+}
+
+/// Whether an error is the upstream's own: its connection, a timeout, a read
+/// or write error. One from the client, or raised by the proxy or a filter,
+/// is not.
+fn is_upstream_error(error: &Error) -> bool {
+    *error.esource() == pingora::ErrorSource::Upstream
+}
+
+/// Classify a finished request for the circuit breaker of its target.
+///
+/// `refused` is set when an agent refused the request or blocked the
+/// response. `error` is the error the request ended with, if any: only one
+/// from the upstream side of the exchange counts against the target. Without
+/// an error, the status the client got decides.
+fn target_outcome(error: Option<&Error>, status: u16, refused: bool) -> TargetOutcome {
+    if refused {
+        return TargetOutcome::NoResult;
+    }
+    match error {
+        Some(e) if is_upstream_error(e) => TargetOutcome::Failure,
+        Some(_) => TargetOutcome::NoResult,
+        None if (1..500).contains(&status) => TargetOutcome::Success,
+        None => TargetOutcome::Failure,
     }
 }
 
@@ -6087,6 +6154,106 @@ mod cache_status_tests {
             1,
             "insert_header replaces; this test documents why append is required"
         );
+    }
+}
+
+#[cfg(test)]
+mod target_outcome_tests {
+    use super::{is_upstream_error, target_outcome, TargetOutcome};
+    use pingora::{Error, ErrorType};
+
+    #[test]
+    fn only_an_error_from_the_upstream_side_is_the_upstreams() {
+        let upstream = Error::new(ErrorType::ReadError).into_up();
+        let downstream = Error::new(ErrorType::ReadError).into_down();
+        let internal = Error::new(ErrorType::ReadError).into_in();
+        let unset = Error::new(ErrorType::ReadError);
+        assert!(is_upstream_error(&upstream));
+        assert!(!is_upstream_error(&downstream));
+        assert!(!is_upstream_error(&internal));
+        assert!(!is_upstream_error(&unset));
+    }
+
+    #[test]
+    fn a_status_below_500_is_a_success() {
+        assert_eq!(target_outcome(None, 200, false), TargetOutcome::Success);
+        assert_eq!(target_outcome(None, 404, false), TargetOutcome::Success);
+        assert_eq!(target_outcome(None, 499, false), TargetOutcome::Success);
+    }
+
+    #[test]
+    fn a_status_of_500_or_more_is_a_failure() {
+        assert_eq!(target_outcome(None, 500, false), TargetOutcome::Failure);
+        assert_eq!(target_outcome(None, 503, false), TargetOutcome::Failure);
+    }
+
+    #[test]
+    fn errors_of_the_upstream_are_failures_whatever_the_status() {
+        for etype in [
+            ErrorType::ConnectRefused,
+            ErrorType::ConnectTimedout,
+            ErrorType::ReadTimedout,
+            ErrorType::WriteTimedout,
+            ErrorType::ReadError,
+            ErrorType::WriteError,
+            ErrorType::ConnectionClosed,
+        ] {
+            let error = Error::new(etype.clone()).into_up();
+            assert_eq!(
+                target_outcome(Some(&error), 502, false),
+                TargetOutcome::Failure,
+                "{etype:?}"
+            );
+            // The response was under way when the upstream failed.
+            assert_eq!(
+                target_outcome(Some(&error), 200, false),
+                TargetOutcome::Failure,
+                "{etype:?} after the header"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_of_the_client_are_no_result_whatever_the_status() {
+        for etype in [
+            ErrorType::ConnectionClosed,
+            ErrorType::ReadError,
+            ErrorType::WriteError,
+            ErrorType::HTTPStatus(413),
+        ] {
+            let error = Error::new(etype.clone()).into_down();
+            for status in [0, 200, 413, 502] {
+                assert_eq!(
+                    target_outcome(Some(&error), status, false),
+                    TargetOutcome::NoResult,
+                    "{etype:?} with {status}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn errors_raised_by_the_proxy_itself_are_no_result() {
+        for error in [
+            Error::new(ErrorType::HTTPStatus(503)),
+            Error::new(ErrorType::InternalError).into_in(),
+        ] {
+            assert_eq!(
+                target_outcome(Some(&error), 503, false),
+                TargetOutcome::NoResult
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_request_is_no_result_even_after_an_upstream_error() {
+        let error = Error::new(ErrorType::ConnectionClosed).into_up();
+        assert_eq!(
+            target_outcome(Some(&error), 403, true),
+            TargetOutcome::NoResult
+        );
+        assert_eq!(target_outcome(None, 403, true), TargetOutcome::NoResult);
+        assert_eq!(target_outcome(None, 503, true), TargetOutcome::NoResult);
     }
 }
 

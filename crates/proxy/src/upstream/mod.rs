@@ -16,7 +16,7 @@ use tracing::{debug, error, info, trace, warn};
 use zentinel_common::{
     errors::{ZentinelError, ZentinelResult},
     types::{CircuitBreakerConfig, LoadBalancingAlgorithm},
-    CircuitBreaker, UpstreamId,
+    Admission, CircuitBreaker, TrialSlot, UpstreamId,
 };
 use zentinel_config::{UpstreamConfig, UpstreamDiscovery};
 
@@ -185,6 +185,14 @@ pub trait LoadBalancer: Send + Sync {
         // Default implementation - just report health
         self.report_health(address, success).await;
     }
+}
+
+/// The half-open trial slot of one target of a pool, held by the request that
+/// was let through as a trial. See [`UpstreamPool::release_half_open_slot`].
+#[derive(Debug)]
+pub struct TrialTicket {
+    target: String,
+    slot: TrialSlot,
 }
 
 /// Selected upstream target
@@ -998,7 +1006,9 @@ impl UpstreamPool {
                 cb_config
             );
 
-            circuit_breakers.insert(target.full_address(), CircuitBreaker::new(cb_config));
+            let address = target.full_address();
+            let name = format!("{}/{}", config.id, address);
+            circuit_breakers.insert(address, CircuitBreaker::with_name(cb_config, name));
         }
 
         let pool = Self {
@@ -1245,9 +1255,9 @@ impl UpstreamPool {
             let mut breakers = self.circuit_breakers.write().await;
             breakers.retain(|address, _| current.iter().any(|a| a == address));
             for address in &current {
-                breakers
-                    .entry(address.clone())
-                    .or_insert_with(|| CircuitBreaker::new(cb_config));
+                breakers.entry(address.clone()).or_insert_with(|| {
+                    CircuitBreaker::with_name(cb_config, format!("{}/{}", self.id, address))
+                });
             }
         }
 
@@ -1550,10 +1560,15 @@ impl UpstreamPool {
     /// Returns the selected peer along with optional metadata from the load balancer.
     /// The metadata can contain sticky session information that should be passed to
     /// the response filter.
+    ///
+    /// When the target's circuit breaker let the request through as a half-open
+    /// trial, the third element is the slot it holds. Report the request's result,
+    /// or, if it ends without one, give the slot back with
+    /// [`release_half_open_slot`](Self::release_half_open_slot).
     pub async fn select_peer_with_metadata(
         &self,
         context: Option<&RequestContext>,
-    ) -> ZentinelResult<(HttpPeer, HashMap<String, String>)> {
+    ) -> ZentinelResult<(HttpPeer, HashMap<String, String>, Option<TrialTicket>)> {
         let request_num = self.stats.requests.fetch_add(1, Ordering::Relaxed) + 1;
 
         trace!(
@@ -1601,22 +1616,30 @@ impl UpstreamPool {
                 "Load balancer selected target"
             );
 
-            // Check circuit breaker
-            let breakers = self.circuit_breakers.read().await;
-            if let Some(breaker) = breakers.get(&selection.address) {
-                if !breaker.is_closed() {
-                    debug!(
-                        upstream_id = %self.id,
-                        target = %selection.address,
-                        attempt = attempts,
-                        "Circuit breaker is open, skipping target"
-                    );
-                    self.stats
-                        .circuit_breaker_trips
-                        .fetch_add(1, Ordering::Relaxed);
-                    continue;
+            // Check circuit breaker. A request let through as a half-open
+            // trial holds a slot, which its ticket gives back.
+            let ticket = {
+                let breakers = self.circuit_breakers.read().await;
+                match breakers.get(&selection.address).map(|b| b.admit()) {
+                    Some(Admission::Refused) => {
+                        debug!(
+                            upstream_id = %self.id,
+                            target = %selection.address,
+                            attempt = attempts,
+                            "Circuit breaker is open, skipping target"
+                        );
+                        self.stats
+                            .circuit_breaker_trips
+                            .fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    Some(Admission::Trial(slot)) => Some(TrialTicket {
+                        target: selection.address.clone(),
+                        slot,
+                    }),
+                    Some(Admission::Allowed) | None => None,
                 }
-            }
+            };
 
             // Create peer with pooling options
             trace!(
@@ -1624,7 +1647,16 @@ impl UpstreamPool {
                 target = %selection.address,
                 "Creating peer for upstream (Pingora handles connection reuse)"
             );
-            let peer = self.create_peer(&selection).await?;
+            let peer = match self.create_peer(&selection).await {
+                Ok(peer) => peer,
+                Err(e) => {
+                    // No request goes out, so nothing would give the slot back.
+                    if let Some(ticket) = ticket {
+                        self.release_half_open_slot(ticket).await;
+                    }
+                    return Err(e);
+                }
+            };
 
             debug!(
                 upstream_id = %self.id,
@@ -1635,7 +1667,7 @@ impl UpstreamPool {
             );
 
             self.stats.successes.fetch_add(1, Ordering::Relaxed);
-            return Ok((peer, selection.metadata));
+            return Ok((peer, selection.metadata, ticket));
         }
 
         self.stats.failures.fetch_add(1, Ordering::Relaxed);
@@ -1657,11 +1689,15 @@ impl UpstreamPool {
     }
 
     /// Select next upstream peer
+    ///
+    /// For callers that report no result for the request. A half-open trial
+    /// slot taken for it is given back at once, as nothing else would.
     pub async fn select_peer(&self, context: Option<&RequestContext>) -> ZentinelResult<HttpPeer> {
-        // Delegate to select_peer_with_metadata and discard metadata
-        self.select_peer_with_metadata(context)
-            .await
-            .map(|(peer, _)| peer)
+        let (peer, _metadata, ticket) = self.select_peer_with_metadata(context).await?;
+        if let Some(ticket) = ticket {
+            self.release_half_open_slot(ticket).await;
+        }
+        Ok(peer)
     }
 
     /// The socket address to connect to for `address`.
@@ -1990,6 +2026,21 @@ impl UpstreamPool {
         }
     }
 
+    /// Give back the half-open trial slot of a request that ended without a
+    /// result
+    ///
+    /// For a request that was sent to the target but says nothing about it:
+    /// the client went away, or a filter or agent refused the request. It is
+    /// neither a success nor a failure, so nothing is counted; without this
+    /// the breaker would wait for a result that never comes. Does nothing
+    /// unless the target's breaker is still in the half-open period the slot
+    /// was taken in.
+    pub async fn release_half_open_slot(&self, ticket: TrialTicket) {
+        if let Some(breaker) = self.circuit_breakers.read().await.get(&ticket.target) {
+            breaker.release_half_open_slot(ticket.slot);
+        }
+    }
+
     /// Get pool statistics
     pub fn stats(&self) -> &PoolStats {
         &self.stats
@@ -2067,13 +2118,16 @@ impl UpstreamPool {
         // Use load balancer to select target
         let selection = self.load_balancer.select(context).await?;
 
-        // Check circuit breaker
+        // Check circuit breaker. A shadow request reports no result, so it
+        // must not be a half-open trial: asking `is_closed()` would take a
+        // trial slot that nothing gives back, and would end the open period
+        // for a request nobody waits on.
         let breakers = self.circuit_breakers.read().await;
         if let Some(breaker) = breakers.get(&selection.address) {
-            if !breaker.is_closed() {
+            if breaker.state() != zentinel_common::types::CircuitBreakerState::Closed {
                 return Err(ZentinelError::upstream(
                     self.id.to_string(),
-                    "Circuit breaker is open for shadow target",
+                    "Circuit breaker is not closed for shadow target",
                 ));
             }
         }
@@ -2252,5 +2306,103 @@ mod target_resolution_tests {
             .await
             .expect("pool");
         assert!(pool.select_peer(None).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod breaker_trial_tests {
+    use super::*;
+    use zentinel_common::types::{CircuitBreakerState, LoadBalancingAlgorithm};
+    use zentinel_config::{ConnectionPoolConfig, HttpVersionConfig, UpstreamTimeouts};
+
+    const TARGET: &str = "127.0.0.1:19540";
+
+    /// One target whose breaker opens on a single failure and is half-open
+    /// the moment it is asked again.
+    async fn pool() -> UpstreamPool {
+        let config = UpstreamConfig {
+            id: "breaker-test".to_string(),
+            targets: vec![zentinel_config::UpstreamTarget {
+                address: TARGET.to_string(),
+                weight: 1,
+                max_requests: None,
+                metadata: HashMap::new(),
+            }],
+            load_balancing: LoadBalancingAlgorithm::RoundRobin,
+            sticky_session: None,
+            health_check: None,
+            connection_pool: ConnectionPoolConfig::default(),
+            circuit_breaker: Some(CircuitBreakerConfig {
+                failure_threshold: 1,
+                success_threshold: 1,
+                timeout_seconds: 0,
+                half_open_max_requests: 1,
+            }),
+            timeouts: UpstreamTimeouts::default(),
+            tls: None,
+            http_version: HttpVersionConfig::default(),
+            discovery: None,
+        };
+        UpstreamPool::new(config).await.expect("pool")
+    }
+
+    #[tokio::test]
+    async fn a_shadow_target_is_selected_while_the_breaker_is_closed() {
+        let pool = pool().await;
+        assert!(pool.select_shadow_target(None).await.is_ok());
+        assert_eq!(
+            pool.circuit_breaker_state(TARGET).await,
+            Some(CircuitBreakerState::Closed)
+        );
+    }
+
+    /// A shadow request reports no result. Asking the breaker on its behalf
+    /// would end the open period, and in half-open state take a trial slot
+    /// nothing gives back.
+    #[tokio::test]
+    async fn a_shadow_selection_does_not_end_the_open_period() {
+        let pool = pool().await;
+        pool.report_result(TARGET, false).await;
+        assert_eq!(
+            pool.circuit_breaker_state(TARGET).await,
+            Some(CircuitBreakerState::Open)
+        );
+
+        assert!(pool.select_shadow_target(None).await.is_err());
+        assert_eq!(
+            pool.circuit_breaker_state(TARGET).await,
+            Some(CircuitBreakerState::Open),
+            "the shadow request ended the open period"
+        );
+    }
+
+    /// The request that ends the open period holds no slot; the next one is a
+    /// trial and does.
+    #[tokio::test]
+    async fn only_a_trial_request_is_given_a_ticket() {
+        let pool = pool().await;
+        let (_, _, closed) = pool.select_peer_with_metadata(None).await.expect("a peer");
+        assert!(closed.is_none(), "a closed breaker has no slots");
+
+        pool.report_result(TARGET, false).await;
+        let (_, _, first) = pool.select_peer_with_metadata(None).await.expect("a peer");
+        assert!(first.is_none(), "it ended the open period");
+        let (_, _, trial) = pool.select_peer_with_metadata(None).await.expect("a peer");
+        let trial = trial.expect("a trial holds a slot");
+        pool.release_half_open_slot(trial).await;
+    }
+
+    #[tokio::test]
+    async fn no_shadow_target_is_selected_while_the_breaker_is_half_open() {
+        let pool = pool().await;
+        pool.report_result(TARGET, false).await;
+        // The first real request after the open period is the trial.
+        assert!(pool.select_peer(None).await.is_ok());
+        assert_eq!(
+            pool.circuit_breaker_state(TARGET).await,
+            Some(CircuitBreakerState::HalfOpen)
+        );
+
+        assert!(pool.select_shadow_target(None).await.is_err());
     }
 }
