@@ -458,7 +458,7 @@ Reusable filter definitions.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `database-path` | `string` | **required** | Path to GeoIP database. The file must open at startup, or Zentinel does not start; `zentinel test` and `zentinel validate` open it too |
+| `database-path` | `string` | **required** | Path to GeoIP database. The file must open at startup, or Zentinel does not start; `zentinel test` and `zentinel validate` open it too. A reload whose configuration names a file that does not open is rejected |
 | `database-type` | `string` | - | Database type: `maxmind`, `ip2location`. Taken from the extension of `database-path` when unset (`.mmdb` is MaxMind, `.bin` is IP2Location, in any case). Required when the extension is neither. Any other value is an error |
 | `action` | `string` | `"block"` | Action: `block`, `allow`, `log-only`. Any other value is an error |
 | `countries` | `[string]` | `[]` | ISO 3166-1 alpha-2 codes: two uppercase ASCII letters. KDL upper-cases what is written; JSON and TOML are not changed, so a lower-case code there is an error. Every KDL argument is read, and each may hold a comma-separated list: `countries "RU" "CN"` and `countries "RU,CN"` are the same. Must not be empty when `action` is `allow` |

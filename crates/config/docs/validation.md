@@ -86,7 +86,7 @@ expected, and so on, is an error and not the setting's default. See
 | `rate-limit.max-rps` | `> 0` |
 | `compress.algorithms` | At least one of `gzip`, `zstd`, `br`/`brotli`; `deflate` and unknown names are errors. `br`/`brotli` loads but is skipped with a warning (Pingora's Brotli output cannot be decoded yet), so list `gzip` or `zstd` as well |
 | `compress.level` | 1-9 |
-| `geo.database-path` | Non-empty. The file is opened at startup, and by `zentinel test` and `zentinel validate`, which fail if it cannot be |
+| `geo.database-path` | Non-empty. The file is opened at startup, on every reload, and by `zentinel test` and `zentinel validate`, which fail (and a reload is rejected) if it cannot be |
 | `geo.database-type` | `maxmind` or `ip2location`; any other value is an error. Required when `database-path` does not end in `.mmdb` or `.bin` (in any case) |
 | `geo.action` | `block`, `allow` or `log-only`; any other value is an error |
 | `geo.countries` | Each entry two uppercase ASCII letters (an ISO 3166-1 alpha-2 code). KDL upper-cases what is written; JSON and TOML are not changed, so a lower-case code there is an error. Every argument and every comma-separated part is checked. Non-empty when `action` is `allow` |

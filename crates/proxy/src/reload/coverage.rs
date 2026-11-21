@@ -106,7 +106,10 @@ pub fn blocks(config: &Config) -> Vec<Block> {
         ),
         block(
             "filters",
-            Reconciled("read from the current configuration per request; rate limiters rebuilt"),
+            Reconciled(
+                "read from the current configuration per request; rate limiters rebuilt; \
+                 geo filters registered, replaced and removed",
+            ),
             filters,
         ),
         block(

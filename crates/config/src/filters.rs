@@ -802,7 +802,7 @@ pub enum GeoFailureMode {
 }
 
 /// GeoIP filtering configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeoFilter {
     /// Path to GeoIP database file (.mmdb or .bin)
     #[serde(rename = "database-path")]

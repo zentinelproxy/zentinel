@@ -475,6 +475,60 @@ impl GeoFilterPool {
 // GeoFilterManager
 // =============================================================================
 
+/// What [`GeoFilterManager::apply`] did, counted per filter.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GeoFilterChanges {
+    /// Filters that were not registered and now are.
+    pub added: usize,
+    /// Filters whose settings changed, now served by a new pool (and an
+    /// empty cache).
+    pub replaced: usize,
+    /// Filters whose settings did not change; their pool and cache are kept.
+    pub unchanged: usize,
+}
+
+/// The pools of every geo filter of a configuration, built and not yet in use.
+///
+/// Made by [`GeoFilterManager::prepare`], which opens every database that
+/// needs it, and put in use by [`GeoFilterManager::apply`] and
+/// [`GeoFilterManager::remove_unlisted`], which cannot fail. Dropping a plan
+/// changes nothing.
+#[must_use = "a plan does nothing until it is applied"]
+pub struct GeoFilterPlan {
+    pools: HashMap<String, Arc<GeoFilterPool>>,
+}
+
+/// The geo filters of `config`, in the order of their ids.
+fn geo_filters(config: &Config) -> Vec<(&String, &GeoFilter)> {
+    let mut geo_filters: Vec<(&String, &GeoFilter)> = config
+        .filters
+        .iter()
+        .filter_map(|(id, filter)| match &filter.filter {
+            Filter::Geo(geo) => Some((id, geo)),
+            _ => None,
+        })
+        .collect();
+    geo_filters.sort_by_key(|(id, _)| *id);
+    geo_filters
+}
+
+/// A line of the error that lists the filters whose database did not open.
+fn load_failure(filter_id: &str, geo_filter: &GeoFilter, error: &GeoLookupError) -> String {
+    format!(
+        "  - filter '{}', database-path '{}': {}",
+        filter_id, geo_filter.database_path, error
+    )
+}
+
+/// The error for the filters whose database did not open.
+fn load_failures(failures: &[String]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{} geo filter(s) cannot be used, because their databases did not load:\n{}",
+        failures.len(),
+        failures.join("\n")
+    )
+}
+
 /// Manages all geo filter instances
 pub struct GeoFilterManager {
     /// Filter ID → GeoFilterPool mapping
@@ -501,40 +555,8 @@ impl GeoFilterManager {
     /// `database-path` and the reason.
     pub fn from_config(config: &Config) -> anyhow::Result<Self> {
         let manager = Self::new();
-
-        let mut geo_filters: Vec<(&String, &GeoFilter)> = config
-            .filters
-            .iter()
-            .filter_map(|(id, filter)| match &filter.filter {
-                Filter::Geo(geo) => Some((id, geo)),
-                _ => None,
-            })
-            .collect();
-        geo_filters.sort_by_key(|(id, _)| *id);
-
-        let mut failures = Vec::new();
-        for (filter_id, geo_filter) in geo_filters {
-            match manager.register_filter(filter_id, geo_filter.clone()) {
-                Ok(()) => info!(
-                    filter_id = %filter_id,
-                    database_path = %geo_filter.database_path,
-                    action = ?geo_filter.action,
-                    countries_count = geo_filter.countries.len(),
-                    "Registered geo filter"
-                ),
-                Err(e) => failures.push(format!(
-                    "  - filter '{}', database-path '{}': {}",
-                    filter_id, geo_filter.database_path, e
-                )),
-            }
-        }
-        if !failures.is_empty() {
-            anyhow::bail!(
-                "{} geo filter(s) cannot be used, because their databases did not load:\n{}",
-                failures.len(),
-                failures.join("\n")
-            );
-        }
+        let plan = manager.prepare(config)?;
+        manager.apply(&plan);
 
         let filter_ids = manager.filter_ids();
         if !filter_ids.is_empty() {
@@ -546,6 +568,140 @@ impl GeoFilterManager {
         }
 
         Ok(manager)
+    }
+
+    /// Open the database of every geo filter of `config`, without keeping
+    /// any of them open, for a configuration that is only being checked.
+    ///
+    /// Opens each database the way [`Self::from_config`] does, one after the
+    /// other, so no more than one is held in memory at a time.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database of any geo filter does not open. The error is
+    /// the one [`Self::from_config`] gives.
+    pub fn check_databases(config: &Config) -> anyhow::Result<()> {
+        let mut failures = Vec::new();
+        for (filter_id, geo_filter) in geo_filters(config) {
+            if let Err(e) = GeoFilterPool::new(geo_filter.clone()) {
+                failures.push(load_failure(filter_id, geo_filter, &e));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(load_failures(&failures))
+        }
+    }
+
+    /// Build the pools of the geo filters of `config`, to bring this manager
+    /// up to date with it, without changing the manager.
+    ///
+    /// A filter whose settings (`database-path` included) are what this
+    /// manager's pool for the id was built from keeps that pool, and with it
+    /// its database and cache. Every other filter of `config` gets a new pool,
+    /// whose database is opened here. [`Self::apply`] then puts the plan in
+    /// use.
+    ///
+    /// Opens databases, which blocks on file reads.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database of any geo filter that needs a new pool does
+    /// not open. The error lists every filter that failed, in the order of
+    /// their ids, with its `database-path` and the reason. Nothing has been
+    /// changed.
+    pub fn prepare(&self, config: &Config) -> anyhow::Result<GeoFilterPlan> {
+        self.prepare_with(config, GeoFilterPool::new)
+    }
+
+    /// [`Self::prepare`], with the function that builds a new pool.
+    fn prepare_with(
+        &self,
+        config: &Config,
+        open: impl Fn(GeoFilter) -> Result<GeoFilterPool, GeoLookupError>,
+    ) -> anyhow::Result<GeoFilterPlan> {
+        let mut pools = HashMap::new();
+        let mut failures = Vec::new();
+        for (filter_id, geo_filter) in geo_filters(config) {
+            let current = self
+                .filter_pools
+                .get(filter_id)
+                .map(|pool| Arc::clone(pool.value()));
+            match current {
+                Some(pool) if pool.config == *geo_filter => {
+                    pools.insert(filter_id.clone(), pool);
+                }
+                _ => match open(geo_filter.clone()) {
+                    Ok(pool) => {
+                        pools.insert(filter_id.clone(), Arc::new(pool));
+                    }
+                    Err(e) => failures.push(load_failure(filter_id, geo_filter, &e)),
+                },
+            }
+        }
+        if failures.is_empty() {
+            Ok(GeoFilterPlan { pools })
+        } else {
+            Err(load_failures(&failures))
+        }
+    }
+
+    /// Put a plan from [`Self::prepare`] in use: register the filters it
+    /// adds and replace the ones whose pool it rebuilt.
+    ///
+    /// Filters the plan does not name stay registered, for the routes that
+    /// still name them; [`Self::remove_unlisted`] drops them once those routes
+    /// are gone. The plan was made from this manager as it is now, so apply it
+    /// before anything else changes the manager.
+    ///
+    /// A filter is replaced in one step, but the filters of a plan are not
+    /// all replaced at one instant: for a moment, a request may meet one
+    /// filter as it was and another as it is to be.
+    pub fn apply(&self, plan: &GeoFilterPlan) -> GeoFilterChanges {
+        let mut changes = GeoFilterChanges::default();
+        for (filter_id, pool) in &plan.pools {
+            let registered = match self
+                .filter_pools
+                .insert(filter_id.clone(), Arc::clone(pool))
+            {
+                None => {
+                    changes.added += 1;
+                    "Registered geo filter"
+                }
+                Some(old) if Arc::ptr_eq(&old, pool) => {
+                    changes.unchanged += 1;
+                    continue;
+                }
+                Some(_) => {
+                    changes.replaced += 1;
+                    "Replaced geo filter"
+                }
+            };
+            info!(
+                filter_id = %filter_id,
+                database_path = %pool.config.database_path,
+                action = ?pool.config.action,
+                countries_count = pool.config.countries.len(),
+                "{registered}"
+            );
+        }
+        changes
+    }
+
+    /// Drop the filters a plan from [`Self::prepare`] does not name, and
+    /// return how many there were.
+    pub fn remove_unlisted(&self, plan: &GeoFilterPlan) -> usize {
+        let mut removed = 0;
+        self.filter_pools.retain(|filter_id, _| {
+            let kept = plan.pools.contains_key(filter_id);
+            if !kept {
+                removed += 1;
+                info!(filter_id = %filter_id, "Removed geo filter");
+            }
+            kept
+        });
+        removed
     }
 
     /// Register a geo filter from configuration
@@ -636,10 +792,15 @@ impl Default for GeoFilterManager {
 
 /// Watches geo database files for changes and triggers reloads
 pub struct GeoDatabaseWatcher {
-    /// The watcher instance
+    /// The watcher instance; none while there is no database to watch
     watcher: RwLock<Option<notify::RecommendedWatcher>>,
     /// Mapping from database path to filter IDs using it
     path_to_filters: RwLock<HashMap<PathBuf, Vec<String>>>,
+    /// The paths `watcher` is watching
+    watched: RwLock<HashSet<PathBuf>>,
+    /// Where `watcher` reports the paths that changed; set by
+    /// [`Self::start_watching`]
+    events: RwLock<Option<mpsc::Sender<PathBuf>>>,
     /// Reference to the geo filter manager
     manager: Arc<GeoFilterManager>,
 }
@@ -650,66 +811,133 @@ impl GeoDatabaseWatcher {
         Self {
             watcher: RwLock::new(None),
             path_to_filters: RwLock::new(HashMap::new()),
+            watched: RwLock::new(HashSet::new()),
+            events: RwLock::new(None),
             manager,
         }
     }
 
     /// Start watching all registered database files
+    ///
+    /// The receiver gets the path of each database file that changed. It
+    /// stays open while there is nothing to watch: a later
+    /// [`Self::sync_watches`] can add databases.
     pub fn start_watching(&self) -> Result<mpsc::Receiver<PathBuf>, GeoLookupError> {
+        let (tx, rx) = mpsc::channel::<PathBuf>(10);
+        *self.events.write() = Some(tx);
+        if let Err(e) = self.sync_watches() {
+            // Nothing reads the receiver: later calls must not watch either.
+            *self.events.write() = None;
+            return Err(e);
+        }
+        Ok(rx)
+    }
+
+    /// Make the watched files the database files of the manager's filters as
+    /// they are now: watch the ones it has gained and stop watching the ones
+    /// it has lost.
+    ///
+    /// Does nothing before [`Self::start_watching`]. A file that cannot be
+    /// watched is logged and tried again by the next call.
+    ///
+    /// # Errors
+    ///
+    /// Fails when there are files to watch and the file watcher cannot be
+    /// created.
+    pub fn sync_watches(&self) -> Result<(), GeoLookupError> {
+        let Some(tx) = self.events.read().clone() else {
+            return Ok(());
+        };
+
         // Build path → filter ID mapping
-        let db_paths = self.manager.database_paths();
         let mut path_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
-        for (filter_id, path) in db_paths {
+        for (filter_id, path) in self.manager.database_paths() {
             path_map.entry(path).or_default().push(filter_id);
         }
 
+        // Holding the watcher serialises calls.
+        let mut watcher_slot = self.watcher.write();
+
         if path_map.is_empty() {
             debug!("No geo databases to watch");
-            let (_tx, rx) = mpsc::channel(1);
-            return Ok(rx);
+            *self.path_to_filters.write() = path_map;
+            if watcher_slot.take().is_some() {
+                info!("Stopped watching geo database files");
+            }
+            self.watched.write().clear();
+            return Ok(());
         }
 
-        // Store the mapping
+        // Store the mapping, so a change to a file watched from here on is
+        // known to the filters using it.
         *self.path_to_filters.write() = path_map.clone();
 
-        // Create channel for events
-        let (tx, rx) = mpsc::channel::<PathBuf>(10);
-
-        // Create file watcher
-        let paths: Vec<PathBuf> = path_map.keys().cloned().collect();
-        let watcher = notify::recommended_watcher(move |event: Result<Event, notify::Error>| {
-            if let Ok(event) = event {
-                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    for path in &event.paths {
-                        let _ = tx.blocking_send(path.clone());
+        if watcher_slot.is_none() {
+            // Create file watcher
+            let watcher =
+                notify::recommended_watcher(move |event: Result<Event, notify::Error>| {
+                    if let Ok(event) = event {
+                        if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                            for path in &event.paths {
+                                let _ = tx.blocking_send(path.clone());
+                            }
+                        }
                     }
-                }
+                })
+                .map_err(|e| {
+                    GeoLookupError::LoadError(format!("Failed to create file watcher: {}", e))
+                })?;
+            *watcher_slot = Some(watcher);
+        }
+        let Some(watcher) = watcher_slot.as_mut() else {
+            return Ok(());
+        };
+
+        let mut watched = self.watched.write();
+
+        // Stop watching the files no filter uses any more
+        let unused: Vec<PathBuf> = watched
+            .iter()
+            .filter(|path| !path_map.contains_key(*path))
+            .cloned()
+            .collect();
+        for path in unused {
+            if let Err(e) = watcher.unwatch(&path) {
+                debug!(path = %path.display(), error = %e, "Failed to stop watching geo database file");
             }
-        })
-        .map_err(|e| GeoLookupError::LoadError(format!("Failed to create file watcher: {}", e)))?;
+            watched.remove(&path);
+            info!(
+                path = %path.display(),
+                "Stopped watching geo database"
+            );
+        }
 
-        // Store watcher
-        *self.watcher.write() = Some(watcher);
-
-        // Add watches for each database path
-        if let Some(ref mut watcher) = *self.watcher.write() {
-            for path in &paths {
-                if let Err(e) = watcher.watch(path, RecursiveMode::NonRecursive) {
-                    warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "Failed to watch geo database file"
-                    );
-                } else {
-                    info!(
-                        path = %path.display(),
-                        "Watching geo database for changes"
-                    );
-                }
+        // Add watches for each database path not watched yet
+        for path in path_map.keys() {
+            if watched.contains(path) {
+                continue;
+            }
+            if let Err(e) = watcher.watch(path, RecursiveMode::NonRecursive) {
+                warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to watch geo database file"
+                );
+            } else {
+                watched.insert(path.clone());
+                info!(
+                    path = %path.display(),
+                    "Watching geo database for changes"
+                );
             }
         }
 
-        Ok(rx)
+        Ok(())
+    }
+
+    /// The database files being watched
+    pub fn watched_paths(&self) -> HashSet<PathBuf> {
+        self.watched.read().clone()
     }
 
     /// Handle a file change event
@@ -744,8 +972,97 @@ impl GeoDatabaseWatcher {
 
     /// Stop watching
     pub fn stop(&self) {
+        *self.events.write() = None;
         *self.watcher.write() = None;
+        self.watched.write().clear();
         info!("Stopped watching geo database files");
+    }
+}
+
+// =============================================================================
+// Test database
+// =============================================================================
+
+/// A MaxMind database file for tests.
+#[cfg(test)]
+pub(crate) mod test_database {
+    use std::path::Path;
+
+    fn string(s: &str) -> Vec<u8> {
+        assert!(s.len() < 29);
+        let mut out = vec![0x40 | s.len() as u8];
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    fn map(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        assert!(entries.len() < 29);
+        let mut out = vec![0xE0 | entries.len() as u8];
+        for (key, value) in entries {
+            out.extend(string(key));
+            out.extend_from_slice(value);
+        }
+        out
+    }
+
+    fn uint16(n: u16) -> Vec<u8> {
+        let mut out = vec![0xA2];
+        out.extend_from_slice(&n.to_be_bytes());
+        out
+    }
+
+    fn uint32(n: u32) -> Vec<u8> {
+        let mut out = vec![0xC4];
+        out.extend_from_slice(&n.to_be_bytes());
+        out
+    }
+
+    /// An extended type: the control byte carries the size, the next byte the
+    /// type minus 7.
+    fn uint64(n: u64) -> Vec<u8> {
+        let mut out = vec![0x08, 0x02];
+        out.extend_from_slice(&n.to_be_bytes());
+        out
+    }
+
+    fn array(items: &[Vec<u8>]) -> Vec<u8> {
+        assert!(items.len() < 29);
+        let mut out = vec![items.len() as u8, 0x04];
+        for item in items {
+            out.extend_from_slice(item);
+        }
+        out
+    }
+
+    /// Write a database to `path` that says every IPv4 address is in
+    /// `country`.
+    ///
+    /// Its search tree is one node whose two records both point at the one
+    /// record of the data section.
+    pub(crate) fn write_country_database(path: &Path, country: &str) {
+        const NODE_COUNT: u32 = 1;
+        // A record past the node count points into the data section, after
+        // the 16 bytes that separate the two.
+        let record = (NODE_COUNT + 16).to_be_bytes();
+
+        let mut file = Vec::new();
+        file.extend_from_slice(&record[1..]);
+        file.extend_from_slice(&record[1..]);
+        file.extend_from_slice(&[0; 16]);
+        file.extend(map(&[("country", map(&[("iso_code", string(country))]))]));
+        file.extend_from_slice(b"\xAB\xCD\xEFMaxMind.com");
+        file.extend(map(&[
+            ("binary_format_major_version", uint16(2)),
+            ("binary_format_minor_version", uint16(0)),
+            ("build_epoch", uint64(1_700_000_000)),
+            ("database_type", string("Test-Country")),
+            ("description", map(&[])),
+            ("ip_version", uint16(4)),
+            ("languages", array(&[string("en")])),
+            ("node_count", uint32(NODE_COUNT)),
+            ("record_size", uint16(24)),
+        ]));
+        std::fs::write(path, file).expect("write the test database");
     }
 }
 
@@ -1247,5 +1564,387 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(message.contains("database-type"), "{message}");
+    }
+
+    // =========================================================================
+    // GeoFilterManager::prepare and apply
+    // =========================================================================
+
+    /// A geo filter that blocks `countries` (quoted, space-separated).
+    fn geo_blocking(id: &str, path: &str, countries: &str) -> String {
+        format!(
+            r#"filter "{id}" {{
+                type "geo"
+                database-path "{path}"
+                countries {countries}
+            }}"#
+        )
+    }
+
+    fn filters_config(filters: &[String]) -> Config {
+        config_with(&format!("filters {{\n{}\n}}", filters.join("\n")))
+    }
+
+    /// Builds the pool of a filter on a database that says `203.0.113.7` is
+    /// in RU, unless its path says "missing", and records every path it was
+    /// asked to open.
+    struct Opener {
+        opened: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Opener {
+        fn new() -> Self {
+            Self {
+                opened: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn open(&self, config: GeoFilter) -> Result<GeoFilterPool, GeoLookupError> {
+            self.opened.borrow_mut().push(config.database_path.clone());
+            if config.database_path.contains("missing") {
+                return Err(GeoLookupError::LoadError(format!(
+                    "failed to open {}",
+                    config.database_path
+                )));
+            }
+            let database = MockGeoDatabase::with_entries(vec![("203.0.113.7", "RU")]);
+            Ok(GeoFilterPool::new_with_database(config, Arc::new(database)))
+        }
+
+        fn opened(&self) -> Vec<String> {
+            self.opened.borrow().clone()
+        }
+    }
+
+    /// A manager that has registered `config`.
+    fn registered(config: &Config) -> GeoFilterManager {
+        let manager = GeoFilterManager::new();
+        let opener = Opener::new();
+        let plan = manager
+            .prepare_with(config, |c| opener.open(c))
+            .expect("the databases open");
+        manager.apply(&plan);
+        manager
+    }
+
+    /// Where `needle` is in `message`; fails the test when it is not there.
+    fn position(message: &str, needle: &str) -> usize {
+        message
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} is not in: {message}"))
+    }
+
+    fn sorted_ids(manager: &GeoFilterManager) -> Vec<String> {
+        let mut ids = manager.filter_ids();
+        ids.sort();
+        ids
+    }
+
+    fn pool(manager: &GeoFilterManager, id: &str) -> Arc<GeoFilterPool> {
+        manager
+            .get_pool(id)
+            .unwrap_or_else(|| panic!("filter {id} is not registered"))
+    }
+
+    #[test]
+    fn apply_registers_the_filters_of_a_configuration() {
+        let manager = GeoFilterManager::new();
+        let config = filters_config(&[
+            geo_blocking("a", "/geo/a.mmdb", r#""RU""#),
+            geo_blocking("b", "/geo/b.mmdb", r#""CN""#),
+        ]);
+        let opener = Opener::new();
+
+        let plan = manager
+            .prepare_with(&config, |c| opener.open(c))
+            .expect("the databases open");
+        assert!(
+            manager.filter_ids().is_empty(),
+            "preparing a plan must not register anything"
+        );
+        let changes = manager.apply(&plan);
+
+        assert_eq!(
+            changes,
+            GeoFilterChanges {
+                added: 2,
+                replaced: 0,
+                unchanged: 0
+            }
+        );
+        assert_eq!(sorted_ids(&manager), ["a", "b"]);
+        assert!(!manager.check("a", "203.0.113.7").unwrap().allowed);
+    }
+
+    #[test]
+    fn unchanged_filters_keep_their_pool_and_cache_and_are_not_opened_again() {
+        let config = filters_config(&[
+            geo_blocking("a", "/geo/a.mmdb", r#""RU""#),
+            geo_blocking("b", "/geo/b.mmdb", r#""CN""#),
+        ]);
+        let manager = registered(&config);
+        let before = pool(&manager, "a");
+        before.check("203.0.113.7");
+        assert_eq!(before.cache_stats(), (1, 1));
+
+        // Nothing may be opened: the databases are not there any more.
+        let plan = manager
+            .prepare_with(&config, |_| {
+                Err(GeoLookupError::LoadError("must not be opened".to_string()))
+            })
+            .expect("nothing changed, so nothing needs opening");
+        let changes = manager.apply(&plan);
+
+        assert_eq!(
+            changes,
+            GeoFilterChanges {
+                added: 0,
+                replaced: 0,
+                unchanged: 2
+            }
+        );
+        assert_eq!(manager.remove_unlisted(&plan), 0);
+        let after = pool(&manager, "a");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.cache_stats(), (1, 1), "the cache was kept");
+    }
+
+    #[test]
+    fn a_filter_with_changed_settings_gets_a_new_pool_and_an_empty_cache() {
+        let manager = registered(&filters_config(&[
+            geo_blocking("a", "/geo/a.mmdb", r#""RU""#),
+            geo_blocking("b", "/geo/b.mmdb", r#""CN""#),
+        ]));
+        let old_a = pool(&manager, "a");
+        let old_b = pool(&manager, "b");
+        assert!(!manager.check("a", "203.0.113.7").unwrap().allowed);
+
+        // `a` now blocks another country; `b` is as it was.
+        let changed = filters_config(&[
+            geo_blocking("a", "/geo/a.mmdb", r#""CN""#),
+            geo_blocking("b", "/geo/b.mmdb", r#""CN""#),
+        ]);
+        let opener = Opener::new();
+        let plan = manager
+            .prepare_with(&changed, |c| opener.open(c))
+            .expect("the databases open");
+        assert_eq!(opener.opened(), ["/geo/a.mmdb"], "only `a` is opened");
+        let changes = manager.apply(&plan);
+
+        assert_eq!(
+            changes,
+            GeoFilterChanges {
+                added: 0,
+                replaced: 1,
+                unchanged: 1
+            }
+        );
+        let new_a = pool(&manager, "a");
+        assert!(!Arc::ptr_eq(&old_a, &new_a));
+        assert_eq!(new_a.cache_stats(), (0, 0), "the cache is empty");
+        assert!(
+            manager.check("a", "203.0.113.7").unwrap().allowed,
+            "the new settings apply"
+        );
+        assert!(Arc::ptr_eq(&old_b, &pool(&manager, "b")));
+    }
+
+    #[test]
+    fn a_filter_with_a_changed_database_path_gets_a_new_pool() {
+        let manager = registered(&filters_config(&[geo_blocking(
+            "a",
+            "/geo/a.mmdb",
+            r#""RU""#,
+        )]));
+        let old = pool(&manager, "a");
+
+        let moved = filters_config(&[geo_blocking("a", "/geo/moved/a.mmdb", r#""RU""#)]);
+        let opener = Opener::new();
+        let plan = manager
+            .prepare_with(&moved, |c| opener.open(c))
+            .expect("the database opens");
+        let changes = manager.apply(&plan);
+
+        assert_eq!(changes.replaced, 1);
+        let new = pool(&manager, "a");
+        assert!(!Arc::ptr_eq(&old, &new));
+        assert_eq!(new.database_path(), Path::new("/geo/moved/a.mmdb"));
+    }
+
+    #[test]
+    fn a_filter_gone_from_the_configuration_is_removed() {
+        let manager = registered(&filters_config(&[
+            geo_blocking("a", "/geo/a.mmdb", r#""RU""#),
+            geo_blocking("b", "/geo/b.mmdb", r#""CN""#),
+        ]));
+
+        let opener = Opener::new();
+        let plan = manager
+            .prepare_with(
+                &filters_config(&[geo_blocking("a", "/geo/a.mmdb", r#""RU""#)]),
+                |c| opener.open(c),
+            )
+            .expect("nothing needs opening");
+        let changes = manager.apply(&plan);
+
+        assert_eq!(
+            changes,
+            GeoFilterChanges {
+                added: 0,
+                replaced: 0,
+                unchanged: 1
+            }
+        );
+        assert_eq!(
+            sorted_ids(&manager),
+            ["a", "b"],
+            "applying a plan does not drop the filters it does not name"
+        );
+
+        assert_eq!(manager.remove_unlisted(&plan), 1);
+        assert_eq!(sorted_ids(&manager), ["a"]);
+        assert!(manager.check("b", "203.0.113.7").is_none());
+    }
+
+    #[test]
+    fn a_failure_while_preparing_changes_nothing_and_names_every_failed_filter() {
+        let manager = registered(&filters_config(&[
+            geo_blocking("a", "/geo/a.mmdb", r#""RU""#),
+            geo_blocking("b", "/geo/b.mmdb", r#""CN""#),
+        ]));
+        let old_a = pool(&manager, "a");
+        let old_b = pool(&manager, "b");
+
+        // `a` changes and opens; `b` is gone; `c` and `d` are added, and
+        // neither opens.
+        let next = filters_config(&[
+            geo_blocking("a", "/geo/a.mmdb", r#""CN""#),
+            geo_blocking("d", "/geo/missing/d.mmdb", r#""RU""#),
+            geo_blocking("c", "/geo/missing/c.mmdb", r#""RU""#),
+        ]);
+        let opener = Opener::new();
+        let message = match manager.prepare_with(&next, |c| opener.open(c)) {
+            Ok(_) => panic!("filters whose databases do not open must fail the plan"),
+            Err(e) => format!("{e:#}"),
+        };
+
+        assert!(message.contains("2 geo filter(s)"), "{message}");
+        assert!(message.contains("'/geo/missing/c.mmdb'"), "{message}");
+        assert!(message.contains("'/geo/missing/d.mmdb'"), "{message}");
+        assert!(
+            position(&message, "'c'") < position(&message, "'d'"),
+            "the filters are not listed in the order of their ids; {message}"
+        );
+        assert_eq!(sorted_ids(&manager), ["a", "b"]);
+        assert!(Arc::ptr_eq(&old_a, &pool(&manager, "a")));
+        assert!(Arc::ptr_eq(&old_b, &pool(&manager, "b")));
+        assert!(!manager.check("a", "203.0.113.7").unwrap().allowed);
+    }
+
+    #[test]
+    fn a_plan_that_is_dropped_changes_nothing() {
+        let manager = registered(&filters_config(&[geo_blocking(
+            "a",
+            "/geo/a.mmdb",
+            r#""RU""#,
+        )]));
+        let old = pool(&manager, "a");
+
+        let opener = Opener::new();
+        let plan = manager
+            .prepare_with(
+                &filters_config(&[geo_blocking("z", "/geo/z.mmdb", r#""RU""#)]),
+                |c| opener.open(c),
+            )
+            .expect("the database opens");
+        drop(plan);
+
+        assert_eq!(sorted_ids(&manager), ["a"]);
+        assert!(Arc::ptr_eq(&old, &pool(&manager, "a")));
+    }
+
+    #[test]
+    fn check_databases_names_every_filter_whose_database_does_not_open() {
+        let config = filters_config(&[
+            geo_blocking("zz-last", "/nonexistent/geo/z.mmdb", r#""RU""#),
+            geo_blocking("aa-first", "/nonexistent/geo/a.mmdb", r#""RU""#),
+        ]);
+
+        let message = match GeoFilterManager::check_databases(&config) {
+            Ok(()) => panic!("databases that do not exist must not pass"),
+            Err(e) => format!("{e:#}"),
+        };
+
+        assert!(message.contains("2 geo filter(s)"), "{message}");
+        assert!(
+            position(&message, "'aa-first'") < position(&message, "'zz-last'"),
+            "{message}"
+        );
+        assert!(message.contains("'/nonexistent/geo/z.mmdb'"), "{message}");
+    }
+
+    // =========================================================================
+    // GeoDatabaseWatcher::sync_watches
+    // =========================================================================
+
+    #[test]
+    fn the_watched_files_follow_the_filters_of_the_manager() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"database").expect("write database");
+            path
+        };
+        let (a, b, c) = (path("a.mmdb"), path("b.mmdb"), path("c.mmdb"));
+        let filter =
+            |id: &str, path: &Path| geo_blocking(id, &path.display().to_string(), r#""RU""#);
+        let opener = Opener::new();
+
+        // Nothing to watch yet, then `a` and `b`.
+        let manager = Arc::new(GeoFilterManager::new());
+        let watcher = GeoDatabaseWatcher::new(Arc::clone(&manager));
+        let _events = watcher.start_watching().expect("start watching");
+        assert!(watcher.watched_paths().is_empty());
+
+        let apply = |filters: &[String]| {
+            let plan = manager
+                .prepare_with(&filters_config(filters), |c| opener.open(c))
+                .expect("the databases open");
+            manager.apply(&plan);
+            manager.remove_unlisted(&plan);
+            watcher.sync_watches().expect("sync the watches");
+        };
+        apply(&[filter("a", &a), filter("b", &b)]);
+        assert_eq!(
+            watcher.watched_paths(),
+            HashSet::from([a.clone(), b.clone()])
+        );
+
+        // `b` is replaced by `c`: `c` is watched and `b` is not any more.
+        apply(&[filter("a", &a), filter("b", &c)]);
+        assert_eq!(
+            watcher.watched_paths(),
+            HashSet::from([a.clone(), c.clone()])
+        );
+
+        // Two filters on one file, and `a` is no longer used.
+        apply(&[filter("b", &c), filter("d", &c)]);
+        assert_eq!(watcher.watched_paths(), HashSet::from([c.clone()]));
+
+        // Nothing is left to watch.
+        apply(&[]);
+        assert!(watcher.watched_paths().is_empty());
+
+        // And a filter can come back.
+        apply(&[filter("a", &a)]);
+        assert_eq!(watcher.watched_paths(), HashSet::from([a]));
+    }
+
+    #[test]
+    fn sync_watches_does_nothing_before_watching_has_started() {
+        let manager = Arc::new(GeoFilterManager::new());
+        let watcher = GeoDatabaseWatcher::new(manager);
+        watcher.sync_watches().expect("nothing to do");
+        assert!(watcher.watched_paths().is_empty());
     }
 }
