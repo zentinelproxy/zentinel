@@ -126,8 +126,10 @@ pub struct BodyInspectionPolicy {
     #[serde(default = "default_inspected_content_types")]
     pub content_types: Vec<String>,
 
-    /// Enable decompression for inspection
-    #[serde(default)]
+    /// Decode a content-coded (`Content-Encoding`) request body for the
+    /// agents. On by default; with it off, such a body is not inspected as
+    /// sent and follows the agents' `failure-mode`.
+    #[serde(default = "default_decompress")]
     pub decompress: bool,
 
     /// Maximum decompression ratio
@@ -142,11 +144,14 @@ impl Default for BodyInspectionPolicy {
             inspect_response_body: false,
             max_inspection_bytes: default_max_inspection_size(),
             content_types: default_inspected_content_types(),
-            decompress: false,
+            decompress: DEFAULT_DECOMPRESS,
             max_decompression_ratio: default_max_decompression_ratio(),
         }
     }
 }
+
+/// `body-inspection { decompress }` when it is not set.
+pub const DEFAULT_DECOMPRESS: bool = true;
 
 // ============================================================================
 // Default Value Functions
@@ -186,6 +191,32 @@ fn default_inspected_content_types() -> Vec<String> {
     ]
 }
 
+fn default_decompress() -> bool {
+    DEFAULT_DECOMPRESS
+}
+
 fn default_max_decompression_ratio() -> f32 {
     100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decompress_is_on_by_default() {
+        assert!(BodyInspectionPolicy::default().decompress);
+    }
+
+    #[test]
+    fn decompress_is_on_when_a_deserialized_policy_leaves_it_out() {
+        let policy: BodyInspectionPolicy = serde_json::from_str("{}").unwrap();
+        assert!(policy.decompress);
+    }
+
+    #[test]
+    fn decompress_can_be_turned_off_when_deserialized() {
+        let policy: BodyInspectionPolicy = serde_json::from_str(r#"{"decompress":false}"#).unwrap();
+        assert!(!policy.decompress);
+    }
 }

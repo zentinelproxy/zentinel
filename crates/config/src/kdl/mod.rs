@@ -839,7 +839,7 @@ fn parse_agent_tls(node: &kdl::KdlNode) -> Result<Option<AgentTlsConfig>> {
 ///         inspect-response-body false
 ///         max-inspection-bytes 1048576
 ///         content-types "application/json" "application/xml"
-///         decompress false
+///         decompress true
 ///         max-decompression-ratio 100.0
 ///     }
 /// }
@@ -1079,7 +1079,7 @@ fn parse_body_inspection_policy(node: &kdl::KdlNode) -> Result<crate::waf::BodyI
     let max_inspection_bytes = get_int_entry(node, "max-inspection-bytes")
         .map(|v| v as usize)
         .unwrap_or(1024 * 1024); // 1MB default
-    let decompress = get_bool_entry(node, "decompress").unwrap_or(false);
+    let decompress = get_bool_entry(node, "decompress").unwrap_or(crate::waf::DEFAULT_DECOMPRESS);
     let max_decompression_ratio = get_int_entry(node, "max-decompression-ratio")
         .map(|v| v as f32)
         .unwrap_or(100.0);
@@ -3597,6 +3597,59 @@ mod tests {
         assert_eq!(waf.body_inspection.max_inspection_bytes, 2097152);
         assert!(waf.body_inspection.decompress);
         assert_eq!(waf.body_inspection.max_decompression_ratio, 50.0);
+    }
+
+    #[test]
+    fn decompress_is_on_when_body_inspection_does_not_set_it() {
+        let kdl = r#"
+        waf {
+            engine "coraza"
+            mode "off"
+
+            body-inspection {
+                inspect-request-body #true
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf = parse_waf_config(doc.get("waf").unwrap()).unwrap();
+
+        assert!(waf.body_inspection.decompress);
+    }
+
+    #[test]
+    fn decompress_is_on_when_there_is_no_body_inspection_block() {
+        let kdl = r#"
+        waf {
+            engine "coraza"
+            mode "off"
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf = parse_waf_config(doc.get("waf").unwrap()).unwrap();
+
+        assert!(waf.body_inspection.decompress);
+    }
+
+    #[test]
+    fn decompress_can_be_turned_off() {
+        let kdl = r#"
+        waf {
+            engine "coraza"
+            mode "off"
+
+            body-inspection {
+                decompress #false
+            }
+        }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let waf = parse_waf_config(doc.get("waf").unwrap()).unwrap();
+
+        assert!(!waf.body_inspection.decompress);
     }
 
     #[test]

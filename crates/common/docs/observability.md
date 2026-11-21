@@ -260,6 +260,16 @@ zentinel_decompression_total{encoding="gzip", result="success"}
 zentinel_decompression_ratio{encoding="gzip"}
 ```
 
+`encoding` is `gzip`, `deflate` or `br`, or `other` for a request body in
+any other coding, or in several. `result` is `success`, or why a request
+body was not decoded for the body agents: `ratio_exceeded`,
+`size_exceeded`, `invalid_data`, `unsupported`, `io_error`, or
+`not_decoded` (decompression is off, the coding is not supported, there
+are several codings, or the agent receives the body in chunks: always with
+`request-body-mode "stream"`, and past the threshold with `"hybrid"`). The
+`encoding` label of the `success` and failure counts used to be the value of
+the request's header as the client wrote it; it is now one of these names.
+
 ### Shadow/Mirror Metrics
 
 ```rust

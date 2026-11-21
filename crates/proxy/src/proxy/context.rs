@@ -478,8 +478,15 @@ pub struct RequestContext {
     // === Body Decompression ===
     /// Whether decompression is enabled for body inspection
     pub(crate) decompression_enabled: bool,
-    /// Content-Encoding of the request body (if compressed)
-    pub(crate) body_content_encoding: Option<String>,
+    /// Content-Encoding of the request body (if compressed): `gzip`,
+    /// `deflate` or `br`
+    pub(crate) body_content_encoding: Option<&'static str>,
+    /// The request body is content-coded and is not decoded for the body
+    /// agents, so it cannot be inspected as sent: their `failure-mode`
+    /// decides, when the first of the body arrives.
+    pub(crate) body_not_decoded: Option<crate::decompression::UndecodedBody>,
+    /// That has been decided, logged and counted for this request.
+    pub(crate) body_not_decoded_applied: bool,
     /// Maximum decompression ratio allowed
     pub(crate) max_decompression_ratio: f64,
     /// Maximum decompressed size allowed
@@ -702,6 +709,8 @@ impl RequestContext {
             body_phase_request_headers: Vec::new(),
             decompression_enabled: false,
             body_content_encoding: None,
+            body_not_decoded: None,
+            body_not_decoded_applied: false,
             max_decompression_ratio: 100.0,
             max_decompression_bytes: 10 * 1024 * 1024, // 10MB
             body_was_decompressed: false,
@@ -1070,6 +1079,22 @@ impl RequestContext {
         self.body_inspection_agents
             .iter()
             .any(|agent| agent.failure_mode == zentinel_config::FailureMode::Closed)
+    }
+
+    /// The body is sent to the agents in pieces, which cannot be decoded: a
+    /// body that was to be decoded is not decoded after all, and follows the
+    /// agents' `failure-mode` (see `body_not_decoded`).
+    pub(crate) fn body_goes_in_pieces(&mut self) {
+        if !self.decompression_enabled {
+            return;
+        }
+        self.decompression_enabled = false;
+        if let Some(encoding) = self.body_content_encoding {
+            self.body_not_decoded = Some(crate::decompression::UndecodedBody {
+                label: encoding,
+                declared: encoding.to_string(),
+            });
+        }
     }
 
     /// The request body limit that applies to this request, given the

@@ -409,6 +409,18 @@ With `max-inspection-bytes 0` every body that is not empty is over the limit;
 upgrade note and the ways to accept larger bodies are in the config
 reference ([BodyInspectionPolicy](../../../config/docs/schema.md#bodyinspectionpolicy)).
 
+A request body in a `Content-Encoding` is sent to the agent decoded, when
+it is in one supported coding (`gzip`, `deflate`, `br`),
+`body-inspection { decompress }` (on by default) is on, and the body is
+held whole: not with `request-body-mode "stream"`, and, with `"hybrid"`,
+not past its threshold. The `Content-Encoding` header in the request
+headers event is as the client sent it. Any other coded body cannot be
+inspected as sent, and the filter's `failure-mode` applies -- `closed`
+refuses the request with 415, `open` skips the agent, which is sent none of
+the body, with a warning. A body that cannot be decoded (invalid data, over
+the ratio or size limit) is refused with 400 or skipped the same way. See
+[Content-coded request bodies](../../../config/docs/schema.md#content-coded-request-bodies).
+
 #### What the upstream sees of a request refused on its body
 
 The proxy connects to the upstream and sends the request line and headers
