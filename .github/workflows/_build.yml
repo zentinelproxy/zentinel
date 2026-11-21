@@ -207,9 +207,13 @@ jobs:
       - name: Generate SBOM
         if: inputs.upload-artifacts && matrix.config.suffix == 'linux-amd64'
         run: |
-          cargo install cargo-sbom --locked
-          cargo sbom --output-format cyclone_dx_json_1_5 > zentinel-sbom.cdx.json
-          cargo sbom --output-format spdx_json_2_3 > zentinel-sbom.spdx.json
+          cargo install sbom-attest --version 0.4.6 --locked
+          PKGS=zentinel-proxy,zentinel-gateway,zentinel-echo-agent
+          TARGET=x86_64-unknown-linux-gnu
+          sbom-attest generate --locked --target $TARGET -p $PKGS --name zentinel \
+            --cdx zentinel-sbom.cdx.json --spdx zentinel-sbom.spdx.json
+          sbom-attest audit zentinel-sbom.cdx.json --locked --target $TARGET -p $PKGS --summary "$GITHUB_STEP_SUMMARY"
+          sbom-attest audit zentinel-sbom.spdx.json --locked --target $TARGET -p $PKGS
 
       - name: Prepare artifacts
         if: inputs.upload-artifacts
