@@ -24,8 +24,9 @@ use zentinel_agent_protocol::v2::AgentCapabilities;
 use zentinel_agent_protocol::{AgentResponse, EventType, RequestBodyChunkEvent};
 
 const BREAKER_OPENED_LOG: &str = "Circuit breaker opened";
-/// How often Pingora tries a request whose connection to the target is dropped
-/// without an answer, each try counting as a failure of the target.
+/// How often Pingora tries a request with an idempotent method whose connection
+/// to the target is dropped without an answer, each try counting as a failure
+/// of the target. A POST is tried once.
 const ATTEMPTS_PER_FAILED_REQUEST: usize = 16;
 /// Logged when a half-open period starts over because its trials never came
 /// back. A trial slot that is given back makes this unnecessary.
@@ -196,13 +197,21 @@ fn parse_status(raw: &[u8]) -> (u16, String) {
 }
 
 fn post(port: u16, body: &str) -> (u16, String) {
+    send_with_body(port, "POST", body)
+}
+
+fn put(port: u16, body: &str) -> (u16, String) {
+    send_with_body(port, "PUT", body)
+}
+
+fn send_with_body(port: u16, method: &str, body: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     write!(
         stream,
-        "POST /upload HTTP/1.1\r\nHost: a.example\r\nConnection: close\r\n\
+        "{method} /upload HTTP/1.1\r\nHost: a.example\r\nConnection: close\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     )
@@ -484,7 +493,9 @@ fn trials_refused_by_an_agent_do_not_keep_the_breaker_half_open() {
 
 /// A failed attempt counts once against the target, not once where the error
 /// happens and once more when the request ends. The breaker here opens on one
-/// failure more than a single request's attempts make.
+/// failure more than a single request's attempts make. The request is a PUT
+/// because a POST is not sent again after the target dropped it, so it would
+/// make one attempt.
 #[test]
 fn a_failed_attempt_is_counted_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -504,7 +515,7 @@ fn a_failed_attempt_is_counted_once() {
         ),
     );
 
-    let (status, _) = post(proxy.port, "{\"payload\":\"drop-connection\"}");
+    let (status, _) = put(proxy.port, "{\"payload\":\"drop-connection\"}");
     assert!(status >= 500, "a dropped connection answered {status}");
     assert_eq!(
         backend.dropped.load(Ordering::SeqCst),
@@ -514,7 +525,7 @@ fn a_failed_attempt_is_counted_once() {
 
     // One failure short of opening: the next request still reaches the
     // target, and its first attempt is the one that opens the breaker.
-    let _ = post(proxy.port, "{\"payload\":\"drop-connection\"}");
+    let _ = put(proxy.port, "{\"payload\":\"drop-connection\"}");
     assert!(
         backend.dropped.load(Ordering::SeqCst) > ATTEMPTS_PER_FAILED_REQUEST,
         "the breaker opened after one request's failures: an attempt was counted twice; log:\n{}",

@@ -91,6 +91,9 @@ metrics.record_upstream_failure(
     "api-route",   // route
     "timeout",     // reason
 );
+
+// Record a request that was not sent again after an error
+metrics.record_retry_refused("non_idempotent_method");
 ```
 
 **Prometheus Metrics:**
@@ -98,7 +101,14 @@ metrics.record_upstream_failure(
 ```
 zentinel_upstream_attempts_total{upstream="backend", route="api"}
 zentinel_upstream_failures_total{upstream="backend", route="api", reason="timeout"}
+zentinel_upstream_retries_refused_total{reason="non_idempotent_method"}
 ```
+
+`zentinel_upstream_retries_refused_total` counts requests that failed after they
+may have reached the upstream and were not sent again. `reason` is
+`non_idempotent_method` (the method is not idempotent and the route's
+`retry-policy` does not set `retry-non-idempotent`) or `retry_buffer_truncated`
+(the request body was larger than the retry buffer).
 
 ### Circuit Breaker Metrics
 
@@ -346,6 +356,7 @@ zentinel_scoped_circuit_breaker_state{namespace="production", service="payments"
 | `zentinel_active_requests` | Gauge | - | Current in-flight |
 | `zentinel_upstream_attempts_total` | Counter | upstream, route | Upstream attempts |
 | `zentinel_upstream_failures_total` | Counter | upstream, route, reason | Upstream failures |
+| `zentinel_upstream_retries_refused_total` | Counter | reason | Requests not sent again after an error |
 | `zentinel_circuit_breaker_state` | Gauge | component, route | CB state (0/1) |
 | `zentinel_agent_latency_seconds` | Histogram | agent, event | Agent call latency |
 | `zentinel_agent_timeouts_total` | Counter | agent, event | Agent timeouts |

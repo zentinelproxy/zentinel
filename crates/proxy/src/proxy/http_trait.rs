@@ -39,6 +39,7 @@ use super::model_routing;
 use super::model_routing_metrics::get_model_routing_metrics;
 use super::ZentinelProxy;
 use zentinel_common::observability::RequestMetrics;
+use zentinel_common::types::is_idempotent_method;
 
 /// The IP socket address behind a Pingora endpoint, if it has one.
 ///
@@ -4207,32 +4208,51 @@ impl ProxyHttp for ZentinelProxy {
             ctx.upstream_attempts
         ));
 
-        // Determine if retry should be attempted:
-        // - Only retry if error is retryable type
-        // - Only retry reused connections if buffer isn't truncated
-        // - Track retry metrics
-        if is_retryable {
-            let can_retry = if client_reused {
-                // For reused connections, check if retry buffer is intact
-                !session.as_ref().retry_buffer_truncated()
-            } else {
-                // Fresh connections can always retry
-                true
-            };
+        // The error type decides whether another attempt is worth making.
+        // Whether this request may be sent again is decided below.
+        enhanced_error.retry.decide_reuse(is_retryable);
 
-            enhanced_error.retry.decide_reuse(can_retry);
-
-            if can_retry {
-                debug!(
+        // This hook replaces Pingora's default policy, which never sends a
+        // request again when its method is not idempotent or its body no
+        // longer fits the retry buffer. Both are checked here, whether or not
+        // the connection was reused: the upstream may have received the
+        // request and acted on it, and a body that was not kept cannot be
+        // replayed.
+        if enhanced_error.retry == RetryType::Decided(true) {
+            let route_allows_non_idempotent = ctx
+                .route_config()
+                .and_then(|route| route.retry_policy.as_ref())
+                .is_some_and(|policy| policy.retry_non_idempotent);
+            let method = session.req_header().method.as_str();
+            let refusal = ReplayCheck {
+                method,
+                route_allows_non_idempotent,
+                retry_buffer_truncated: session.as_ref().retry_buffer_truncated(),
+            }
+            .refusal();
+            match refusal {
+                Some(refusal) => {
+                    enhanced_error.set_retry(false);
+                    self.metrics.record_retry_refused(refusal.as_str());
+                    info!(
+                        correlation_id = %ctx.trace_id,
+                        route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                        upstream = %upstream_id,
+                        peer_address = %peer.address(),
+                        method = method,
+                        error_type = ?error_type,
+                        client_reused = client_reused,
+                        reason = refusal.as_str(),
+                        "Not retrying a request that may have been sent to the upstream"
+                    );
+                }
+                None => debug!(
                     correlation_id = %ctx.trace_id,
                     upstream = %upstream_id,
                     error_type = ?error_type,
                     "Error is retryable, will attempt retry"
-                );
+                ),
             }
-        } else {
-            // Non-retryable error - don't retry
-            enhanced_error.retry.decide_reuse(false);
         }
 
         enhanced_error
@@ -4682,6 +4702,59 @@ enum TargetOutcome {
     /// the target: the client went away or sent a body over its limit, a
     /// filter or an agent refused the request or its response.
     NoResult,
+}
+
+/// Why a request that failed after it may have been sent to the upstream is
+/// not sent again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayRefusal {
+    /// The method is not idempotent, and the route's `retry-policy` does not
+    /// set `retry-non-idempotent`.
+    NonIdempotentMethod,
+    /// The request body was larger than the retry buffer, so it cannot be
+    /// sent a second time.
+    RetryBufferTruncated,
+}
+
+impl ReplayRefusal {
+    /// The fixed value logged, and used as the `reason` label of
+    /// `zentinel_upstream_retries_refused_total`.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NonIdempotentMethod => "non_idempotent_method",
+            Self::RetryBufferTruncated => "retry_buffer_truncated",
+        }
+    }
+}
+
+/// What decides whether a request that failed after it may have been sent to
+/// the upstream can be sent again.
+struct ReplayCheck<'a> {
+    /// The request method, as received.
+    method: &'a str,
+    /// The route's `retry-policy` sets `retry-non-idempotent`.
+    route_allows_non_idempotent: bool,
+    /// The request body was larger than the retry buffer.
+    retry_buffer_truncated: bool,
+}
+
+impl ReplayCheck<'_> {
+    /// Why the request may not be sent again, if it may not.
+    ///
+    /// A method that is not idempotent
+    /// ([`zentinel_common::types::is_idempotent_method`]) is replayed only
+    /// where the route's `retry-policy` says `retry-non-idempotent`. A request
+    /// whose body was larger than the retry buffer is never replayed, whatever
+    /// its method.
+    fn refusal(&self) -> Option<ReplayRefusal> {
+        if !is_idempotent_method(self.method) && !self.route_allows_non_idempotent {
+            Some(ReplayRefusal::NonIdempotentMethod)
+        } else if self.retry_buffer_truncated {
+            Some(ReplayRefusal::RetryBufferTruncated)
+        } else {
+            None
+        }
+    }
 }
 
 /// Whether an error is the upstream's own: its connection, a timeout, a read
@@ -6254,6 +6327,115 @@ mod target_outcome_tests {
         );
         assert_eq!(target_outcome(None, 403, true), TargetOutcome::NoResult);
         assert_eq!(target_outcome(None, 503, true), TargetOutcome::NoResult);
+    }
+}
+
+#[cfg(test)]
+mod replay_refusal_tests {
+    use super::{ReplayCheck, ReplayRefusal};
+
+    fn refusal(
+        method: &str,
+        route_allows_non_idempotent: bool,
+        retry_buffer_truncated: bool,
+    ) -> Option<ReplayRefusal> {
+        ReplayCheck {
+            method,
+            route_allows_non_idempotent,
+            retry_buffer_truncated,
+        }
+        .refusal()
+    }
+
+    const IDEMPOTENT: [&str; 6] = ["GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE"];
+
+    #[test]
+    fn an_idempotent_request_may_be_sent_again() {
+        for method in IDEMPOTENT {
+            assert_eq!(refusal(method, false, false), None, "{method}");
+        }
+    }
+
+    #[test]
+    fn a_request_that_is_not_idempotent_is_not_sent_again() {
+        for method in ["POST", "PATCH", "CONNECT"] {
+            assert_eq!(
+                refusal(method, false, false),
+                Some(ReplayRefusal::NonIdempotentMethod),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_extension_method_is_not_idempotent() {
+        assert_eq!(
+            refusal("PURGE", false, false),
+            Some(ReplayRefusal::NonIdempotentMethod)
+        );
+    }
+
+    /// QUERY is not in RFC 9110, although `http::Method::is_idempotent` says
+    /// it is.
+    #[test]
+    fn query_is_not_idempotent() {
+        let method = http::Method::from_bytes(b"QUERY").unwrap();
+        assert_eq!(
+            refusal(method.as_str(), false, false),
+            Some(ReplayRefusal::NonIdempotentMethod)
+        );
+    }
+
+    /// Method names are case-sensitive (RFC 9110 section 9.1).
+    #[test]
+    fn a_method_in_another_case_is_not_idempotent() {
+        for method in ["get", "Get", "put", "delete"] {
+            assert_eq!(
+                refusal(method, false, false),
+                Some(ReplayRefusal::NonIdempotentMethod),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_route_may_allow_a_request_that_is_not_idempotent_to_be_sent_again() {
+        assert_eq!(refusal("POST", true, false), None);
+    }
+
+    #[test]
+    fn a_request_whose_body_was_truncated_is_not_sent_again_whatever_its_method() {
+        for method in IDEMPOTENT {
+            assert_eq!(
+                refusal(method, false, true),
+                Some(ReplayRefusal::RetryBufferTruncated),
+                "{method}"
+            );
+        }
+        assert_eq!(
+            refusal("POST", true, true),
+            Some(ReplayRefusal::RetryBufferTruncated)
+        );
+    }
+
+    #[test]
+    fn the_method_is_named_first_when_both_apply() {
+        assert_eq!(
+            refusal("POST", false, true),
+            Some(ReplayRefusal::NonIdempotentMethod)
+        );
+    }
+
+    #[test]
+    fn the_reasons_are_fixed_values() {
+        assert_eq!(
+            ReplayRefusal::NonIdempotentMethod.as_str(),
+            "non_idempotent_method"
+        );
+        assert_eq!(
+            ReplayRefusal::RetryBufferTruncated.as_str(),
+            "retry_buffer_truncated"
+        );
     }
 }
 

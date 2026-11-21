@@ -327,6 +327,44 @@ one:
                Send Request
 ```
 
+### Retrying After an Upstream Error
+
+An error after the connection to the upstream was established, a connection
+dropped before the response header for example, can be followed by another
+attempt at the same request. The proxy does not send the request again when
+the upstream may already have acted on it:
+
+| Request | Sent again after such an error |
+|---------|--------------------------------|
+| Method GET, HEAD, OPTIONS, TRACE, PUT or DELETE | Yes, as the error type allows |
+| Any other method, such as POST, PATCH or QUERY | No, unless the route's `retry-policy` sets `retry-non-idempotent #true` |
+| Body larger than the retry buffer | No, whatever the method: the body cannot be replayed |
+
+The methods in the first row are the idempotent methods of RFC 9110 section
+9.2.2. Method names are case-sensitive, so `get` is not one of them. The same
+rule decides whether a request is sent again on a status code listed in
+`retryable-status-codes`.
+
+When the proxy does not send the request again, the client gets the error, a
+502 for a dropped connection. The log says `Not retrying a request that may
+have been sent to the upstream`, with a `reason` of `non_idempotent_method` or
+`retry_buffer_truncated`, and
+`zentinel_upstream_retries_refused_total{reason}` counts it.
+
+The case likely to come up first is a connection the proxy kept for reuse,
+which the upstream closed while it was idle. A POST sent on it, and a gRPC
+call is a POST, used to be sent again silently on a new connection. It now
+gets a 502, and the client decides whether to send it again. To restore the
+earlier behavior for a route, set `retry-non-idempotent #true` in its
+`retry-policy`.
+
+The retry buffer holds 64 KiB of the request body by default. On a route that
+reads the whole body (API schema validation, body inspection, MCP) it is
+sized to that route's limit instead: the route's body size limit, never
+above the global one, or the MCP envelope limit.
+
+A failure to connect happens before the request is sent and is not affected.
+
 ## Rate Limiting Architecture
 
 ```
