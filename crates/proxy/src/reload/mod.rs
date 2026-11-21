@@ -1607,6 +1607,181 @@ routes {{
         );
     }
 
+    /// A configuration whose namespace and service routes name upstreams and
+    /// agents in every place the configuration allows, and whose top-level
+    /// route does too. `suffix` changes a path, so two files differ.
+    fn write_config_with_scoped_references(path: &Path, suffix: &str) {
+        let config = format!(
+            r#"
+server {{
+    worker-threads 4
+}}
+
+listeners {{
+    listener "http" {{
+        address "127.0.0.1:8080"
+        protocol "http"
+    }}
+}}
+
+upstreams {{
+    upstream "edge" {{
+        target "127.0.0.1:3000"
+    }}
+}}
+
+agents {{
+    agent "guard" {{
+        type "auth"
+        grpc address="http://127.0.0.1:50051"
+        events "request_headers"
+    }}
+}}
+
+routes {{
+    route "gate" {{
+        matches {{
+            path-prefix "/gate{suffix}/"
+        }}
+        upstream "edge"
+        shadow {{ upstream "pool"; }}
+        fallback {{ fallback-upstream "shared:pool"; }}
+        service-type "inference"
+        inference {{
+            provider "generic"
+            guardrails {{
+                prompt-injection {{ enabled #true; agent "scanner"; }}
+            }}
+        }}
+    }}
+}}
+
+namespace "shared" {{
+    upstreams {{
+        upstream "pool" {{ target "127.0.0.1:3002"; }}
+    }}
+    agents {{
+        agent "scanner" {{
+            type "auth"
+            grpc address="http://127.0.0.1:50053"
+            events "request_headers"
+        }}
+    }}
+    exports {{
+        upstreams "pool"
+        agents "scanner"
+    }}
+}}
+
+namespace "api" {{
+    upstreams {{
+        upstream "backend" {{ target "127.0.0.1:3001"; }}
+    }}
+    agents {{
+        agent "auth" {{
+            type "auth"
+            grpc address="http://127.0.0.1:50052"
+            events "request_headers"
+        }}
+    }}
+    filters {{
+        filter "check" {{ type "agent"; agent "auth"; }}
+    }}
+    routes {{
+        route "main" {{
+            matches {{
+                path-prefix "/api{suffix}/"
+            }}
+            upstream "backend"
+            filters "check"
+            shadow {{ upstream "backend"; }}
+            fallback {{ fallback-upstream "shared:pool"; }}
+            service-type "inference"
+            inference {{
+                provider "generic"
+                model-routing {{
+                    model "m*" upstream="pool"
+                    default-upstream "backend"
+                }}
+                guardrails {{
+                    prompt-injection {{ enabled #true; agent "auth"; }}
+                    pii-detection {{ enabled #true; agent "guard"; }}
+                }}
+            }}
+        }}
+    }}
+    service "users" {{
+        upstreams {{
+            upstream "local" {{ target "127.0.0.1:3003"; }}
+        }}
+        filters {{
+            filter "scan" {{ type "agent"; agent "auth"; }}
+        }}
+        routes {{
+            route "list" {{
+                matches {{
+                    path-prefix "/users{suffix}/"
+                }}
+                upstream "local"
+                filters "scan"
+                shadow {{ upstream "api:backend"; }}
+                mcp {{ upstreams {{ upstream "local" prefix="l"; }} }}
+            }}
+        }}
+    }}
+}}
+"#
+        );
+
+        std::fs::write(path, config).unwrap();
+    }
+
+    /// The configuration the manager keeps is the lowered one, so rolling
+    /// back to it, and applying a change to it, validate the lowered form:
+    /// the routes of namespaces and services are top-level routes there, and
+    /// name the upstreams and agents they use by their qualified ids.
+    #[tokio::test]
+    async fn a_lowered_configuration_with_scoped_references_is_applied_and_rolled_back() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.kdl");
+        write_config_with_scoped_references(&config_path, "");
+
+        let manager = ConfigManager::new(&config_path, Config::default_for_testing())
+            .await
+            .unwrap();
+
+        // The first reload loads the file; the second keeps the first's
+        // lowered result as the configuration to roll back to.
+        manager.reload(ReloadTrigger::Manual).await.unwrap();
+        assert!(manager.current().routes.iter().any(|r| r.id == "api:main"));
+        write_config_with_scoped_references(&config_path, "-v2");
+        manager.reload(ReloadTrigger::Manual).await.unwrap();
+
+        manager
+            .rollback("Testing rollback".to_string())
+            .await
+            .unwrap();
+        let rolled_back = manager.current();
+        assert!(rolled_back
+            .routes
+            .iter()
+            .any(|r| r.id == "api:main" && r.upstream.as_deref() == Some("api:backend")));
+
+        // `apply_change` and the reload of a file both validate the current,
+        // lowered configuration or a freshly lowered one.
+        manager
+            .apply_config((*rolled_back).clone(), ReloadTrigger::Manual)
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .stats()
+                .failed_reloads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
     #[tokio::test]
     async fn test_reload_events_broadcast() {
         // Test that reload events are properly broadcast to subscribers

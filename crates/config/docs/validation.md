@@ -131,6 +131,10 @@ The validator ensures all cross-references are valid:
 ```
 Route → Upstream      ✓ Upstream must exist
 Route → Filter        ✓ Filter must exist
+Route → Shadow, fallback, MCP and model-routing upstreams
+                      ✓ Upstream must exist
+Route → Guardrail agent (enabled guardrails)
+                      ✓ Agent must exist
 Filter → Agent        ✓ Agent must exist
 Listener → Route      ✓ Default route must exist
 ```
@@ -140,6 +144,25 @@ Invalid references produce clear error messages:
 ```
 Configuration validation failed:
   Route 'api' references non-existent upstream 'backend'
+```
+
+Inside a namespace or service, these references may also be qualified
+(`ns:name`, `ns:svc:name`). A qualified reference must name a resource of the
+kind the field expects, defined in that scope, exported or not. An agent filter
+of a namespace or service is checked like an agent filter at the top level. The
+id of a resource of another kind (for example a filter, an agent or a route
+named as an upstream) is reported as a reference that cannot be resolved:
+
+```
+Configuration validation failed:
+  Route 'main' in namespace 'api' references upstream 'api:check' which cannot be resolved.
+  Available upstreams: 'backend', 'edge', 'pool'
+
+  Route 'main' in namespace 'api' references shadow upstream 'missing' which cannot be resolved.
+  Available upstreams: 'backend', 'edge', 'pool'
+
+  Filter 'probe' in namespace 'api' references agent 'api:backend' which cannot be resolved.
+  Available agents: 'auth', 'guard', 'scanner'
 ```
 
 ## Default Values

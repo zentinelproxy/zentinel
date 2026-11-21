@@ -14,7 +14,8 @@ use std::net::SocketAddr;
 use tracing::{debug, trace, warn};
 
 use crate::{
-    Config, Filter, ListenerProtocol, NamespaceConfig, ServiceConfig, ServiceType, WafMode,
+    Config, Filter, FilterConfig, ListenerProtocol, NamespaceConfig, RouteConfig, ServiceConfig,
+    ServiceType, WafMode,
 };
 use zentinel_common::ids::{QualifiedId, Scope};
 use zentinel_common::types::Priority;
@@ -262,79 +263,81 @@ impl ValidationContext {
 
     /// Check if an upstream reference can be resolved from the given scope.
     ///
-    /// Resolution order: local scope → parent scope → exported → global
+    /// Resolution order: local scope → parent scope → exported → global.
+    /// A qualified reference (`ns:name`, `ns:svc:name`) must name an upstream
+    /// defined in that scope, as lowering resolves it.
     pub fn can_resolve_upstream(&self, reference: &str, from_scope: &Scope) -> bool {
-        // Check if it's a qualified reference (contains ':')
-        if reference.contains(':') {
-            // Qualified references must match exactly
-            return self.all_ids.contains(reference);
-        }
-
-        // Unqualified reference - search scope chain
-        for scope in from_scope.chain() {
-            if let Some(upstreams) = self.upstreams_by_scope.get(&scope) {
-                if upstreams.contains(reference) {
-                    return true;
-                }
-            }
-        }
-
-        // Check exports (for cross-namespace access)
-        if self.exported_upstreams.contains(reference) {
-            return true;
-        }
-
-        false
+        Self::can_resolve(
+            &self.upstreams_by_scope,
+            &self.exported_upstreams,
+            reference,
+            from_scope,
+        )
     }
 
     /// Check if an agent reference can be resolved from the given scope.
+    ///
+    /// A qualified reference (`ns:name`, `ns:svc:name`) must name an agent
+    /// defined in that scope, as lowering resolves it.
     pub fn can_resolve_agent(&self, reference: &str, from_scope: &Scope) -> bool {
-        if reference.contains(':') {
-            return self.all_ids.contains(reference);
-        }
-
-        for scope in from_scope.chain() {
-            if let Some(agents) = self.agents_by_scope.get(&scope) {
-                if agents.contains(reference) {
-                    return true;
-                }
-            }
-        }
-
-        if self.exported_agents.contains(reference) {
-            return true;
-        }
-
-        false
+        Self::can_resolve(
+            &self.agents_by_scope,
+            &self.exported_agents,
+            reference,
+            from_scope,
+        )
     }
 
     /// Check if a filter reference can be resolved from the given scope.
     ///
-    /// A qualified reference (`ns:name`, `ns:svc:name`) must name a filter of
-    /// that scope, as lowering resolves it. `all_ids` also holds the ids of
-    /// agents, upstreams and routes, which a route's filter list cannot name.
+    /// A qualified reference (`ns:name`, `ns:svc:name`) must name a filter
+    /// defined in that scope, as lowering resolves it.
     pub fn can_resolve_filter(&self, reference: &str, from_scope: &Scope) -> bool {
+        Self::can_resolve(
+            &self.filters_by_scope,
+            &self.exported_filters,
+            reference,
+            from_scope,
+        )
+    }
+
+    /// Whether `reference` names a resource of one kind, as lowering resolves
+    /// it. `ids_by_scope` and `exported` hold the ids of that kind only.
+    ///
+    /// A qualified reference (`ns:name`, `ns:svc:name`) names that resource
+    /// exactly: it must be defined in the scope the reference points at,
+    /// exported or not. `all_ids` also holds the ids of the other kinds of
+    /// resource, which a reference of this kind cannot name. An unqualified
+    /// one is looked up in the scope chain, then in the exports.
+    ///
+    /// A reference that contains `:` may also be the whole id of a top-level
+    /// resource of this kind. A lowered configuration holds the resources of
+    /// namespaces and services there, under ids such as `api:backend`, and its
+    /// routes name them so; only the ids of namespaces and services may not
+    /// contain `:`, so a top-level resource may have one too.
+    fn can_resolve(
+        ids_by_scope: &HashMap<Scope, HashSet<String>>,
+        exported: &HashSet<String>,
+        reference: &str,
+        from_scope: &Scope,
+    ) -> bool {
+        let defined_in = |scope: &Scope, name: &str| {
+            ids_by_scope
+                .get(scope)
+                .is_some_and(|ids| ids.contains(name))
+        };
+
         if reference.contains(':') {
             let qualified = QualifiedId::parse(reference);
-            return self
-                .filters_by_scope
-                .get(&qualified.scope)
-                .is_some_and(|filters| filters.contains(&qualified.name));
+            return defined_in(&qualified.scope, &qualified.name)
+                || defined_in(&Scope::Global, reference);
         }
 
-        for scope in from_scope.chain() {
-            if let Some(filters) = self.filters_by_scope.get(&scope) {
-                if filters.contains(reference) {
-                    return true;
-                }
-            }
-        }
-
-        if self.exported_filters.contains(reference) {
-            return true;
-        }
-
-        false
+        from_scope
+            .chain()
+            .iter()
+            .any(|scope| defined_in(scope, reference))
+            || exported.contains(reference)
     }
 
     /// Get all upstreams available from a given scope.
@@ -456,6 +459,9 @@ pub fn validate_config_semantics(config: &Config) -> Result<(), validator::Valid
     // Validate namespaces and services
     trace!("Validating namespaces");
     let ctx = ValidationContext::from_config(config);
+    for route in &config.routes {
+        validate_route_references(route, &Scope::Global, &ctx, &mut errors);
+    }
     validate_namespaces(config, &ctx, &mut errors);
 
     // Warn about orphaned upstreams
@@ -1102,7 +1108,11 @@ fn validate_namespace_resources(
                 ));
             }
         }
+
+        validate_route_references(route, &scope, ctx, errors);
     }
+
+    validate_scoped_filters(&ns.filters, &scope, ctx, errors);
 
     // Validate exports reference existing resources
     for export_name in &ns.exports.upstreams {
@@ -1194,6 +1204,148 @@ fn validate_service_resources(
                     format_available_owned(&available)
                 ));
             }
+        }
+
+        validate_route_references(route, &scope, ctx, errors);
+    }
+
+    validate_scoped_filters(&svc.filters, &scope, ctx, errors);
+}
+
+/// Where a scope is, for the end of an error message: nothing for the top
+/// level, ` in namespace 'api'`, ` in service 'api:users'`.
+fn location(scope: &Scope) -> String {
+    match scope {
+        Scope::Global => String::new(),
+        Scope::Namespace(ns_id) => format!(" in namespace '{ns_id}'"),
+        Scope::Service { namespace, service } => format!(" in service '{namespace}:{service}'"),
+    }
+}
+
+/// The upstreams a route names besides its `upstream`, each with what it is
+/// for. These are the upstream references lowering resolves in a route.
+fn route_upstream_references(route: &RouteConfig) -> Vec<(&'static str, &str)> {
+    let mut references = Vec::new();
+    if let Some(shadow) = &route.shadow {
+        references.push(("shadow upstream", shadow.upstream.as_str()));
+    }
+    if let Some(fallback) = &route.fallback {
+        for entry in &fallback.upstreams {
+            references.push(("fallback upstream", entry.upstream.as_str()));
+        }
+    }
+    if let Some(mcp) = &route.mcp {
+        for entry in &mcp.upstreams {
+            references.push(("mcp upstream", entry.upstream.as_str()));
+        }
+    }
+    if let Some(model_routing) = route
+        .inference
+        .as_ref()
+        .and_then(|inference| inference.model_routing.as_ref())
+    {
+        for mapping in &model_routing.mappings {
+            references.push(("model-routing upstream", mapping.upstream.as_str()));
+        }
+        if let Some(default_upstream) = &model_routing.default_upstream {
+            references.push(("model-routing default-upstream", default_upstream.as_str()));
+        }
+    }
+    references
+}
+
+/// The agents a route names, each with what it is for: the guardrails that are
+/// enabled. A guardrail that is not enabled never calls its agent.
+fn route_agent_references(route: &RouteConfig) -> Vec<(&'static str, &str)> {
+    let mut references = Vec::new();
+    if let Some(guardrails) = route
+        .inference
+        .as_ref()
+        .and_then(|inference| inference.guardrails.as_ref())
+    {
+        if let Some(prompt_injection) = guardrails.prompt_injection.as_ref() {
+            if prompt_injection.enabled {
+                references.push(("guardrails agent", prompt_injection.agent.as_str()));
+            }
+        }
+        if let Some(pii_detection) = guardrails.pii_detection.as_ref() {
+            if pii_detection.enabled {
+                references.push(("guardrails agent", pii_detection.agent.as_str()));
+            }
+        }
+    }
+    references
+}
+
+/// The upstreams and agents a route names besides its `upstream` and
+/// `filters` must resolve from `scope`.
+///
+/// At the top level a reference resolves as lowering resolves it: to a
+/// top-level id, to a qualified id (`ns:name`) or to an id a namespace
+/// exports. The route's own `upstream` is stricter there: `validate_routes`
+/// accepts only a literal top-level id. The message of a top-level route says
+/// the id doesn't exist; a namespace or service route says it cannot be
+/// resolved, as the checks of its `upstream` and `filters` do.
+fn validate_route_references(
+    route: &RouteConfig,
+    scope: &Scope,
+    ctx: &ValidationContext,
+    errors: &mut Vec<String>,
+) {
+    let route_label = format!("Route '{}'{}", route.id, location(scope));
+    let outcome = if scope.is_global() {
+        "doesn't exist"
+    } else {
+        "cannot be resolved"
+    };
+
+    for (what, upstream) in route_upstream_references(route) {
+        if !ctx.can_resolve_upstream(upstream, scope) {
+            errors.push(format!(
+                "{route_label} references {what} '{upstream}' which {outcome}.\n\
+                 Available upstreams: {}",
+                format_available_owned(&ctx.available_upstreams(scope))
+            ));
+        }
+    }
+
+    for (what, agent) in route_agent_references(route) {
+        if !ctx.can_resolve_agent(agent, scope) {
+            errors.push(format!(
+                "{route_label} references {what} '{agent}' which {outcome}.\n\
+                 Available agents: {}",
+                format_available_owned(&ctx.available_agents(scope))
+            ));
+        }
+    }
+}
+
+/// The agent of an agent filter of a namespace or service must resolve from
+/// that scope. The filters of the top level are checked by
+/// `validate_filters`.
+fn validate_scoped_filters(
+    filters: &HashMap<String, FilterConfig>,
+    scope: &Scope,
+    ctx: &ValidationContext,
+    errors: &mut Vec<String>,
+) {
+    // Sorted, so the errors come in the same order on every run.
+    let mut filter_ids: Vec<&String> = filters.keys().collect();
+    filter_ids.sort();
+
+    for filter_id in filter_ids {
+        let Filter::Agent(agent_filter) = &filters[filter_id].filter else {
+            continue;
+        };
+        if !ctx.can_resolve_agent(&agent_filter.agent, scope) {
+            errors.push(format!(
+                "Filter '{}'{} references agent '{}' which cannot be resolved.\n\
+                 Available agents: {}",
+                filter_id,
+                location(scope),
+                agent_filter.agent,
+                format_available_owned(&ctx.available_agents(scope))
+            ));
         }
     }
 }
@@ -1870,10 +2022,35 @@ mod tests {
         config.validate().map_err(|e| e.to_string())
     }
 
+    /// Parse `kdl`, lower its namespaces and services, and validate the
+    /// result, as `ConfigManager` does with the configuration it applies, and
+    /// with the previous one when it rolls back.
+    fn validated_lowered(kdl: &str) -> Result<(), String> {
+        let config = crate::Config::from_kdl(kdl)
+            .expect("the configuration parses")
+            .lower_scopes();
+        config.validate().map_err(|e| e.to_string())
+    }
+
+    /// The error of validating the lowered form of `kdl`, which is expected to
+    /// be refused because of `context`.
+    fn lowered_refused(kdl: &str, context: &str) -> String {
+        match validated_lowered(kdl) {
+            Ok(()) => panic!("the lowered configuration is valid, but {context}"),
+            Err(message) => message,
+        }
+    }
+
     /// The error of validating `kdl`, which is expected to be refused.
     fn validation_error(kdl: &str) -> String {
+        refused(kdl, "a route names an undefined resource")
+    }
+
+    /// The error of validating `kdl`, which is expected to be refused because
+    /// of `context`.
+    fn refused(kdl: &str, context: &str) -> String {
         match validated(kdl) {
-            Ok(()) => panic!("the configuration is valid, but a route lists an undefined filter"),
+            Ok(()) => panic!("the configuration is valid, but {context}"),
             Err(message) => message,
         }
     }
@@ -1934,6 +2111,905 @@ mod tests {
         assert!(ctx.all_ids.contains("api:main"));
         assert!(!ctx.can_resolve_filter("api:backend", &Scope::Global));
         assert!(!ctx.can_resolve_filter("api:main", &Scope::Global));
+    }
+
+    /// What the routes and agent filters of `scoped_resources_with` name.
+    struct ScopedRefs<'a> {
+        /// The `upstream` of route `api:main`.
+        ns_upstream: &'a str,
+        /// The `upstream` of route `api:users:list`.
+        svc_upstream: &'a str,
+        /// The agent of filter `api:probe`.
+        ns_probe_agent: &'a str,
+        /// The agent of filter `api:users:probe`.
+        svc_probe_agent: &'a str,
+        /// Settings added to route `api:main`.
+        ns_route_extra: &'a str,
+        /// Settings added to route `api:users:list`.
+        svc_route_extra: &'a str,
+        /// Settings added to the top-level route `gate`.
+        global_route_extra: &'a str,
+    }
+
+    /// Resources of every kind at every level:
+    ///
+    /// - top level: upstreams `edge` and `legacy:edge`, agents `guard` and
+    ///   `legacy:guard`, route `gate`
+    /// - namespace `shared`: upstream `pool`, agent `scanner`, both exported
+    /// - namespace `api`: upstream `backend`, agent `auth`, filters `check`
+    ///   and `probe`, route `main`
+    /// - service `api:users`: upstream `local`, agent `scan`, filters `limit`
+    ///   and `probe`, route `list`
+    ///
+    /// What the routes and the `probe` filters name is `refs`.
+    fn scoped_resources_with(refs: &ScopedRefs) -> String {
+        let ScopedRefs {
+            ns_upstream,
+            svc_upstream,
+            ns_probe_agent,
+            svc_probe_agent,
+            ns_route_extra,
+            svc_route_extra,
+            global_route_extra,
+        } = refs;
+        format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 1 }}
+            listeners {{
+                listener "public" {{ address "127.0.0.1:19480"; }}
+            }}
+            upstreams {{
+                upstream "edge" {{ target "127.0.0.1:3000"; }}
+                upstream "legacy:edge" {{ target "127.0.0.1:3004"; }}
+            }}
+            routes {{
+                route "gate" {{
+                    matches {{ path-prefix "/gate/"; }}
+                    upstream "edge"
+                    {global_route_extra}
+                }}
+            }}
+            agents {{
+                agent "guard" {{
+                    type "auth"
+                    grpc address="http://127.0.0.1:50051"
+                    events "request_headers"
+                }}
+                agent "legacy:guard" {{
+                    type "auth"
+                    grpc address="http://127.0.0.1:50055"
+                    events "request_headers"
+                }}
+            }}
+            namespace "shared" {{
+                upstreams {{
+                    upstream "pool" {{ target "127.0.0.1:3002"; }}
+                }}
+                agents {{
+                    agent "scanner" {{
+                        type "auth"
+                        grpc address="http://127.0.0.1:50053"
+                        events "request_headers"
+                    }}
+                }}
+                exports {{
+                    upstreams "pool"
+                    agents "scanner"
+                }}
+            }}
+            namespace "api" {{
+                upstreams {{
+                    upstream "backend" {{ target "127.0.0.1:3001"; }}
+                }}
+                agents {{
+                    agent "auth" {{
+                        type "auth"
+                        grpc address="http://127.0.0.1:50052"
+                        events "request_headers"
+                    }}
+                }}
+                filters {{
+                    filter "check" {{ type "agent"; agent "auth"; }}
+                    filter "probe" {{ type "agent"; agent "{ns_probe_agent}"; }}
+                }}
+                routes {{
+                    route "main" {{
+                        matches {{ path-prefix "/api/"; }}
+                        upstream "{ns_upstream}"
+                        {ns_route_extra}
+                    }}
+                }}
+                service "users" {{
+                    upstreams {{
+                        upstream "local" {{ target "127.0.0.1:3003"; }}
+                    }}
+                    agents {{
+                        agent "scan" {{
+                            type "auth"
+                            grpc address="http://127.0.0.1:50054"
+                            events "request_headers"
+                        }}
+                    }}
+                    filters {{
+                        filter "limit" {{ type "rate-limit"; max-rps 5; }}
+                        filter "probe" {{ type "agent"; agent "{svc_probe_agent}"; }}
+                    }}
+                    routes {{
+                        route "list" {{
+                            matches {{ path-prefix "/users/"; }}
+                            upstream "{svc_upstream}"
+                            {svc_route_extra}
+                        }}
+                    }}
+                }}
+            }}
+            "#
+        )
+    }
+
+    /// The references every test starts from, all defined.
+    fn defined_refs<'a>() -> ScopedRefs<'a> {
+        ScopedRefs {
+            ns_upstream: "backend",
+            svc_upstream: "local",
+            ns_probe_agent: "auth",
+            svc_probe_agent: "scan",
+            ns_route_extra: "",
+            svc_route_extra: "",
+            global_route_extra: "",
+        }
+    }
+
+    /// [`scoped_resources_with`], with the routes naming `ns_upstream` and
+    /// `svc_upstream`, and the filter `api:probe` naming `probe_agent`.
+    fn scoped_resources(ns_upstream: &str, svc_upstream: &str, probe_agent: &str) -> String {
+        let mut refs = defined_refs();
+        refs.ns_upstream = ns_upstream;
+        refs.svc_upstream = svc_upstream;
+        refs.ns_probe_agent = probe_agent;
+        scoped_resources_with(&refs)
+    }
+
+    /// The upstream the route `route` of `kdl` names once its scopes are
+    /// lowered, and whether the lowered configuration has an upstream under
+    /// that id.
+    fn lowered_upstream(kdl: &str, route: &str) -> (String, bool) {
+        let lowered = crate::Config::from_kdl(kdl)
+            .expect("the configuration parses")
+            .lower_scopes();
+        let upstream = lowered
+            .routes
+            .iter()
+            .find(|r| r.id == route)
+            .and_then(|r| r.upstream.clone())
+            .expect("the route has an upstream");
+        let defined = lowered.upstreams.contains_key(&upstream);
+        (upstream, defined)
+    }
+
+    /// The scopes of `scoped_resources` that hold routes.
+    fn route_scopes() -> [Scope; 3] {
+        [
+            Scope::Global,
+            Scope::Namespace("api".to_string()),
+            Scope::Service {
+                namespace: "api".to_string(),
+                service: "users".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn namespace_route_may_name_a_qualified_upstream_that_is_defined() {
+        // Each reference, and the id lowering resolves it to. `shared:pool`
+        // is exported; a qualified reference names an upstream whether or not
+        // it is.
+        for (reference, resolved) in [
+            ("api:backend", "api:backend"),
+            ("shared:pool", "shared:pool"),
+            ("api:users:local", "api:users:local"),
+            ("edge", "edge"),
+        ] {
+            let kdl = scoped_resources(reference, "local", "auth");
+            assert_eq!(validated(&kdl), Ok(()), "reference '{reference}'");
+            assert_eq!(validated_lowered(&kdl), Ok(()), "lowered '{reference}'");
+            assert_eq!(
+                lowered_upstream(&kdl, "api:main"),
+                (resolved.to_string(), true),
+                "reference '{reference}'"
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_route_naming_a_qualified_id_of_another_kind_as_upstream_fails_validation() {
+        // `api:check` is a filter, `api:auth` and `api:users:scan` are agents,
+        // `api:main` and `api:users:list` are routes. Lowering resolves an
+        // upstream reference against upstreams only, so the route's upstream
+        // would stay unresolved.
+        for reference in [
+            "api:check",
+            "api:auth",
+            "api:main",
+            "api:users:limit",
+            "api:users:scan",
+            "api:users:list",
+            "shared:scanner",
+        ] {
+            let kdl = scoped_resources(reference, "local", "auth");
+            lowered_refused(&kdl, &format!("namespace route, upstream '{reference}'"));
+            let message = validation_error(&kdl);
+            let expected = format!(
+                "Route 'main' in namespace 'api' references upstream '{reference}' \
+                 which cannot be resolved"
+            );
+            assert!(
+                message.contains(&expected),
+                "reference '{reference}', got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn service_route_may_name_a_qualified_upstream_that_is_defined() {
+        for (reference, resolved) in [
+            ("api:users:local", "api:users:local"),
+            ("api:backend", "api:backend"),
+            ("shared:pool", "shared:pool"),
+            ("backend", "api:backend"),
+            ("edge", "edge"),
+        ] {
+            let kdl = scoped_resources("backend", reference, "auth");
+            assert_eq!(validated(&kdl), Ok(()), "reference '{reference}'");
+            assert_eq!(validated_lowered(&kdl), Ok(()), "lowered '{reference}'");
+            assert_eq!(
+                lowered_upstream(&kdl, "api:users:list"),
+                (resolved.to_string(), true),
+                "reference '{reference}'"
+            );
+        }
+    }
+
+    #[test]
+    fn service_route_naming_a_qualified_id_of_another_kind_as_upstream_fails_validation() {
+        for reference in [
+            "api:users:limit",
+            "api:users:scan",
+            "api:users:list",
+            "api:check",
+            "api:auth",
+            "api:main",
+            "shared:scanner",
+        ] {
+            let kdl = scoped_resources("backend", reference, "auth");
+            lowered_refused(&kdl, &format!("service route, upstream '{reference}'"));
+            let message = validation_error(&kdl);
+            let expected = format!(
+                "Route 'list' in service 'api:users' references upstream '{reference}' \
+                 which cannot be resolved"
+            );
+            assert!(
+                message.contains(&expected),
+                "reference '{reference}', got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_qualified_upstream_reference_that_names_nothing_fails_validation() {
+        for reference in [
+            "api:missing",
+            "missing:backend",
+            "api:users:missing",
+            "users:local",
+            "api:users:local:extra",
+        ] {
+            let message = validation_error(&scoped_resources(reference, "local", "auth"));
+            assert!(
+                message.contains(&format!("upstream '{reference}' which cannot be resolved")),
+                "reference '{reference}', got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn qualified_upstream_reference_names_an_upstream_not_any_id() {
+        let config = crate::Config::from_kdl(&scoped_resources("backend", "local", "auth"))
+            .expect("the configuration parses");
+        let ctx = ValidationContext::from_config(&config);
+
+        for scope in route_scopes() {
+            for reference in ["api:backend", "api:users:local", "shared:pool"] {
+                assert!(
+                    ctx.can_resolve_upstream(reference, &scope),
+                    "'{reference}' from {scope}"
+                );
+            }
+            // Defined ids of an agent, a filter and a route.
+            for reference in [
+                "api:auth",
+                "api:check",
+                "api:main",
+                "api:users:scan",
+                "api:users:limit",
+                "api:users:list",
+                "shared:scanner",
+            ] {
+                assert!(ctx.all_ids.contains(reference), "'{reference}' is defined");
+                assert!(
+                    !ctx.can_resolve_upstream(reference, &scope),
+                    "'{reference}' from {scope}"
+                );
+            }
+            // `local` and `scan` belong to the service, not to the namespace.
+            assert!(!ctx.can_resolve_upstream("api:local", &scope));
+        }
+    }
+
+    #[test]
+    fn qualified_agent_reference_names_an_agent_not_any_id() {
+        let config = crate::Config::from_kdl(&scoped_resources("backend", "local", "auth"))
+            .expect("the configuration parses");
+        let ctx = ValidationContext::from_config(&config);
+
+        for scope in route_scopes() {
+            for reference in ["api:auth", "api:users:scan", "shared:scanner"] {
+                assert!(
+                    ctx.can_resolve_agent(reference, &scope),
+                    "'{reference}' from {scope}"
+                );
+            }
+            // Defined ids of an upstream, a filter and a route.
+            for reference in [
+                "api:backend",
+                "api:check",
+                "api:main",
+                "api:users:local",
+                "api:users:limit",
+                "api:users:list",
+                "shared:pool",
+            ] {
+                assert!(ctx.all_ids.contains(reference), "'{reference}' is defined");
+                assert!(
+                    !ctx.can_resolve_agent(reference, &scope),
+                    "'{reference}' from {scope}"
+                );
+            }
+            assert!(!ctx.can_resolve_agent("api:scan", &scope));
+        }
+    }
+
+    /// For upstreams and agents, from each of the three scopes, validation
+    /// accepts a reference exactly when lowering resolves it to a resource of
+    /// that kind.
+    fn assert_validation_follows_lowering(references: &[&str]) {
+        let [global, namespace, service] = route_scopes();
+        for reference in references {
+            // Each kind of reference is placed where a route or filter of each
+            // scope names it. The top-level route names both an upstream and
+            // an agent.
+            let top_level = format!(
+                r#"shadow {{ upstream "{reference}"; }}
+                service-type "inference"
+                inference {{
+                    provider "generic"
+                    guardrails {{
+                        prompt-injection {{ enabled #true; agent "{reference}"; }}
+                    }}
+                }}"#
+            );
+            let mut refs = defined_refs();
+            refs.ns_upstream = reference;
+            refs.svc_upstream = reference;
+            refs.ns_probe_agent = reference;
+            refs.svc_probe_agent = reference;
+            refs.global_route_extra = &top_level;
+            let config = crate::Config::from_kdl(&scoped_resources_with(&refs))
+                .expect("the configuration parses");
+            let ctx = ValidationContext::from_config(&config);
+            let lowered = config.lower_scopes();
+
+            let route = |id: &str| {
+                lowered
+                    .routes
+                    .iter()
+                    .find(|r| r.id == id)
+                    .unwrap_or_else(|| panic!("route '{id}'"))
+            };
+            let has_upstream = |name: &str| lowered.upstreams.contains_key(name);
+            let has_agent = |name: &str| lowered.agents.iter().any(|a| a.id == name);
+            let filter_agent = |id: &str| match &lowered.filters[id].filter {
+                Filter::Agent(agent_filter) => agent_filter.agent.clone(),
+                other => panic!("expected an agent filter, got {other:?}"),
+            };
+            let guardrails_agent = match route("gate")
+                .inference
+                .as_ref()
+                .and_then(|inference| inference.guardrails.as_ref())
+                .and_then(|guardrails| guardrails.prompt_injection.as_ref())
+            {
+                Some(prompt_injection) => prompt_injection.agent.clone(),
+                None => panic!("route 'gate' has a guardrails agent"),
+            };
+
+            let upstream_of_route = |id: &str| route(id).upstream.clone().expect("an upstream");
+            let shadow_upstream = route("gate")
+                .shadow
+                .as_ref()
+                .expect("a shadow")
+                .upstream
+                .clone();
+            for (scope, lowered_to, what) in [
+                (&global, shadow_upstream, "the top level"),
+                (&namespace, upstream_of_route("api:main"), "a namespace"),
+                (&service, upstream_of_route("api:users:list"), "a service"),
+            ] {
+                assert_eq!(
+                    ctx.can_resolve_upstream(reference, scope),
+                    has_upstream(&lowered_to),
+                    "upstream '{reference}' from {what}"
+                );
+            }
+            for (scope, lowered_to, what) in [
+                (&global, guardrails_agent, "the top level"),
+                (&namespace, filter_agent("api:probe"), "a namespace"),
+                (&service, filter_agent("api:users:probe"), "a service"),
+            ] {
+                assert_eq!(
+                    ctx.can_resolve_agent(reference, scope),
+                    has_agent(&lowered_to),
+                    "agent '{reference}' from {what}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn qualified_references_are_accepted_when_lowering_resolves_them() {
+        assert_validation_follows_lowering(&[
+            "api:backend",
+            "api:auth",
+            "api:check",
+            "api:main",
+            "api:users:local",
+            "api:users:scan",
+            "api:users:limit",
+            "api:users:list",
+            "shared:pool",
+            "shared:scanner",
+            "api:scan",
+            "api:local",
+            "api:users:backend",
+            "api:users:auth",
+            "api:missing",
+            "missing:backend",
+            "users:local",
+            "api:users:local:extra",
+            "edge:edge",
+            "api:edge",
+            "api:guard",
+            // Whole ids of top-level resources.
+            "legacy:edge",
+            "legacy:guard",
+            "legacy:missing",
+        ]);
+    }
+
+    #[test]
+    fn unqualified_references_are_accepted_when_lowering_resolves_them() {
+        assert_validation_follows_lowering(&[
+            "edge", "guard", "backend", "local", "auth", "scan", "pool", "scanner", "check",
+            "limit", "main", "gate", "missing",
+        ]);
+    }
+
+    #[test]
+    fn a_top_level_resource_may_have_a_colon_in_its_id() {
+        // Only the ids of namespaces and services may not contain `:`.
+        for place in PLACES {
+            for (what, settings) in upstream_settings("legacy:edge")
+                .into_iter()
+                .chain(agent_settings("legacy:guard", true))
+            {
+                let kdl = place.route_with(&settings);
+                assert_eq!(validated(&kdl), Ok(()), "{place:?}: {what}");
+                assert_eq!(
+                    validated_lowered(&kdl),
+                    Ok(()),
+                    "{place:?}, lowered: {what}"
+                );
+            }
+        }
+        let kdl = scoped_resources("legacy:edge", "legacy:edge", "legacy:guard");
+        assert_eq!(validated(&kdl), Ok(()));
+        assert_eq!(validated_lowered(&kdl), Ok(()));
+        assert_eq!(
+            lowered_upstream(&kdl, "api:main"),
+            ("legacy:edge".to_string(), true)
+        );
+    }
+
+    /// Where a route of `scoped_resources_with` is.
+    #[derive(Clone, Copy, Debug)]
+    enum Place {
+        /// Route `gate` at the top level.
+        Global,
+        /// Route `main` of namespace `api`.
+        Namespace,
+        /// Route `list` of service `api:users`.
+        Service,
+    }
+
+    const PLACES: [Place; 3] = [Place::Global, Place::Namespace, Place::Service];
+
+    impl Place {
+        /// The configuration, with `settings` added to the route.
+        fn route_with(self, settings: &str) -> String {
+            let mut refs = defined_refs();
+            match self {
+                Place::Global => refs.global_route_extra = settings,
+                Place::Namespace => refs.ns_route_extra = settings,
+                Place::Service => refs.svc_route_extra = settings,
+            }
+            scoped_resources_with(&refs)
+        }
+
+        /// How an error names the route.
+        fn route_label(self) -> &'static str {
+            match self {
+                Place::Global => "Route 'gate'",
+                Place::Namespace => "Route 'main' in namespace 'api'",
+                Place::Service => "Route 'list' in service 'api:users'",
+            }
+        }
+
+        /// What an error says about a reference that does not resolve.
+        fn outcome(self) -> &'static str {
+            match self {
+                Place::Global => "doesn't exist",
+                Place::Namespace | Place::Service => "cannot be resolved",
+            }
+        }
+    }
+
+    /// The settings of a route that name an upstream, naming `reference`, and
+    /// what an error calls each.
+    fn upstream_settings(reference: &str) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "shadow upstream",
+                format!(r#"shadow {{ upstream "{reference}"; }}"#),
+            ),
+            (
+                "fallback upstream",
+                format!(r#"fallback {{ fallback-upstream "{reference}"; }}"#),
+            ),
+            (
+                "mcp upstream",
+                format!(r#"mcp {{ upstreams {{ upstream "{reference}" prefix="p"; }} }}"#),
+            ),
+            (
+                "model-routing upstream",
+                format!(
+                    r#"service-type "inference"
+                    inference {{
+                        provider "generic"
+                        model-routing {{
+                            model "m*" upstream="{reference}"
+                        }}
+                    }}"#
+                ),
+            ),
+            (
+                "model-routing default-upstream",
+                format!(
+                    r#"service-type "inference"
+                    inference {{
+                        provider "generic"
+                        model-routing {{ default-upstream "{reference}"; }}
+                    }}"#
+                ),
+            ),
+        ]
+    }
+
+    /// The settings of a route that name an agent, naming `reference` and
+    /// enabled or not, and what an error calls each.
+    fn agent_settings(reference: &str, enabled: bool) -> Vec<(&'static str, String)> {
+        let enabled = if enabled { "#true" } else { "#false" };
+        vec![
+            (
+                "guardrails agent",
+                format!(
+                    r#"service-type "inference"
+                    inference {{
+                        provider "generic"
+                        guardrails {{
+                            prompt-injection {{ enabled {enabled}; agent "{reference}"; }}
+                        }}
+                    }}"#
+                ),
+            ),
+            (
+                "guardrails agent",
+                format!(
+                    r#"service-type "inference"
+                    inference {{
+                        provider "generic"
+                        guardrails {{
+                            pii-detection {{ enabled {enabled}; agent "{reference}"; }}
+                        }}
+                    }}"#
+                ),
+            ),
+        ]
+    }
+
+    #[test]
+    fn routes_may_name_defined_upstreams_in_every_upstream_field() {
+        for place in PLACES {
+            let own: &[&str] = match place {
+                Place::Global => &[],
+                Place::Namespace => &["backend"],
+                Place::Service => &["backend", "local"],
+            };
+            // `pool` is exported, so it is also visible unqualified.
+            let shared = [
+                "edge",
+                "pool",
+                "shared:pool",
+                "api:backend",
+                "api:users:local",
+            ];
+            for reference in shared.iter().chain(own) {
+                for (what, settings) in upstream_settings(reference) {
+                    let kdl = place.route_with(&settings);
+                    assert_eq!(validated(&kdl), Ok(()), "{place:?}: {what} '{reference}'");
+                    assert_eq!(
+                        validated_lowered(&kdl),
+                        Ok(()),
+                        "{place:?}, lowered: {what} '{reference}'"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn routes_naming_an_upstream_that_cannot_be_resolved_fail_validation() {
+        for place in PLACES {
+            // Ids of an agent, a filter and a route, ids that are not defined,
+            // and upstreams of a scope the route is not in.
+            let not_visible: &[&str] = match place {
+                Place::Global => &["backend", "local"],
+                Place::Namespace => &["local"],
+                Place::Service => &[],
+            };
+            let never = [
+                "api:check",
+                "api:auth",
+                "api:main",
+                "api:users:scan",
+                "api:users:list",
+                "api:users:limit",
+                "shared:scanner",
+                "guard",
+                "gate",
+                "api:missing",
+                "missing",
+            ];
+            for reference in never.iter().chain(not_visible) {
+                for (what, settings) in upstream_settings(reference) {
+                    let kdl = place.route_with(&settings);
+                    lowered_refused(
+                        &kdl,
+                        &format!("{place:?}, lowered: {what} '{reference}' cannot be resolved"),
+                    );
+                    let message = refused(
+                        &kdl,
+                        &format!("{place:?}: {what} '{reference}' cannot be resolved"),
+                    );
+                    let expected = format!(
+                        "{} references {what} '{reference}' which {}",
+                        place.route_label(),
+                        place.outcome()
+                    );
+                    assert!(
+                        message.contains(&expected),
+                        "{place:?}: {what} '{reference}', got: {message}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn routes_may_name_defined_agents_in_the_guardrails() {
+        for place in PLACES {
+            let own: &[&str] = match place {
+                Place::Global => &[],
+                Place::Namespace => &["auth"],
+                Place::Service => &["auth", "scan"],
+            };
+            // `scanner` is exported, so it is also visible unqualified.
+            let shared = [
+                "guard",
+                "scanner",
+                "shared:scanner",
+                "api:auth",
+                "api:users:scan",
+            ];
+            for reference in shared.iter().chain(own) {
+                for (what, settings) in agent_settings(reference, true) {
+                    let kdl = place.route_with(&settings);
+                    assert_eq!(validated(&kdl), Ok(()), "{place:?}: {what} '{reference}'");
+                    assert_eq!(
+                        validated_lowered(&kdl),
+                        Ok(()),
+                        "{place:?}, lowered: {what} '{reference}'"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn routes_naming_a_guardrail_agent_that_cannot_be_resolved_fail_validation() {
+        for place in PLACES {
+            let not_visible: &[&str] = match place {
+                Place::Global => &["auth", "scan"],
+                Place::Namespace => &["scan"],
+                Place::Service => &[],
+            };
+            // Ids of an upstream, a filter and a route, and ids that are not
+            // defined.
+            let never = [
+                "api:backend",
+                "api:check",
+                "api:main",
+                "api:users:local",
+                "api:users:limit",
+                "shared:pool",
+                "edge",
+                "gate",
+                "api:missing",
+                "missing",
+            ];
+            for reference in never.iter().chain(not_visible) {
+                for (what, settings) in agent_settings(reference, true) {
+                    let kdl = place.route_with(&settings);
+                    lowered_refused(
+                        &kdl,
+                        &format!("{place:?}, lowered: {what} '{reference}' cannot be resolved"),
+                    );
+                    let message = refused(
+                        &kdl,
+                        &format!("{place:?}: {what} '{reference}' cannot be resolved"),
+                    );
+                    let expected = format!(
+                        "{} references {what} '{reference}' which {}",
+                        place.route_label(),
+                        place.outcome()
+                    );
+                    assert!(
+                        message.contains(&expected),
+                        "{place:?}: {what} '{reference}', got: {message}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_guardrail_that_is_not_enabled_may_name_an_agent_that_does_not_exist() {
+        // It never calls its agent.
+        for place in PLACES {
+            for (what, settings) in agent_settings("missing", false) {
+                let kdl = place.route_with(&settings);
+                assert_eq!(validated(&kdl), Ok(()), "{place:?}: {what}");
+                assert_eq!(
+                    validated_lowered(&kdl),
+                    Ok(()),
+                    "{place:?}, lowered: {what}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn agent_filters_of_namespaces_and_services_must_name_an_agent_that_resolves() {
+        let ns_only: &[&str] = &["auth"];
+        let svc_also: &[&str] = &["auth", "scan"];
+        let shared = [
+            "guard",
+            "scanner",
+            "shared:scanner",
+            "api:auth",
+            "api:users:scan",
+        ];
+        for reference in shared.iter().chain(svc_also) {
+            let mut refs = defined_refs();
+            refs.svc_probe_agent = reference;
+            let kdl = scoped_resources_with(&refs);
+            assert_eq!(validated(&kdl), Ok(()), "service filter, '{reference}'");
+            assert_eq!(
+                validated_lowered(&kdl),
+                Ok(()),
+                "service filter, lowered, '{reference}'"
+            );
+        }
+        for reference in shared.iter().chain(ns_only) {
+            let kdl = scoped_resources("backend", "local", reference);
+            assert_eq!(validated(&kdl), Ok(()), "namespace filter, '{reference}'");
+            assert_eq!(
+                validated_lowered(&kdl),
+                Ok(()),
+                "namespace filter, lowered, '{reference}'"
+            );
+        }
+
+        // Ids of an upstream, a filter and a route, ids that are not defined,
+        // and an agent of the service from the namespace.
+        let never = [
+            "api:backend",
+            "api:check",
+            "api:main",
+            "api:users:local",
+            "api:users:limit",
+            "shared:pool",
+            "edge",
+            "api:missing",
+            "missing",
+        ];
+        for reference in never.iter().chain(&["scan"]) {
+            let kdl = scoped_resources("backend", "local", reference);
+            lowered_refused(&kdl, &format!("namespace filter, agent '{reference}'"));
+            let message = validation_error(&kdl);
+            let expected = format!(
+                "Filter 'probe' in namespace 'api' references agent '{reference}' \
+                 which cannot be resolved"
+            );
+            assert!(
+                message.contains(&expected),
+                "namespace filter, '{reference}', got: {message}"
+            );
+        }
+        for reference in never.iter() {
+            let mut refs = defined_refs();
+            refs.svc_probe_agent = reference;
+            let kdl = scoped_resources_with(&refs);
+            lowered_refused(&kdl, &format!("service filter, agent '{reference}'"));
+            let message = validation_error(&kdl);
+            let expected = format!(
+                "Filter 'probe' in service 'api:users' references agent '{reference}' \
+                 which cannot be resolved"
+            );
+            assert!(
+                message.contains(&expected),
+                "service filter, '{reference}', got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shipped_examples_pass_validation() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/examples");
+        let mut examples: Vec<_> = std::fs::read_dir(&dir)
+            .expect("the examples directory exists")
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "kdl"))
+            .collect();
+        examples.sort();
+        assert!(!examples.is_empty());
+
+        for path in examples {
+            let config = crate::Config::from_file(&path)
+                .unwrap_or_else(|e| panic!("{} does not load: {e}", path.display()));
+            if let Err(e) = config.validate() {
+                panic!("{} does not validate: {e}", path.display());
+            }
+        }
     }
 
     #[test]
