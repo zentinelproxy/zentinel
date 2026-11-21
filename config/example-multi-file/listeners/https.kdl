@@ -1,9 +1,7 @@
 // TLS listener.
 //
-// Note: per-SNI certificate serving, client-auth and cipher-suite selection
-// are parsed but not yet applied by the listener (issue #303); the listener
-// serves the primary certificate to all clients. Zentinel warns loudly at
-// startup when such settings are configured.
+// min-version and max-version take "1.2" or "1.3" (also written "tls1.2" or
+// "tlsv1.2", in any letter case); any other value is an error.
 
 listeners {
     listener "https" {

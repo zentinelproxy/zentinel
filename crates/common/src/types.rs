@@ -63,7 +63,9 @@ impl fmt::Display for HttpMethod {
 }
 
 /// TLS version
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Versions are ordered from oldest to newest: `Tls12 < Tls13`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TlsVersion {
     #[serde(rename = "TLS1.2")]
     Tls12,
@@ -562,6 +564,12 @@ mod tests {
             HttpMethod::from_str("PROPFIND").unwrap(),
             HttpMethod::Custom("PROPFIND".to_string())
         );
+    }
+
+    #[test]
+    fn tls_versions_are_ordered_oldest_first() {
+        assert!(TlsVersion::Tls12 < TlsVersion::Tls13);
+        assert_eq!(TlsVersion::Tls13.max(TlsVersion::Tls12), TlsVersion::Tls13);
     }
 
     #[test]

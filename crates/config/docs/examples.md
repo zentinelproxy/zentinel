@@ -259,9 +259,6 @@ listeners {
             key-file "/etc/ssl/private/default.key"
 
             // Additional certificates for SNI, one `sni` block per certificate.
-            // NOTE: `sni` blocks are parsed and used for ACME issuance, but
-            // per-SNI certificate *serving* is not wired in yet (issue #303);
-            // clients currently receive the default certificate.
 
             // Explicit hostnames: only these are registered, SAN is ignored
             sni {

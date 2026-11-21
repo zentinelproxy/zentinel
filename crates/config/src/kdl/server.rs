@@ -345,10 +345,13 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
 
     // TLS version configuration
     let min_version = get_string_entry(node, "min-version")?
-        .map(|s| parse_tls_version(&s))
+        .map(|s| parse_tls_version(&s, "min-version", listener_id))
+        .transpose()?
         .unwrap_or(TlsVersion::Tls12);
 
-    let max_version = get_string_entry(node, "max-version")?.map(|s| parse_tls_version(&s));
+    let max_version = get_string_entry(node, "max-version")?
+        .map(|s| parse_tls_version(&s, "max-version", listener_id))
+        .transpose()?;
 
     // Client authentication (mTLS)
     let client_auth = get_bool_entry(node, "client-auth")?.unwrap_or(false);
@@ -405,7 +408,7 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
         "Parsed TLS configuration"
     );
 
-    Ok(TlsConfig {
+    let tls = TlsConfig {
         cert_folders,
         allow_sni_overlaps,
         cert_file,
@@ -419,7 +422,15 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
         ocsp_stapling,
         session_resumption,
         acme,
-    })
+    };
+
+    // Checked here, for every listener the KDL defines: a namespace's or a
+    // service's listener is lowered after `Config::validate` has run.
+    if let Some(message) = tls.version_range_error(listener_id) {
+        return Err(anyhow::anyhow!(message));
+    }
+
+    Ok(tls)
 }
 
 /// Child nodes recognized inside a listener `tls` block.
@@ -954,11 +965,27 @@ fn parse_sni_cert_folder(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
     })
 }
 
-fn parse_tls_version(s: &str) -> TlsVersion {
-    match s.to_lowercase().as_str() {
-        "1.3" | "tls1.3" | "tlsv1.3" => TlsVersion::Tls13,
-        // All other values default to TLS 1.2
-        _ => TlsVersion::Tls12,
+/// Read a `min-version` or `max-version` value.
+///
+/// TLS 1.2 and 1.3 are accepted as `1.2`, `tls1.2` and `tlsv1.2` (likewise for
+/// 1.3), in any letter case. Any other value is an error: reading it as TLS 1.2
+/// would turn a misspelled `max-version` into a listener that cannot speak
+/// TLS 1.3, with nothing in the log to say why.
+///
+/// # Errors
+///
+/// Returns an error naming the listener, the setting, the value written and the
+/// values that are accepted.
+fn parse_tls_version(value: &str, setting: &str, listener_id: &str) -> Result<TlsVersion> {
+    match value.to_lowercase().as_str() {
+        "1.2" | "tls1.2" | "tlsv1.2" => Ok(TlsVersion::Tls12),
+        "1.3" | "tls1.3" | "tlsv1.3" => Ok(TlsVersion::Tls13),
+        _ => Err(anyhow::anyhow!(
+            "Invalid {setting} {value:?} in the tls block of listener '{listener_id}'. \
+             Accepted values are \"1.2\", \"tls1.2\", \"tlsv1.2\", \"1.3\", \"tls1.3\" and \
+             \"tlsv1.3\" (letter case does not matter). Only TLS 1.2 and 1.3 are supported; \
+             TLS 1.0 and 1.1 are not supported."
+        )),
     }
 }
 
@@ -1124,6 +1151,141 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("Unknown node 'tls13-cipher-suites'"));
         assert!(message.contains("Supported nodes:"));
+    }
+
+    /// A `tls` block carrying only the settings under test.
+    fn tls_versions(settings: &str) -> Result<TlsConfig> {
+        parse_tls(&format!(
+            r#"
+            tls {{
+                cert-file "/certs/default.crt"
+                key-file "/certs/default.key"
+                {settings}
+            }}
+            "#
+        ))
+    }
+
+    /// Every way `min-version` and `max-version` may be written: TLS 1.2 and
+    /// 1.3, each as `N`, `tlsN` and `tlsvN`, in any letter case.
+    const ACCEPTED_TLS_VERSIONS: &[(&str, TlsVersion)] = &[
+        ("1.2", TlsVersion::Tls12),
+        ("tls1.2", TlsVersion::Tls12),
+        ("tlsv1.2", TlsVersion::Tls12),
+        ("TLS1.2", TlsVersion::Tls12),
+        ("TLSv1.2", TlsVersion::Tls12),
+        ("Tls1.2", TlsVersion::Tls12),
+        ("1.3", TlsVersion::Tls13),
+        ("tls1.3", TlsVersion::Tls13),
+        ("tlsv1.3", TlsVersion::Tls13),
+        ("TLS1.3", TlsVersion::Tls13),
+        ("TLSv1.3", TlsVersion::Tls13),
+        ("Tls1.3", TlsVersion::Tls13),
+    ];
+
+    /// Values that are not a supported TLS version. They used to be read as
+    /// TLS 1.2 without a word.
+    const REJECTED_TLS_VERSIONS: &[&str] = &[
+        "TLS 1.3", "TLS 1.2", "1.4", "1.0", "1.1", "tls1.0", "TLSv1.1", "tls13", "tls12", "1", "3",
+        "1.30", " 1.3", "1.3 ", "tls", "latest", "",
+    ];
+
+    #[test]
+    fn min_version_accepts_every_spelling_of_tls_12_and_13() {
+        for (written, expected) in ACCEPTED_TLS_VERSIONS {
+            let tls = tls_versions(&format!("min-version \"{written}\"")).unwrap();
+            assert_eq!(tls.min_version, *expected, "min-version \"{written}\"");
+            assert_eq!(tls.max_version, None);
+        }
+    }
+
+    #[test]
+    fn max_version_accepts_every_spelling_of_tls_12_and_13() {
+        for (written, expected) in ACCEPTED_TLS_VERSIONS {
+            let tls = tls_versions(&format!("max-version \"{written}\"")).unwrap();
+            assert_eq!(
+                tls.max_version,
+                Some(*expected),
+                "max-version \"{written}\""
+            );
+            assert_eq!(tls.min_version, TlsVersion::Tls12);
+        }
+    }
+
+    #[test]
+    fn tls_versions_default_to_tls_12_with_no_upper_bound() {
+        let tls = tls_versions("").unwrap();
+        assert_eq!(tls.min_version, TlsVersion::Tls12);
+        assert_eq!(tls.max_version, None);
+    }
+
+    #[test]
+    fn min_version_rejects_a_value_that_is_not_a_supported_tls_version() {
+        for written in REJECTED_TLS_VERSIONS {
+            let err = tls_versions(&format!("min-version \"{written}\""))
+                .expect_err(&format!("min-version \"{written}\" should be rejected"));
+            let message = err.to_string();
+            assert!(message.contains("min-version"), "{message}");
+            assert!(message.contains("test-listener"), "{message}");
+            assert!(
+                message.contains(&format!("{written:?}")),
+                "the error should quote the value {written:?}: {message}"
+            );
+            assert!(
+                message.contains("\"1.2\"") && message.contains("\"tlsv1.3\""),
+                "the error should list the accepted values: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_version_rejects_a_value_that_is_not_a_supported_tls_version() {
+        for written in REJECTED_TLS_VERSIONS {
+            let err = tls_versions(&format!("max-version \"{written}\""))
+                .expect_err(&format!("max-version \"{written}\" should be rejected"));
+            let message = err.to_string();
+            assert!(message.contains("max-version"), "{message}");
+            assert!(message.contains("test-listener"), "{message}");
+            assert!(
+                message.contains(&format!("{written:?}")),
+                "the error should quote the value {written:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tls_version_error_says_tls_1_0_and_1_1_are_not_supported() {
+        for written in ["1.0", "tls1.1", "TLSv1.0"] {
+            let message = tls_versions(&format!("min-version \"{written}\""))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("TLS 1.0 and 1.1 are not supported"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_min_version_above_the_max_version_is_rejected() {
+        let message = tls_versions("min-version \"TLSv1.3\"\nmax-version \"1.2\"")
+            .expect_err("min-version TLS1.3 with max-version TLS1.2 enables no version")
+            .to_string();
+        assert!(message.contains("test-listener"), "{message}");
+        assert!(message.contains("min-version") && message.contains("max-version"));
+        assert!(message.contains("TLS1.3") && message.contains("TLS1.2"));
+    }
+
+    /// Equal bounds pin one version.
+    #[test]
+    fn min_and_max_version_may_be_equal() {
+        let tls = tls_versions("min-version \"1.3\"\nmax-version \"tls1.3\"").unwrap();
+        assert_eq!(tls.min_version, TlsVersion::Tls13);
+        assert_eq!(tls.max_version, Some(TlsVersion::Tls13));
+
+        let tls = tls_versions("min-version \"TLS1.2\"\nmax-version \"1.2\"").unwrap();
+        assert_eq!(tls.min_version, TlsVersion::Tls12);
+        assert_eq!(tls.max_version, Some(TlsVersion::Tls12));
     }
 
     #[test]

@@ -34,9 +34,9 @@ listeners {
             session-resumption #true
             // Custom cipher suites are configured as repeated nodes, e.g.:
             //   cipher-suite "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
-            // NOTE: cipher-suite, min-version, max-version and client-auth are
-            // parsed but not yet applied to the listener (issue #303); the
-            // listener currently uses the built-in intermediate TLS profile.
+            // min-version and max-version take "1.2" or "1.3" (also written
+            // "tls1.2" or "tlsv1.2", in any letter case); any other value is
+            // an error.
         }
     }
 }

@@ -425,6 +425,10 @@ pub fn validate_config_semantics(config: &Config) -> Result<(), validator::Valid
     trace!("Validating listeners");
     validate_listeners(config, &route_ids, &mut errors);
 
+    // Validate listener TLS version ranges
+    trace!("Validating TLS version ranges");
+    validate_tls_version_ranges(config, &mut errors);
+
     // Validate ACME domains (global uniqueness)
     trace!("Validating ACME domains");
     validate_acme_domains(config, &mut errors);
@@ -701,6 +705,22 @@ fn validate_listeners(config: &Config, route_ids: &HashSet<&str>, errors: &mut V
                     }
                 ));
             }
+        }
+    }
+}
+
+/// A `min-version` above the `max-version` leaves no TLS version to serve.
+///
+/// The proxy used to log a warning and enable both TLS 1.2 and 1.3. KDL stops
+/// at parse time; this covers a config built from JSON, TOML or code.
+fn validate_tls_version_ranges(config: &Config, errors: &mut Vec<String>) {
+    for listener in &config.listeners {
+        if let Some(message) = listener
+            .tls
+            .as_ref()
+            .and_then(|tls| tls.version_range_error(&listener.id))
+        {
+            errors.push(message);
         }
     }
 }
@@ -1597,6 +1617,175 @@ mod tests {
             let kdl = config_with_tls(&format!("{CERTS}\n      ca-file \"/tmp/ca.crt\""));
             let config = Config::from_kdl(&kdl).expect("should parse");
             assert!(config.validate().is_ok());
+        }
+    }
+
+    /// `min-version` above `max-version` leaves no protocol to serve. The
+    /// proxy used to log a warning and enable both TLS 1.2 and 1.3.
+    mod tls_version_range {
+        use super::*;
+        use zentinel_common::types::TlsVersion;
+
+        fn tls_block(versions: &str) -> String {
+            format!("tls {{\n cert-file \"/tmp/x.crt\"\n key-file \"/tmp/x.key\"\n {versions}\n }}")
+        }
+
+        /// A document with one `https` listener at the top level.
+        fn kdl_with_versions(versions: &str) -> String {
+            format!(
+                "system {{\n  workers 2\n}}\n\
+                 listeners {{\n  listener \"https\" {{\n    address \"127.0.0.1:8443\"\n\
+                 \x20   protocol \"https\"\n    {}\n  }}\n}}\n\
+                 upstreams {{\n  upstream \"b\" {{\n    target \"127.0.0.1:9000\"\n  }}\n}}\n\
+                 routes {{\n  route \"r\" {{\n    matches {{\n      path-prefix \"/\"\n    }}\n\
+                 \x20   upstream \"b\"\n  }}\n}}\n",
+                tls_block(versions)
+            )
+        }
+
+        /// A document whose `https` listener sits inside a namespace's
+        /// `listeners` block.
+        fn kdl_with_namespace_listener(versions: &str) -> String {
+            format!(
+                "schema-version \"1.0\"\nsystem {{ worker-threads 1 }}\n\
+                 listeners {{ listener \"public\" {{ address \"127.0.0.1:19480\" }} }}\n\
+                 namespace \"ns\" {{\n  listeners {{\n    listener \"ns-https\" {{\n\
+                 \x20     address \"127.0.0.1:19481\"\n      protocol \"https\"\n      {}\n\
+                 \x20   }}\n  }}\n}}\n",
+                tls_block(versions)
+            )
+        }
+
+        /// A document whose `https` listener is a service's `listener` block.
+        fn kdl_with_service_listener(versions: &str) -> String {
+            format!(
+                "schema-version \"1.0\"\nsystem {{ worker-threads 1 }}\n\
+                 listeners {{ listener \"public\" {{ address \"127.0.0.1:19480\" }} }}\n\
+                 namespace \"ns\" {{\n  service \"svc\" {{\n    listener {{\n\
+                 \x20     id \"svc-https\"\n      address \"127.0.0.1:19481\"\n\
+                 \x20     protocol \"https\"\n      {}\n    }}\n  }}\n}}\n",
+                tls_block(versions)
+            )
+        }
+
+        fn config_with_versions(versions: &str) -> Config {
+            Config::from_kdl(&kdl_with_versions(versions)).expect("should parse")
+        }
+
+        /// A config built from values instead of parsed from KDL, as JSON, TOML
+        /// and code build one.
+        fn config_with_range(min: TlsVersion, max: Option<TlsVersion>) -> Config {
+            let mut config = config_with_versions("");
+            let tls = config.listeners[0]
+                .tls
+                .as_mut()
+                .expect("the listener has a tls block");
+            tls.min_version = min;
+            tls.max_version = max;
+            config
+        }
+
+        const EMPTY_RANGE: &str = "min-version \"1.3\"\n max-version \"1.2\"";
+
+        #[test]
+        fn a_min_version_above_the_max_version_is_rejected_by_validate() {
+            let config = config_with_range(TlsVersion::Tls13, Some(TlsVersion::Tls12));
+            let message = config
+                .validate()
+                .expect_err("an empty version range must not validate")
+                .to_string();
+            assert!(
+                message.contains("'https'")
+                    && message.contains("min-version")
+                    && message.contains("max-version")
+                    && message.contains("TLS1.3")
+                    && message.contains("TLS1.2"),
+                "the error should name the listener, both settings and both versions, got: {message}"
+            );
+        }
+
+        #[test]
+        fn every_other_range_validates() {
+            for min in [TlsVersion::Tls12, TlsVersion::Tls13] {
+                for max in [None, Some(TlsVersion::Tls12), Some(TlsVersion::Tls13)] {
+                    if min == TlsVersion::Tls13 && max == Some(TlsVersion::Tls12) {
+                        continue;
+                    }
+                    let config = config_with_range(min, max);
+                    assert!(
+                        config.validate().is_ok(),
+                        "{min:?}..{max:?} should validate: {:?}",
+                        config.validate()
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn ranges_with_at_least_one_version_are_accepted_from_kdl() {
+            for versions in [
+                "",
+                "min-version \"1.2\"",
+                "min-version \"1.3\"",
+                "max-version \"1.2\"",
+                "max-version \"1.3\"",
+                "min-version \"1.2\"\n max-version \"1.3\"",
+                "min-version \"1.2\"\n max-version \"1.2\"",
+                "min-version \"1.3\"\n max-version \"1.3\"",
+            ] {
+                let config = config_with_versions(versions);
+                assert!(
+                    config.validate().is_ok(),
+                    "{versions:?} should validate: {:?}",
+                    config.validate()
+                );
+            }
+        }
+
+        /// Whatever the spelling, KDL stops at load; this is what `zentinel test`
+        /// and a reload run.
+        #[test]
+        fn a_min_version_above_the_max_version_does_not_load_from_kdl() {
+            for versions in [
+                EMPTY_RANGE,
+                "min-version \"TLSv1.3\"\n max-version \"tls1.2\"",
+            ] {
+                let message = format!(
+                    "{:#}",
+                    Config::from_kdl(&kdl_with_versions(versions))
+                        .expect_err(&format!("{versions:?} should not load"))
+                );
+                assert!(
+                    message.contains("'https'") && message.contains("max-version"),
+                    "the error should name the listener and the setting, got: {message}"
+                );
+            }
+        }
+
+        /// A namespace's or a service's listener is lowered after `validate`
+        /// runs, so the check has to happen when it is parsed.
+        #[test]
+        fn a_namespace_listener_with_an_empty_range_does_not_load() {
+            Config::from_kdl(&kdl_with_namespace_listener("min-version \"1.3\""))
+                .expect("a valid range in a namespace listener loads");
+            let message = format!(
+                "{:#}",
+                Config::from_kdl(&kdl_with_namespace_listener(EMPTY_RANGE))
+                    .expect_err("an empty range in a namespace listener must not load")
+            );
+            assert!(message.contains("'ns-https'"), "{message}");
+        }
+
+        #[test]
+        fn a_service_listener_with_an_empty_range_does_not_load() {
+            Config::from_kdl(&kdl_with_service_listener("min-version \"1.3\""))
+                .expect("a valid range in a service listener loads");
+            let message = format!(
+                "{:#}",
+                Config::from_kdl(&kdl_with_service_listener(EMPTY_RANGE))
+                    .expect_err("an empty range in a service listener must not load")
+            );
+            assert!(message.contains("'svc-https'"), "{message}");
         }
     }
 

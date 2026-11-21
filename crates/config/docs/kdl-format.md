@@ -181,8 +181,6 @@ listeners {
             ocsp-stapling #true
 
             // SNI certificate for an additional domain.
-            // NOTE: parsed and used for ACME issuance, but per-SNI
-            // certificate *serving* is not wired in yet (issue #303).
             sni {
                 hostnames "api.example.com"
                 cert-file "/etc/ssl/certs/api.crt"

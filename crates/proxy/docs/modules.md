@@ -515,6 +515,24 @@ fails a handshake. Metrics: `zentinel_tls_ocsp_fetch_total{listener,result}`
 (`success`, `failure`, `invalid`, `revoked`, `no_issuer`) and
 `zentinel_tls_ocsp_stapled_certificates{listener}`.
 
+**Protocol versions** (`min-version`, `max-version`): the listener accepts the
+TLS versions from `min-version` (default TLS 1.2) up to `max-version` (default
+TLS 1.3). Only TLS 1.2 and 1.3 exist; any other value is a config error, and so
+is a `min-version` above `max-version`, for a listener in any scope. On a
+reload the error keeps the running config. `build_server_config` also returns
+an error naming the listener for such a range when the `TlsConfig` was built in
+code, instead of enabling both versions.
+
+**Session resumption** (`session-resumption`, default on): the `ServerConfig`
+of each listener keeps rustls's default in-process session cache, 256 sessions,
+oldest dropped first, with no server-side expiry and nothing kept across a
+restart. TLS 1.2 clients resume by session ID and TLS 1.3 clients by ticket.
+Every TLS 1.3 handshake, a resumed one included, sends two single-use tickets
+(none when the client does not offer `psk_dhe_ke`), each taking one cache entry
+and advertised as valid for 24 hours.
+With `session-resumption #false` the cache is replaced by one that stores
+nothing, so no ticket is issued and every connection is a full handshake.
+
 **Key Structs:**
 
 ```rust
