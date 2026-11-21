@@ -223,6 +223,25 @@ one:
 | `waf`, `limits` | Reconciled: read from the current configuration per request / connection |
 | `listeners`, `system`, `observability`, `cache` | **Restart required.** A reload that changes one logs a warning naming the block |
 
+The reload handler applies a new configuration in three steps around the swap
+of the route matchers:
+
+1. What the new routes refer to goes in first: agents are loaded and replaced,
+   route components are rebuilt, and rate limiters, active health checks and
+   upstream pools are added or replaced. Limiters and health checks whose
+   configuration did not change keep their state.
+2. The route matchers are swapped.
+3. What the new configuration no longer lists comes out last: agents, rate
+   limiters, health checks and upstream pools.
+
+A route added by a reload, or whose rate limit or upstream it changed, is
+therefore never served without its new limiter or pool, and the routes of the
+previous configuration keep theirs until the swap. The upstream pools are built
+before the swap, bounded by 10 seconds (the time service discovery lookups may
+take). If that runs out, no new pool is installed: the new routes still go
+live, the previous pools stay, and a route that names a new upstream fails with
+"Upstream pool not found" until the next reload.
+
 ### Agent Processing Pipeline
 
 ```
