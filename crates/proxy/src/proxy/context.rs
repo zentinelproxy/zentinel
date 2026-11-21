@@ -305,6 +305,9 @@ pub struct RequestContext {
     /// the request ends without a result, and so does a retry for the attempt
     /// before it.
     pub(crate) half_open_trial: Option<crate::upstream::TrialTicket>,
+    /// `error_while_proxy` has counted the current attempt's failure against
+    /// the target, so `logging` must not count it again.
+    pub(crate) attempt_failure_reported: bool,
     /// Number of upstream attempts
     pub(crate) upstream_attempts: u32,
     /// Times the request itself has been sent upstream.
@@ -663,6 +666,7 @@ impl RequestContext {
             selected_upstream_address: None,
             selected_pool: None,
             half_open_trial: None,
+            attempt_failure_reported: false,
             upstream_attempts: 0,
             request_attempts: 0,
             namespace: None,

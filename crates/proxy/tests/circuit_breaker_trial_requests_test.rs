@@ -24,6 +24,9 @@ use zentinel_agent_protocol::v2::AgentCapabilities;
 use zentinel_agent_protocol::{AgentResponse, EventType, RequestBodyChunkEvent};
 
 const BREAKER_OPENED_LOG: &str = "Circuit breaker opened";
+/// How often Pingora tries a request whose connection to the target is dropped
+/// without an answer, each try counting as a failure of the target.
+const ATTEMPTS_PER_FAILED_REQUEST: usize = 16;
 /// Logged when a half-open period starts over because its trials never came
 /// back. A trial slot that is given back makes this unnecessary.
 const PERIOD_RESTARTED_LOG: &str = "half-open trials did not finish in time";
@@ -44,6 +47,8 @@ struct Backend {
     port: u16,
     /// `GET /hold` requests received.
     held: Arc<AtomicUsize>,
+    /// Requests whose connection was dropped without an answer.
+    dropped: Arc<AtomicUsize>,
     /// Requests the proxy gave up on: a body that never arrived, or a
     /// `GET /hold` the proxy closed the connection of.
     abandoned: Arc<AtomicUsize>,
@@ -53,12 +58,18 @@ fn spawn_backend() -> Backend {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let held = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
     let abandoned = Arc::new(AtomicUsize::new(0));
-    let (held_counter, counter) = (held.clone(), abandoned.clone());
+    let (held_counter, dropped_counter, counter) =
+        (held.clone(), dropped.clone(), abandoned.clone());
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let (held_counter, counter) = (held_counter.clone(), counter.clone());
+            let (held_counter, dropped_counter, counter) = (
+                held_counter.clone(),
+                dropped_counter.clone(),
+                counter.clone(),
+            );
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
@@ -90,6 +101,7 @@ fn spawn_backend() -> Backend {
                     return;
                 }
                 if String::from_utf8_lossy(&body).contains("drop-connection") {
+                    dropped_counter.fetch_add(1, Ordering::SeqCst);
                     let _ = stream.shutdown(std::net::Shutdown::Both);
                     return;
                 }
@@ -103,6 +115,7 @@ fn spawn_backend() -> Backend {
     Backend {
         port,
         held,
+        dropped,
         abandoned,
     }
 }
@@ -467,4 +480,53 @@ fn trials_refused_by_an_agent_do_not_keep_the_breaker_half_open() {
         "the refused trials kept their slots until the period started over; log:\n{}",
         proxy.log()
     );
+}
+
+/// A failed attempt counts once against the target, not once where the error
+/// happens and once more when the request ends. The breaker here opens on one
+/// failure more than a single request's attempts make.
+#[test]
+fn a_failed_attempt_is_counted_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = spawn_backend();
+    let port = free_port();
+    let proxy = Proxy::start(
+        dir.path(),
+        port,
+        &config(
+            port,
+            backend.port,
+            &format!(
+                "failure-threshold {}\nsuccess-threshold 1\ntimeout-seconds 300",
+                ATTEMPTS_PER_FAILED_REQUEST + 1
+            ),
+            None,
+        ),
+    );
+
+    let (status, _) = post(proxy.port, "{\"payload\":\"drop-connection\"}");
+    assert!(status >= 500, "a dropped connection answered {status}");
+    assert_eq!(
+        backend.dropped.load(Ordering::SeqCst),
+        ATTEMPTS_PER_FAILED_REQUEST,
+        "Pingora's attempt limit is not what ATTEMPTS_PER_FAILED_REQUEST says"
+    );
+
+    // One failure short of opening: the next request still reaches the
+    // target, and its first attempt is the one that opens the breaker.
+    let _ = post(proxy.port, "{\"payload\":\"drop-connection\"}");
+    assert!(
+        backend.dropped.load(Ordering::SeqCst) > ATTEMPTS_PER_FAILED_REQUEST,
+        "the breaker opened after one request's failures: an attempt was counted twice; log:\n{}",
+        proxy.log()
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !proxy.log().contains(BREAKER_OPENED_LOG) {
+        assert!(
+            Instant::now() < deadline,
+            "the breaker did not open; log:\n{}",
+            proxy.log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

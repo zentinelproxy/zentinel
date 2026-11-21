@@ -453,7 +453,11 @@ one:
 
 ### What a request tells the breaker
 
-What `logging` reports to the breaker of the target a finished request was sent to:
+What a request tells the breaker of the target it was sent to. An attempt is
+reported at most once. An error of the upstream after the connection was
+established is reported when it happens, which is also how an attempt that a
+retry replaces is counted. Any other outcome is reported when the request
+ends, for its last attempt:
 
 | Outcome | Reported as |
 |---------|-------------|
@@ -466,9 +470,16 @@ A request with no result is neither a success nor a failure: it does not
 reset the run of failures, count towards closing the breaker, or reach the
 load balancer's health and latency accounting. When it was a half-open trial,
 it gives its trial slot back so another request can take its place; so does
-the attempt before a retry, if it reported nothing. Shadow requests are never
-half-open trials: while a target's breaker is open or half-open it receives no
-shadow traffic.
+the attempt before a retry, if it reported nothing.
+
+`failure_threshold` counts the failures that are reported. An error of the
+upstream after the connection was established counts once per attempt, an
+attempt that a retry replaces included. Any other outcome counts once, for the
+last attempt. A connection failure that a retry replaces, and a 5xx response
+that is discarded for a retry, are not counted.
+
+Shadow requests are never half-open trials: while a target's breaker is open
+or half-open it receives no shadow traffic.
 
 If a trial is lost altogether (the request was dropped before it could report
 or give its slot back), the half-open period does not wait for it forever.

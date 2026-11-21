@@ -1058,6 +1058,9 @@ impl ProxyHttp for ZentinelProxy {
         {
             pool.release_half_open_slot(ticket).await;
         }
+        // The mark `error_while_proxy` sets belongs to one attempt: clear it
+        // for the attempt that starts here.
+        ctx.attempt_failure_reported = false;
 
         // Delay before this attempt at the *request*, from the route's policy.
         // upstream_peer is re-entered by Pingora's retry loop, so this is where
@@ -2830,11 +2833,6 @@ impl ProxyHttp for ZentinelProxy {
                 .record_outcome(upstream, success, error_msg.as_deref())
                 .await;
 
-            // Report to upstream pool
-            if let Some(pool) = self.upstream_pools.get(upstream).await {
-                pool.report_result(upstream, success).await;
-            }
-
             if !success {
                 warn!(
                     correlation_id = %ctx.trace_id,
@@ -4185,6 +4183,8 @@ impl ProxyHttp for ZentinelProxy {
         // its body: the upstream request is abandoned because of the
         // refusal, not because the peer failed (#610).
         if is_upstream_error(&e) && !ctx.response_blocked && !ctx.request_refused_by_agent {
+            // Counted here, once for this attempt; `logging` leaves it out.
+            ctx.attempt_failure_reported = true;
             let peer_address = peer.address().to_string();
             let upstream_pools = self.upstream_pools.clone();
             let upstream_id_owned = upstream_id.to_string();
@@ -4315,31 +4315,36 @@ impl ProxyHttp for ZentinelProxy {
             let success = outcome == TargetOutcome::Success;
 
             if let Some(pool) = self.upstream_pools.get(upstream_id).await {
-                match outcome {
-                    TargetOutcome::Success | TargetOutcome::Failure => {
-                        pool.report_result_with_latency(peer_addr, success, Some(duration))
-                            .await;
-                    }
-                    // Neither a success, which would also reset the
-                    // breaker's run of real failures, nor a failure. If the
-                    // request was a half-open trial, it gives its slot back:
-                    // nothing else will.
-                    TargetOutcome::NoResult => {
-                        if let Some(ticket) = ctx.half_open_trial.take() {
-                            pool.release_half_open_slot(ticket).await;
+                // `error_while_proxy` reports an upstream error when it
+                // happens. That attempt is already counted: reporting it
+                // here too would count one failure twice.
+                if !ctx.attempt_failure_reported {
+                    match outcome {
+                        TargetOutcome::Success | TargetOutcome::Failure => {
+                            pool.report_result_with_latency(peer_addr, success, Some(duration))
+                                .await;
+                        }
+                        // Neither a success, which would also reset the
+                        // breaker's run of real failures, nor a failure. If
+                        // the request was a half-open trial, it gives its
+                        // slot back: nothing else will.
+                        TargetOutcome::NoResult => {
+                            if let Some(ticket) = ctx.half_open_trial.take() {
+                                pool.release_half_open_slot(ticket).await;
+                            }
                         }
                     }
+                    trace!(
+                        correlation_id = %ctx.trace_id,
+                        upstream = %upstream_id,
+                        peer_address = %peer_addr,
+                        outcome = ?outcome,
+                        duration_ms = duration.as_millis(),
+                        status = status,
+                        "Reported result to adaptive load balancer"
+                    );
                 }
                 pool.decrement_active();
-                trace!(
-                    correlation_id = %ctx.trace_id,
-                    upstream = %upstream_id,
-                    peer_address = %peer_addr,
-                    outcome = ?outcome,
-                    duration_ms = duration.as_millis(),
-                    status = status,
-                    "Reported result to adaptive load balancer"
-                );
             }
 
             // Track warmth for inference routes (cold model detection)
