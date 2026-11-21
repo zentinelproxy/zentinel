@@ -197,6 +197,10 @@ fn test_config(config_path: Option<&str>, strict: bool) -> Result<()> {
         .validate()
         .context("Configuration validation failed")?;
 
+    // Startup refuses a TLS listener whose certificate or key cannot be
+    // loaded, so this is an error here too, with or without `--strict`.
+    check_tls_listeners(&config).context("Configuration validation failed")?;
+
     // Additional validation checks
     let route_count = config.routes.len();
     let upstream_count = config.upstreams.len();
@@ -471,7 +475,7 @@ async fn initialize_acme(
     let mut acme_configs: Vec<(String, AcmeConfig)> = Vec::new();
 
     for listener in &config.listeners {
-        if listener.protocol == zentinel_config::ListenerProtocol::Https {
+        if serves_tls(listener.protocol) {
             if let Some(ref tls) = listener.tls {
                 // Root-level ACME
                 if let Some(ref acme) = tls.acme {
@@ -615,9 +619,9 @@ async fn initialize_acme(
         if acme_client.needs_renewal(primary_domain)? {
             // Issuance at startup: defer only for renewals (cert
             // already present). First issuance with no cert files
-            // cannot be deferred — the HTTPS listener is skipped when
-            // cert files are absent (ACME certificate files not found,
-            // continue) and hot-reload never re-adds a listener.
+            // cannot be deferred — startup stops when the listener's
+            // cert files are absent (`build_tls_listener`), and
+            // hot-reload never adds a listener.
             let issuance_result: Result<(), AcmeError> = async {
                 info!(
                     source = %description,
@@ -801,6 +805,251 @@ fn pingora_options(upgrade: bool) -> Opt {
 /// bytes, the first thing a prior-knowledge client sends) before refusing it.
 const H2C_PREFACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// A TLS listener that has been built and is ready to be added to the service.
+struct TlsListener<'a> {
+    tls_config: &'a zentinel_config::TlsConfig,
+    /// The default certificate file, for the startup log.
+    cert_path: std::path::PathBuf,
+    /// The resolver the listener's connections consult. The certificate
+    /// reloader has to refresh this same object, or a reload updates
+    /// something no live connection consults.
+    resolver: Arc<HotReloadableSniResolver>,
+    settings: pingora::listeners::tls::TlsSettings,
+}
+
+/// The certificate and key files a `tls` block names itself, as opposed to
+/// the ones an `acme` block has issued.
+fn manual_cert_files(
+    tls_config: &zentinel_config::TlsConfig,
+) -> Option<(&std::path::Path, &std::path::Path)> {
+    match (&tls_config.cert_file, &tls_config.key_file) {
+        (Some(cert), Some(key)) => Some((cert, key)),
+        _ => None,
+    }
+}
+
+/// Whether listeners of this protocol terminate TLS, so that their `tls`
+/// block applies: the certificate resolver is built from it and an `acme`
+/// block in it is initialized.
+///
+/// `https` and `h2` are built the same way. `h3` is not: configuration
+/// validation and startup both reject it, so no TLS listener is ever built for
+/// one and nothing is issued for it.
+fn serves_tls(protocol: zentinel_config::ListenerProtocol) -> bool {
+    matches!(
+        protocol,
+        zentinel_config::ListenerProtocol::Https | zentinel_config::ListenerProtocol::Http2
+    )
+}
+
+/// Whether ACME initialization issues this listener's default certificate.
+fn default_cert_issued_by_acme(listener: &zentinel_config::ListenerConfig) -> bool {
+    serves_tls(listener.protocol)
+        && listener
+            .tls
+            .as_ref()
+            .is_some_and(|tls| tls.acme.is_some() && manual_cert_files(tls).is_none())
+}
+
+fn describe_listener(listener: &zentinel_config::ListenerConfig) -> String {
+    format!("TLS listener '{}' ({})", listener.id, listener.address)
+}
+
+/// Build what a TLS listener is started with: the certificate resolver, the
+/// rustls configuration and Pingora's TLS settings.
+///
+/// Startup and `zentinel test` both build listeners here, so apart from
+/// certificates that ACME has yet to issue, a listener that `zentinel test`
+/// accepts is one startup can build.
+///
+/// # Errors
+///
+/// Returns an error naming the listener, its address and the file at fault
+/// when the certificate or key file does not exist or is not readable as PEM,
+/// when an SNI certificate cannot be loaded, or when the TLS settings cannot
+/// be built. Startup stops on it: a listener that is left out leaves the
+/// process running without listening on its port.
+fn build_tls_listener(listener: &zentinel_config::ListenerConfig) -> Result<TlsListener<'_>> {
+    let describe = || describe_listener(listener);
+    let tls_config = listener
+        .tls
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("{} has no tls block", describe()))?;
+
+    // Determine certificate paths: manual or ACME-managed
+    let acme_managed = manual_cert_files(tls_config).is_none() && tls_config.acme.is_some();
+    let (cert_path, key_path) = if let Some((cert, key)) = manual_cert_files(tls_config) {
+        (cert.to_path_buf(), key.to_path_buf())
+    } else if let Some(acme_config) = &tls_config.acme {
+        let primary_domain = acme_config
+            .domains
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("{}: the acme block has no domains", describe()))?;
+        let domain_dir = acme_config.storage.join("domains").join(primary_domain);
+        (domain_dir.join("cert.pem"), domain_dir.join("key.pem"))
+    } else {
+        anyhow::bail!(
+            "{}: the tls block needs cert-file and key-file, or an acme block",
+            describe()
+        );
+    };
+
+    // For ACME-managed certificates this runs after ACME initialization, so
+    // a missing file means issuance did not leave one behind.
+    for (what, path) in [("certificate", &cert_path), ("key", &key_path)] {
+        if !path.exists() {
+            let hint = if acme_managed {
+                " (expected from the acme block's storage after ACME initialization)"
+            } else {
+                ""
+            };
+            anyhow::bail!(
+                "{}: {what} file not found: {}{hint}",
+                describe(),
+                path.display()
+            );
+        }
+    }
+
+    // Build the certificate resolver first and keep a handle on it. The
+    // resolver installed in the ServerConfig has to be the same object the
+    // reloader refreshes, or a reload updates something no live connection
+    // consults.
+    let resolver = HotReloadableSniResolver::from_config(tls_config.clone(), listener.id.clone())
+        .map(Arc::new)
+        .with_context(|| format!("{}: failed to load TLS certificates", describe()))?;
+
+    // Everything the operator configured -- SNI certificates, client auth,
+    // protocol versions, cipher suites, session resumption -- is expressed
+    // here and handed to the listener as a complete rustls ServerConfig.
+    let server_config = tls::build_server_config_with_resolver(tls_config, resolver.clone())
+        .with_context(|| format!("{}: failed to build TLS configuration", describe()))?;
+
+    let mut settings = pingora::listeners::tls::TlsSettings::with_server_config(server_config)
+        .with_context(|| format!("{}: failed to create TLS settings", describe()))?;
+    settings.enable_h2();
+
+    Ok(TlsListener {
+        tls_config,
+        cert_path,
+        resolver,
+        settings,
+    })
+}
+
+/// Enters `system { working-directory }` and goes back when dropped.
+///
+/// Startup changes into the working directory before it builds the
+/// listeners, so a relative `cert-file` is read from there. A check that
+/// runs earlier, or in `zentinel test`, has to look in the same place.
+struct WorkingDirectory {
+    previous: Option<std::path::PathBuf>,
+}
+
+impl WorkingDirectory {
+    fn enter(dir: Option<&std::path::Path>) -> Result<Self> {
+        let Some(dir) = dir else {
+            return Ok(Self { previous: None });
+        };
+        let previous = std::env::current_dir().context("Failed to read the current directory")?;
+        std::env::set_current_dir(dir).with_context(|| {
+            format!("Failed to change working directory to '{}'", dir.display())
+        })?;
+        Ok(Self {
+            previous: Some(previous),
+        })
+    }
+}
+
+impl Drop for WorkingDirectory {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            let _ = std::env::set_current_dir(previous);
+        }
+    }
+}
+
+/// Check every TLS listener the way startup builds it.
+///
+/// Reports all listeners that cannot be built, not only the first. A listener
+/// whose default certificate ACME issues while the proxy starts is not built,
+/// since the files need not exist yet; the rest of its `tls` block (`sni`
+/// certificates, the client CA) is still loaded.
+///
+/// # Errors
+///
+/// Returns an error listing each TLS listener that cannot be built.
+fn check_tls_listeners(config: &Config) -> Result<()> {
+    // Startup builds the listeners of the configuration with namespace and
+    // service resources moved to the top level.
+    let (config, _) = config.lower_scopes_reporting();
+    let tls_listeners: Vec<_> = config
+        .listeners
+        .iter()
+        .filter(|listener| serves_tls(listener.protocol))
+        .collect();
+    if tls_listeners.is_empty() {
+        return Ok(());
+    }
+
+    let _cwd = WorkingDirectory::enter(config.server.working_directory.as_deref())?;
+    let mut problems = Vec::new();
+    for listener in tls_listeners {
+        let checked = if default_cert_issued_by_acme(listener) {
+            info!(
+                listener_id = %listener.id,
+                "Default certificate is issued by ACME at startup; not checked here"
+            );
+            listener
+                .tls
+                .as_ref()
+                .map_or(Ok(()), tls::check_extra_tls_files)
+                .with_context(|| {
+                    format!("{}: failed to load TLS files", describe_listener(listener))
+                })
+        } else {
+            build_tls_listener(listener).map(|_| ())
+        };
+        if let Err(e) = checked {
+            problems.push(format!("{e:#}"));
+        }
+    }
+
+    if problems.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{} TLS listener(s) cannot be built:\n  {}",
+        problems.len(),
+        problems.join("\n  ")
+    );
+}
+
+/// Refuse to start when a TLS listener cannot be built, before anything else
+/// is started.
+///
+/// Runs before the process forks, so that `--daemon` reports the failure to
+/// the shell that started it, and before ACME initialization, so that a
+/// certificate file that is missing does not cost a round trip to the CA on
+/// every restart. The listeners are built again, for real, once the proxy is
+/// set up.
+///
+/// A configuration that does not load is left to the steps that follow, which
+/// report it better.
+fn check_tls_before_start(config_path: Option<&str>) -> Result<()> {
+    let loaded = match config_path {
+        Some(path) => Config::from_file(path),
+        None => Config::default_embedded(),
+    };
+    let Ok(config) = loaded else {
+        return Ok(());
+    };
+    check_tls_listeners(&config).map_err(|e| {
+        error!(error = %format!("{e:#}"), "TLS listener could not be built; refusing to start");
+        e.context("Refusing to start")
+    })
+}
+
 /// Run the proxy server
 fn run_server(
     config_path: Option<String>,
@@ -880,6 +1129,8 @@ fn run_server(
     // A configuration that does not load fails here, in the foreground.
     let daemon_plan =
         zentinel_proxy::daemon::DaemonPlan::prepare(effective_config_path.as_deref(), daemon)?;
+    // Also in the foreground, before ACME initialization; see the function.
+    check_tls_before_start(effective_config_path.as_deref())?;
     if let Some(ref plan) = daemon_plan {
         plan.daemonize()?;
         info!(
@@ -1135,6 +1386,33 @@ fn run_server(
     // refresh certificates from disk without restarting the process.
     let cert_reloader = Arc::new(CertificateReloader::new());
 
+    // Build every TLS listener before registering any of them, so that a
+    // listener that cannot be built stops startup before an earlier one has
+    // started its background tasks. A listener that cannot be built stops
+    // startup: skipping it would leave the process running without listening
+    // on its port, which is what an operator would least expect from a unit
+    // that reports `active (running)`.
+    let mut tls_listeners = std::collections::HashMap::new();
+    for listener in &config.listeners {
+        if !serves_tls(listener.protocol) {
+            continue;
+        }
+        match build_tls_listener(listener) {
+            Ok(built) => {
+                tls_listeners.insert(listener.id.as_str(), built);
+            }
+            Err(e) => {
+                error!(
+                    listener_id = %listener.id,
+                    address = %listener.address,
+                    error = %format!("{e:#}"),
+                    "TLS listener could not be built; refusing to start"
+                );
+                return Err(e);
+            }
+        }
+    }
+
     // Configure listening addresses from config
     for listener in &config.listeners {
         match listener.protocol {
@@ -1159,177 +1437,41 @@ fn run_server(
             // They used to differ only in that `h2` fell through to a catch-all
             // and bound nothing at all (#377).
             zentinel_config::ListenerProtocol::Https | zentinel_config::ListenerProtocol::Http2 => {
-                match &listener.tls {
-                    Some(tls_config) => {
-                        // Determine certificate paths: manual or ACME-managed
-                        let (cert_path, key_path) = if let (Some(ref cert), Some(ref key)) =
-                            (&tls_config.cert_file, &tls_config.key_file)
-                        {
-                            // Manual certificates specified
-                            (cert.clone(), key.clone())
-                        } else if let Some(ref acme_config) = tls_config.acme {
-                            // ACME-managed certificates
-                            let acme_storage = &acme_config.storage;
-                            let primary_domain = acme_config
-                                .domains
-                                .first()
-                                .ok_or_else(|| {
-                                    error!(
-                                        listener_id = %listener.id,
-                                        "ACME configuration has no domains"
-                                    );
-                                })
-                                .unwrap_or(&"default".to_string())
-                                .clone();
+                let Some(built) = tls_listeners.remove(listener.id.as_str()) else {
+                    anyhow::bail!("TLS listener '{}' was not built", listener.id);
+                };
+                let tls_config = built.tls_config;
+                let sni_resolver = built.resolver;
 
-                            let cert_path = acme_storage
-                                .join("domains")
-                                .join(&primary_domain)
-                                .join("cert.pem");
-                            let key_path = acme_storage
-                                .join("domains")
-                                .join(&primary_domain)
-                                .join("key.pem");
+                cert_reloader.register(&listener.id, sni_resolver.clone());
 
-                            // If certs still don't exist after ACME init, something went wrong
-                            if !cert_path.exists() || !key_path.exists() {
-                                error!(
-                                    listener_id = %listener.id,
-                                    address = %listener.address,
-                                    domains = ?acme_config.domains,
-                                    cert_path = %cert_path.display(),
-                                    "ACME certificate files not found after initialization"
-                                );
-                                continue;
-                            }
-
-                            (cert_path, key_path)
-                        } else {
-                            error!(
-                                listener_id = %listener.id,
-                                "TLS configuration requires either cert-file/key-file or acme block"
-                            );
-                            continue;
-                        };
-
-                        let cert_path_str = cert_path.to_string_lossy();
-                        let key_path_str = key_path.to_string_lossy();
-
-                        // Validate certificate files exist
-                        if !cert_path.exists() {
-                            error!(
-                                listener_id = %listener.id,
-                                cert_file = %cert_path_str,
-                                "TLS certificate file not found"
-                            );
-                            continue;
-                        }
-                        if !key_path.exists() {
-                            error!(
-                                listener_id = %listener.id,
-                                key_file = %key_path_str,
-                                "TLS key file not found"
-                            );
-                            continue;
-                        }
-
-                        // Build the certificate resolver first and keep a handle
-                        // on it. The resolver installed in the ServerConfig has
-                        // to be the same object the reloader refreshes, or a
-                        // reload updates something no live connection consults.
-                        let sni_resolver = match HotReloadableSniResolver::from_config(
-                            tls_config.clone(),
-                            listener.id.clone(),
-                        ) {
-                            Ok(r) => Arc::new(r),
-                            Err(e) => {
-                                error!(
-                                    listener_id = %listener.id,
-                                    error = %e,
-                                    "Failed to load TLS certificates for listener"
-                                );
-                                continue;
-                            }
-                        };
-
-                        // Everything the operator configured -- SNI certificates,
-                        // client auth, protocol versions, cipher suites, session
-                        // resumption -- is expressed here and handed to the
-                        // listener as a complete rustls ServerConfig.
-                        let server_config = match tls::build_server_config_with_resolver(
-                            tls_config,
-                            sni_resolver.clone(),
-                        ) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                error!(
-                                    listener_id = %listener.id,
-                                    error = %e,
-                                    "Failed to build TLS configuration for listener"
-                                );
-                                continue;
-                            }
-                        };
-
-                        let mut tls_settings =
-                            match pingora::listeners::tls::TlsSettings::with_server_config(
-                                server_config,
-                            ) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    error!(
-                                        listener_id = %listener.id,
-                                        error = %e,
-                                        "Failed to create TLS settings"
-                                    );
-                                    continue;
-                                }
-                            };
-                        tls_settings.enable_h2();
-
-                        cert_reloader.register(&listener.id, sni_resolver.clone());
-
-                        // OCSP stapling (#590): fetch and refresh responses in
-                        // the background. The first handshakes may go out
-                        // unstapled until the first fetch lands; a responder
-                        // problem never blocks startup or a handshake.
-                        if tls_config.ocsp_stapling {
-                            runtime.spawn(tls::run_ocsp_refresher(
-                                sni_resolver.clone(),
-                                tls::OCSP_REFRESH_TICK,
-                            ));
-                        }
-
-                        // Folders configured to reload on their own get a
-                        // watcher or a timer. Without this the `reload-mode`
-                        // setting would parse and do nothing, which is the
-                        // failure mode this listener was just fixed for.
-                        spawn_cert_folder_reloaders(
-                            &runtime,
-                            &listener.id,
-                            tls_config,
-                            sni_resolver,
-                        );
-
-                        proxy_service.add_tls_with_settings(&listener.address, None, tls_settings);
-                        info!(
-                            listener_id = %listener.id,
-                            address = %listener.address,
-                            cert_file = %cert_path_str,
-                            acme_enabled = tls_config.acme.is_some(),
-                            sni_cert_count = tls_config.additional_certs.len(),
-                            client_auth = tls_config.client_auth,
-                            "HTTPS (h2+http/1.1) listening on: {}", listener.address
-                        );
-                    }
-                    None => {
-                        error!(
-                            listener_id = %listener.id,
-                            address = %listener.address,
-                            "HTTPS listener requires TLS configuration"
-                        );
-                    }
+                // OCSP stapling (#590): fetch and refresh responses in
+                // the background. The first handshakes may go out
+                // unstapled until the first fetch lands; a responder
+                // problem never blocks startup or a handshake.
+                if tls_config.ocsp_stapling {
+                    runtime.spawn(tls::run_ocsp_refresher(
+                        sni_resolver.clone(),
+                        tls::OCSP_REFRESH_TICK,
+                    ));
                 }
+
+                // Folders configured to reload on their own get a
+                // watcher or a timer. Without this the `reload-mode`
+                // setting would parse and do nothing, which is the
+                // failure mode this listener was just fixed for.
+                spawn_cert_folder_reloaders(&runtime, &listener.id, tls_config, sni_resolver);
+
+                proxy_service.add_tls_with_settings(&listener.address, None, built.settings);
+                info!(
+                    listener_id = %listener.id,
+                    address = %listener.address,
+                    cert_file = %built.cert_path.display(),
+                    acme_enabled = tls_config.acme.is_some(),
+                    sni_cert_count = tls_config.additional_certs.len(),
+                    client_auth = tls_config.client_auth,
+                    "HTTPS (h2+http/1.1) listening on: {}", listener.address
+                );
             }
             // Config validation rejects h3 before startup, so this is
             // unreachable for a parsed config. Erroring rather than warning
@@ -1870,5 +2012,83 @@ mod tests {
         assert!(ignored[0].contains("'adress'") && ignored[0].contains("is being ignored"));
 
         assert!(ignored_settings(None).is_empty());
+    }
+
+    #[test]
+    fn tls_is_served_by_https_and_h2_listeners_only() {
+        use zentinel_config::ListenerProtocol;
+
+        assert!(serves_tls(ListenerProtocol::Https));
+        assert!(serves_tls(ListenerProtocol::Http2));
+        assert!(!serves_tls(ListenerProtocol::Http));
+        assert!(!serves_tls(ListenerProtocol::H2c));
+        // Rejected by validation and by startup: no TLS listener is built.
+        assert!(!serves_tls(ListenerProtocol::Http3));
+    }
+
+    /// What a listener's `tls` block names besides its `acme` block.
+    #[derive(Clone, Copy, Debug)]
+    enum CertFiles {
+        /// No `cert-file` and `key-file`: ACME issues the default certificate.
+        None,
+        /// A `cert-file` and `key-file`: they are the default certificate.
+        Named,
+    }
+
+    fn listener_with_acme(
+        protocol: zentinel_config::ListenerProtocol,
+        cert_files: CertFiles,
+    ) -> zentinel_config::ListenerConfig {
+        let kdl = format!(
+            r#"
+            system {{
+                worker-threads 1
+            }}
+            listeners {{
+                listener "edge" {{
+                    address "127.0.0.1:8443"
+                    protocol "{}"
+                    tls {{
+                        {}
+                        acme {{
+                            email "admin@example.com"
+                            domains "a.example"
+                            storage "/var/lib/zentinel/acme"
+                        }}
+                    }}
+                }}
+            }}
+            "#,
+            match protocol {
+                zentinel_config::ListenerProtocol::Https => "https",
+                zentinel_config::ListenerProtocol::Http2 => "h2",
+                other => panic!("no TLS listener for {other:?}"),
+            },
+            match cert_files {
+                CertFiles::Named => {
+                    "cert-file \"/etc/zentinel/a.crt\"\nkey-file \"/etc/zentinel/a.key\""
+                }
+                CertFiles::None => "",
+            },
+        );
+        let config = Config::from_kdl(&kdl).unwrap();
+        config.listeners.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn acme_issues_the_default_certificate_of_https_and_h2_listeners() {
+        use zentinel_config::ListenerProtocol;
+
+        for protocol in [ListenerProtocol::Https, ListenerProtocol::Http2] {
+            assert!(
+                default_cert_issued_by_acme(&listener_with_acme(protocol, CertFiles::None)),
+                "{protocol:?}"
+            );
+            // A certificate named in the `tls` block is the default one.
+            assert!(
+                !default_cert_issued_by_acme(&listener_with_acme(protocol, CertFiles::Named)),
+                "{protocol:?} with cert-file and key-file"
+            );
+        }
     }
 }

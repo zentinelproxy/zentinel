@@ -1597,6 +1597,31 @@ pub fn build_server_config_with_resolver(
     Ok(server_config)
 }
 
+/// Load what a `tls` block reads besides its default certificate: the `sni`
+/// certificates that name files, and the client CA when client authentication
+/// is on.
+///
+/// For a listener whose default certificate is issued by ACME and need not
+/// exist yet, so that the rest of the block can still be checked.
+///
+/// # Errors
+///
+/// Returns the error of the first file that cannot be loaded; it names the
+/// file.
+pub fn check_extra_tls_files(config: &TlsConfig) -> Result<(), TlsError> {
+    for sni in &config.additional_certs {
+        if let (Some(cert), Some(key)) = (&sni.cert_file, &sni.key_file) {
+            load_certified_key(cert, key)?;
+        }
+    }
+    if config.client_auth {
+        if let Some(ca_path) = &config.ca_file {
+            load_client_ca(ca_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Validate TLS configuration files exist and are readable
 pub fn validate_tls_config(config: &TlsConfig) -> Result<(), TlsError> {
     // If ACME is configured, skip manual cert file validation

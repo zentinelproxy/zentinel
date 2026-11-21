@@ -26,6 +26,10 @@ zentinel test --strict --config config/example-multi-file
 Both read the same files. `--strict` checks every one of them for settings
 that are being ignored, and names the file each finding is in.
 
+`listeners/https.kdl` points at `/etc/zentinel/certs/example.crt` and
+`example.key`. Create those files, or change the paths, before running `test`
+or starting the proxy: a TLS listener whose files are missing makes both stop.
+
 ## Loading a directory
 
 `zentinel -c <dir>` (or `ZENTINEL_CONFIG=<dir>`) reads every `*.kdl` file

@@ -32,3 +32,6 @@ tests/chaos/results/
 
 # Claude roadmap files (internal planning, not for commit)
 .claude/*roadmap*.md
+
+# Local TLS certificate and key for config/zentinel.kdl (see the HTTPS listener comment there)
+/certs/
