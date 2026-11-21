@@ -395,7 +395,10 @@ An agent gets `RequestBodyChunk` events when it subscribes to them
 #false`, and `waf { body-inspection { inspect-request-body #false } }` is
 not set. No `waf` block is needed (one used to be, and without it no
 agent got a request body). Without a `waf` block, bodies of every content
-type are sent; with one, those in its `body-inspection { content-types }`.
+type are sent; with one, those in its `body-inspection { content-types }`
+(an entry also covers `type/<name>+subtype`, as `application/json` covers
+`application/vnd.api+json`), and those of a request that has a body and no
+usable `Content-Type` unless `inspect-untyped-bodies #false` is set there.
 
 In `request-body-mode "buffer"` an agent is sent the whole body in one
 `RequestBodyChunk` event with `is_last` set, or none of it. A body longer

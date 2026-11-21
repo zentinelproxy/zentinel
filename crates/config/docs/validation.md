@@ -263,6 +263,7 @@ Configuration validation failed:
 | `body-inspection.inspect-request-body` | `true` | Inspect requests |
 | `body-inspection.inspect-response-body` | `false` | Response inspection opt-in |
 | `body-inspection.max-inspection-bytes` | `1048576` | 1MB inspection limit |
+| `body-inspection.inspect-untyped-bodies` | `true` | A body with no usable `Content-Type` is inspected whatever `content-types` lists |
 
 ### Observability Defaults
 

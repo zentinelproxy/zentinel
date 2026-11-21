@@ -578,6 +578,7 @@ waf {
         content-types "application/json" "application/x-www-form-urlencoded" "multipart/form-data"
         decompress #true
         max-decompression-ratio 100.0
+        inspect-untyped-bodies #true
     }
 }
 ```
@@ -585,10 +586,18 @@ waf {
 `body-inspection { content-types }` is an allowlist of media types, matched
 without regard to ASCII case (RFC 9110 section 8.3.1): `APPLICATION/JSON` matches
 `application/json`, and leading whitespace and parameters (`; charset=utf-8`) on
-the request's value are ignored. An entry matches as a prefix. A request that
-carries several `Content-Type` headers is inspected when **any** of them matches.
-A request with no `Content-Type` is inspected only when the list has an empty
-entry (`content-types "" "application/json"`); an empty list inspects every body.
+the request's value are ignored. An entry matches as a prefix, and an entry
+`type/subtype` also matches the structured-syntax types (RFC 6839) of the same
+top-level type with that suffix, `type/<name>+subtype`: `application/json`
+covers `application/vnd.api+json` and `application/problem+json`,
+`application/xml` covers `application/soap+xml`, and `text/xml` covers
+`text/foo+xml`. A request that carries several `Content-Type` headers is
+inspected when **any** of them matches. A request that has a body but no
+usable `Content-Type` (none, only blank ones, or a value that is not valid
+text) is inspected whatever the list says, unless `inspect-untyped-bodies` is
+`#false`. A request with neither is inspected only when the list has an empty
+entry (`content-types "" "application/json"`); an empty list inspects every
+body.
 
 ### Observability Block
 
