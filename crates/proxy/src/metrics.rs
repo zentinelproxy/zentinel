@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use zentinel_agent_protocol::v2::{MetricsCollector, UnifiedMetricsAggregator};
+use zentinel_common::observability::RequestMetrics;
 
 /// Metrics manager for the proxy.
 ///
@@ -167,9 +168,16 @@ impl MetricsManager {
     // -------------------------------------------------------------------------
 
     /// Increment total requests counter.
+    ///
+    /// `method` is the request method as received; it is reduced with
+    /// [`RequestMetrics::bounded_method_label`] before it becomes a label, so a
+    /// method outside the standard set is counted under `<other>`.
     pub fn inc_requests_total(&self, method: &str, status: u16, route: &str) {
         let mut labels = HashMap::new();
-        labels.insert("method".to_string(), method.to_string());
+        labels.insert(
+            "method".to_string(),
+            RequestMetrics::bounded_method_label(method).to_string(),
+        );
         labels.insert("status".to_string(), status.to_string());
         labels.insert("route".to_string(), route.to_string());
 
@@ -182,9 +190,14 @@ impl MetricsManager {
     }
 
     /// Record request duration.
+    ///
+    /// `method` is reduced the same way as in [`Self::inc_requests_total`].
     pub fn observe_request_duration(&self, method: &str, route: &str, duration_secs: f64) {
         let mut labels = HashMap::new();
-        labels.insert("method".to_string(), method.to_string());
+        labels.insert(
+            "method".to_string(),
+            RequestMetrics::bounded_method_label(method).to_string(),
+        );
         labels.insert("route".to_string(), route.to_string());
 
         // Standard latency buckets
@@ -526,6 +539,40 @@ mod tests {
             .contains("zentinel_request_duration_seconds_count"));
         // Verify count is 3 (with labels, the format is {labels} 3)
         assert!(response.body.contains("} 3\n") || response.body.contains(" 3\n"));
+    }
+
+    #[test]
+    fn request_metrics_count_nonstandard_methods_under_one_label_value() {
+        let manager = MetricsManager::new("test", "1");
+
+        manager.inc_requests_total("GET", 200, "/api");
+        manager.observe_request_duration("GET", "/api", 0.05);
+        for i in 0..50 {
+            let method = format!("EXT{i}");
+            manager.inc_requests_total(&method, 200, "/api");
+            manager.observe_request_duration(&method, "/api", 0.05);
+        }
+        manager.inc_requests_total("get", 200, "/api");
+
+        let body = manager.handle_metrics_request().body;
+
+        for name in [
+            "zentinel_requests_total{",
+            "zentinel_request_duration_seconds_count{",
+        ] {
+            let mut methods: Vec<&str> = body
+                .lines()
+                .filter(|line| line.starts_with(name))
+                .filter_map(|line| line.split("method=\"").nth(1))
+                .filter_map(|rest| rest.split('"').next())
+                .collect();
+            methods.sort_unstable();
+            assert_eq!(
+                methods,
+                ["<other>", "GET"],
+                "{name}: expected one series for GET and one for <other>"
+            );
+        }
     }
 
     #[test]
