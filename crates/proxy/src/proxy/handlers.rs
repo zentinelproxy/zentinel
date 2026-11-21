@@ -256,30 +256,39 @@ impl ZentinelProxy {
         // never above the global one: pingora's default of 64 KiB dropped
         // anything larger, the loop never ran, and the upstream waited for a
         // body that never came (#531).
-        let global_limit = ctx
-            .config
-            .get_or_insert_with(|| self.config_manager.current())
-            .limits
-            .max_body_size_bytes;
-        let limit = ctx.max_body_size(global_limit);
-        session.enable_retry_buffering_with_limit(limit);
-        let mut body = Vec::new();
-        while let Some(chunk) = session.read_request_body().await.map_err(|e| {
-            Error::explain(
-                ErrorType::InternalError,
-                format!("Failed to read body: {}", e),
-            )
-        })? {
-            if body.len() + chunk.len() > limit {
-                return Err(Error::explain(
-                    ErrorType::HTTPStatus(413),
-                    "Request body exceeds the configured limit",
-                ));
+        //
+        // An inference route's prompt check reads the body before this, and
+        // leaves it in `validated_request_body`: the body is not read twice.
+        let body = match ctx.validated_request_body.take() {
+            Some(body) => body,
+            None => {
+                let global_limit = ctx
+                    .config
+                    .get_or_insert_with(|| self.config_manager.current())
+                    .limits
+                    .max_body_size_bytes;
+                let limit = ctx.max_body_size(global_limit);
+                session.enable_retry_buffering_with_limit(limit);
+                let mut body = Vec::new();
+                while let Some(chunk) = session.read_request_body().await.map_err(|e| {
+                    Error::explain(
+                        ErrorType::InternalError,
+                        format!("Failed to read body: {}", e),
+                    )
+                })? {
+                    if body.len() + chunk.len() > limit {
+                        return Err(Error::explain(
+                            ErrorType::HTTPStatus(413),
+                            "Request body exceeds the configured limit",
+                        ));
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                bytes::Bytes::from(body)
             }
-            body.extend_from_slice(&chunk);
-        }
+        };
 
-        let body_slice = body.as_slice();
+        let body_slice = body.as_ref();
 
         // Validate the request body
         if let Err(validation_error) = validator
@@ -333,7 +342,7 @@ impl ZentinelProxy {
             "Request validation passed"
         );
 
-        ctx.validated_request_body = Some(bytes::Bytes::from(body));
+        ctx.validated_request_body = Some(body);
         Ok(None)
     }
 

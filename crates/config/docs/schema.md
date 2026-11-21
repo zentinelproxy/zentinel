@@ -287,6 +287,29 @@ Per-route cache configuration, nested under `policies.cache`.
 | `prompt-injection` | `PromptInjectionConfig` | Prompt injection detection |
 | `pii-detection` | `PiiDetectionConfig` | PII detection |
 
+### PromptInjectionConfig
+
+Checked on the request body. On a route with it enabled, the whole request
+body is read before an upstream is chosen, up to the route's body-size limit
+(`413` above it). See [Prompt check](../../proxy/docs/inference.md#prompt-check).
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `enabled` | `bool` | `#false` | Run the check |
+| `agent` | `string` | **required** | Guardrail agent to ask (over a Unix socket) |
+| `action` | `string` | `"log"` | When the agent flags the content: `block`, `warn` or `log` |
+| `block-status` | `int` | `400` | Status of the refusal when `action "block"` and the agent flags the content (also of a refusal for a body with no text to check, under `failure-mode "closed"`) |
+| `block-message` | `string` | - | Message of the refusal when `action "block"` and the agent flags the content |
+| `timeout-ms` | `int` | `500` | How long to wait for the agent |
+| `failure-mode` | `string` | `"open"` | When the check cannot be made (agent timeout or failure, no text to check in the body): `open` forwards the request, `closed` refuses it. Not for the body-size limit: a body over it gets `413` either way |
+
+The text checked is taken from the request body as described in
+[Prompt check](../../proxy/docs/inference.md#prompt-check): `messages[].content`
+(a string, or the `text` of its parts), `prompt`, or `input` (a string or an
+array of strings), `text`, `query`, `question`. A body of another shape, or
+with a `Content-Encoding` other than `identity`, has no text to check. A
+WebSocket upgrade and a proxied MCP tool call are not checked.
+
 ### FallbackConfig
 
 | Property | Type | Default | Description |

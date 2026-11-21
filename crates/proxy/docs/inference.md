@@ -314,21 +314,76 @@ route "/v1/chat/completions" {
 }
 ```
 
+### Prompt check
+
+The `prompt-injection` check is made on the request body. On a route that
+has it enabled, the whole body is read before an upstream is chosen, and the
+check is made on the body as the client sent it:
+
+- The body is read up to the route's body-size limit
+  (`policies { max-body-size }`, or the global `limits { max-body-size }`). A body
+  over it is refused with `413`, and the upstream is not contacted. That
+  limit is the route's setting, not the guardrail's decision: part of the
+  body has been read by then, so the `413` is the same under `failure-mode
+  "open"`, and a body that cannot be read is an error.
+- The body is held in memory until the check passes, then sent to the
+  upstream. The request reaches the upstream later than it would without
+  the check, by the time the body takes to arrive and the agent to answer.
+  Memory per request can be several times the body's size: the read body,
+  Pingora's copy of it for the upstream, the extracted text and the
+  serialized event sent to the agent.
+- The text sent to the guardrail agent, as a guardrail inspection event, is:
+  the `content` of `messages` (a string, or the `text` of the parts of an
+  array; other parts are left out), else `prompt`, else the first of `input`
+  (a string, or an array of strings), `text`, `query` and `question` that is
+  a string. Over a Unix socket only: guardrail events are not carried by
+  gRPC agents. A Unix socket message is at most 16 MiB, so a body whose text
+  is larger than that cannot be sent to the agent, and the check does not
+  complete (`failure-mode` applies).
+- A request without a body is forwarded and not checked. Nor are a
+  WebSocket upgrade and a proxied MCP tool call.
+- A body with no text in the shape above (not JSON, another shape, or no
+  text parts), or with a `Content-Encoding` other than `identity` (the body
+  is not decompressed), has no text to check.
+- The route's other checks that read the whole body first (API schema
+  validation, `request-body-mode "inspect-first"`) are given the same body;
+  it is not read twice. A body agent in `stream` or `hybrid` mode is sent
+  the body as one chunk, at the end, rather than chunk by chunk. A body agent
+  that rewrites the body changes what the upstream receives: the check has
+  not seen the rewritten body.
+
+`action` decides what is done with content the agent flags: `block` refuses
+the request with `block-status` (default `400`) and `block-message`, `warn`
+forwards it and adds a warning header to the response, `log` forwards it and
+logs the detection.
+
+`failure-mode` decides what is done when the check cannot be made:
+
+| Situation | `open` (default) | `closed` |
+|-----------|------------------|----------|
+| The guardrail's `timeout-ms` runs out before the agent answers | forwarded | refused with `504` |
+| The agent's call fails (this includes the agent's own `timeout-ms` running out first), or its answer is unusable | forwarded | refused with `503` |
+| The body has no text to check (see above) | forwarded as it is | refused with `block-status` |
+
 ### Guardrail Response
 
 When blocked:
 
 ```json
 {
-  "error": {
-    "type": "guardrail_violation",
-    "message": "Request blocked by guardrail",
-    "guardrail": "prompt_injection",
-    "confidence": 0.95,
-    "details": "Detected injection pattern in user message"
-  }
+  "error": "prompt_injection_blocked",
+  "message": "Request blocked: potential prompt injection detected"
 }
 ```
+
+`message` is `block-message` when the agent flagged the content and
+`block-message` is set. A refusal under `failure-mode "closed"` has its own
+message and status, as in the table above.
+
+A request refused because the agent flagged its content is counted in
+`zentinel_blocked_requests_total{reason="prompt_injection"}`. A request
+refused because the check could not be made (`failure-mode "closed"`) is
+counted in `zentinel_blocked_requests_total{reason="prompt_check_failed"}`.
 
 ## Model Routing
 
@@ -496,8 +551,9 @@ zentinel_inference_tokens_per_request{route="chat", model="gpt-4", quantile="0.5
 zentinel_inference_cost_dollars_total{route="chat", model="gpt-4"}
 
 # Guardrails
-zentinel_inference_guardrail_blocked_total{route="chat", guardrail="prompt_injection"}
-zentinel_inference_guardrail_latency_ms{route="chat", guardrail="prompt_injection"}
+zentinel_blocked_requests_total{reason="prompt_injection"}
+zentinel_blocked_requests_total{reason="prompt_check_failed"}
+zentinel_pii_detected_total{route="chat", category="ssn"}
 
 # Model routing
 zentinel_inference_model_requests_total{route="chat", model="gpt-4", upstream="openai"}

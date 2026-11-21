@@ -440,8 +440,11 @@ pub struct RequestContext {
     /// to forward.
     pub(crate) mcp_proxied_call: Option<crate::agentic::multiplex::ProxiedCall>,
 
-    /// A request body read whole in `request_filter` for API schema
-    /// validation, waiting to be handed back to pingora.
+    /// A request body read whole in `request_filter`, waiting to be handed
+    /// back to pingora. It is read there by an inference route's prompt
+    /// check, by API schema validation, or by `request-body-mode
+    /// "inspect-first"`; whichever comes first reads it, and the others
+    /// use it.
     ///
     /// Reading the body there consumes it. Without this, a request that passed
     /// validation reached the upstream with headers promising a body that never

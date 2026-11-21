@@ -20,16 +20,28 @@ use zentinel_config::{
 
 use crate::agents::AgentManager;
 
+/// Why a prompt check refused a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockCause {
+    /// The agent reported a detection and the route's action is `block`.
+    /// `detections` may be empty: the agent decides what it lists.
+    Detection,
+    /// The check could not be made (the agent failed or timed out, or the
+    /// body had no text to check) and the failure mode is `closed`.
+    CheckFailed,
+}
+
 /// Result of a prompt injection check
 #[derive(Debug)]
 pub enum PromptInjectionResult {
     /// Content is clean (no injection detected)
     Clean,
-    /// Injection detected, request should be blocked
+    /// The request should be blocked, for the reason in `cause`
     Blocked {
         status: u16,
         message: String,
         detections: Vec<GuardrailDetection>,
+        cause: BlockCause,
     },
     /// Injection detected but allowed (logged only)
     Detected { detections: Vec<GuardrailDetection> },
@@ -223,6 +235,7 @@ impl GuardrailProcessor {
                                 "Request blocked: potential prompt injection detected".to_string()
                             }),
                             detections: response.detections,
+                            cause: BlockCause::Detection,
                         },
                         GuardrailAction::Log => PromptInjectionResult::Detected {
                             detections: response.detections,
@@ -250,6 +263,7 @@ impl GuardrailProcessor {
                         status: 503,
                         message: "Guardrail check unavailable".to_string(),
                         detections: vec![],
+                        cause: BlockCause::CheckFailed,
                     },
                 }
             }
@@ -268,6 +282,7 @@ impl GuardrailProcessor {
                         status: 504,
                         message: "Guardrail check timed out".to_string(),
                         detections: vec![],
+                        cause: BlockCause::CheckFailed,
                     },
                 }
             }
@@ -371,15 +386,25 @@ impl GuardrailProcessor {
 ///
 /// Attempts to parse the body as JSON and extract message content
 /// from common inference API formats (OpenAI, Anthropic, etc.)
+///
+/// The text taken is:
+/// - `messages[].content`, a string or an array of parts (the `text` of the
+///   parts that have one; other parts, such as images, are left out),
+/// - else `prompt`, a string,
+/// - else the first of `input`, `text`, `query` and `question` that is a
+///   string, or, for `input`, an array of strings.
+///
+/// Any other shape has no text: `None`.
 pub fn extract_inference_content(body: &[u8]) -> Option<String> {
     let json: serde_json::Value = serde_json::from_slice(body).ok()?;
 
-    // OpenAI format: {"messages": [{"content": "..."}]}
+    // OpenAI format: {"messages": [{"content": "..."}]}, where `content` may
+    // also be an array of parts: [{"type": "text", "text": "..."}, ...]
     if let Some(messages) = json.get("messages").and_then(|m| m.as_array()) {
         let content: Vec<String> = messages
             .iter()
-            .filter_map(|msg| msg.get("content").and_then(|c| c.as_str()))
-            .map(String::from)
+            .filter_map(|msg| msg.get("content"))
+            .filter_map(message_text)
             .collect();
         if !content.is_empty() {
             return Some(content.join("\n"));
@@ -393,12 +418,45 @@ pub fn extract_inference_content(body: &[u8]) -> Option<String> {
 
     // Generic: look for common content fields
     for field in &["input", "text", "query", "question"] {
-        if let Some(value) = json.get(*field).and_then(|v| v.as_str()) {
-            return Some(value.to_string());
+        match json.get(*field) {
+            Some(serde_json::Value::String(value)) => return Some(value.clone()),
+            // `input` may be a list of texts.
+            Some(serde_json::Value::Array(items)) if *field == "input" => {
+                let texts: Vec<&str> = items.iter().filter_map(|item| item.as_str()).collect();
+                if !texts.is_empty() {
+                    return Some(texts.join("\n"));
+                }
+            }
+            _ => {}
         }
     }
 
     None
+}
+
+/// The text of one message's `content`: the string, or the `text` of the
+/// parts of an array that have one. `None` when there is none.
+fn message_text(content: &serde_json::Value) -> Option<String> {
+    match content {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Array(parts) => {
+            let texts: Vec<&str> = parts
+                .iter()
+                .filter(|part| {
+                    part.get("type")
+                        .and_then(|t| t.as_str())
+                        .is_none_or(|t| t == "text")
+                })
+                .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if texts.is_empty() {
+                None
+            } else {
+                Some(texts.join("\n"))
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -588,6 +646,44 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_content_parts() {
+        let body = br#"{
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "first part"},
+                    {"type": "image_url", "image_url": {"url": "http://a.example/i.png"}},
+                    {"type": "text", "text": "second part"}
+                ]},
+                {"role": "user", "content": "plain message"}
+            ]
+        }"#;
+        let content = extract_inference_content(body);
+        assert_eq!(
+            content,
+            Some("first part\nsecond part\nplain message".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_content_parts_without_text() {
+        let body = br#"{"messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "http://a.example/i.png"}}
+        ]}]}"#;
+        assert_eq!(extract_inference_content(body), None);
+        let body = br#"{"messages": [{"role": "user", "content": {"text": "an object"}}]}"#;
+        assert_eq!(extract_inference_content(body), None);
+    }
+
+    #[test]
+    fn test_extract_input_list() {
+        let body = br#"{"input": ["first text", 7, "second text"]}"#;
+        let content = extract_inference_content(body);
+        assert_eq!(content, Some("first text\nsecond text".to_string()));
+        let body = br#"{"input": [1, 2]}"#;
+        assert_eq!(extract_inference_content(body), None);
+    }
+
+    #[test]
     fn test_extract_nested_content() {
         // Messages with mixed content types (some with content, some without)
         let body = br#"{
@@ -668,10 +764,12 @@ mod tests {
                 status,
                 message,
                 detections,
+                cause,
             } => {
                 assert_eq!(status, 400);
                 assert_eq!(message, "Blocked: injection detected");
                 assert_eq!(detections.len(), 1);
+                assert_eq!(cause, BlockCause::Detection);
             }
             _ => panic!("Expected Blocked result, got {:?}", result),
         }
@@ -756,10 +854,14 @@ mod tests {
         // Fail-closed: block the request on agent error
         match result {
             PromptInjectionResult::Blocked {
-                status, message, ..
+                status,
+                message,
+                cause,
+                ..
             } => {
                 assert_eq!(status, 503);
                 assert_eq!(message, "Guardrail check unavailable");
+                assert_eq!(cause, BlockCause::CheckFailed);
             }
             _ => panic!("Expected Blocked result, got {:?}", result),
         }
@@ -788,6 +890,37 @@ mod tests {
                 );
             }
             _ => panic!("Expected Blocked result"),
+        }
+    }
+
+    /// A detection the agent reports without listing anything is still a
+    /// detection, not a failed check.
+    #[tokio::test]
+    async fn test_prompt_injection_detected_without_detections_is_a_detection() {
+        let response = create_guardrail_response(true, vec![]);
+        let mock = Arc::new(MockAgentCaller::with_response(Ok(response)));
+        let processor = GuardrailProcessor::with_caller(mock);
+
+        let config =
+            create_prompt_injection_config(GuardrailAction::Block, GuardrailFailureMode::Closed);
+
+        let result = processor
+            .check_prompt_injection(&config, "suspicious content", None, None, "corr-123")
+            .await;
+
+        match result {
+            PromptInjectionResult::Blocked {
+                status,
+                message,
+                detections,
+                cause,
+            } => {
+                assert_eq!(status, 400);
+                assert_eq!(message, "Blocked: injection detected");
+                assert!(detections.is_empty());
+                assert_eq!(cause, BlockCause::Detection);
+            }
+            _ => panic!("Expected Blocked result, got {:?}", result),
         }
     }
 
@@ -898,6 +1031,7 @@ mod tests {
             status: 400,
             message: "test".to_string(),
             detections: vec![],
+            cause: BlockCause::Detection,
         };
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("Blocked"));
