@@ -17,7 +17,8 @@ use crate::server::{
 use std::time::Duration;
 
 use super::helpers::{
-    get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, get_unique_child,
+    get_arg_string, get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry,
+    get_unique_child, string_args_of_children,
 };
 
 /// Parse server configuration block
@@ -87,12 +88,19 @@ pub(crate) fn unapplied_system_settings(node: &kdl::KdlNode, block: &str) -> Vec
     problems
 }
 
-/// A listener's protocol and its `tls` block have to agree. `h2c` is
-/// cleartext, so a `tls` block on it would never be read. `https` and `h2`
-/// need one: without it the listener used to pass validation and bind
-/// nothing at startup (an error in the log, no socket).
+/// A listener's protocol and its `tls` block have to agree. `http` and `h2c`
+/// are cleartext, so a `tls` block on them would never be read: the listener
+/// used to bind a plain socket and the block was dropped, with nothing in the
+/// log or the config to say so. `https` and `h2` need one: without it the
+/// listener used to pass validation and bind nothing at startup (an error in
+/// the log, no socket).
 pub(crate) fn check_listener_tls(id: &str, protocol: ListenerProtocol, tls: bool) -> Result<()> {
     match (protocol, tls) {
+        (ListenerProtocol::Http, true) => Err(anyhow::anyhow!(
+            "Listener '{id}': has a 'tls' block, but protocol \"http\" (the protocol when \
+             none is written) serves plain HTTP/1.1, so the block would not be used. Add \
+             protocol \"https\" to serve TLS, or remove the 'tls' block."
+        )),
         (ListenerProtocol::H2c, true) => Err(anyhow::anyhow!(
             "Listener '{id}': protocol \"h2c\" is HTTP/2 over cleartext TCP and cannot have a \
              'tls' block. For HTTP/2 over TLS use protocol \"https\" (or \"h2\"), which \
@@ -350,16 +358,16 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
     let session_resumption = get_bool_entry(node, "session-resumption")?.unwrap_or(true);
 
     // Cipher suites
-    let cipher_suites = if let Some(children) = node.children() {
-        children
+    let mut cipher_suites = Vec::new();
+    if let Some(children) = node.children() {
+        for suite in children
             .nodes()
             .iter()
             .filter(|n| n.name().value() == "cipher-suite")
-            .filter_map(get_first_arg_string)
-            .collect()
-    } else {
-        Vec::new()
-    };
+        {
+            cipher_suites.extend(get_arg_string(suite)?);
+        }
+    }
 
     // Parse SNI certificates
     let additional_certs = if let Some(children) = node.children() {
@@ -522,20 +530,7 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     })?;
 
     // Required: domains (at least one)
-    let domains: Vec<String> = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .filter(|n| n.name().value() == "domains")
-            .flat_map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let domains = string_args_of_children(node, "domains")?;
 
     if domains.is_empty() {
         return Err(anyhow::anyhow!(
@@ -752,20 +747,7 @@ fn parse_propagation_config(node: &kdl::KdlNode) -> Result<PropagationCheckConfi
         .unwrap_or(120);
 
     // Parse nameservers
-    let nameservers: Vec<String> = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .filter(|n| n.name().value() == "nameservers")
-            .flat_map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let nameservers = string_args_of_children(node, "nameservers")?;
 
     Ok(PropagationCheckConfig {
         initial_delay_secs,
@@ -802,39 +784,11 @@ fn parse_propagation_config(node: &kdl::KdlNode) -> Result<PropagationCheckConfi
 fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCertificate> {
     reject_unknown_nodes(node, KNOWN_SNI_NODES, "sni", listener_id)?;
 
-    let children = node.children();
-
     // Parse hostnames - explicit override, disables SAN auto-extraction.
-    let hostnames: Vec<String> = if let Some(children) = children {
-        children
-            .nodes()
-            .iter()
-            .filter(|n| n.name().value() == "hostnames")
-            .flat_map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let hostnames = string_args_of_children(node, "hostnames")?;
 
     // Parse priority-hostnames - tie-breaking with full SAN auto-extraction.
-    let priority_hostnames: Vec<String> = if let Some(children) = children {
-        children
-            .nodes()
-            .iter()
-            .filter(|n| n.name().value() == "priority-hostnames")
-            .flat_map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let priority_hostnames = string_args_of_children(node, "priority-hostnames")?;
 
     // Validate mutual exclusion
     if !hostnames.is_empty() && !priority_hostnames.is_empty() {

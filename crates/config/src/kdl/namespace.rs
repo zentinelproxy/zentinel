@@ -9,7 +9,7 @@ use tracing::trace;
 use crate::namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
 use crate::ListenerConfig;
 
-use super::helpers::{get_first_arg_string, reject_repeated};
+use super::helpers::{get_first_arg_string, reject_repeated, string_args};
 use super::{parse_filter_definitions, parse_listeners, parse_routes, parse_upstreams};
 
 // ============================================================================
@@ -307,13 +307,13 @@ fn parse_exports(node: &kdl::KdlNode) -> Result<ExportConfig> {
 
         match child_name {
             "upstreams" => {
-                exports.upstreams = parse_string_list(child);
+                exports.upstreams = parse_string_list(child)?;
             }
             "agents" => {
-                exports.agents = parse_string_list(child);
+                exports.agents = parse_string_list(child)?;
             }
             "filters" => {
-                exports.filters = parse_string_list(child);
+                exports.filters = parse_string_list(child)?;
             }
             other => {
                 return Err(anyhow::anyhow!(
@@ -335,18 +335,13 @@ fn parse_exports(node: &kdl::KdlNode) -> Result<ExportConfig> {
 /// ```kdl
 /// upstreams "shared-auth" "shared-cache" "another"
 /// ```
-fn parse_string_list(node: &kdl::KdlNode) -> Vec<String> {
-    node.entries()
-        .iter()
-        .filter_map(|entry| {
-            if entry.name().is_none() {
-                // It's a positional argument
-                entry.value().as_string().map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
+///
+/// # Errors
+///
+/// A [`WrongValueType`](super::helpers::WrongValueType) for an argument that is
+/// not a string.
+fn parse_string_list(node: &kdl::KdlNode) -> Result<Vec<String>> {
+    string_args(node)
 }
 
 // ============================================================================
@@ -443,7 +438,7 @@ mod tests {
     fn test_parse_string_list() {
         let kdl = r#"items "a" "b" "c""#;
         let node = parse_kdl_node(kdl);
-        let list = parse_string_list(&node);
+        let list = parse_string_list(&node).unwrap();
         assert_eq!(list, vec!["a", "b", "c"]);
     }
 

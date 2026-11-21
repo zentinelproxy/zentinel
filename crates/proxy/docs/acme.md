@@ -327,6 +327,7 @@ For better usability, SNI blocks with ACME can automatically derive their routin
 ```kdl
 listeners {
     listener "https" {
+        protocol "https"
         tls {
             // Root certificate (fallback)
             acme {

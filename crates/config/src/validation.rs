@@ -1546,6 +1546,7 @@ mod tests {
             format!(
                 "system {{\n  workers 2\n}}\n\
                  listeners {{\n  listener \"https\" {{\n    address \"127.0.0.1:8443\"\n\
+                 \x20   protocol \"https\"\n\
                  \x20   tls {{\n{tls_body}\n    }}\n  }}\n}}\n\
                  upstreams {{\n  upstream \"b\" {{\n    target \"127.0.0.1:9000\"\n  }}\n}}\n\
                  routes {{\n  route \"r\" {{\n    matches {{\n      path-prefix \"/\"\n    }}\n\

@@ -10,8 +10,9 @@ use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 use crate::{kdl::circuitbreaker_helper::parse_circuit_breaker_faildefault, upstreams::*};
 
 use super::helpers::{
-    get_bool_entry, get_first_arg_string, get_int_entry, get_int_entry_or, get_string_entry,
-    get_unique_child, get_unique_in_nodes, parse_upstream_targets,
+    get_arg_string, get_bool_entry, get_first_arg_string, get_int_entry, get_int_entry_or,
+    get_string_entry, get_unique_arg_string, get_unique_child, get_unique_in_nodes, node_bool,
+    node_int, node_number, node_string, node_value, parse_upstream_targets, string_args,
 };
 
 //Parse a single upstream block
@@ -422,8 +423,7 @@ pub(crate) fn resolve_load_balancing(
     upstream: &kdl::KdlNode,
     upstream_id: &str,
 ) -> Result<(LoadBalancingAlgorithm, Option<String>)> {
-    let Some(name) = get_unique_child(upstream, "load-balancing")?.and_then(get_first_arg_string)
-    else {
+    let Some(name) = get_unique_arg_string(upstream, "load-balancing")? else {
         return Ok((LoadBalancingAlgorithm::RoundRobin, None));
     };
     if let Some(algorithm) = parse_load_balancing(&name) {
@@ -479,18 +479,27 @@ pub(crate) fn resolve_sticky_session_config(
         find_string_entry(nodes, "cookie-name")?.unwrap_or_else(|| "SERVERID".to_string());
 
     // Parse cookie TTL - support both integer seconds and duration strings
-    let cookie_ttl_secs = match find_int_entry(nodes, "cookie-ttl")? {
-        Some(secs) => Some(secs as u64),
-        None => find_string_entry(nodes, "cookie-ttl")?.and_then(|s| parse_duration_string(&s)),
-    }
-    .unwrap_or(3600); // Default 1 hour
+    let cookie_ttl_secs = get_unique_in_nodes(nodes, "cookie-ttl")?
+        .map(|node| {
+            node_value(
+                node,
+                "an integer number of seconds, or a duration string such as \"1h\"",
+                |v| match v.as_integer() {
+                    Some(secs) => Some(secs as u64),
+                    // `"1h"`, `"30m"`, `"3600s"`; a bare `"3600"` is seconds.
+                    None => v.as_string().and_then(|text| {
+                        parse_duration_string(text).or_else(|| text.trim().parse().ok())
+                    }),
+                },
+            )
+        })
+        .transpose()?
+        .flatten()
+        .unwrap_or(3600); // Default 1 hour
 
     let cookie_path = find_string_entry(nodes, "cookie-path")?.unwrap_or_else(|| "/".to_string());
 
-    let cookie_secure = get_unique_in_nodes(nodes, "cookie-secure")?
-        .and_then(|n| n.entries().first())
-        .and_then(|e| e.value().as_bool())
-        .unwrap_or(true); // Default to secure
+    let cookie_secure = find_bool_entry(nodes, "cookie-secure")?.unwrap_or(true);
 
     let cookie_same_site = match find_string_entry(nodes, "cookie-same-site")? {
         None => SameSitePolicy::default(),
@@ -889,14 +898,7 @@ pub(crate) fn parse_discovery(node: &kdl::KdlNode, upstream_id: &str) -> Result<
     match kind.as_str() {
         "static" => {
             reject_foreign_discovery_keys(node, &kind, STATIC_DISCOVERY_KEYS, upstream_id)?;
-            let backends = get_unique_child(node, "backends")?
-                .map(|n| {
-                    n.entries()
-                        .iter()
-                        .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let backends = string_arguments(node, "backends")?;
             if backends.is_empty() {
                 return Err(anyhow!(
                     "Upstream '{}': discovery \"static\" requires a non-empty 'backends' list",
@@ -988,7 +990,7 @@ pub(crate) fn health_check_type_problem(
     health_check: &kdl::KdlNode,
     upstream_id: &str,
 ) -> Result<Option<String>> {
-    let Some(name) = get_unique_child(health_check, "type")?.and_then(get_first_arg_string) else {
+    let Some(name) = get_unique_arg_string(health_check, "type")? else {
         return Ok(None);
     };
     if HEALTH_CHECK_TYPES.contains(&name.to_lowercase().as_str()) {
@@ -1032,15 +1034,29 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
 
 /// Parse the `type "<kind>" { ... }` node of a health check.
 fn parse_health_check_type(type_node: &kdl::KdlNode) -> Result<HealthCheckType> {
-    let type_name = get_first_arg_string(type_node).unwrap_or_else(|| "tcp".to_string());
+    let type_name = get_arg_string(type_node)?.unwrap_or_else(|| "tcp".to_string());
     let check_type = match type_name.to_lowercase().as_str() {
         "http" => {
             // Parse HTTP health check options
             let path =
                 get_string_entry(type_node, "path")?.unwrap_or_else(|| "/health".to_string());
 
-            let expected_status = get_string_entry(type_node, "expected-status")?
-                .and_then(|s| s.parse().ok())
+            // The shipped configs write `expected-status 200`, a number; a
+            // quoted `"200"` has always been accepted too. Only the quoted form
+            // was ever read, so a number meant 200 whatever it said.
+            let expected_status = get_unique_child(type_node, "expected-status")?
+                .map(|n| {
+                    node_value(
+                        n,
+                        "an HTTP status code: an integer, or a string such as \"200\"",
+                        |v| match v.as_integer() {
+                            Some(code) => u16::try_from(code).ok(),
+                            None => v.as_string().and_then(|s| s.trim().parse().ok()),
+                        },
+                    )
+                })
+                .transpose()?
+                .flatten()
                 .unwrap_or(200);
 
             let host = get_string_entry(type_node, "host")?;
@@ -1092,14 +1108,10 @@ fn parse_health_check_type(type_node: &kdl::KdlNode) -> Result<HealthCheckType> 
 /// The string arguments of `parent`'s only child named `name`; empty when
 /// there is none.
 fn string_arguments(parent: &kdl::KdlNode, name: &str) -> Result<Vec<String>> {
-    Ok(get_unique_child(parent, name)?
-        .map(|n| {
-            n.entries()
-                .iter()
-                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default())
+    match get_unique_child(parent, name)? {
+        Some(n) => string_args(n),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Parse inference readiness configuration
@@ -1137,14 +1149,10 @@ fn parse_inference_readiness(
         .and_then(|n| n.children())
         .map(|c| -> Result<ModelStatusConfig> {
             let nodes = c.nodes();
-            let models = get_unique_in_nodes(nodes, "models")?
-                .map(|n| {
-                    n.entries()
-                        .iter()
-                        .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let models = match get_unique_in_nodes(nodes, "models")? {
+                Some(n) => string_args(n)?,
+                None => Vec::new(),
+            };
 
             Ok(ModelStatusConfig {
                 endpoint_pattern: find_string_entry(nodes, "endpoint-pattern")?
@@ -1212,27 +1220,35 @@ fn parse_inference_readiness(
 
 /// Find a string entry in nodes by name
 fn find_string_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<String>> {
-    Ok(get_unique_in_nodes(nodes, name)?
-        .and_then(|n| n.entries().first())
-        .and_then(|e| e.value().as_string().map(|s| s.to_string())))
+    get_unique_in_nodes(nodes, name)?
+        .map(node_string)
+        .transpose()
+        .map(Option::flatten)
 }
 
 /// Find an integer entry in nodes by name
 fn find_int_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<i64>> {
     Ok(get_unique_in_nodes(nodes, name)?
-        .and_then(|n| n.entries().first())
-        .and_then(|e| e.value().as_integer().map(|v| v as i64)))
+        .map(node_int)
+        .transpose()?
+        .flatten()
+        .map(|v| v as i64))
 }
 
-/// Find a float entry in nodes by name
+/// Find a boolean entry in nodes by name
+fn find_bool_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<bool>> {
+    get_unique_in_nodes(nodes, name)?
+        .map(node_bool)
+        .transpose()
+        .map(Option::flatten)
+}
+
+/// Find a float entry in nodes by name; an integer is read as a float
 fn find_float_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<f64>> {
-    Ok(get_unique_in_nodes(nodes, name)?
-        .and_then(|n| n.entries().first())
-        .and_then(|e| {
-            e.value()
-                .as_float()
-                .or_else(|| e.value().as_integer().map(|i| i as f64))
-        }))
+    get_unique_in_nodes(nodes, name)?
+        .map(node_number)
+        .transpose()
+        .map(Option::flatten)
 }
 
 #[cfg(test)]

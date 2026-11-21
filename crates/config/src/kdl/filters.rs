@@ -9,8 +9,9 @@ use crate::routes::FailureMode;
 use crate::FilterConfig;
 
 use super::helpers::{
-    get_bool_entry, get_bool_entry_or, get_first_arg_string, get_int_entry, get_int_entry_or,
-    get_string_entry, get_unique, get_unique_child, reject_repeated_header_names,
+    get_arg_string, get_bool_entry, get_bool_entry_or, get_first_arg_string, get_int_entry,
+    get_int_entry_or, get_string_entry, get_unique, get_unique_child, reject_repeated_header_names,
+    string_args,
 };
 
 /// Parse top-level filter definitions block
@@ -470,7 +471,7 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
                 reject_repeated_header_names(rename_children)?;
                 for entry_node in rename_children.nodes() {
                     let old_name = entry_node.name().value().to_string();
-                    if let Some(new_name) = get_first_arg_string(entry_node) {
+                    if let Some(new_name) = get_arg_string(entry_node)? {
                         rename.insert(old_name, new_name);
                     }
                 }
@@ -481,7 +482,7 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
                 reject_repeated_header_names(set_children)?;
                 for entry_node in set_children.nodes() {
                     let name = entry_node.name().value().to_string();
-                    if let Some(value) = get_first_arg_string(entry_node) {
+                    if let Some(value) = get_arg_string(entry_node)? {
                         set.insert(name, value);
                     }
                 }
@@ -492,18 +493,14 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
                 reject_repeated_header_names(add_children)?;
                 for entry_node in add_children.nodes() {
                     let name = entry_node.name().value().to_string();
-                    if let Some(value) = get_first_arg_string(entry_node) {
+                    if let Some(value) = get_arg_string(entry_node)? {
                         add.insert(name, value);
                     }
                 }
             }
         }
         if let Some(remove_node) = get_unique(node_children, "remove")? {
-            for entry in remove_node.entries() {
-                if let Some(name) = entry.value().as_string() {
-                    remove.push(name.to_string());
-                }
-            }
+            remove.extend(string_args(remove_node)?);
         }
     }
 
@@ -539,11 +536,8 @@ fn get_string_list(node: &kdl::KdlNode, name: &str) -> Result<Option<Vec<String>
         return Ok(None);
     };
     Ok(Some(
-        child
-            .entries()
+        string_args(child)?
             .iter()
-            .filter(|e| e.name().is_none())
-            .filter_map(|e| e.value().as_string())
             .flat_map(|s| s.split(','))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())

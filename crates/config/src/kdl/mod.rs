@@ -22,14 +22,19 @@ mod retrypolicy_helper;
 pub(crate) mod routes;
 pub(crate) mod server;
 pub(crate) mod upstreams;
+#[cfg(test)]
+mod wrong_type_tests;
 
 use tracing::{debug, trace, warn};
 
 // Re-export commonly used items
+use helpers::{
+    get_arg_string, get_float_entry, get_unique, get_unique_child, node_bool, node_int,
+    property_string, string_args,
+};
 pub use helpers::{
     get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, offset_to_line_col,
 };
-use helpers::{get_unique, get_unique_child};
 
 pub use filters::parse_filter_definitions;
 pub use routes::parse_routes;
@@ -56,10 +61,12 @@ use crate::{AgentConfig, Config, CURRENT_SCHEMA_VERSION};
 /// # Errors
 ///
 /// A [`DuplicateNode`](helpers::DuplicateNode) when a block that is read once
-/// is written twice, with where in the document it is, and any error the
-/// parsers raise for a block or value they cannot use.
+/// is written twice, a [`WrongValueType`](helpers::WrongValueType) when a
+/// setting has a value of a type it does not take, each with where in the
+/// document it is, and any error the parsers raise for a block or value they
+/// cannot use.
 pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
-    parse_document(&doc).map_err(|error| helpers::locate_duplicate(error, &doc))
+    parse_document(&doc).map_err(|error| helpers::locate_error(error, &doc))
 }
 
 fn parse_document(doc: &kdl::KdlDocument) -> Result<Config> {
@@ -85,7 +92,7 @@ fn parse_document(doc: &kdl::KdlDocument) -> Result<Config> {
 
         match node_name {
             "schema-version" | "version" => {
-                schema_version = get_first_arg_string(node);
+                schema_version = get_arg_string(node)?;
                 trace!(version = ?schema_version, "Parsed schema version");
             }
             // Accept both "system" (preferred) and "server" (deprecated)
@@ -523,8 +530,8 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
     // used, where it silently produced `Custom(<id>)` instead of the declared
     // type. Both are accepted here for the same reason `unix-socket` accepts a
     // child `path` or a bare argument.
-    let declared_type = match node.get("type").and_then(|v| v.as_string()) {
-        Some(t) => Some(t.to_string()),
+    let declared_type = match property_string(node, "type")? {
+        Some(t) => Some(t),
         None => get_string_entry(node, "type")?,
     };
     let agent_type = match declared_type {
@@ -591,69 +598,57 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 transport = Some(AgentTransport::Http { url, tls });
             }
             "timeout-ms" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        timeout_ms = v as u64;
-                    }
+                if let Some(v) = node_int(child)? {
+                    timeout_ms = v as u64;
                 }
             }
             "connect-timeout-ms" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        connect_timeout_ms = Some(v.clamp(0, u64::MAX as i128) as u64);
-                    }
+                if let Some(v) = node_int(child)? {
+                    connect_timeout_ms = Some(v.clamp(0, u64::MAX as i128) as u64);
                 }
             }
             "failure-mode" => {
-                if let Some(mode) = get_first_arg_string(child) {
+                if let Some(mode) = get_arg_string(child)? {
                     failure_mode = parse_agent_failure_mode(&mode)?;
                 }
             }
             "events" => {
                 // Parse events from arguments
-                for entry in child.entries() {
-                    if let Some(event_str) = entry.value().as_string() {
-                        let event = match event_str {
-                            "request_headers" | "request-headers" => AgentEvent::RequestHeaders,
-                            "request_body" | "request-body" => AgentEvent::RequestBody,
-                            "response_headers" | "response-headers" => AgentEvent::ResponseHeaders,
-                            "response_body" | "response-body" => AgentEvent::ResponseBody,
-                            "log" | "request_complete" | "request-complete" => AgentEvent::Log,
-                            "websocket_frame" | "websocket-frame" | "web_socket_frame"
-                            | "web-socket-frame" => AgentEvent::WebSocketFrame,
-                            "guardrail" => AgentEvent::Guardrail,
-                            other => {
-                                return Err(anyhow::anyhow!("Unknown agent event: '{}'", other))
-                            }
-                        };
-                        events.push(event);
-                    }
+                for event_str in string_args(child)? {
+                    let event = match event_str.as_str() {
+                        "request_headers" | "request-headers" => AgentEvent::RequestHeaders,
+                        "request_body" | "request-body" => AgentEvent::RequestBody,
+                        "response_headers" | "response-headers" => AgentEvent::ResponseHeaders,
+                        "response_body" | "response-body" => AgentEvent::ResponseBody,
+                        "log" | "request_complete" | "request-complete" => AgentEvent::Log,
+                        "websocket_frame" | "websocket-frame" | "web_socket_frame"
+                        | "web-socket-frame" => AgentEvent::WebSocketFrame,
+                        "guardrail" => AgentEvent::Guardrail,
+                        other => return Err(anyhow::anyhow!("Unknown agent event: '{}'", other)),
+                    };
+                    events.push(event);
                 }
             }
             "circuit-breaker" => {
                 circuit_breaker = Some(parse_circuit_breaker_faildefault(child)?);
             }
             "max-request-body-bytes" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        max_request_body_bytes = Some(v as usize);
-                    }
+                if let Some(v) = node_int(child)? {
+                    max_request_body_bytes = Some(v as usize);
                 }
             }
             "max-response-body-bytes" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        max_response_body_bytes = Some(v as usize);
-                    }
+                if let Some(v) = node_int(child)? {
+                    max_response_body_bytes = Some(v as usize);
                 }
             }
             "request-body-mode" => {
-                if let Some(mode) = get_first_arg_string(child) {
+                if let Some(mode) = get_arg_string(child)? {
                     request_body_mode = parse_body_streaming_mode(&mode, &id)?;
                 }
             }
             "response-body-mode" => {
-                if let Some(mode) = get_first_arg_string(child) {
+                if let Some(mode) = get_arg_string(child)? {
                     response_body_mode = parse_body_streaming_mode(&mode, &id)?;
                     if response_body_mode == BodyStreamingMode::InspectFirst {
                         return Err(anyhow::anyhow!(
@@ -666,20 +661,16 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 }
             }
             "chunk-timeout-ms" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        chunk_timeout_ms = v as u64;
-                    }
+                if let Some(v) = node_int(child)? {
+                    chunk_timeout_ms = v as u64;
                 }
             }
             "config" => {
                 config = Some(kdl_to_json(child)?);
             }
             "max-concurrent-calls" => {
-                if let Some(entry) = child.entries().first() {
-                    if let Some(v) = entry.value().as_integer() {
-                        max_concurrent_calls = v as usize;
-                    }
+                if let Some(v) = node_int(child)? {
+                    max_concurrent_calls = v as usize;
                 }
             }
             "protocol-version" => {
@@ -793,28 +784,29 @@ fn collect_agent_tls(
             }
             "tls-insecure" => {
                 *has_tls = true;
-                *insecure_skip_verify = child
-                    .entries()
-                    .iter()
-                    .find(|e| e.name().is_none())
-                    .and_then(|e| e.value().as_bool())
-                    .unwrap_or(true);
+                // A bare `tls-insecure` means #true. An argument has to be a
+                // boolean: `tls-insecure "false"` used to read as #true.
+                *insecure_skip_verify = if child.entries().is_empty() {
+                    true
+                } else {
+                    node_bool(child)?.unwrap_or(true)
+                };
             }
             "ca-cert" => {
                 *has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
+                if let Some(path) = get_arg_string(child)? {
                     *ca_cert = Some(PathBuf::from(path));
                 }
             }
             "client-cert" => {
                 *has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
+                if let Some(path) = get_arg_string(child)? {
                     *client_cert = Some(PathBuf::from(path));
                 }
             }
             "client-key" => {
                 *has_tls = true;
-                if let Some(path) = get_first_arg_string(child) {
+                if let Some(path) = get_arg_string(child)? {
                     *client_key = Some(PathBuf::from(path));
                 }
             }
@@ -1044,26 +1036,13 @@ fn parse_rule_exclusion(node: &kdl::KdlNode) -> Result<crate::waf::RuleExclusion
     // Try getting from "rule-ids" child node first
     if let Some(children) = node.children() {
         if let Some(ids_node) = get_unique(children, "rule-ids")? {
-            for entry in ids_node.entries() {
-                if let Some(id) = entry.value().as_string() {
-                    rule_ids.push(id.to_string());
-                }
-            }
+            rule_ids.extend(string_args(ids_node)?);
         }
     }
 
     // Also try getting from entries on the exclusion node itself
-    for entry in node.entries() {
-        if let Some(name) = entry.name() {
-            if name.value() == "rule-ids" {
-                // Skip, handled above
-                continue;
-            }
-        } else if let Some(id) = entry.value().as_string() {
-            // Positional argument - this is a rule ID
-            rule_ids.push(id.to_string());
-        }
-    }
+    // The positional arguments of the exclusion node are rule IDs too.
+    rule_ids.extend(string_args(node)?);
 
     // Parse scope.
     //
@@ -1071,10 +1050,10 @@ fn parse_rule_exclusion(node: &kdl::KdlNode) -> Result<crate::waf::RuleExclusion
     // `scope "path" "/x"`, which is what config/zentinel.kdl uses and the more
     // natural KDL of the two. Only the first was implemented, which nobody
     // noticed while exclusions were being discarded wholesale.
-    let scope_argument = get_unique_child(node, "scope")?
-        .and_then(|n| n.entries().get(1))
-        .and_then(|e| e.value().as_string())
-        .map(str::to_string);
+    let scope_argument = match get_unique_child(node, "scope")? {
+        Some(n) => helpers::string_arg_at(n, 1)?,
+        None => None,
+    };
 
     let scope = if let Some(scope_str) = get_string_entry(node, "scope")? {
         match (scope_str.to_lowercase().as_str(), scope_argument) {
@@ -1125,7 +1104,9 @@ fn parse_body_inspection_policy(node: &kdl::KdlNode) -> Result<crate::waf::BodyI
         .map(|v| v as usize)
         .unwrap_or(1024 * 1024); // 1MB default
     let decompress = get_bool_entry(node, "decompress")?.unwrap_or(false);
-    let max_decompression_ratio = get_int_entry(node, "max-decompression-ratio")?
+    // A ratio, so a fractional value is a number too: the shipped config
+    // writes `max-decompression-ratio 100.0`, which was never read.
+    let max_decompression_ratio = get_float_entry(node, "max-decompression-ratio")?
         .map(|v| v as f32)
         .unwrap_or(100.0);
 
@@ -1133,11 +1114,7 @@ fn parse_body_inspection_policy(node: &kdl::KdlNode) -> Result<crate::waf::BodyI
     let mut content_types = Vec::new();
     if let Some(children) = node.children() {
         if let Some(ct_node) = get_unique(children, "content-types")? {
-            for entry in ct_node.entries() {
-                if let Some(ct) = entry.value().as_string() {
-                    content_types.push(ct.to_string());
-                }
-            }
+            content_types.extend(string_args(ct_node)?);
         }
     }
 
@@ -1781,7 +1758,6 @@ fn parse_metrics_config(node: &kdl::KdlNode) -> Result<crate::observability::Met
 /// ```
 fn parse_tracing_config(node: &kdl::KdlNode) -> Result<crate::observability::TracingConfig> {
     use crate::observability::TracingConfig;
-    use helpers::get_float_entry;
 
     let backend = parse_tracing_backend(node)?;
 

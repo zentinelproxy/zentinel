@@ -15,9 +15,10 @@ use crate::{kdl::retrypolicy_helper::parse_retry_policy, routes::*};
 use zentinel_common::types::ByteSize;
 
 use super::helpers::{
-    get_bool_entry, get_first_arg_string, get_float_entry, get_int_entry, get_string_entry,
-    get_unique, get_unique_child, reject_repeated, reject_repeated_header_names,
-    reject_repeated_names,
+    get_arg_string, get_bool_entry, get_first_arg_string, get_float_entry, get_int_entry,
+    get_string_entry, get_unique, get_unique_child, int_args, node_args, node_value, number_of,
+    property_string, reject_repeated, reject_repeated_header_names, reject_repeated_names,
+    string_arg_at, string_args, EXPECT_NUMBER,
 };
 
 /// Recognized child node names inside a `route` block.
@@ -298,10 +299,7 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
                                 .ok_or_else(|| {
                                     match_condition_value_error(&route_id, match_node)
                                 })?;
-                            let value = entries
-                                .get(1)
-                                .and_then(|e| e.value().as_string())
-                                .map(|s| s.to_string());
+                            let value = string_arg_at(match_node, 1)?;
                             matches.push(MatchCondition::Header {
                                 name: name.to_string(),
                                 value,
@@ -315,12 +313,7 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
                             get_first_arg_string(match_node).ok_or_else(|| {
                                 match_condition_value_error(&route_id, match_node)
                             })?;
-                            let methods: Vec<String> = match_node
-                                .entries()
-                                .iter()
-                                .filter(|e| e.name().is_none())
-                                .filter_map(|e| e.value().as_string().map(str::to_string))
-                                .collect();
+                            let methods = string_args(match_node)?;
                             matches.push(MatchCondition::Method(methods));
                         }
                         "query-param" => {
@@ -331,10 +324,7 @@ fn parse_match_conditions(node: &kdl::KdlNode) -> Result<Vec<MatchCondition>> {
                                 .ok_or_else(|| {
                                     match_condition_value_error(&route_id, match_node)
                                 })?;
-                            let value = entries
-                                .get(1)
-                                .and_then(|e| e.value().as_string())
-                                .map(|s| s.to_string());
+                            let value = string_arg_at(match_node, 1)?;
                             matches.push(MatchCondition::QueryParam {
                                 name: name.to_string(),
                                 value,
@@ -424,15 +414,7 @@ pub(crate) fn resolve_priority(
 }
 
 fn parse_upstream_ref(node: &kdl::KdlNode) -> Result<Option<String>> {
-    if let Some(route_children) = node.children() {
-        if let Some(upstream_node) = get_unique(route_children, "upstream")? {
-            let entry = upstream_node.entries().first();
-            if let Some(s) = entry.and_then(|e| e.value().as_string()) {
-                return Ok(Some(s.to_string()));
-            }
-        }
-    }
-    Ok(None)
+    get_string_entry(node, "upstream")
 }
 
 /// Every name `parse_builtin_handler` accepts, for messages and suggestions.
@@ -601,11 +583,7 @@ fn parse_route_filter_refs(node: &kdl::KdlNode) -> Result<Vec<String>> {
 
     if let Some(route_children) = node.children() {
         if let Some(filters_node) = get_unique(route_children, "filters")? {
-            for entry in filters_node.entries() {
-                if let Some(id) = entry.value().as_string() {
-                    filter_ids.push(id.to_string());
-                }
-            }
+            filter_ids.extend(string_args(filters_node)?);
         }
     }
 
@@ -659,18 +637,6 @@ fn parse_optional_block<T>(
     get_unique_child(node, name)?.map(parse).transpose()
 }
 
-/// A node's `name=value` property, as a string.
-///
-/// The shared helpers read *child nodes*; this reads a property on the node
-/// itself, which is the shape `upstream "docs" prefix="docs"` uses.
-fn get_string_prop(node: &kdl::KdlNode, name: &str) -> Option<String> {
-    node.entries()
-        .iter()
-        .find(|e| e.name().map(|n| n.value()) == Some(name))
-        .and_then(|e| e.value().as_string())
-        .map(|s| s.to_string())
-}
-
 /// Parse the `upstreams` block inside `mcp`.
 ///
 /// ```kdl
@@ -701,7 +667,7 @@ fn parse_mcp_upstreams(node: &kdl::KdlNode) -> Result<Vec<McpUpstream>> {
         // Required, never derived from the upstream name. A tool's name is what
         // a model reasons about; deriving it would rename every tool when an
         // upstream is renamed.
-        let prefix = get_string_prop(child, "prefix").ok_or_else(|| {
+        let prefix = property_string(child, "prefix")?.ok_or_else(|| {
             anyhow::anyhow!(
                 "mcp upstream '{upstream}' needs a prefix: upstream \"{upstream}\" prefix=\"...\""
             )
@@ -727,7 +693,7 @@ fn parse_mcp_upstreams(node: &kdl::KdlNode) -> Result<Vec<McpUpstream>> {
         }
 
         out.push(McpUpstream {
-            path: get_string_prop(child, "path").unwrap_or_else(|| "/".to_string()),
+            path: property_string(child, "path")?.unwrap_or_else(|| "/".to_string()),
             upstream,
             prefix,
         });
@@ -891,15 +857,9 @@ fn parse_allow_deny(node: &kdl::KdlNode) -> Result<(Vec<String>, Vec<String>)> {
     };
 
     for child in children.nodes() {
-        let values: Vec<String> = child
-            .entries()
-            .iter()
-            .filter(|entry| entry.name().is_none())
-            .filter_map(|entry| entry.value().as_string().map(str::to_string))
-            .collect();
-
         match child.name().value() {
             "allow" => {
+                let values = string_args(child)?;
                 if values.is_empty() {
                     return Err(anyhow::anyhow!(
                         "'allow' with no entries would be read as no allowlist at all, \
@@ -909,6 +869,7 @@ fn parse_allow_deny(node: &kdl::KdlNode) -> Result<(Vec<String>, Vec<String>)> {
                 allow.extend(values);
             }
             "deny" => {
+                let values = string_args(child)?;
                 if values.is_empty() {
                     return Err(anyhow::anyhow!("'deny' needs at least one entry"));
                 }
@@ -938,12 +899,27 @@ fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettin
     let timeout_secs = get_int_entry(policies, "timeout-secs")?.map(|v| v as u64);
 
     // Accepts both `max-body-size "10MB"` and a plain byte count.
-    let max_body_size = match get_string_entry(policies, "max-body-size")? {
-        Some(s) => Some(
-            s.parse::<ByteSize>()
-                .map_err(|e| anyhow::anyhow!("Invalid max-body-size '{s}': {e}"))?,
-        ),
-        None => get_int_entry(policies, "max-body-size")?.map(|v| ByteSize(v as usize)),
+    enum Size {
+        Text(String),
+        Bytes(i128),
+    }
+    let max_body_size = match get_unique_child(policies, "max-body-size")? {
+        None => None,
+        Some(node) => match node_value(
+            node,
+            "a size: an integer number of bytes, or a string such as \"10MB\"",
+            |v| match v.as_string() {
+                Some(s) => Some(Size::Text(s.to_string())),
+                None => v.as_integer().map(Size::Bytes),
+            },
+        )? {
+            None => None,
+            Some(Size::Text(s)) => Some(
+                s.parse::<ByteSize>()
+                    .map_err(|e| anyhow::anyhow!("Invalid max-body-size '{s}': {e}"))?,
+            ),
+            Some(Size::Bytes(v)) => Some(ByteSize(v as usize)),
+        },
     };
 
     let failure_mode = match get_string_entry(policies, "failure-mode")?.as_deref() {
@@ -1054,7 +1030,7 @@ fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications
                 reject_repeated_header_names(rename_children)?;
                 for entry_node in rename_children.nodes() {
                     let old_name = entry_node.name().value().to_string();
-                    if let Some(new_name) = get_first_arg_string(entry_node) {
+                    if let Some(new_name) = get_arg_string(entry_node)? {
                         rename.insert(old_name, new_name);
                     }
                 }
@@ -1065,7 +1041,7 @@ fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications
                 reject_repeated_header_names(set_children)?;
                 for entry_node in set_children.nodes() {
                     let name = entry_node.name().value().to_string();
-                    if let Some(value) = get_first_arg_string(entry_node) {
+                    if let Some(value) = get_arg_string(entry_node)? {
                         set.insert(name, value);
                     }
                 }
@@ -1076,18 +1052,14 @@ fn parse_header_modifications(node: &kdl::KdlNode) -> Result<HeaderModifications
                 reject_repeated_header_names(add_children)?;
                 for entry_node in add_children.nodes() {
                     let name = entry_node.name().value().to_string();
-                    if let Some(value) = get_first_arg_string(entry_node) {
+                    if let Some(value) = get_arg_string(entry_node)? {
                         add.insert(name, value);
                     }
                 }
             }
         }
         if let Some(remove_node) = get_unique(children, "remove")? {
-            for entry in remove_node.entries() {
-                if let Some(name) = entry.value().as_string() {
-                    remove.push(name.to_string());
-                }
-            }
+            remove.extend(string_args(remove_node)?);
         }
     }
 
@@ -1159,11 +1131,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     // Parse cacheable methods (string arguments)
     let cacheable_methods = if let Some(children) = node.children() {
         if let Some(methods_node) = get_unique(children, "cacheable-methods")? {
-            methods_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                .collect()
+            string_args(methods_node)?
         } else {
             vec!["GET".to_string(), "HEAD".to_string()]
         }
@@ -1174,10 +1142,9 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     // Parse cacheable status codes (integer arguments)
     let cacheable_status_codes = if let Some(children) = node.children() {
         if let Some(codes_node) = get_unique(children, "cacheable-status-codes")? {
-            codes_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_integer().map(|v| v as u16))
+            int_args(codes_node)?
+                .into_iter()
+                .map(|v| v as u16)
                 .collect()
         } else {
             vec![200, 203, 204, 206, 300, 301, 308, 404, 410]
@@ -1189,11 +1156,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     // Parse vary headers
     let vary_headers = if let Some(children) = node.children() {
         if let Some(vary_node) = get_unique(children, "vary-headers")? {
-            vary_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                .collect()
+            string_args(vary_node)?
         } else {
             Vec::new()
         }
@@ -1204,11 +1167,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     // Parse ignore query params
     let ignore_query_params = if let Some(children) = node.children() {
         if let Some(ignore_node) = get_unique(children, "ignore-query-params")? {
-            ignore_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                .collect()
+            string_args(ignore_node)?
         } else {
             Vec::new()
         }
@@ -1219,11 +1178,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     // Parse exclude extensions (file extensions to skip caching)
     let exclude_extensions = if let Some(children) = node.children() {
         if let Some(ext_node) = get_unique(children, "exclude-extensions")? {
-            ext_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                .collect()
+            string_args(ext_node)?
         } else {
             Vec::new()
         }
@@ -1234,11 +1189,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     // Parse exclude paths (glob patterns to skip caching)
     let exclude_paths = if let Some(children) = node.children() {
         if let Some(paths_node) = get_unique(children, "exclude-paths")? {
-            paths_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                .collect()
+            string_args(paths_node)?
         } else {
             Vec::new()
         }
@@ -1471,16 +1422,30 @@ fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
     // numeric string (`percentage "50"`). Invalid values are hard errors —
     // silently falling back to the 100% default would mirror far more traffic
     // than intended.
-    let percentage = if let Some(pct_str) = get_string_entry(node, "percentage")? {
-        pct_str.parse::<f64>().map_err(|_| {
-            anyhow::anyhow!(
-                "Shadow 'percentage' has invalid value \"{}\". \
-                 Expected a number between 0 and 100, e.g., percentage 50",
-                pct_str
-            )
-        })?
-    } else {
-        get_float_entry(node, "percentage")?.unwrap_or(100.0)
+    enum Percentage {
+        Text(String),
+        Number(f64),
+    }
+    let percentage = match get_unique_child(node, "percentage")? {
+        None => 100.0,
+        Some(percentage_node) => match node_value(
+            percentage_node,
+            "a number, or a numeric string such as \"50\"",
+            |v| match v.as_string() {
+                Some(s) => Some(Percentage::Text(s.to_string())),
+                None => number_of(v).map(Percentage::Number),
+            },
+        )? {
+            None => 100.0,
+            Some(Percentage::Text(pct_str)) => pct_str.parse::<f64>().map_err(|_| {
+                anyhow::anyhow!(
+                    "Shadow 'percentage' has invalid value \"{}\". \
+                     Expected a number between 0 and 100, e.g., percentage 50",
+                    pct_str
+                )
+            })?,
+            Some(Percentage::Number(number)) => number,
+        },
     };
     if !(0.0..=100.0).contains(&percentage) {
         return Err(anyhow::anyhow!(
@@ -1615,24 +1580,19 @@ fn parse_fallback_triggers(node: &kdl::KdlNode) -> Result<FallbackTriggers> {
     // Parse error codes (integer arguments)
     let on_error_codes = if let Some(children) = node.children() {
         if let Some(codes_node) = get_unique(children, "on-error-codes")? {
-            codes_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_integer().map(|v| v as u16))
+            int_args(codes_node)?
+                .into_iter()
+                .map(|v| v as u16)
                 .collect()
         } else {
             Vec::new()
         }
     } else {
         // Also check for inline arguments
-        get_unique_child(node, "on-error-codes")?
-            .map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_integer().map(|v| v as u16))
-                    .collect()
-            })
-            .unwrap_or_default()
+        match get_unique_child(node, "on-error-codes")? {
+            Some(n) => int_args(n)?.into_iter().map(|v| v as u16).collect(),
+            None => Vec::new(),
+        }
     };
 
     Ok(FallbackTriggers {
@@ -1701,11 +1661,7 @@ fn parse_model_mapping(node: &kdl::KdlNode) -> Result<HashMap<String, String>> {
                 reject_repeated_names(mapping_children)?;
                 for entry_node in mapping_children.nodes() {
                     // Each node is like: "gpt-4" "claude-3-opus"
-                    let entries: Vec<_> = entry_node
-                        .entries()
-                        .iter()
-                        .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                        .collect();
+                    let entries = string_args(entry_node)?;
 
                     // The node name is the source model, first entry is target
                     let source = entry_node.name().value().to_string();
@@ -1717,11 +1673,7 @@ fn parse_model_mapping(node: &kdl::KdlNode) -> Result<HashMap<String, String>> {
 
             // Also handle inline format: model-mapping { "gpt-4" "claude-3-opus" }
             // where entries are pairs
-            let entries: Vec<_> = mapping_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                .collect();
+            let entries = string_args(mapping_node)?;
 
             // Process pairs
             for chunk in entries.chunks(2) {
@@ -1822,12 +1774,10 @@ fn parse_model_routing_config(node: &kdl::KdlNode) -> Result<ModelRoutingConfig>
 /// ```
 fn parse_model_upstream_mapping(node: &kdl::KdlNode) -> Result<Option<ModelUpstreamMapping>> {
     // Get the model pattern from the first positional entry (no name)
-    let model_pattern = node
-        .entries()
-        .iter()
-        .find(|e| e.name().is_none())
-        .and_then(|e| e.value().as_string())
-        .map(|s| s.to_string());
+    let model_pattern = match node.entries().iter().position(|e| e.name().is_none()) {
+        Some(index) => string_arg_at(node, index)?,
+        None => None,
+    };
 
     let model_pattern = match model_pattern {
         Some(p) => p,
@@ -1835,22 +1785,13 @@ fn parse_model_upstream_mapping(node: &kdl::KdlNode) -> Result<Option<ModelUpstr
     };
 
     // Get upstream from inline entry (e.g., upstream="openai-primary")
-    let upstream = node
-        .entries()
-        .iter()
-        .find(|e| e.name().map(|n| n.value()) == Some("upstream"))
-        .and_then(|e| e.value().as_string())
-        .map(|s| s.to_string())
+    let upstream = property_string(node, "upstream")?
         .ok_or_else(|| anyhow::anyhow!("Model mapping requires 'upstream' attribute"))?;
 
     // Get optional provider override from inline entry
-    let provider_str = node
-        .entries()
-        .iter()
-        .find(|e| e.name().map(|n| n.value()) == Some("provider"))
-        .and_then(|e| e.value().as_string());
+    let provider_str = property_string(node, "provider")?;
 
-    let provider = match provider_str {
+    let provider = match provider_str.as_deref() {
         Some("openai") => Some(InferenceProvider::OpenAi),
         Some("anthropic") => Some(InferenceProvider::Anthropic),
         Some("generic") => Some(InferenceProvider::Generic),
@@ -2080,15 +2021,7 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
     // Parse alert-thresholds as a list of floats from arguments
     let alert_thresholds = if let Some(children) = node.children() {
         if let Some(threshold_node) = get_unique(children, "alert-thresholds")? {
-            threshold_node
-                .entries()
-                .iter()
-                .filter_map(|e| {
-                    e.value()
-                        .as_float()
-                        .or_else(|| e.value().as_integer().map(|i| i as f64))
-                })
-                .collect()
+            node_args(threshold_node, EXPECT_NUMBER, number_of)?
         } else {
             vec![0.80, 0.90, 0.95]
         }
@@ -2368,11 +2301,7 @@ fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig>
     // Parse categories as string arguments
     let categories = if let Some(children) = node.children() {
         if let Some(cat_node) = get_unique(children, "categories")? {
-            cat_node
-                .entries()
-                .iter()
-                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                .collect()
+            string_args(cat_node)?
         } else {
             Vec::new()
         }
