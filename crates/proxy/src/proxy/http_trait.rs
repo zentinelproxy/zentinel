@@ -2136,7 +2136,9 @@ impl ProxyHttp for ZentinelProxy {
     /// Used for body size enforcement and WAF/agent inspection.
     ///
     /// Supports two modes:
-    /// - **Buffer mode** (default): Buffer chunks until end of stream or limit, then send to agents
+    /// - **Buffer mode** (default): Buffer chunks until end of stream, then send to agents.
+    ///   A body longer than `max-inspection-bytes` is not sent; each agent's
+    ///   `failure-mode` decides (see `request_body_over_inspection_limit`)
     /// - **Stream mode**: Send each chunk immediately to agents as it arrives
     async fn request_body_filter(
         &self,
@@ -2371,10 +2373,20 @@ impl ProxyHttp for ZentinelProxy {
                         }
                     }
 
-                    // Send when complete or limit reached
-                    let should_send =
-                        end_of_stream || ctx.body_bytes_inspected >= max_inspection_bytes;
-                    if should_send && !ctx.body_buffer.is_empty() {
+                    // Send when complete, or once the body is known to be
+                    // longer than the limit. A body of exactly the limit is
+                    // not over it until more follows, so it is held until
+                    // the next call brings that or the end.
+                    let over_limit = undecided && ctx.request_body_bytes > max_inspection_bytes;
+                    let should_send = end_of_stream || over_limit;
+                    if over_limit {
+                        // Only the start of the body is buffered, and an
+                        // agent must not decide on it as if it were the
+                        // body: the agents' failure modes apply instead.
+                        ctx.body_buffer.clear();
+                        self.request_body_over_inspection_limit(ctx, max_inspection_bytes)
+                            .await?;
+                    } else if should_send && !ctx.body_buffer.is_empty() {
                         self.send_buffered_body_to_agents(end_of_stream, ctx)
                             .await?;
                         ctx.body_buffer.clear();
@@ -5893,6 +5905,42 @@ impl ZentinelProxy {
             }
         }
         Ok(())
+    }
+
+    /// A request body longer than `max_inspection_bytes` (buffer mode): the
+    /// body agents are not sent the part that was buffered. Each agent's
+    /// `failure-mode` decides, as for a body over its own limit: a `closed`
+    /// one refuses the request with 413 and an `open` one is skipped, with
+    /// a warning and a metric.
+    ///
+    /// Before, the agents were sent the buffered start of the body as if it
+    /// were the body, and the size check that applies the failure mode saw
+    /// only that part's length, so it never found the body over the limit.
+    async fn request_body_over_inspection_limit(
+        &self,
+        ctx: &mut RequestContext,
+        max_inspection_bytes: u64,
+    ) -> Result<(), Box<Error>> {
+        // No agent is called, so the request's id, for the logs, is all that
+        // is needed.
+        let correlation_id = zentinel_common::CorrelationId::from_string(&ctx.trace_id);
+        let decision = self
+            .agent_manager
+            .process_request_body_over_inspection_limit(
+                &correlation_id,
+                ctx.request_body_bytes as usize,
+                max_inspection_bytes as usize,
+                &ctx.body_inspection_agents,
+            )
+            .await;
+        // A refusal is answered by `fail_to_proxy`, as for any decision on
+        // the body.
+        self.refuse_on_agent_request_decision(
+            ctx,
+            &decision,
+            "request_body",
+            "agent_body_inspection",
+        )
     }
 
     async fn send_buffered_body_to_agents(
