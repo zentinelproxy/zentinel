@@ -15,7 +15,9 @@
 //!   socket and address;
 //! - a proxy using that KDL sends traffic to whatever listens where the unit
 //!   told the agent to listen;
-//! - `bundle install ratelimit` explains that rate limiting is built in.
+//! - `bundle install ratelimit` explains that rate limiting is built in;
+//! - `bundle install` stops when an archive's `.sha256` cannot be fetched or
+//!   read, and installs it unverified only with `--skip-verify`.
 
 #![cfg(unix)]
 
@@ -265,7 +267,7 @@ fn bundle_install_wires_agents_the_way_they_are_started() {
         );
         assert!(out.status.success(), "install {agent}: {}", text(&out));
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("verified"), "{}", text(&out));
+        assert!(stdout.contains(", verified)"), "{}", text(&out));
         assert!(stdout.contains("include \""), "{}", text(&out));
     }
 
@@ -405,6 +407,93 @@ observability {{ metrics {{ enabled #false }} }}
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Run `bundle install waf` against a release server whose `.sha256` files
+/// are replaced by `checksum` (or are not served when it is `None`).
+fn install_waf(
+    platform: &str,
+    checksum: Option<&str>,
+    extra_args: &[&str],
+) -> (Output, PathBuf, tempfile::TempDir) {
+    let mut files = release_files(platform);
+    files.retain(|path, _| !path.ends_with(".sha256"));
+    if let Some(checksum) = checksum {
+        let path = format!(
+            "/zentinelproxy/zentinel-agent-waf/releases/download/v{}/\
+             zentinel-waf-agent-{}-{platform}.tar.gz.sha256",
+            PINS.waf, PINS.waf
+        );
+        files.insert(path, checksum.as_bytes().to_vec());
+    }
+    let release_port = serve(files);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let prefix = tmp.path().join("p");
+    let mut args = vec![
+        "bundle",
+        "install",
+        "waf",
+        "--prefix",
+        prefix.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra_args);
+    let out = zentinel(&args, &home, release_port);
+    (out, prefix.join("bin/zentinel-waf-agent"), tmp)
+}
+
+#[test]
+fn bundle_install_stops_when_the_checksum_file_is_missing() {
+    let Some(platform) = platform() else {
+        eprintln!("skipping: no agent release is built for this platform");
+        return;
+    };
+
+    let (out, binary, _tmp) = install_waf(platform, None, &[]);
+
+    assert!(!out.status.success(), "{}", text(&out));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("waf") && stderr.contains(".sha256") && stderr.contains("--skip-verify"),
+        "{}",
+        text(&out)
+    );
+    assert!(!binary.exists(), "{}", text(&out));
+}
+
+#[test]
+fn bundle_install_stops_when_the_checksum_file_is_empty() {
+    let Some(platform) = platform() else {
+        eprintln!("skipping: no agent release is built for this platform");
+        return;
+    };
+
+    let (out, binary, _tmp) = install_waf(platform, Some(""), &[]);
+
+    assert!(!out.status.success(), "{}", text(&out));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--skip-verify"), "{}", text(&out));
+    assert!(!binary.exists(), "{}", text(&out));
+}
+
+#[test]
+fn bundle_install_skip_verify_installs_without_a_checksum_file() {
+    let Some(platform) = platform() else {
+        eprintln!("skipping: no agent release is built for this platform");
+        return;
+    };
+
+    let (out, binary, _tmp) = install_waf(platform, None, &["--skip-verify"]);
+
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("unverified"),
+        "{}",
+        text(&out)
+    );
+    assert!(binary.exists(), "{}", text(&out));
 }
 
 #[test]

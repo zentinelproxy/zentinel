@@ -16,10 +16,10 @@ vendored copy of it. This script fails when:
     unique [grpc_ports] entry, or a [required_files] entry that is not
     { flag = "--...", file = "<plain name>" } (crates/proxy/src/bundle/lock.rs
     refuses the same lock at runtime);
-  * (unless --offline) any agent/platform asset is not downloadable. A
-    missing .sha256 next to it is reported as a warning: the installer then
-    skips verification, and older agent releases ship none. URLs are built exactly as crates/proxy/src/bundle/lock.rs
-    builds them:
+  * (unless --offline) any agent/platform asset, or the .sha256 next to it,
+    is not downloadable: `zentinel bundle install` refuses an archive whose
+    checksum it cannot fetch. URLs are built exactly as
+    crates/proxy/src/bundle/lock.rs builds them:
 
       https://github.com/<repo>/releases/download/v<ver>/<bin>-<ver>-<os>-<arch>.tar.gz
 
@@ -165,10 +165,9 @@ def main() -> int:
             if not reason:
                 continue
             if url.endswith(".sha256"):
-                # The installer skips verification (with a warning) when the
-                # checksum file is absent; older agent releases ship none.
+                # `bundle install` stops when it cannot fetch the checksum.
                 missing_sums += 1
-                print(f"warning: {agent} {platform}: no checksum ({reason}) {url}")
+                errors.append(f"{agent} {platform}: no checksum ({reason}) {url}")
             else:
                 errors.append(f"{agent} {platform}: {reason} {url}")
         print(f"checked {len(checks)} URLs ({missing_sums} assets without a .sha256)")

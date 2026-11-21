@@ -29,6 +29,13 @@ The script:
 
 Pass `--skip-service` (or `--binary-only`) to install only the binary even on systemd hosts.
 
+The download is checked against the SHA256 checksum published with the release. If that checksum cannot be downloaded, or neither `sha256sum` nor `shasum` is installed, the script stops before installing anything. Pass `--skip-verify` to continue with a warning in those two cases; a checksum that is found and does not match always stops the script.
+
+```bash
+# Continue when the checksum cannot be downloaded or checked
+curl -fsSL https://get.zentinelproxy.io | sh -s -- --skip-verify
+```
+
 ## File layout
 
 | Path | Purpose | Mode | Owner |

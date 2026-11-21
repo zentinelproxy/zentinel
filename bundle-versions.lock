@@ -12,8 +12,12 @@
 # requests every asset URL and fails otherwise, so release the agent first,
 # then update this file in both places, then the API copy.
 #
+# Every archive needs its .sha256 next to it: `zentinel bundle install`
+# refuses an archive whose checksum it cannot fetch or read, unless
+# `--skip-verify` is given.
+#
 # Asset URL: https://github.com/<repository>/releases/download/v<version>/
-#            <binary>-<version>-<platform>.tar.gz   (+ optional .sha256)
+#            <binary>-<version>-<platform>.tar.gz   (+ .sha256, required)
 # <binary> is zentinel-<name>-agent unless [binary_names] says otherwise.
 # Format: CalVer for bundle, SemVer for agents
 
