@@ -1,11 +1,18 @@
 use anyhow::Result;
 use zentinel_common::CircuitBreakerConfig;
 
-use crate::kdl::helpers::{extract_u32_with_limits, extract_u64_with_limits};
+use crate::kdl::helpers::{
+    extract_u32_with_limits, extract_u64_with_limits, reject_repeated_names,
+};
 
 /// Parse circuit breaker configuration
 pub fn parse_circuit_breaker_faildefault(node: &kdl::KdlNode) -> Result<CircuitBreakerConfig> {
     let default_config = CircuitBreakerConfig::default();
+
+    // Each key sets one value; a repeated key would silently keep the last.
+    if let Some(children) = node.children() {
+        reject_repeated_names(children)?;
+    }
 
     fn cb_config_map(
         mut cfg: CircuitBreakerConfig,

@@ -17,7 +17,9 @@ mod validators;
 
 pub use coordinator::GracefulReloadCoordinator;
 pub use signals::{SignalManager, SignalType};
-pub use validators::{RouteMatcherValidator, RouteValidator, UpstreamValidator};
+pub use validators::{
+    GeoDatabaseValidator, RouteMatcherValidator, RouteValidator, UpstreamValidator,
+};
 
 // Re-export for use by proxy initialization
 

@@ -397,6 +397,7 @@ mod acme_client_logic {
             listeners {
                 listener "test" {
                     address "127.0.0.1:443"
+                    protocol "https"
                     tls {
                         acme {
                             email "test@example.com"

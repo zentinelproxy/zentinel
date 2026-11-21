@@ -8,6 +8,7 @@ use zentinel_common::errors::{ZentinelError, ZentinelResult};
 use zentinel_config::Config;
 
 use super::ConfigValidator;
+use crate::geo_filter::GeoFilterManager;
 
 /// Route configuration validator
 ///
@@ -141,6 +142,48 @@ impl ConfigValidator for RouteMatcherValidator {
 
     fn name(&self) -> &str {
         "RouteMatcherValidator"
+    }
+}
+
+/// Rejects a configuration with a geo filter whose database does not open.
+///
+/// The reload handler registers each geo filter by opening its database. A
+/// configuration with a database that does not open is rejected before it is
+/// stored, and the proxy keeps running on the current configuration. The error
+/// names each filter, its `database-path` and the reason.
+///
+/// Every geo filter is opened, including the ones the running proxy already
+/// has open, one after the other; the files are read and then closed again.
+pub struct GeoDatabaseValidator;
+
+#[async_trait::async_trait]
+impl ConfigValidator for GeoDatabaseValidator {
+    async fn validate(&self, config: &Config) -> ZentinelResult<()> {
+        // As for the route matchers: lowered, so the filters of namespaces and
+        // services are checked under the ids the proxy gives them.
+        let config = config.lower_scopes();
+        let checked =
+            tokio::task::spawn_blocking(move || GeoFilterManager::check_databases(&config)).await;
+        match checked {
+            Ok(Ok(())) => {
+                debug!("Geo database validation passed");
+                Ok(())
+            }
+            Ok(Err(e)) => Err(ZentinelError::Config {
+                message: format!("Configuration rejected: {e:#}"),
+                source: None,
+            }),
+            Err(e) => Err(ZentinelError::Config {
+                message: format!(
+                    "Configuration rejected: the check of the geo databases did not finish: {e}"
+                ),
+                source: None,
+            }),
+        }
+    }
+
+    fn name(&self) -> &str {
+        "GeoDatabaseValidator"
     }
 }
 
@@ -278,6 +321,69 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("global listeners"), "{msg}");
         assert!(msg.contains("^/(unclosed"), "{msg}");
+    }
+
+    fn geo_filter(id: &str, database: &str) -> String {
+        format!(
+            r#"filter "{id}" {{
+                type "geo"
+                database-path "{database}"
+                countries "RU" "CN"
+            }}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn rejects_a_geo_filter_whose_database_does_not_open() {
+        let config = config(
+            FINE,
+            &format!(
+                "filters {{ {} }}",
+                geo_filter("region-block", "/nonexistent/geo/country.mmdb")
+            ),
+        );
+        config
+            .validate()
+            .expect("Config::validate does not open databases");
+        let err = GeoDatabaseValidator
+            .validate(&config)
+            .await
+            .expect_err("a database that does not open must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("'region-block'"), "{msg}");
+        assert!(msg.contains("'/nonexistent/geo/country.mmdb'"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_geo_filter_of_a_namespace_under_its_qualified_id() {
+        let namespace = format!(
+            r#"namespace "api" {{
+                listeners {{ listener "api" {{ address "127.0.0.1:18081" }} }}
+                routes {{ {FINE} }}
+                filters {{ {} }}
+            }}"#,
+            geo_filter("regional", "/nonexistent/geo/regional.mmdb")
+        );
+        let config = config(FINE, &namespace);
+        let err = GeoDatabaseValidator
+            .validate(&config)
+            .await
+            .expect_err("a database that does not open must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("'api:regional'"), "{msg}");
+        // Already lowered, as on rollback.
+        GeoDatabaseValidator
+            .validate(&config.lower_scopes())
+            .await
+            .expect_err("lowering is idempotent");
+    }
+
+    #[tokio::test]
+    async fn accepts_a_configuration_without_geo_filters() {
+        GeoDatabaseValidator
+            .validate(&config(FINE, ""))
+            .await
+            .expect("nothing to open");
     }
 
     #[tokio::test]

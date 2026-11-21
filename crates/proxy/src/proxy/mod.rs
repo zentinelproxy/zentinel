@@ -53,8 +53,8 @@ use crate::inference::InferenceRateLimitManager;
 use crate::logging::{LogManager, SharedLogManager};
 use crate::rate_limit::{RateLimitConfig, RateLimitManager};
 use crate::reload::{
-    ConfigManager, GracefulReloadCoordinator, ReloadEvent, RouteMatcherValidator, RouteValidator,
-    UpstreamValidator,
+    ConfigManager, GeoDatabaseValidator, GracefulReloadCoordinator, ReloadEvent,
+    RouteMatcherValidator, RouteValidator, UpstreamValidator,
 };
 use crate::routing::RouteMatcher;
 
@@ -265,6 +265,14 @@ impl ZentinelProxy {
         let validators = route_components.validators.clone();
         let static_servers = route_components.static_servers.clone();
 
+        // Initialize geo filter manager. A geo filter whose database cannot be
+        // opened stops startup; it is not left unregistered. Built before the
+        // reload handler, which brings it up to date with every reloaded config.
+        let geo_filter_manager = Arc::new(GeoFilterManager::from_config(&config)?);
+
+        // Start geo database file watcher for hot reload
+        let geo_database_watcher = Self::spawn_geo_database_watcher(geo_filter_manager.clone());
+
         // Setup configuration reload subscription
         Self::setup_reload_handler(
             config_manager.clone(),
@@ -275,6 +283,8 @@ impl ZentinelProxy {
             rate_limit_manager.clone(),
             agent_manager.clone(),
             route_components,
+            geo_filter_manager.clone(),
+            geo_database_watcher,
         )
         .await;
 
@@ -337,14 +347,8 @@ impl ZentinelProxy {
             agent_manager.clone(),
         ));
 
-        // Initialize geo filter manager
-        let geo_filter_manager = Arc::new(Self::initialize_geo_filters(&config));
-
         // Start periodic cleanup task for rate limiters and geo caches
         Self::spawn_cleanup_task(rate_limit_manager.clone(), geo_filter_manager.clone());
-
-        // Start geo database file watcher for hot reload
-        Self::spawn_geo_database_watcher(geo_filter_manager.clone());
 
         // Mark as ready
         app_state.set_ready(true);
@@ -426,6 +430,11 @@ impl ZentinelProxy {
         config_manager
             .add_validator(Box::new(UpstreamValidator))
             .await;
+        // A geo filter whose database does not open cannot be registered, so
+        // a configuration with one is rejected, not stored and half applied.
+        config_manager
+            .add_validator(Box::new(GeoDatabaseValidator))
+            .await;
     }
 
     /// Build per-listener route matchers for listeners bound to a namespace
@@ -492,6 +501,8 @@ impl ZentinelProxy {
         rate_limit_manager: Arc<RateLimitManager>,
         agent_manager: Arc<AgentManager>,
         route_components: RouteComponents,
+        geo_filter_manager: Arc<GeoFilterManager>,
+        geo_database_watcher: Arc<GeoDatabaseWatcher>,
     ) {
         let mut reload_rx = config_manager.subscribe();
         let config_manager_clone = config_manager.clone();
@@ -566,6 +577,57 @@ impl ZentinelProxy {
                         }
                     };
 
+                    // Open the database of every geo filter the new configuration
+                    // adds or changes and build the new pools, and change nothing
+                    // unless all of them open, as for the routes. A database that did
+                    // not open when the configuration was validated is rejected
+                    // there (`GeoDatabaseValidator`); this covers one that has
+                    // gone since. The manager must hold every filter the new
+                    // configuration names before the routes that name them go
+                    // live.
+                    let prepared = {
+                        let manager = Arc::clone(&geo_filter_manager);
+                        let config = Arc::clone(&new_config);
+                        match tokio::task::spawn_blocking(move || manager.prepare(&config)).await {
+                            Ok(prepared) => prepared,
+                            Err(e) => {
+                                Err(anyhow::anyhow!("the geo databases were not opened: {e}"))
+                            }
+                        }
+                    };
+                    let geo_plan = match prepared {
+                        Ok(plan) => plan,
+                        // Already the previous configuration: rolling back
+                        // again would loop.
+                        Err(e) if rolled_back => {
+                            error!(
+                                error = %e,
+                                "Geo filters of the rolled-back configuration do not open; \
+                                 geo filters, routes, rate limiters, health checks and upstream \
+                                 pools left unchanged"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(
+                                error = %e,
+                                "Geo filters of the reloaded configuration do not open; \
+                                 rolling back"
+                            );
+                            if let Err(e) = config_manager_clone
+                                .rollback(format!("geo filter build failed: {e}"))
+                                .await
+                            {
+                                error!(
+                                    error = %e,
+                                    "Rollback failed; geo filters, routes, rate limiters, \
+                                     health checks and upstream pools left unchanged"
+                                );
+                            }
+                            continue;
+                        }
+                    };
+
                     // From here the handler changes shared state, so it must not
                     // interleave with a newer reload: that reload's hook loads
                     // its agents and stores its configuration, and this event's
@@ -613,6 +675,14 @@ impl ZentinelProxy {
                         "Route components reloaded"
                     );
 
+                    // Register the geo filters the new configuration adds and
+                    // replace the ones it changes, before the routes that name
+                    // them go live. They were registered once at startup, so a
+                    // filter added by a reload was missing and a changed one kept
+                    // its old settings. Unchanged ones keep their pool and cache.
+                    // The ones it drops stay until those routes are gone.
+                    let geo_changes = geo_filter_manager.apply(&geo_plan);
+
                     *route_matcher.write() = new_matcher;
                     info!(
                         routes = global_route_count,
@@ -629,6 +699,25 @@ impl ZentinelProxy {
                     let removed = agent_manager.remove_unlisted(&new_config.agents).await;
                     if removed > 0 {
                         info!(removed, "Agents removed");
+                    }
+
+                    // Only now, with the routes that named them gone, drop the geo
+                    // filters the new configuration dropped.
+                    let geo_removed = geo_filter_manager.remove_unlisted(&geo_plan);
+                    info!(
+                        added = geo_changes.added,
+                        replaced = geo_changes.replaced,
+                        removed = geo_removed,
+                        unchanged = geo_changes.unchanged,
+                        "Geo filters reloaded"
+                    );
+                    // Watch the databases of the filters as they are now.
+                    if let Err(e) = geo_database_watcher.sync_watches() {
+                        warn!(
+                            error = %e,
+                            "Failed to update the geo database file watches; a changed \
+                             database file may not be re-read on its own"
+                        );
                     }
                     drop(reload_guard);
 
@@ -966,45 +1055,6 @@ impl ZentinelProxy {
         manager
     }
 
-    /// Initialize geo filters from configuration
-    fn initialize_geo_filters(config: &Config) -> GeoFilterManager {
-        let manager = GeoFilterManager::new();
-
-        for (filter_id, filter_config) in &config.filters {
-            if let zentinel_config::Filter::Geo(ref geo_filter) = filter_config.filter {
-                match manager.register_filter(filter_id, geo_filter.clone()) {
-                    Ok(_) => {
-                        info!(
-                            filter_id = %filter_id,
-                            database_path = %geo_filter.database_path,
-                            action = ?geo_filter.action,
-                            countries_count = geo_filter.countries.len(),
-                            "Registered geo filter"
-                        );
-                    }
-                    Err(e) => {
-                        error!(
-                            filter_id = %filter_id,
-                            error = %e,
-                            "Failed to register geo filter"
-                        );
-                    }
-                }
-            }
-        }
-
-        let filter_ids = manager.filter_ids();
-        if !filter_ids.is_empty() {
-            info!(
-                filter_count = filter_ids.len(),
-                filter_ids = ?filter_ids,
-                "GeoIP filtering initialized"
-            );
-        }
-
-        manager
-    }
-
     /// Spawn background task to periodically clean up idle rate limiters and expired geo caches
     fn spawn_cleanup_task(
         rate_limit_manager: Arc<RateLimitManager>,
@@ -1038,7 +1088,12 @@ impl ZentinelProxy {
     }
 
     /// Spawn background task to watch geo database files for changes
-    fn spawn_geo_database_watcher(geo_filter_manager: Arc<GeoFilterManager>) {
+    ///
+    /// Returns the watcher, so the reload handler can point it at the
+    /// databases of a reloaded configuration.
+    fn spawn_geo_database_watcher(
+        geo_filter_manager: Arc<GeoFilterManager>,
+    ) -> Arc<GeoDatabaseWatcher> {
         let watcher = Arc::new(GeoDatabaseWatcher::new(geo_filter_manager));
 
         // Try to start watching
@@ -1070,6 +1125,7 @@ impl ZentinelProxy {
                 );
             }
         }
+        watcher
     }
 }
 
@@ -1969,6 +2025,10 @@ mod reload_rollback_tests {
         limits: Arc<RateLimitManager>,
         agents: Arc<AgentManager>,
         components: RouteComponents,
+        geo: Arc<GeoFilterManager>,
+        geo_watcher: Arc<GeoDatabaseWatcher>,
+        /// Keeps the watcher's event channel open.
+        _geo_events: tokio::sync::mpsc::Receiver<std::path::PathBuf>,
     }
 
     impl Harness {
@@ -2012,6 +2072,9 @@ mod reload_rollback_tests {
             ));
             let limits = Arc::new(ZentinelProxy::initialize_rate_limiters(&config));
             let components = RouteComponents::from_config(&config);
+            let geo = Arc::new(GeoFilterManager::from_config(&config).expect("config A opens"));
+            let geo_watcher = Arc::new(GeoDatabaseWatcher::new(Arc::clone(&geo)));
+            let geo_events = geo_watcher.start_watching().expect("start watching");
             ZentinelProxy::setup_reload_handler(
                 Arc::clone(&manager),
                 Arc::clone(&routes),
@@ -2021,6 +2084,8 @@ mod reload_rollback_tests {
                 Arc::clone(&limits),
                 Arc::clone(&agents),
                 components.clone(),
+                Arc::clone(&geo),
+                Arc::clone(&geo_watcher),
             )
             .await;
             Self {
@@ -2031,6 +2096,9 @@ mod reload_rollback_tests {
                 limits,
                 agents,
                 components,
+                geo,
+                geo_watcher,
+                _geo_events: geo_events,
             }
         }
 
@@ -2197,6 +2265,118 @@ mod reload_rollback_tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1,
             "exactly one rollback"
+        );
+    }
+
+    /// The backstop for a geo database that opened when the configuration was
+    /// validated and does not any more, or that the validators never saw: the
+    /// handler used to leave the filter unregistered while the new routes went
+    /// live. It now changes nothing and rolls back.
+    #[tokio::test]
+    async fn geo_filters_that_fail_in_the_handler_roll_the_reload_back() {
+        let h = Harness::start(false).await;
+        h.write(&kdl(
+            "b",
+            "^/b",
+            r#"filters {
+                filter "region" {
+                    type "geo"
+                    database-path "/nonexistent/geo/country.mmdb"
+                    countries "RU"
+                }
+            }"#,
+        ));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("without the validators the reload is stored");
+        assert!(
+            eventually(|| h.on_config_a()).await,
+            "after a failed geo filter build current() is {:?} and /a routes to {:?}",
+            h.current_routes(),
+            h.routed("/a"),
+        );
+        assert_eq!(
+            h.manager
+                .stats()
+                .rollbacks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "exactly one rollback"
+        );
+        assert!(h.geo.filter_ids().is_empty());
+    }
+
+    /// A top-level `filters` block with one geo filter, `region`, that blocks
+    /// `countries` on the database at `database`.
+    fn geo_filter(database: &std::path::Path, countries: &str) -> String {
+        format!(
+            r#"filters {{
+                filter "region" {{
+                    type "geo"
+                    database-path "{}"
+                    countries {countries}
+                }}
+            }}"#,
+            database.display()
+        )
+    }
+
+    /// A reload registers the geo filter it adds, replaces one whose settings
+    /// change and removes one that is gone, and points the database file
+    /// watcher at the databases of the configuration. The filters were
+    /// registered once, at startup, so none of this happened.
+    #[tokio::test]
+    async fn a_reload_adds_changes_and_removes_geo_filters() {
+        let h = Harness::start(true).await;
+        assert!(h.geo.filter_ids().is_empty());
+        assert!(h.geo_watcher.watched_paths().is_empty());
+
+        let database = h._dir.path().join("country.mmdb");
+        crate::geo_filter::test_database::write_country_database(&database, "US");
+        let blocked = |h: &Harness| h.geo.check("region", "127.0.0.1").map(|r| !r.allowed);
+
+        // Added: the database says the client is in the US, which it blocks.
+        h.write(&kdl("a", "^/a", &geo_filter(&database, r#""US""#)));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("the geo filter is added");
+        assert!(
+            eventually(|| blocked(&h) == Some(true)).await,
+            "the geo filter added by the reload is not registered: {:?}",
+            h.geo.filter_ids()
+        );
+        assert!(
+            eventually(|| h.geo_watcher.watched_paths().contains(&database)).await,
+            "the database of the added filter is not watched"
+        );
+
+        // Changed: the same database, another country.
+        h.write(&kdl("a", "^/a", &geo_filter(&database, r#""DE""#)));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("the geo filter is changed");
+        assert!(
+            eventually(|| blocked(&h) == Some(false)).await,
+            "the geo filter keeps the settings it was registered with"
+        );
+
+        // Removed: the filter is gone, and so is the watch on its database.
+        h.write(&kdl("a", "^/a", ""));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("the geo filter is removed");
+        assert!(
+            eventually(|| h.geo.filter_ids().is_empty()).await,
+            "the removed geo filter is still registered: {:?}",
+            h.geo.filter_ids()
+        );
+        assert!(
+            eventually(|| h.geo_watcher.watched_paths().is_empty()).await,
+            "the database of the removed filter is still watched"
         );
     }
 

@@ -531,6 +531,7 @@ pub struct HotReloadableSniResolver {
 
 ```kdl
 listener "https" {
+    protocol "https"
     tls {
         cert-file "/etc/certs/default.crt"
         key-file "/etc/certs/default.key"
@@ -560,15 +561,26 @@ GeoIP-based request filtering.
 
 ```rust
 impl GeoFilterManager {
-    pub fn register_filter(&self, id: &str, config: &GeoFilterConfig);
-    pub fn check(&self, filter_id: &str, ip: IpAddr) -> GeoFilterResult;
+    // Startup: open every database, or fail listing each filter that failed.
+    pub fn from_config(config: &Config) -> anyhow::Result<Self>;
+    // Reload: build the pools of a new configuration without changing
+    // anything (a filter with unchanged settings keeps its pool), then...
+    pub fn prepare(&self, config: &Config) -> anyhow::Result<GeoFilterPlan>;
+    // ...register the added filters and replace the changed ones, and, once
+    // the routes are swapped, drop the removed ones.
+    pub fn apply(&self, plan: &GeoFilterPlan) -> GeoFilterChanges;
+    pub fn remove_unlisted(&self, plan: &GeoFilterPlan) -> usize;
+    pub fn check(&self, filter_id: &str, client_ip: &str) -> Option<GeoFilterResult>;
     pub fn clear_expired_caches(&self);
 }
 
-pub enum GeoFilterResult {
-    Allowed,
-    Blocked { country: String },
-    Error,
+pub struct GeoFilterResult {
+    pub allowed: bool,
+    pub country_code: Option<String>,
+    pub cache_hit: bool,
+    pub add_header: bool,
+    pub status_code: u16,
+    pub block_message: Option<String>,
 }
 ```
 
@@ -581,10 +593,41 @@ filter "geo-block" {
     database-type "maxmind"
     action "block"
     countries "CN" "RU" "KP"
-    fail-mode "open"
-    cache-ttl 3600
+    on-failure "open"
+    cache-ttl-secs 3600
 }
 ```
+
+Every argument of `countries` is read; each may also hold a comma-separated
+list. `action`, `database-type` and `on-failure` take only the values listed in
+the config schema, and `action "allow"` needs at least one country: all of
+these are refused when a KDL configuration loads. `database-type` can be left
+out when `database-path` ends in `.mmdb` or `.bin`, in any case; any other
+name needs it.
+
+The database file must open at startup. If it cannot, the proxy does not
+start, and one error lists every geo filter that failed, in the order of their
+ids, with its file and the reason. `zentinel test` and `zentinel validate` open
+the databases the same way.
+
+A configuration reload brings the geo filters up to date with the new
+configuration: a filter it adds is registered, a filter whose settings
+(`database-path` included) change gets a new pool and an empty cache, and a
+filter it removes is dropped. A filter whose settings did not change keeps its
+pool and its cache. A reload is rejected, and the proxy keeps running on the
+current configuration, when the database of any geo filter in the new
+configuration does not open; the log names each filter, its file and the
+reason. The check (`GeoDatabaseValidator`) runs wherever a configuration is
+stored: a reload from the file, a rollback, and a configuration applied
+programmatically (`apply_config`, `apply_change`). Every geo database is
+opened for that check, including those already in use, so a reload takes
+about as long as it takes to read them. Should a database that opened for
+the check not open when the filters are built, the
+reload is rolled back.
+
+A changed database file is re-read on its own. The files watched for that
+follow a reload: a database a reload adds is watched and one no filter uses
+any more is not.
 
 ### `decompression`
 
