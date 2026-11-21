@@ -10,7 +10,9 @@ use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 use crate::{kdl::circuitbreaker_helper::parse_circuit_breaker_faildefault, upstreams::*};
 
 use super::helpers::{
-    get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, parse_upstream_targets,
+    get_arg_string, get_bool_entry, get_first_arg_string, get_int_entry, get_int_entry_or,
+    get_string_entry, get_unique_arg_string, get_unique_child, get_unique_in_nodes, node_bool,
+    node_int, node_number, node_string, node_value, parse_upstream_targets, string_args,
 };
 
 //Parse a single upstream block
@@ -177,13 +179,11 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
 
         // Parse targets (accepts every supported syntax; see
         // `parse_upstream_targets`).
-        let targets = parse_upstream_targets(child);
+        let targets = parse_upstream_targets(child)?;
 
         // Service discovery, which may supply the targets instead of (or in
         // addition to) statically configured ones.
-        let discovery = child
-            .children()
-            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "discovery"))
+        let discovery = get_unique_child(child, "discovery")?
             .map(|n| parse_discovery(n, &id))
             .transpose()?;
 
@@ -196,13 +196,9 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
         }
 
         // Parse load balancing algorithm and sticky session config
-        let load_balancing_node = child.children().and_then(|c| {
-            c.nodes()
-                .iter()
-                .find(|n| n.name().value() == "load-balancing")
-        });
+        let load_balancing_node = get_unique_child(child, "load-balancing")?;
 
-        let (load_balancing, problem) = resolve_load_balancing(child, &id);
+        let (load_balancing, problem) = resolve_load_balancing(child, &id)?;
         if let Some(problem) = problem {
             warn!("{}", problem);
         }
@@ -212,12 +208,13 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
             load_balancing_node
                 .and_then(|n| n.children())
                 .map(|children| {
-                    let (config, problems) = resolve_sticky_session_config(children, &id);
+                    let (config, problems) = resolve_sticky_session_config(children, &id)?;
                     for problem in problems {
                         warn!("{}", problem);
                     }
-                    config
+                    Ok::<_, anyhow::Error>(config)
                 })
+                .transpose()?
         } else {
             None
         };
@@ -231,19 +228,14 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
         }
 
         // Parse health check configuration
-        let health_check = child
-            .children()
-            .and_then(|c| {
-                c.nodes()
-                    .iter()
-                    .find(|n| n.name().value() == "health-check")
-            })
-            .and_then(|n| {
-                if let Some(problem) = health_check_type_problem(n, &id) {
+        let health_check = get_unique_child(child, "health-check")?
+            .map(|n| {
+                if let Some(problem) = health_check_type_problem(n, &id)? {
                     warn!("{}", problem);
                 }
-                parse_health_check(n).ok()
-            });
+                parse_health_check(n)
+            })
+            .transpose()?;
 
         if health_check.is_some() {
             trace!(
@@ -253,13 +245,10 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
         }
 
         // Parse HTTP version configuration
-        let http_version_node = child.children().and_then(|c| {
-            c.nodes()
-                .iter()
-                .find(|n| n.name().value() == "http-version")
-        });
+        let http_version_node = get_unique_child(child, "http-version")?;
         let http_version = http_version_node
             .map(parse_http_version)
+            .transpose()?
             .unwrap_or_default();
 
         let mut http_version = http_version;
@@ -275,28 +264,21 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
         }
 
         // Parse connection pool configuration
-        let connection_pool = child
-            .children()
-            .and_then(|c| {
-                c.nodes()
-                    .iter()
-                    .find(|n| n.name().value() == "connection-pool")
-            })
+        let connection_pool = get_unique_child(child, "connection-pool")?
             .map(parse_connection_pool)
+            .transpose()?
             .unwrap_or_default();
 
         // Parse timeouts configuration
-        let timeouts = child
-            .children()
-            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "timeouts"))
+        let timeouts = get_unique_child(child, "timeouts")?
             .map(parse_upstream_timeouts)
+            .transpose()?
             .unwrap_or_default();
 
         // Parse TLS configuration
-        let tls = child
-            .children()
-            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "tls"))
-            .map(parse_upstream_tls);
+        let tls = get_unique_child(child, "tls")?
+            .map(parse_upstream_tls)
+            .transpose()?;
 
         if tls.is_some() {
             trace!(
@@ -307,13 +289,7 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
 
         check_http_version_transport(&id, &http_version, tls.is_some(), http_version_node)?;
 
-        let circuit_breaker = child
-            .children()
-            .and_then(|c| {
-                c.nodes()
-                    .iter()
-                    .find(|n| n.name().value() == "circuit-breaker")
-            })
+        let circuit_breaker = get_unique_child(child, "circuit-breaker")?
             .map(parse_circuit_breaker_faildefault)
             .transpose()?;
 
@@ -348,6 +324,11 @@ pub fn parse_upstream(child: &kdl::KdlNode) -> Result<UpstreamConfig> {
 }
 
 /// Parse upstreams configuration block
+///
+/// # Errors
+///
+/// Fails when two upstreams in the block share an ID; the later one used to
+/// replace the earlier without a word.
 pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamConfig>> {
     trace!("Parsing upstreams configuration block");
     let mut upstreams = HashMap::new();
@@ -356,6 +337,12 @@ pub fn parse_upstreams(node: &kdl::KdlNode) -> Result<HashMap<String, UpstreamCo
         for child in children.nodes() {
             if child.name().value() == "upstream" {
                 let config = parse_upstream(child)?;
+                if upstreams.contains_key(&config.id) {
+                    return Err(anyhow!(
+                        "Duplicate upstream ID '{}' found. Each upstream ID must be unique.",
+                        config.id
+                    ));
+                }
                 upstreams.insert(config.id.clone(), config);
             }
         }
@@ -427,24 +414,25 @@ fn parse_load_balancing(s: &str) -> Option<LoadBalancingAlgorithm> {
 /// An unknown name keeps round robin, as it always has — configs carrying one
 /// have been loading and must keep doing so — but it comes back as a problem
 /// for `zentinel lint` (through `validate::unknown_keys`) rather than silently.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `load-balancing` is
+/// written more than once.
 pub(crate) fn resolve_load_balancing(
     upstream: &kdl::KdlNode,
     upstream_id: &str,
-) -> (LoadBalancingAlgorithm, Option<String>) {
-    let Some(name) = upstream
-        .children()
-        .and_then(|c| c.get("load-balancing"))
-        .and_then(get_first_arg_string)
-    else {
-        return (LoadBalancingAlgorithm::RoundRobin, None);
+) -> Result<(LoadBalancingAlgorithm, Option<String>)> {
+    let Some(name) = get_unique_arg_string(upstream, "load-balancing")? else {
+        return Ok((LoadBalancingAlgorithm::RoundRobin, None));
     };
     if let Some(algorithm) = parse_load_balancing(&name) {
-        return (algorithm, None);
+        return Ok((algorithm, None));
     }
     let suggestion = super::helpers::did_you_mean(&name, LOAD_BALANCING_NAMES)
         .map(|s| format!(" Did you mean '{}'?", s))
         .unwrap_or_default();
-    (
+    Ok((
         LoadBalancingAlgorithm::RoundRobin,
         Some(format!(
             "'load-balancing \"{}\"' on upstream '{}' is not a load-balancing algorithm and \
@@ -454,7 +442,7 @@ pub(crate) fn resolve_load_balancing(
             suggestion,
             LOAD_BALANCING_NAMES.join(", ")
         )),
-    )
+    ))
 }
 
 /// Parse sticky session configuration
@@ -475,32 +463,45 @@ pub(crate) fn resolve_load_balancing(
 /// (round robin and lax) -- configs carrying them have been loading -- and
 /// come back as problems, logged at load and reported by `zentinel lint`
 /// through `validate::unknown_keys`, rather than silently.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when one of the settings
+/// is written more than once.
 pub(crate) fn resolve_sticky_session_config(
     children: &kdl::KdlDocument,
     upstream_id: &str,
-) -> (StickySessionConfig, Vec<String>) {
+) -> Result<(StickySessionConfig, Vec<String>)> {
     let nodes = children.nodes();
     let mut problems = Vec::new();
 
     let cookie_name =
-        find_string_entry(nodes, "cookie-name").unwrap_or_else(|| "SERVERID".to_string());
+        find_string_entry(nodes, "cookie-name")?.unwrap_or_else(|| "SERVERID".to_string());
 
     // Parse cookie TTL - support both integer seconds and duration strings
-    let cookie_ttl_secs = find_int_entry(nodes, "cookie-ttl")
-        .map(|v| v as u64)
-        .or_else(|| find_string_entry(nodes, "cookie-ttl").and_then(|s| parse_duration_string(&s)))
+    let cookie_ttl_secs = get_unique_in_nodes(nodes, "cookie-ttl")?
+        .map(|node| {
+            node_value(
+                node,
+                "an integer number of seconds, or a duration string such as \"1h\"",
+                |v| match v.as_integer() {
+                    Some(secs) => Some(secs as u64),
+                    // `"1h"`, `"30m"`, `"3600s"`; a bare `"3600"` is seconds.
+                    None => v.as_string().and_then(|text| {
+                        parse_duration_string(text).or_else(|| text.trim().parse().ok())
+                    }),
+                },
+            )
+        })
+        .transpose()?
+        .flatten()
         .unwrap_or(3600); // Default 1 hour
 
-    let cookie_path = find_string_entry(nodes, "cookie-path").unwrap_or_else(|| "/".to_string());
+    let cookie_path = find_string_entry(nodes, "cookie-path")?.unwrap_or_else(|| "/".to_string());
 
-    let cookie_secure = nodes
-        .iter()
-        .find(|n| n.name().value() == "cookie-secure")
-        .and_then(|n| n.entries().first())
-        .and_then(|e| e.value().as_bool())
-        .unwrap_or(true); // Default to secure
+    let cookie_secure = find_bool_entry(nodes, "cookie-secure")?.unwrap_or(true);
 
-    let cookie_same_site = match find_string_entry(nodes, "cookie-same-site") {
+    let cookie_same_site = match find_string_entry(nodes, "cookie-same-site")? {
         None => SameSitePolicy::default(),
         Some(value) => match value.to_lowercase().as_str() {
             "strict" => SameSitePolicy::Strict,
@@ -517,7 +518,7 @@ pub(crate) fn resolve_sticky_session_config(
         },
     };
 
-    let fallback = match find_string_entry(nodes, "fallback") {
+    let fallback = match find_string_entry(nodes, "fallback")? {
         None => LoadBalancingAlgorithm::RoundRobin,
         Some(name) => parse_load_balancing(&name).unwrap_or_else(|| {
             let suggestion = super::helpers::did_you_mean(&name, LOAD_BALANCING_NAMES)
@@ -541,7 +542,7 @@ pub(crate) fn resolve_sticky_session_config(
         }),
     };
 
-    (
+    Ok((
         StickySessionConfig {
             cookie_name,
             cookie_ttl_secs,
@@ -551,7 +552,7 @@ pub(crate) fn resolve_sticky_session_config(
             fallback,
         },
         problems,
-    )
+    ))
 }
 
 /// Parse duration string like "1h", "30m", "1d" to seconds
@@ -591,44 +592,37 @@ pub(crate) fn parse_duration_string(s: &str) -> Option<u64> {
 ///     max-h2-streams 100
 /// }
 /// ```
-fn parse_http_version(node: &kdl::KdlNode) -> HttpVersionConfig {
-    // Helper to get integer value from a child node's first argument
-    let get_child_int = |name: &str| -> Option<i128> {
-        node.children()
-            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == name))
-            .and_then(|n| n.entries().first())
-            .and_then(|e| e.value().as_integer())
-    };
+fn parse_http_version(node: &kdl::KdlNode) -> Result<HttpVersionConfig> {
+    let min_version = get_int_entry(node, "min-version")?
+        .map(|v| v as u8)
+        .unwrap_or(1);
 
-    let min_version = get_child_int("min-version").map(|v| v as u8).unwrap_or(1);
+    let max_version = get_int_entry(node, "max-version")?
+        .map(|v| v as u8)
+        .unwrap_or(2); // Default to HTTP/2 support
 
-    let max_version = get_child_int("max-version").map(|v| v as u8).unwrap_or(2); // Default to HTTP/2 support
-
-    let h2_ping_interval_secs = get_child_int("h2-ping-interval")
+    let h2_ping_interval_secs = get_int_entry(node, "h2-ping-interval")?
         .map(|v| v as u64)
         .unwrap_or(0);
 
-    let max_h2_streams = get_child_int("max-h2-streams")
+    let max_h2_streams = get_int_entry(node, "max-h2-streams")?
         .map(|v| v as usize)
         .unwrap_or(100);
 
-    HttpVersionConfig {
+    Ok(HttpVersionConfig {
         min_version,
         max_version,
         h2_ping_interval_secs,
         max_h2_streams,
         // Set by `parse_upstream` from the upstream's own `h2c` node.
         h2c: false,
-    }
+    })
 }
 
 /// Read an upstream's `h2c` setting: absent is `false`, anything but a
 /// boolean is an error rather than a silent `false`.
 fn parse_h2c(upstream: &kdl::KdlNode, id: &str) -> Result<bool> {
-    let Some(node) = upstream
-        .children()
-        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "h2c"))
-    else {
+    let Some(node) = get_unique_child(upstream, "h2c")? else {
         return Ok(false);
     };
     node.entries()
@@ -666,11 +660,10 @@ fn check_http_version_transport(
             ));
         }
         // min-version defaults to 1; only a value written down conflicts.
-        let explicit_min = http_version_node
-            .and_then(|n| n.children())
-            .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "min-version"))
-            .and_then(|n| n.entries().first())
-            .and_then(|e| e.value().as_integer());
+        let explicit_min = match http_version_node {
+            Some(node) => get_int_entry(node, "min-version")?,
+            None => None,
+        };
         if explicit_min == Some(1) {
             return Err(anyhow!(
                 "Upstream '{id}': 'h2c #true' never falls back to HTTP/1.1, but \
@@ -703,12 +696,12 @@ fn check_http_version_transport(
 ///
 /// `idle-timeout` and `max-lifetime` are accepted as aliases for the two
 /// `-secs` names.
-fn parse_connection_pool(node: &kdl::KdlNode) -> ConnectionPoolConfig {
-    let max_connections = get_int_entry(node, "max-connections")
+fn parse_connection_pool(node: &kdl::KdlNode) -> Result<ConnectionPoolConfig> {
+    let max_connections = get_int_entry(node, "max-connections")?
         .map(|v| v as usize)
         .unwrap_or(100);
 
-    let max_idle = get_int_entry(node, "max-idle")
+    let max_idle = get_int_entry(node, "max-idle")?
         .map(|v| v as usize)
         .unwrap_or(20);
 
@@ -718,21 +711,19 @@ fn parse_connection_pool(node: &kdl::KdlNode) -> ConnectionPoolConfig {
     // config/zentinel.kdl was discarded and pools ran with no lifetime cap at
     // all. Both are accepted so anyone who followed the old rustdoc keeps
     // working, with the documented name taking precedence.
-    let idle_timeout_secs = get_int_entry(node, "idle-timeout-secs")
-        .or_else(|| get_int_entry(node, "idle-timeout"))
+    let idle_timeout_secs = get_int_entry_or(node, "idle-timeout-secs", "idle-timeout")?
         .map(|v| v as u64)
         .unwrap_or(60);
 
-    let max_lifetime_secs = get_int_entry(node, "max-lifetime-secs")
-        .or_else(|| get_int_entry(node, "max-lifetime"))
-        .map(|v| v as u64);
+    let max_lifetime_secs =
+        get_int_entry_or(node, "max-lifetime-secs", "max-lifetime")?.map(|v| v as u64);
 
-    ConnectionPoolConfig {
+    Ok(ConnectionPoolConfig {
         max_connections,
         max_idle,
         idle_timeout_secs,
         max_lifetime_secs,
-    }
+    })
 }
 
 /// Parse upstream timeouts configuration
@@ -749,30 +740,29 @@ fn parse_connection_pool(node: &kdl::KdlNode) -> ConnectionPoolConfig {
 ///
 /// The unsuffixed names (`connect`, `request`, `read`, `write`) are accepted as
 /// aliases.
-fn parse_upstream_timeouts(node: &kdl::KdlNode) -> UpstreamTimeouts {
+fn parse_upstream_timeouts(node: &kdl::KdlNode) -> Result<UpstreamTimeouts> {
     // As with the connection pool above, the `-secs` spellings are what every
     // config and the documentation use, and the unsuffixed ones are what this
     // parser used to read. Reading only the latter meant every timeout in
     // every shipped config was discarded in favour of the default — an
     // upstream asking for `request-secs 300` was cut off at 60.
-    let timeout = |suffixed: &str, bare: &str, default: u64| {
-        get_int_entry(node, suffixed)
-            .or_else(|| get_int_entry(node, bare))
+    let timeout = |suffixed: &str, bare: &str, default: u64| -> Result<u64> {
+        Ok(get_int_entry_or(node, suffixed, bare)?
             .map(|v| v as u64)
-            .unwrap_or(default)
+            .unwrap_or(default))
     };
 
-    let connect_secs = timeout("connect-secs", "connect", 10);
-    let request_secs = timeout("request-secs", "request", 60);
-    let read_secs = timeout("read-secs", "read", 30);
-    let write_secs = timeout("write-secs", "write", 30);
+    let connect_secs = timeout("connect-secs", "connect", 10)?;
+    let request_secs = timeout("request-secs", "request", 60)?;
+    let read_secs = timeout("read-secs", "read", 30)?;
+    let write_secs = timeout("write-secs", "write", 30)?;
 
-    UpstreamTimeouts {
+    Ok(UpstreamTimeouts {
         connect_secs,
         request_secs,
         read_secs,
         write_secs,
-    }
+    })
 }
 
 /// Parse upstream TLS configuration
@@ -787,41 +777,24 @@ fn parse_upstream_timeouts(node: &kdl::KdlNode) -> UpstreamTimeouts {
 ///     ca-cert "/path/to/ca.crt"
 /// }
 /// ```
-fn parse_upstream_tls(node: &kdl::KdlNode) -> UpstreamTlsConfig {
-    let sni = find_string_entry_from_node(node, "sni");
+fn parse_upstream_tls(node: &kdl::KdlNode) -> Result<UpstreamTlsConfig> {
+    let sni = get_string_entry(node, "sni")?;
 
-    let insecure_skip_verify =
-        find_bool_entry_from_node(node, "insecure-skip-verify").unwrap_or(false);
+    let insecure_skip_verify = get_bool_entry(node, "insecure-skip-verify")?.unwrap_or(false);
 
-    let client_cert = find_string_entry_from_node(node, "client-cert").map(PathBuf::from);
+    let client_cert = get_string_entry(node, "client-cert")?.map(PathBuf::from);
 
-    let client_key = find_string_entry_from_node(node, "client-key").map(PathBuf::from);
+    let client_key = get_string_entry(node, "client-key")?.map(PathBuf::from);
 
-    let ca_cert = find_string_entry_from_node(node, "ca-cert").map(PathBuf::from);
+    let ca_cert = get_string_entry(node, "ca-cert")?.map(PathBuf::from);
 
-    UpstreamTlsConfig {
+    Ok(UpstreamTlsConfig {
         sni,
         insecure_skip_verify,
         client_cert,
         client_key,
         ca_cert,
-    }
-}
-
-/// Find a string entry in a node's children by name
-fn find_string_entry_from_node(node: &kdl::KdlNode, name: &str) -> Option<String> {
-    node.children()
-        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == name))
-        .and_then(|n| n.entries().first())
-        .and_then(|e| e.value().as_string().map(|s| s.to_string()))
-}
-
-/// Find a boolean entry in a node's children by name
-fn find_bool_entry_from_node(node: &kdl::KdlNode, name: &str) -> Option<bool> {
-    node.children()
-        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == name))
-        .and_then(|n| n.entries().first())
-        .and_then(|e| e.value().as_bool())
+    })
 }
 
 /// Keys each discovery backend accepts, used to reject settings that belong to
@@ -882,7 +855,7 @@ fn required_string(
     kind: &str,
     upstream_id: &str,
 ) -> Result<String> {
-    get_string_entry(node, key).ok_or_else(|| {
+    get_string_entry(node, key)?.ok_or_else(|| {
         anyhow!(
             "Upstream '{}': discovery \"{}\" requires '{}'",
             upstream_id,
@@ -897,7 +870,7 @@ fn required_string(
 /// Zero would busy-loop the refresh task, so it is an error rather than a
 /// value that silently becomes the default.
 fn refresh_secs(node: &kdl::KdlNode, key: &str, default: u64, upstream_id: &str) -> Result<u64> {
-    match get_int_entry(node, key) {
+    match get_int_entry(node, key)? {
         None => Ok(default),
         Some(v) if v <= 0 => Err(anyhow!(
             "Upstream '{}': '{}' must be greater than zero (got {})",
@@ -925,16 +898,7 @@ pub(crate) fn parse_discovery(node: &kdl::KdlNode, upstream_id: &str) -> Result<
     match kind.as_str() {
         "static" => {
             reject_foreign_discovery_keys(node, &kind, STATIC_DISCOVERY_KEYS, upstream_id)?;
-            let backends = node
-                .children()
-                .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "backends"))
-                .map(|n| {
-                    n.entries()
-                        .iter()
-                        .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let backends = string_arguments(node, "backends")?;
             if backends.is_empty() {
                 return Err(anyhow!(
                     "Upstream '{}': discovery \"static\" requires a non-empty 'backends' list",
@@ -946,7 +910,7 @@ pub(crate) fn parse_discovery(node: &kdl::KdlNode, upstream_id: &str) -> Result<
         "dns" => {
             reject_foreign_discovery_keys(node, &kind, DNS_DISCOVERY_KEYS, upstream_id)?;
             let hostname = required_string(node, "hostname", &kind, upstream_id)?;
-            let port = get_int_entry(node, "port").ok_or_else(|| {
+            let port = get_int_entry(node, "port")?.ok_or_else(|| {
                 anyhow!(
                     "Upstream '{}': discovery \"dns\" requires 'port'",
                     upstream_id
@@ -977,10 +941,10 @@ pub(crate) fn parse_discovery(node: &kdl::KdlNode, upstream_id: &str) -> Result<
             Ok(UpstreamDiscovery::Consul {
                 address: required_string(node, "address", &kind, upstream_id)?,
                 service: required_string(node, "service", &kind, upstream_id)?,
-                datacenter: get_string_entry(node, "datacenter"),
-                only_passing: get_bool_entry(node, "only-passing").unwrap_or(true),
+                datacenter: get_string_entry(node, "datacenter")?,
+                only_passing: get_bool_entry(node, "only-passing")?.unwrap_or(true),
                 refresh_interval_secs: refresh_secs(node, "refresh-interval", 30, upstream_id)?,
-                tag: get_string_entry(node, "tag"),
+                tag: get_string_entry(node, "tag")?,
             })
         }
         "kubernetes" => {
@@ -988,9 +952,9 @@ pub(crate) fn parse_discovery(node: &kdl::KdlNode, upstream_id: &str) -> Result<
             Ok(UpstreamDiscovery::Kubernetes {
                 namespace: required_string(node, "namespace", &kind, upstream_id)?,
                 service: required_string(node, "service", &kind, upstream_id)?,
-                port_name: get_string_entry(node, "port-name"),
+                port_name: get_string_entry(node, "port-name")?,
                 refresh_interval_secs: refresh_secs(node, "refresh-interval", 30, upstream_id)?,
-                kubeconfig: get_string_entry(node, "kubeconfig"),
+                kubeconfig: get_string_entry(node, "kubeconfig")?,
             })
         }
         "file" => {
@@ -1017,149 +981,47 @@ const HEALTH_CHECK_TYPES: &[&str] = &["tcp", "http", "grpc", "inference", "mcp"]
 /// written for the intended type go with it. That fallback is kept, because
 /// configs carrying such a value have been loading, and reported here for
 /// `zentinel lint` (through `validate::unknown_keys`).
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `type` is written
+/// more than once.
 pub(crate) fn health_check_type_problem(
     health_check: &kdl::KdlNode,
     upstream_id: &str,
-) -> Option<String> {
-    let name = health_check
-        .children()?
-        .get("type")
-        .and_then(get_first_arg_string)?;
+) -> Result<Option<String>> {
+    let Some(name) = get_unique_arg_string(health_check, "type")? else {
+        return Ok(None);
+    };
     if HEALTH_CHECK_TYPES.contains(&name.to_lowercase().as_str()) {
-        return None;
+        return Ok(None);
     }
     let suggestion = super::helpers::did_you_mean(&name.to_lowercase(), HEALTH_CHECK_TYPES)
         .map(|s| format!(" Did you mean '{}'?", s))
         .unwrap_or_default();
-    Some(format!(
+    Ok(Some(format!(
         "health-check 'type \"{}\"' on upstream '{}' is not a health-check type ({}) and is \
          being ignored; the upstream is checked over TCP.{}",
         name,
         upstream_id,
         HEALTH_CHECK_TYPES.join(", "),
         suggestion
-    ))
+    )))
 }
 
 /// Parse health check configuration
 fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
     // Parse health check type
-    let check_type = node
-        .children()
-        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "type"))
-        .map(|type_node| {
-            let type_name = get_first_arg_string(type_node).unwrap_or_else(|| "tcp".to_string());
-            match type_name.to_lowercase().as_str() {
-                "http" => {
-                    // Parse HTTP health check options
-                    let path = type_node
-                        .children()
-                        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "path"))
-                        .and_then(get_first_arg_string)
-                        .unwrap_or_else(|| "/health".to_string());
-
-                    let expected_status = type_node
-                        .children()
-                        .and_then(|c| {
-                            c.nodes()
-                                .iter()
-                                .find(|n| n.name().value() == "expected-status")
-                        })
-                        .and_then(get_first_arg_string)
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(200);
-
-                    let host = type_node
-                        .children()
-                        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "host"))
-                        .and_then(get_first_arg_string);
-
-                    HealthCheckType::Http {
-                        path,
-                        expected_status,
-                        host,
-                    }
-                }
-                "grpc" => {
-                    let service = type_node
-                        .children()
-                        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "service"))
-                        .and_then(get_first_arg_string)
-                        .unwrap_or_else(|| "grpc.health.v1.Health".to_string());
-                    HealthCheckType::Grpc { service }
-                }
-                "inference" => {
-                    // Parse inference health check options
-                    let endpoint = type_node
-                        .children()
-                        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "endpoint"))
-                        .and_then(get_first_arg_string)
-                        .unwrap_or_else(|| "/v1/models".to_string());
-
-                    let expected_models = type_node
-                        .children()
-                        .and_then(|c| {
-                            c.nodes()
-                                .iter()
-                                .find(|n| n.name().value() == "expected-models")
-                        })
-                        .map(|n| {
-                            n.entries()
-                                .iter()
-                                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    // Parse optional readiness config
-                    let readiness = type_node
-                        .children()
-                        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "readiness"))
-                        .map(|n| Box::new(parse_inference_readiness(n)));
-
-                    HealthCheckType::Inference {
-                        endpoint,
-                        expected_models,
-                        readiness,
-                    }
-                }
-                "mcp" => {
-                    let path = type_node
-                        .children()
-                        .and_then(|c| c.nodes().iter().find(|n| n.name().value() == "path"))
-                        .and_then(get_first_arg_string)
-                        .unwrap_or_else(|| "/".to_string());
-
-                    let expected_tools = type_node
-                        .children()
-                        .and_then(|c| {
-                            c.nodes()
-                                .iter()
-                                .find(|n| n.name().value() == "expected-tools")
-                        })
-                        .map(|n| {
-                            n.entries()
-                                .iter()
-                                .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    HealthCheckType::Mcp {
-                        path,
-                        expected_tools,
-                    }
-                }
-                _ => HealthCheckType::Tcp,
-            }
-        })
-        .unwrap_or(HealthCheckType::Tcp);
+    let check_type = match get_unique_child(node, "type")? {
+        Some(type_node) => parse_health_check_type(type_node)?,
+        None => HealthCheckType::Tcp,
+    };
 
     // Parse other health check settings
-    let interval_secs = get_int_entry(node, "interval-secs").unwrap_or(10) as u64;
-    let timeout_secs = get_int_entry(node, "timeout-secs").unwrap_or(5) as u64;
-    let healthy_threshold = get_int_entry(node, "healthy-threshold").unwrap_or(2) as u32;
-    let unhealthy_threshold = get_int_entry(node, "unhealthy-threshold").unwrap_or(3) as u32;
+    let interval_secs = get_int_entry(node, "interval-secs")?.unwrap_or(10) as u64;
+    let timeout_secs = get_int_entry(node, "timeout-secs")?.unwrap_or(5) as u64;
+    let healthy_threshold = get_int_entry(node, "healthy-threshold")?.unwrap_or(2) as u32;
+    let unhealthy_threshold = get_int_entry(node, "unhealthy-threshold")?.unwrap_or(3) as u32;
 
     Ok(HealthCheck {
         check_type,
@@ -1170,97 +1032,165 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
     })
 }
 
+/// Parse the `type "<kind>" { ... }` node of a health check.
+fn parse_health_check_type(type_node: &kdl::KdlNode) -> Result<HealthCheckType> {
+    let type_name = get_arg_string(type_node)?.unwrap_or_else(|| "tcp".to_string());
+    let check_type = match type_name.to_lowercase().as_str() {
+        "http" => {
+            // Parse HTTP health check options
+            let path =
+                get_string_entry(type_node, "path")?.unwrap_or_else(|| "/health".to_string());
+
+            // The shipped configs write `expected-status 200`, a number; a
+            // quoted `"200"` has always been accepted too. Only the quoted form
+            // was ever read, so a number meant 200 whatever it said.
+            let expected_status = get_unique_child(type_node, "expected-status")?
+                .map(|n| {
+                    node_value(
+                        n,
+                        "an HTTP status code: an integer, or a string such as \"200\"",
+                        |v| match v.as_integer() {
+                            Some(code) => u16::try_from(code).ok(),
+                            None => v.as_string().and_then(|s| s.trim().parse().ok()),
+                        },
+                    )
+                })
+                .transpose()?
+                .flatten()
+                .unwrap_or(200);
+
+            let host = get_string_entry(type_node, "host")?;
+
+            HealthCheckType::Http {
+                path,
+                expected_status,
+                host,
+            }
+        }
+        "grpc" => {
+            let service = get_string_entry(type_node, "service")?
+                .unwrap_or_else(|| "grpc.health.v1.Health".to_string());
+            HealthCheckType::Grpc { service }
+        }
+        "inference" => {
+            // Parse inference health check options
+            let endpoint = get_string_entry(type_node, "endpoint")?
+                .unwrap_or_else(|| "/v1/models".to_string());
+
+            let expected_models = string_arguments(type_node, "expected-models")?;
+
+            // Parse optional readiness config
+            let readiness = get_unique_child(type_node, "readiness")?
+                .map(|n| parse_inference_readiness(n).map(Box::new))
+                .transpose()?;
+
+            HealthCheckType::Inference {
+                endpoint,
+                expected_models,
+                readiness,
+            }
+        }
+        "mcp" => {
+            let path = get_string_entry(type_node, "path")?.unwrap_or_else(|| "/".to_string());
+
+            let expected_tools = string_arguments(type_node, "expected-tools")?;
+
+            HealthCheckType::Mcp {
+                path,
+                expected_tools,
+            }
+        }
+        _ => HealthCheckType::Tcp,
+    };
+    Ok(check_type)
+}
+
+/// The string arguments of `parent`'s only child named `name`; empty when
+/// there is none.
+fn string_arguments(parent: &kdl::KdlNode, name: &str) -> Result<Vec<String>> {
+    match get_unique_child(parent, name)? {
+        Some(n) => string_args(n),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// Parse inference readiness configuration
-fn parse_inference_readiness(node: &kdl::KdlNode) -> zentinel_common::InferenceReadinessConfig {
+fn parse_inference_readiness(
+    node: &kdl::KdlNode,
+) -> Result<zentinel_common::InferenceReadinessConfig> {
     use zentinel_common::{
         ColdModelAction, InferenceProbeConfig, InferenceReadinessConfig, ModelStatusConfig,
         QueueDepthConfig, WarmthDetectionConfig,
     };
 
-    let children = match node.children() {
-        Some(c) => c,
-        None => return InferenceReadinessConfig::default(),
-    };
+    if node.children().is_none() {
+        return Ok(InferenceReadinessConfig::default());
+    }
 
     // Parse inference-probe
-    let inference_probe = children
-        .nodes()
-        .iter()
-        .find(|n| n.name().value() == "inference-probe")
+    let inference_probe = get_unique_child(node, "inference-probe")?
         .and_then(|n| n.children())
-        .map(|c| {
+        .map(|c| -> Result<InferenceProbeConfig> {
             let nodes = c.nodes();
-            InferenceProbeConfig {
-                endpoint: find_string_entry(nodes, "endpoint")
+            Ok(InferenceProbeConfig {
+                endpoint: find_string_entry(nodes, "endpoint")?
                     .unwrap_or_else(|| "/v1/completions".to_string()),
-                model: find_string_entry(nodes, "model").unwrap_or_default(),
-                prompt: find_string_entry(nodes, "prompt").unwrap_or_else(|| ".".to_string()),
-                max_tokens: find_int_entry(nodes, "max-tokens").unwrap_or(1) as u32,
-                timeout_secs: find_int_entry(nodes, "timeout-secs").unwrap_or(30) as u64,
-                max_latency_ms: find_int_entry(nodes, "max-latency-ms").map(|v| v as u64),
-            }
-        });
+                model: find_string_entry(nodes, "model")?.unwrap_or_default(),
+                prompt: find_string_entry(nodes, "prompt")?.unwrap_or_else(|| ".".to_string()),
+                max_tokens: find_int_entry(nodes, "max-tokens")?.unwrap_or(1) as u32,
+                timeout_secs: find_int_entry(nodes, "timeout-secs")?.unwrap_or(30) as u64,
+                max_latency_ms: find_int_entry(nodes, "max-latency-ms")?.map(|v| v as u64),
+            })
+        })
+        .transpose()?;
 
     // Parse model-status
-    let model_status = children
-        .nodes()
-        .iter()
-        .find(|n| n.name().value() == "model-status")
+    let model_status = get_unique_child(node, "model-status")?
         .and_then(|n| n.children())
-        .map(|c| {
+        .map(|c| -> Result<ModelStatusConfig> {
             let nodes = c.nodes();
-            let models = nodes
-                .iter()
-                .find(|n| n.name().value() == "models")
-                .map(|n| {
-                    n.entries()
-                        .iter()
-                        .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let models = match get_unique_in_nodes(nodes, "models")? {
+                Some(n) => string_args(n)?,
+                None => Vec::new(),
+            };
 
-            ModelStatusConfig {
-                endpoint_pattern: find_string_entry(nodes, "endpoint-pattern")
+            Ok(ModelStatusConfig {
+                endpoint_pattern: find_string_entry(nodes, "endpoint-pattern")?
                     .unwrap_or_else(|| "/v1/models/{model}/status".to_string()),
                 models,
-                expected_status: find_string_entry(nodes, "expected-status")
+                expected_status: find_string_entry(nodes, "expected-status")?
                     .unwrap_or_else(|| "ready".to_string()),
-                status_field: find_string_entry(nodes, "status-field")
+                status_field: find_string_entry(nodes, "status-field")?
                     .unwrap_or_else(|| "status".to_string()),
-                timeout_secs: find_int_entry(nodes, "timeout-secs").unwrap_or(5) as u64,
-            }
-        });
+                timeout_secs: find_int_entry(nodes, "timeout-secs")?.unwrap_or(5) as u64,
+            })
+        })
+        .transpose()?;
 
     // Parse queue-depth
-    let queue_depth = children
-        .nodes()
-        .iter()
-        .find(|n| n.name().value() == "queue-depth")
+    let queue_depth = get_unique_child(node, "queue-depth")?
         .and_then(|n| n.children())
-        .map(|c| {
+        .map(|c| -> Result<QueueDepthConfig> {
             let nodes = c.nodes();
-            QueueDepthConfig {
-                header: find_string_entry(nodes, "header"),
-                body_field: find_string_entry(nodes, "body-field"),
-                endpoint: find_string_entry(nodes, "endpoint"),
-                degraded_threshold: find_int_entry(nodes, "degraded-threshold").unwrap_or(50)
+            Ok(QueueDepthConfig {
+                header: find_string_entry(nodes, "header")?,
+                body_field: find_string_entry(nodes, "body-field")?,
+                endpoint: find_string_entry(nodes, "endpoint")?,
+                degraded_threshold: find_int_entry(nodes, "degraded-threshold")?.unwrap_or(50)
                     as u64,
-                unhealthy_threshold: find_int_entry(nodes, "unhealthy-threshold").unwrap_or(200)
+                unhealthy_threshold: find_int_entry(nodes, "unhealthy-threshold")?.unwrap_or(200)
                     as u64,
-                timeout_secs: find_int_entry(nodes, "timeout-secs").unwrap_or(5) as u64,
-            }
-        });
+                timeout_secs: find_int_entry(nodes, "timeout-secs")?.unwrap_or(5) as u64,
+            })
+        })
+        .transpose()?;
 
     // Parse warmth-detection
-    let warmth_detection = children
-        .nodes()
-        .iter()
-        .find(|n| n.name().value() == "warmth-detection")
+    let warmth_detection = get_unique_child(node, "warmth-detection")?
         .and_then(|n| n.children())
-        .map(|c| {
+        .map(|c| -> Result<WarmthDetectionConfig> {
             let nodes = c.nodes();
-            let cold_action = find_string_entry(nodes, "cold-action")
+            let cold_action = find_string_entry(nodes, "cold-action")?
                 .map(|s| match s.as_str() {
                     "log-only" | "log_only" => ColdModelAction::LogOnly,
                     "mark-degraded" | "mark_degraded" => ColdModelAction::MarkDegraded,
@@ -1269,53 +1199,56 @@ fn parse_inference_readiness(node: &kdl::KdlNode) -> zentinel_common::InferenceR
                 })
                 .unwrap_or_default();
 
-            WarmthDetectionConfig {
-                sample_size: find_int_entry(nodes, "sample-size").unwrap_or(10) as u32,
-                cold_threshold_multiplier: find_float_entry(nodes, "cold-threshold-multiplier")
+            Ok(WarmthDetectionConfig {
+                sample_size: find_int_entry(nodes, "sample-size")?.unwrap_or(10) as u32,
+                cold_threshold_multiplier: find_float_entry(nodes, "cold-threshold-multiplier")?
                     .unwrap_or(3.0),
-                idle_cold_timeout_secs: find_int_entry(nodes, "idle-cold-timeout-secs")
+                idle_cold_timeout_secs: find_int_entry(nodes, "idle-cold-timeout-secs")?
                     .unwrap_or(300) as u64,
                 cold_action,
-            }
-        });
+            })
+        })
+        .transpose()?;
 
-    InferenceReadinessConfig {
+    Ok(InferenceReadinessConfig {
         inference_probe,
         model_status,
         queue_depth,
         warmth_detection,
-    }
+    })
 }
 
 /// Find a string entry in nodes by name
-fn find_string_entry(nodes: &[kdl::KdlNode], name: &str) -> Option<String> {
-    nodes
-        .iter()
-        .find(|n| n.name().value() == name)
-        .and_then(|n| n.entries().first())
-        .and_then(|e| e.value().as_string().map(|s| s.to_string()))
+fn find_string_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<String>> {
+    get_unique_in_nodes(nodes, name)?
+        .map(node_string)
+        .transpose()
+        .map(Option::flatten)
 }
 
 /// Find an integer entry in nodes by name
-fn find_int_entry(nodes: &[kdl::KdlNode], name: &str) -> Option<i64> {
-    nodes
-        .iter()
-        .find(|n| n.name().value() == name)
-        .and_then(|n| n.entries().first())
-        .and_then(|e| e.value().as_integer().map(|v| v as i64))
+fn find_int_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<i64>> {
+    Ok(get_unique_in_nodes(nodes, name)?
+        .map(node_int)
+        .transpose()?
+        .flatten()
+        .map(|v| v as i64))
 }
 
-/// Find a float entry in nodes by name
-fn find_float_entry(nodes: &[kdl::KdlNode], name: &str) -> Option<f64> {
-    nodes
-        .iter()
-        .find(|n| n.name().value() == name)
-        .and_then(|n| n.entries().first())
-        .and_then(|e| {
-            e.value()
-                .as_float()
-                .or_else(|| e.value().as_integer().map(|i| i as f64))
-        })
+/// Find a boolean entry in nodes by name
+fn find_bool_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<bool>> {
+    get_unique_in_nodes(nodes, name)?
+        .map(node_bool)
+        .transpose()
+        .map(Option::flatten)
+}
+
+/// Find a float entry in nodes by name; an integer is read as a float
+fn find_float_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<f64>> {
+    get_unique_in_nodes(nodes, name)?
+        .map(node_number)
+        .transpose()
+        .map(Option::flatten)
 }
 
 #[cfg(test)]
@@ -2024,6 +1957,7 @@ mod tests {
 
             let doc = upstream_node(r#"load-balancing "least-conections""#);
             let problem = resolve_load_balancing(doc.nodes().first().unwrap(), "b")
+                .unwrap()
                 .1
                 .expect("an unknown algorithm should be reported");
             assert!(problem.contains("is being ignored"), "{problem}");
@@ -2042,7 +1976,9 @@ mod tests {
             ] {
                 let doc = upstream_node(body);
                 assert_eq!(
-                    resolve_load_balancing(doc.nodes().first().unwrap(), "b").1,
+                    resolve_load_balancing(doc.nodes().first().unwrap(), "b")
+                        .unwrap()
+                        .1,
                     None
                 );
             }
@@ -2063,7 +1999,9 @@ mod tests {
                 .unwrap()
                 .get("health-check")
                 .unwrap();
-            let problem = health_check_type_problem(check, "b").expect("should be reported");
+            let problem = health_check_type_problem(check, "b")
+                .unwrap()
+                .expect("should be reported");
             assert!(problem.contains("is being ignored"), "{problem}");
             assert!(problem.contains("Did you mean 'http'?"), "{problem}");
         }
@@ -2077,7 +2015,11 @@ mod tests {
                     .unwrap()
                     .get("health-check")
                     .unwrap();
-                assert_eq!(health_check_type_problem(check, "b"), None, "{name}");
+                assert_eq!(
+                    health_check_type_problem(check, "b").unwrap(),
+                    None,
+                    "{name}"
+                );
             }
         }
     }

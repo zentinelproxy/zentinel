@@ -122,12 +122,9 @@ routes {
 
         filters "public-cors"
 
-        websocket {
-            enabled #true
-            ping-interval-secs 30
-            ping-timeout-secs 10
-            max-message-size-bytes 65536
-        }
+        websocket #true
+        // Not yet configurable: ping-interval-secs 30, ping-timeout-secs 10,
+        // max-message-size-bytes 65536.
 
         policies {
             response-headers {

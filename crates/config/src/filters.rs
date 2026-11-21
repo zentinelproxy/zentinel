@@ -187,20 +187,7 @@ impl Filter {
                 return Err("rate-limit max-rps must be > 0".into());
             }
             Filter::Compress(c) => c.validate()?,
-            Filter::Geo(g) => {
-                if g.database_path.is_empty() {
-                    return Err("geo filter requires 'database-path'".into());
-                }
-                // Validate country codes are uppercase and 2 characters
-                for code in &g.countries {
-                    if code.len() != 2 || !code.chars().all(|c| c.is_ascii_uppercase()) {
-                        return Err(format!(
-                            "geo filter: invalid country code '{}' (expected ISO 3166-1 alpha-2 like 'US', 'CN')",
-                            code
-                        ));
-                    }
-                }
-            }
+            Filter::Geo(g) => g.validate()?,
             Filter::Agent(a) if !available_agents.contains(&a.agent) => {
                 return Err(format!(
                     "agent filter references unknown agent '{}'. Available: {:?}",
@@ -774,6 +761,22 @@ pub enum GeoDatabaseType {
     Ip2Location,
 }
 
+impl GeoDatabaseType {
+    /// The type a database file name says it is: `.mmdb` is MaxMind and
+    /// `.bin` is IP2Location, in any case. `None` for any other name.
+    #[must_use]
+    pub fn from_path(path: &str) -> Option<Self> {
+        let path = path.to_ascii_lowercase();
+        if path.ends_with(".mmdb") {
+            Some(Self::MaxMind)
+        } else if path.ends_with(".bin") {
+            Some(Self::Ip2Location)
+        } else {
+            None
+        }
+    }
+}
+
 /// Action to take based on geo filter result
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -851,6 +854,56 @@ impl Default for GeoFilter {
             cache_ttl_secs: default_geo_cache_ttl(),
             add_country_header: true,
         }
+    }
+}
+
+impl GeoFilter {
+    /// The database type: `database-type` when it is set, else the one the
+    /// extension of `database-path` says (see [`GeoDatabaseType::from_path`]).
+    #[must_use]
+    pub fn resolved_database_type(&self) -> Option<GeoDatabaseType> {
+        self.database_type
+            .clone()
+            .or_else(|| GeoDatabaseType::from_path(&self.database_path))
+    }
+
+    /// Validate the geo filter configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when `database-path` is empty, when the database type
+    /// is not set and the extension of `database-path` does not say it, when a
+    /// country code is not two uppercase ASCII letters, or when `action` is
+    /// `allow` and `countries` is empty: such a filter would either allow
+    /// nobody or everybody, and nothing in the setting says which.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.database_path.is_empty() {
+            return Err("geo filter requires 'database-path'".into());
+        }
+        if self.resolved_database_type().is_none() {
+            return Err(format!(
+                "geo filter: cannot tell the database type of '{}' from its extension (.mmdb \
+                 or .bin); set 'database-type' to \"maxmind\" or \"ip2location\"",
+                self.database_path
+            ));
+        }
+        for code in &self.countries {
+            if code.len() != 2 || !code.chars().all(|c| c.is_ascii_uppercase()) {
+                return Err(format!(
+                    "geo filter: invalid country code '{}' (expected two uppercase ASCII \
+                     letters, an ISO 3166-1 alpha-2 code like 'US' or 'CN')",
+                    code
+                ));
+            }
+        }
+        if self.action == GeoFilterAction::Allow && self.countries.is_empty() {
+            return Err(
+                "geo filter: action \"allow\" requires at least one entry in 'countries'; list \
+                 the countries to allow, or use action \"block\" or \"log-only\""
+                    .into(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -1127,6 +1180,35 @@ mod tests {
         let result = filter.validate(&[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid country code"));
+    }
+
+    #[test]
+    fn test_geo_filter_validation_allow_requires_countries() {
+        let filter = |countries: Vec<String>, action: GeoFilterAction| {
+            Filter::Geo(GeoFilter {
+                database_path: "/path/to/db.mmdb".to_string(),
+                database_type: None,
+                action,
+                countries,
+                on_failure: GeoFailureMode::Open,
+                status_code: 403,
+                block_message: None,
+                cache_ttl_secs: 3600,
+                add_country_header: true,
+            })
+        };
+
+        let err = filter(vec![], GeoFilterAction::Allow)
+            .validate(&[])
+            .expect_err("an allowlist without countries must not validate");
+        assert!(err.contains("'countries'"), "{err}");
+
+        let us = vec!["US".to_string()];
+        assert!(filter(us, GeoFilterAction::Allow).validate(&[]).is_ok());
+        assert!(filter(vec![], GeoFilterAction::Block).validate(&[]).is_ok());
+        assert!(filter(vec![], GeoFilterAction::LogOnly)
+            .validate(&[])
+            .is_ok());
     }
 
     #[test]

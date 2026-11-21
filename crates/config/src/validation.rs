@@ -793,6 +793,11 @@ fn validate_filters(config: &Config, agent_ids: &HashSet<&str>, errors: &mut Vec
                 errors.push(format!("Filter '{}': {}", filter_id, e));
             }
         }
+        if let Filter::Geo(geo) = &filter_config.filter {
+            if let Err(e) = geo.validate() {
+                errors.push(format!("Filter '{}': {}", filter_id, e));
+            }
+        }
         if let Filter::Agent(agent_filter) = &filter_config.filter {
             if !agent_ids.contains(agent_filter.agent.as_str()) {
                 warn!(
@@ -1347,6 +1352,101 @@ mod tests {
     use crate::namespace::{ExportConfig, NamespaceConfig, ServiceConfig};
     use zentinel_common::types::TlsVersion;
 
+    /// A `Config` read from JSON or TOML does not go through the KDL parser,
+    /// so `validate()` is the only check its geo filters get (and the KDL
+    /// parser's namespaced ones are checked while parsing).
+    mod geo_filter_validation {
+        use super::*;
+        use crate::{FilterConfig, GeoFailureMode, GeoFilter, GeoFilterAction};
+
+        fn config_with_geo(
+            database_path: &str,
+            action: GeoFilterAction,
+            countries: &[&str],
+        ) -> Config {
+            let kdl = "system {\n  worker-threads 1\n}\n\
+                 listeners {\n  listener \"http\" {\n    address \"127.0.0.1:8080\"\n\
+                 \x20   protocol \"http\"\n  }\n}\n\
+                 upstreams {\n  upstream \"b\" {\n    target \"127.0.0.1:9000\"\n  }\n}\n\
+                 routes {\n  route \"r\" {\n    matches {\n      path-prefix \"/\"\n    }\n\
+                 \x20   upstream \"b\"\n  }\n}\n";
+            let mut config = Config::from_kdl(kdl).expect("should parse");
+            config.filters.insert(
+                "g".to_string(),
+                FilterConfig::new(
+                    "g",
+                    Filter::Geo(GeoFilter {
+                        database_path: database_path.to_string(),
+                        database_type: None,
+                        action,
+                        countries: countries.iter().map(|c| c.to_string()).collect(),
+                        on_failure: GeoFailureMode::Open,
+                        status_code: 403,
+                        block_message: None,
+                        cache_ttl_secs: 3600,
+                        add_country_header: true,
+                    }),
+                ),
+            );
+            config
+        }
+
+        fn refusal(config: &Config) -> String {
+            config
+                .validate()
+                .expect_err("the geo filter must not validate")
+                .to_string()
+        }
+
+        #[test]
+        fn a_country_code_that_is_not_two_uppercase_letters_is_reported_once() {
+            // Lower case is among them: JSON and TOML do not upper-case it.
+            for code in ["RUS", "R1", "us", ""] {
+                let config =
+                    config_with_geo("/db/country.mmdb", GeoFilterAction::Block, &["CN", code]);
+                let message = refusal(&config);
+                assert_eq!(
+                    message.matches("Filter 'g'").count(),
+                    1,
+                    "{code}: {message}"
+                );
+                assert!(
+                    message.contains(&format!("invalid country code '{code}'")),
+                    "{code}: {message}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_allowlist_without_countries_is_reported_once() {
+            let config = config_with_geo("/db/country.mmdb", GeoFilterAction::Allow, &[]);
+            let message = refusal(&config);
+            assert_eq!(message.matches("Filter 'g'").count(), 1, "{message}");
+            assert!(message.contains("'countries'"), "{message}");
+        }
+
+        #[test]
+        fn a_database_whose_type_cannot_be_told_is_reported_once() {
+            let config = config_with_geo("/db/country.dat", GeoFilterAction::Block, &["CN"]);
+            let message = refusal(&config);
+            assert_eq!(message.matches("Filter 'g'").count(), 1, "{message}");
+            assert!(message.contains("'database-type'"), "{message}");
+        }
+
+        #[test]
+        fn a_usable_geo_filter_validates() {
+            for (path, action, countries) in [
+                ("/db/country.mmdb", GeoFilterAction::Block, vec!["CN", "RU"]),
+                ("/db/COUNTRY.BIN", GeoFilterAction::Allow, vec!["US"]),
+                ("/db/country.mmdb", GeoFilterAction::LogOnly, vec![]),
+            ] {
+                config_with_geo(path, action, &countries)
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{path}: {e}"));
+            }
+        }
+    }
+
     /// A listener address that is not `IP:PORT` used to pass `validate()`
     /// (the field's `validate_socket_addr` attribute never ran, `listeners`
     /// not being nested) and then panic inside Pingora at bind time (#520).
@@ -1546,6 +1646,7 @@ mod tests {
             format!(
                 "system {{\n  workers 2\n}}\n\
                  listeners {{\n  listener \"https\" {{\n    address \"127.0.0.1:8443\"\n\
+                 \x20   protocol \"https\"\n\
                  \x20   tls {{\n{tls_body}\n    }}\n  }}\n}}\n\
                  upstreams {{\n  upstream \"b\" {{\n    target \"127.0.0.1:9000\"\n  }}\n}}\n\
                  routes {{\n  route \"r\" {{\n    matches {{\n      path-prefix \"/\"\n    }}\n\

@@ -23,7 +23,9 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
-use zentinel_config::{GeoDatabaseType, GeoFailureMode, GeoFilter, GeoFilterAction};
+use zentinel_config::{
+    Config, Filter, GeoDatabaseType, GeoFailureMode, GeoFilter, GeoFilterAction,
+};
 
 // =============================================================================
 // Error Types
@@ -238,14 +240,16 @@ pub struct GeoFilterPool {
 impl GeoFilterPool {
     /// Create a new geo filter pool from configuration
     pub fn new(config: GeoFilter) -> Result<Self, GeoLookupError> {
-        // Determine database type (auto-detect from extension if not specified)
-        let db_type = config.database_type.clone().unwrap_or_else(|| {
-            if config.database_path.ends_with(".mmdb") {
-                GeoDatabaseType::MaxMind
-            } else {
-                GeoDatabaseType::Ip2Location
-            }
-        });
+        // The configured type, else the one the extension says. A path that
+        // says nothing is refused when the configuration loads; a filter that
+        // got here without that check is refused instead of guessed at.
+        let db_type = config.resolved_database_type().ok_or_else(|| {
+            GeoLookupError::LoadError(format!(
+                "cannot tell the database type of {:?} from its extension; \
+                 set database-type",
+                config.database_path
+            ))
+        })?;
 
         let database_path = PathBuf::from(&config.database_path);
 
@@ -377,13 +381,12 @@ impl GeoFilterPool {
                 !in_list
             }
             GeoFilterAction::Allow => {
-                // Allow mode: allow only if country is in the list
-                // If no country found and list is not empty, block
-                if self.countries_set.is_empty() {
-                    true
-                } else {
-                    in_list
-                }
+                // Allow mode: allow only if country is in the list. An empty
+                // list allows nobody. A KDL configuration refuses one, and so
+                // does `Config::validate` for top-level filters; a JSON or
+                // TOML filter inside a namespace or service is not checked
+                // and can still reach this.
+                in_list
             }
             GeoFilterAction::LogOnly => {
                 // Log-only mode: always allow
@@ -484,6 +487,65 @@ impl GeoFilterManager {
         Self {
             filter_pools: DashMap::new(),
         }
+    }
+
+    /// Register every geo filter of `config`, opening its database.
+    ///
+    /// `config` is the lowered configuration (see `Config::lower_scopes`), so
+    /// the geo filters of namespaces and services are among its filters.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database of any geo filter does not open. The error
+    /// lists every filter that failed, in the order of their ids, with its
+    /// `database-path` and the reason.
+    pub fn from_config(config: &Config) -> anyhow::Result<Self> {
+        let manager = Self::new();
+
+        let mut geo_filters: Vec<(&String, &GeoFilter)> = config
+            .filters
+            .iter()
+            .filter_map(|(id, filter)| match &filter.filter {
+                Filter::Geo(geo) => Some((id, geo)),
+                _ => None,
+            })
+            .collect();
+        geo_filters.sort_by_key(|(id, _)| *id);
+
+        let mut failures = Vec::new();
+        for (filter_id, geo_filter) in geo_filters {
+            match manager.register_filter(filter_id, geo_filter.clone()) {
+                Ok(()) => info!(
+                    filter_id = %filter_id,
+                    database_path = %geo_filter.database_path,
+                    action = ?geo_filter.action,
+                    countries_count = geo_filter.countries.len(),
+                    "Registered geo filter"
+                ),
+                Err(e) => failures.push(format!(
+                    "  - filter '{}', database-path '{}': {}",
+                    filter_id, geo_filter.database_path, e
+                )),
+            }
+        }
+        if !failures.is_empty() {
+            anyhow::bail!(
+                "{} geo filter(s) cannot be used, because their databases did not load:\n{}",
+                failures.len(),
+                failures.join("\n")
+            );
+        }
+
+        let filter_ids = manager.filter_ids();
+        if !filter_ids.is_empty() {
+            info!(
+                filter_count = filter_ids.len(),
+                filter_ids = ?filter_ids,
+                "GeoIP filtering initialized"
+            );
+        }
+
+        Ok(manager)
     }
 
     /// Register a geo filter from configuration
@@ -867,7 +929,9 @@ mod tests {
     }
 
     #[test]
-    fn allow_mode_allows_all_when_empty_list() {
+    fn allow_mode_allows_nobody_when_empty_list() {
+        // The configuration refuses this combination; a pool built without
+        // it must not read the empty list as "everybody".
         let db = MockGeoDatabase::with_entries(vec![("1.2.3.4", "CN")]);
         let pool = mock_pool(
             GeoFilterAction::Allow,
@@ -877,7 +941,7 @@ mod tests {
         );
 
         let result = pool.check("1.2.3.4");
-        assert!(result.allowed, "Empty allow list should allow all");
+        assert!(!result.allowed, "Empty allow list should allow nobody");
     }
 
     // =========================================================================
@@ -1050,5 +1114,138 @@ mod tests {
         let manager = GeoFilterManager::new();
         let result = manager.reload_filter("nonexistent");
         assert!(matches!(result, Err(GeoLookupError::LoadError(_))));
+    }
+
+    // =========================================================================
+    // GeoFilterManager::from_config
+    // =========================================================================
+
+    fn config_with(filters: &str) -> Config {
+        Config::from_kdl(&format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{
+                listener "http" {{ address "127.0.0.1:19292" protocol "http" }}
+            }}
+            routes {{
+                route "all" {{
+                    matches {{ path-prefix "/" }}
+                    upstream "backend"
+                }}
+            }}
+            upstreams {{
+                upstream "backend" {{ target "127.0.0.1:19293" }}
+            }}
+            {filters}
+            "#
+        ))
+        .expect("config parses")
+    }
+
+    fn geo(id: &str, path: &str) -> String {
+        format!(
+            r#"filter "{id}" {{
+                type "geo"
+                database-path "{path}"
+                countries "RU" "CN"
+            }}"#
+        )
+    }
+
+    fn failure(config: &Config) -> String {
+        match GeoFilterManager::from_config(config) {
+            Ok(_) => panic!("a geo filter without a database must not register"),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
+    #[test]
+    fn from_config_fails_for_a_missing_database_and_names_filter_and_path() {
+        let config = config_with(&format!(
+            "filters {{ {} }}",
+            geo("region-block", "/nonexistent/geo/country.mmdb")
+        ));
+
+        let message = failure(&config);
+        assert!(message.contains("'region-block'"), "{message}");
+        assert!(
+            message.contains("'/nonexistent/geo/country.mmdb'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn from_config_lists_every_failure_in_the_order_of_the_filter_ids() {
+        // Written in the reverse of the order they are reported in.
+        let config = config_with(&format!(
+            "filters {{\n{}\n{}\n{}\n}}",
+            geo("zz-last", "/nonexistent/geo/z.mmdb"),
+            geo("mm-middle", "/nonexistent/geo/m.mmdb"),
+            geo("aa-first", "/nonexistent/geo/a.mmdb"),
+        ));
+
+        let message = failure(&config);
+        assert!(message.contains("3 geo filter(s)"), "{message}");
+        let at = |id: &str| {
+            message
+                .find(id)
+                .unwrap_or_else(|| panic!("{id}: {message}"))
+        };
+        assert!(at("'aa-first'") < at("'mm-middle'"), "{message}");
+        assert!(at("'mm-middle'") < at("'zz-last'"), "{message}");
+    }
+
+    #[test]
+    fn from_config_registers_nothing_when_there_is_no_geo_filter() {
+        let config = config_with(
+            r#"filters {
+                filter "limit" {
+                    type "rate-limit"
+                    max-rps 10
+                }
+            }"#,
+        );
+
+        let manager = GeoFilterManager::from_config(&config).expect("no geo filter to open");
+        assert!(manager.filter_ids().is_empty());
+    }
+
+    #[test]
+    fn from_config_opens_the_geo_filters_of_namespaces_and_services() {
+        let filters = format!(
+            "filters {{ {} }}",
+            geo("regional", "/nonexistent/geo/regional.mmdb")
+        );
+        let config = config_with(&format!(
+            "namespace \"ns\" {{\n{filters}\nservice \"svc\" {{\n{filters}\n}}\n}}"
+        ))
+        .lower_scopes();
+
+        let message = failure(&config);
+        assert!(message.contains("2 geo filter(s)"), "{message}");
+        assert!(message.contains("ns:regional"), "{message}");
+        assert!(message.contains("ns:svc:regional"), "{message}");
+    }
+
+    #[test]
+    fn a_database_whose_type_cannot_be_told_is_not_guessed_at() {
+        let config = GeoFilter {
+            database_path: "/nonexistent/geo/country.dat".to_string(),
+            database_type: None,
+            action: GeoFilterAction::Block,
+            countries: vec!["CN".to_string()],
+            on_failure: GeoFailureMode::Open,
+            status_code: 403,
+            block_message: None,
+            cache_ttl_secs: 3600,
+            add_country_header: true,
+        };
+
+        let message = match GeoFilterPool::new(config) {
+            Ok(_) => panic!("a database of unknown type must not open"),
+            Err(e) => e.to_string(),
+        };
+        assert!(message.contains("database-type"), "{message}");
     }
 }

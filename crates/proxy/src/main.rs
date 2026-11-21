@@ -197,6 +197,11 @@ fn test_config(config_path: Option<&str>, strict: bool) -> Result<()> {
         .validate()
         .context("Configuration validation failed")?;
 
+    let geo_databases = open_geo_databases(&config)?;
+    if geo_databases > 0 {
+        info!("  - {} geo filter database(s) open", geo_databases);
+    }
+
     // Additional validation checks
     let route_count = config.routes.len();
     let upstream_count = config.upstreams.len();
@@ -240,6 +245,24 @@ fn test_config(config_path: Option<&str>, strict: bool) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Open the database of every geo filter, as the proxy does at startup, and
+/// return how many there are.
+///
+/// A configuration that passes `test` or `validate` then does not stop startup
+/// on a database that will not open. The filters of namespaces and services
+/// are included, under the ids the proxy gives them.
+///
+/// # Errors
+///
+/// Fails when any database does not open; the error names each filter, its
+/// `database-path` and the reason.
+fn open_geo_databases(config: &Config) -> Result<usize> {
+    let (lowered, _) = config.lower_scopes_reporting();
+    let manager = zentinel_proxy::geo_filter::GeoFilterManager::from_config(&lowered)
+        .context("Geo filter database check failed")?;
+    Ok(manager.filter_ids().len())
 }
 
 /// Settings in the configuration file that no parser applies.
@@ -327,6 +350,11 @@ fn validate_config(
         .context("Configuration schema validation failed")?;
 
     println!("✓ Configuration schema valid");
+
+    let geo_databases = open_geo_databases(&config)?;
+    if geo_databases > 0 {
+        println!("✓ {} geo filter database(s) open", geo_databases);
+    }
 
     // Runtime validation (async)
     let rt = tokio::runtime::Runtime::new()?;
