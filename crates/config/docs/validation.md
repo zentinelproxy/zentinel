@@ -44,10 +44,39 @@ Minimum supported: `1.0`
 | `id` | Non-empty, unique |
 | `address` | Valid socket address (host:port) |
 | `protocol` | Must be `http`, `https`, `h2`, `h3` or `h2c`; `https` and `h2` need a `tls` block, `h2c` must not have one |
-| `tls` | Required when protocol is `https` |
+| `tls` | Required when protocol is `https` or `h2`; its certificate and key files must be loadable (see below) |
 | `request-timeout-secs` | `> 0` |
 
 **At least one listener is required.**
+
+#### TLS listeners
+
+A listener with protocol `https` or `h2` is built at startup from its `tls`
+block. If that fails -- a `cert-file` or `key-file` that does not exist or is
+not PEM, an `sni` certificate that cannot be loaded, a `ca-file` that cannot be
+read, TLS settings that cannot be built -- the proxy logs an error naming the
+listener, its address and the file, and exits with a non-zero status. No
+listener is started without it. The check runs before ACME initialization and,
+with `--daemon`, before the process forks, so the failure reaches the shell
+that started the proxy.
+
+`zentinel test` builds every TLS listener the same way and reports each one
+that fails, so apart from certificates that ACME has yet to issue, a
+configuration that `zentinel test` accepts is one whose TLS listeners startup
+can build. A relative path is read from `system { working-directory }` when it
+is set (startup changes into it as well) and from the current directory
+otherwise.
+
+ACME is the exception. For an `https` listener whose default certificate comes
+from an `acme` block, `zentinel test` does not require the certificate to exist
+yet, because ACME issues it while the proxy starts; the listener's `sni`
+certificates and `ca-file` are still loaded. ACME issues certificates only for
+`https` listeners, so an `h2` listener with an `acme` block is checked like any
+other: `zentinel test` and startup stop on it unless its certificate files
+already exist.
+
+A reload keeps the certificates it already has when the new files cannot be
+loaded; only startup refuses.
 
 ### Routes
 

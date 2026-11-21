@@ -20,25 +20,37 @@ listeners {
         default-route "fallback"
     }
 
-    listener "https" {
-        address "0.0.0.0:8443"
-        protocol "https"
-        request-timeout-secs 60
-        keepalive-timeout-secs 75
-
-        tls {
-            cert-file "/etc/zentinel/certs/server.crt"
-            key-file "/etc/zentinel/certs/server.key"
-            min-version "TLS1.2"
-            ocsp-stapling #true
-            session-resumption #true
-            // Custom cipher suites are configured as repeated nodes, e.g.:
-            //   cipher-suite "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
-            // NOTE: cipher-suite, min-version, max-version and client-auth are
-            // parsed but not yet applied to the listener (issue #303); the
-            // listener currently uses the built-in intermediate TLS profile.
-        }
-    }
+    // HTTPS listener, off by default: it needs a certificate and key, and a
+    // TLS listener whose files do not exist stops the proxy from starting.
+    // To enable it, create the files, for example a self-signed pair for
+    // localhost in `certs/` (relative paths are read from the directory the
+    // proxy is started in, or from `system { working-directory }` when set;
+    // keep the key out of version control):
+    //
+    //   mkdir -p certs
+    //   openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+    //       -keyout certs/server.key -out certs/server.crt \
+    //       -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
+    //
+    // then remove the `//` from the listener below and check it with
+    // `zentinel test --config config/zentinel.kdl`.
+    //
+    // listener "https" {
+    //     address "0.0.0.0:8443"
+    //     protocol "https"
+    //     request-timeout-secs 60
+    //     keepalive-timeout-secs 75
+    //
+    //     tls {
+    //         cert-file "certs/server.crt"
+    //         key-file "certs/server.key"
+    //         min-version "TLS1.2"
+    //         ocsp-stapling #true
+    //         session-resumption #true
+    //         // Custom cipher suites are configured as repeated nodes, e.g.:
+    //         //   cipher-suite "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+    //     }
+    // }
 }
 
 // ============================================================================
