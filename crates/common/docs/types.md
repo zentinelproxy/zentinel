@@ -161,6 +161,24 @@ let policy = RetryPolicy::default();
 | `backoff_max_ms` | u64 | 5000 | Maximum backoff delay |
 | `retryable_status_codes` | Vec<u16> | [502, 503, 504] | Status codes to retry |
 
+### Idempotent methods
+
+```rust
+use zentinel_common::types::is_idempotent_method;
+
+assert!(is_idempotent_method("GET"));
+assert!(!is_idempotent_method("POST"));
+assert!(!is_idempotent_method("get")); // method names are case-sensitive
+assert!(!is_idempotent_method("QUERY")); // not an RFC 9110 method
+```
+
+`is_idempotent_method` is true for the six idempotent methods of RFC 9110
+section 9.2.2: GET, HEAD, OPTIONS, TRACE, PUT and DELETE. It is the one
+definition the proxy uses to decide whether a request may be sent again, after
+an error and after a retryable status code alike. A request with any other
+method is sent again only where `retry_non_idempotent` is set
+(`RetryPolicy::may_retry_method`).
+
 ## Circuit Breaker
 
 ### CircuitBreakerConfig
@@ -184,8 +202,8 @@ let config = CircuitBreakerConfig {
 |-------|------|---------|-------------|
 | `failure_threshold` | u32 | 5 | Consecutive failures to open |
 | `success_threshold` | u32 | 2 | Consecutive successes to close |
-| `timeout_seconds` | u64 | 30 | Time in open state before half-open |
-| `half_open_max_requests` | u32 | 1 | Requests allowed in half-open |
+| `timeout_seconds` | u64 | 30 | Time in open state before half-open. Also how long a half-open period whose slots are all taken lasts, counted from its start (or last restart), before the next request starts it over as a new period |
+| `half_open_max_requests` | u32 | 1 | Trial slots in half-open, besides the request that ends the open period. A trial that ends without a result gives its slot back |
 
 ### CircuitBreakerState
 

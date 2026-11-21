@@ -74,6 +74,8 @@ pub struct RequestMetrics {
     upstream_attempts: IntCounterVec,
     /// Upstream failures
     upstream_failures: IntCounterVec,
+    /// Requests not sent to the upstream again after an error, by reason
+    retries_refused: IntCounterVec,
     /// Circuit breaker state (0 = closed, 1 = open)
     circuit_breaker_state: IntGaugeVec,
     /// Agent call latency
@@ -200,6 +202,13 @@ impl RequestMetrics {
             &["upstream", "route", "reason"]
         )
         .context("Failed to register upstream_failures metric")?;
+
+        let retries_refused = register_int_counter_vec!(
+            "zentinel_upstream_retries_refused_total",
+            "Total requests not sent to the upstream again after an error, by reason",
+            &["reason"]
+        )
+        .context("Failed to register retries_refused metric")?;
 
         let circuit_breaker_state = register_int_gauge_vec!(
             "zentinel_circuit_breaker_state",
@@ -411,6 +420,7 @@ impl RequestMetrics {
             active_requests,
             upstream_attempts,
             upstream_failures,
+            retries_refused,
             circuit_breaker_state,
             agent_latency,
             agent_timeouts,
@@ -472,6 +482,16 @@ impl RequestMetrics {
         self.upstream_failures
             .with_label_values(&[upstream, route, reason])
             .inc();
+    }
+
+    /// Record a request that was not sent to the upstream again after an
+    /// error because it might have been acted on, or its body could not be
+    /// replayed.
+    ///
+    /// `reason` is one of a fixed set of values, `non_idempotent_method` or
+    /// `retry_buffer_truncated`, never taken from the request.
+    pub fn record_retry_refused(&self, reason: &str) {
+        self.retries_refused.with_label_values(&[reason]).inc();
     }
 
     /// Update circuit breaker state

@@ -44,7 +44,7 @@ let config = CircuitBreakerConfig {
     failure_threshold: 5,      // Open after 5 failures
     success_threshold: 2,      // Close after 2 successes
     timeout_seconds: 30,       // Wait 30s before half-open
-    half_open_max_requests: 1, // Allow 1 request in half-open
+    half_open_max_requests: 1, // Allow 1 trial request in half-open
 };
 
 let breaker = CircuitBreaker::new(config);
@@ -72,6 +72,45 @@ async fn call_upstream(breaker: &CircuitBreaker) -> Result<Response, Error> {
     }
 }
 ```
+
+### Half-Open Trial Requests
+
+In half-open state `admit()` lets up to `half_open_max_requests` trial requests
+through, each holding a `TrialSlot`. The request that ends the open period goes
+through as well and holds no slot. A trial reports `record_success()` or
+`record_failure()`. A request that ends without a result of its own (the client
+went away, a filter refused it) says nothing about the service and hands its
+slot back instead:
+
+```rust
+use zentinel_common::Admission;
+
+let admission = breaker.admit();
+if admission == Admission::Refused {
+    return Err(Error::CircuitOpen);
+}
+
+match upstream_request().await {
+    Ok(response) => breaker.record_success(),
+    Err(e) if e.is_upstream_failure() => breaker.record_failure(),
+    // Not the upstream's doing: no result, slot returned.
+    Err(_) => {
+        if let Admission::Trial(slot) = admission {
+            breaker.release_half_open_slot(slot);
+        }
+    }
+}
+```
+
+`release_half_open_slot()` takes the slot by value, so it is given back once, and
+it does nothing once the half-open period the slot was taken in is over. It
+never changes a counter. `is_closed()` is `admit()` for callers that only want a
+yes or no; a slot it takes cannot be given back.
+
+A trial that is lost altogether does not block the breaker for good. When the
+half-open period began (or last started over) at least `timeout_seconds` ago and
+every slot is still taken, the next `admit()` starts the period over and lets a
+new trial through.
 
 ### State Inspection
 

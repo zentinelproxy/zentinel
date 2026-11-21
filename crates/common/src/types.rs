@@ -317,18 +317,29 @@ impl RetryPolicy {
 
     /// Whether a request using `method` may be replayed.
     ///
-    /// Idempotent methods are safe by definition. Anything else needs
-    /// `retry_non_idempotent`, because replaying it can duplicate a side
-    /// effect the origin already performed.
+    /// Idempotent methods (see [`is_idempotent_method`]) are safe by
+    /// definition. Anything else needs `retry_non_idempotent`, because
+    /// replaying it can duplicate a side effect the origin already performed.
     pub fn may_retry_method(&self, method: &str) -> bool {
-        if self.retry_non_idempotent {
-            return true;
-        }
-        matches!(
-            method.to_ascii_uppercase().as_str(),
-            "GET" | "HEAD" | "PUT" | "DELETE" | "OPTIONS" | "TRACE"
-        )
+        self.retry_non_idempotent || is_idempotent_method(method)
     }
+}
+
+/// Whether `method` is idempotent in the sense of RFC 9110 section 9.2.2: GET,
+/// HEAD, OPTIONS, TRACE, PUT or DELETE.
+///
+/// Method names are case-sensitive (RFC 9110 section 9.1), so `get` is not
+/// GET. A method RFC 9110 does not define, QUERY for one, is not idempotent
+/// here, although `http::Method::is_idempotent` says it is.
+///
+/// This is the one definition the proxy uses to decide whether a request may
+/// be sent again, after an error and after a retryable status code alike.
+#[must_use]
+pub fn is_idempotent_method(method: &str) -> bool {
+    matches!(
+        method,
+        "GET" | "HEAD" | "OPTIONS" | "TRACE" | "PUT" | "DELETE"
+    )
 }
 
 /// Circuit breaker configuration
@@ -665,14 +676,43 @@ mod retry_policy_tests {
     #[test]
     fn only_idempotent_methods_are_replayed_by_default() {
         let p = RetryPolicy::default();
-        for method in ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "get"] {
+        for method in ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"] {
             assert!(p.may_retry_method(method), "{method} should be retryable");
         }
-        for method in ["POST", "PATCH", "post", "LOCK"] {
+        for method in ["POST", "PATCH", "post", "LOCK", "QUERY"] {
             assert!(
                 !p.may_retry_method(method),
                 "{method} must not be replayed without opting in"
             );
+        }
+    }
+
+    /// RFC 9110 section 9.1: method names are case-sensitive.
+    #[test]
+    fn a_method_in_another_case_is_not_idempotent() {
+        for method in ["get", "Get", "head", "put", "delete", "options", "trace"] {
+            assert!(
+                !is_idempotent_method(method),
+                "{method} is not an RFC 9110 method name"
+            );
+            assert!(!RetryPolicy::default().may_retry_method(method));
+        }
+    }
+
+    /// QUERY is not in RFC 9110, although `http::Method::is_idempotent` says
+    /// it is.
+    #[test]
+    fn query_is_not_idempotent() {
+        assert!(!is_idempotent_method("QUERY"));
+    }
+
+    #[test]
+    fn the_six_methods_of_rfc_9110_are_idempotent() {
+        for method in ["GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE"] {
+            assert!(is_idempotent_method(method), "{method}");
+        }
+        for method in ["POST", "PATCH", "CONNECT", ""] {
+            assert!(!is_idempotent_method(method), "{method}");
         }
     }
 

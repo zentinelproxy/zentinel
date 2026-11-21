@@ -327,6 +327,44 @@ one:
                Send Request
 ```
 
+### Retrying After an Upstream Error
+
+An error after the connection to the upstream was established, a connection
+dropped before the response header for example, can be followed by another
+attempt at the same request. The proxy does not send the request again when
+the upstream may already have acted on it:
+
+| Request | Sent again after such an error |
+|---------|--------------------------------|
+| Method GET, HEAD, OPTIONS, TRACE, PUT or DELETE | Yes, as the error type allows |
+| Any other method, such as POST, PATCH or QUERY | No, unless the route's `retry-policy` sets `retry-non-idempotent #true` |
+| Body larger than the retry buffer | No, whatever the method: the body cannot be replayed |
+
+The methods in the first row are the idempotent methods of RFC 9110 section
+9.2.2. Method names are case-sensitive, so `get` is not one of them. The same
+rule decides whether a request is sent again on a status code listed in
+`retryable-status-codes`.
+
+When the proxy does not send the request again, the client gets the error, a
+502 for a dropped connection. The log says `Not retrying a request that may
+have been sent to the upstream`, with a `reason` of `non_idempotent_method` or
+`retry_buffer_truncated`, and
+`zentinel_upstream_retries_refused_total{reason}` counts it.
+
+The case likely to come up first is a connection the proxy kept for reuse,
+which the upstream closed while it was idle. A POST sent on it, and a gRPC
+call is a POST, used to be sent again silently on a new connection. It now
+gets a 502, and the client decides whether to send it again. To restore the
+earlier behavior for a route, set `retry-non-idempotent #true` in its
+`retry-policy`.
+
+The retry buffer holds 64 KiB of the request body by default. On a route that
+reads the whole body (API schema validation, body inspection, MCP) it is
+sized to that route's limit instead: the route's body size limit, never
+above the global one, or the MCP envelope limit.
+
+A failure to connect happens before the request is sent and is not affected.
+
 ## Rate Limiting Architecture
 
 ```
@@ -448,7 +486,44 @@ one:
   - failure_threshold: 5 (consecutive failures to open)
   - success_threshold: 2 (consecutive successes to close)
   - timeout_secs: 30 (time in open state before half-open)
+  - half_open_max_requests: 1 (trial requests let through in half-open)
 ```
+
+### What a request tells the breaker
+
+What a request tells the breaker of the target it was sent to. An attempt is
+reported at most once. An error of the upstream after the connection was
+established is reported when it happens, which is also how an attempt that a
+retry replaces is counted. Any other outcome is reported when the request
+ends, for its last attempt:
+
+| Outcome | Reported as |
+|---------|-------------|
+| Status below 500 | Success |
+| Status of 500 or more | Failure |
+| Connection failure, upstream timeout, upstream read or write error | Failure |
+| Client went away, client body over its limit, request or response refused by an agent or filter | No result |
+
+A request with no result is neither a success nor a failure: it does not
+reset the run of failures, count towards closing the breaker, or reach the
+load balancer's health and latency accounting. When it was a half-open trial,
+it gives its trial slot back so another request can take its place; so does
+the attempt before a retry, if it reported nothing.
+
+`failure_threshold` counts the failures that are reported. An error of the
+upstream after the connection was established counts once per attempt, an
+attempt that a retry replaces included. Any other outcome counts once, for the
+last attempt. A connection failure that a retry replaces, and a 5xx response
+that is discarded for a retry, are not counted.
+
+Shadow requests are never half-open trials: while a target's breaker is open
+or half-open it receives no shadow traffic.
+
+If a trial is lost altogether (the request was dropped before it could report
+or give its slot back), the half-open period does not wait for it forever.
+When the period began (or last started over) at least `timeout_secs` ago and
+every slot is still taken, the next request starts it over and is let through
+as a new trial. No setting controls this; it reuses `timeout_secs`.
 
 ## Scoped Configuration
 
