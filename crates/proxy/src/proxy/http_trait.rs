@@ -273,6 +273,82 @@ impl ZentinelProxy {
         );
         ctx.client_ip = client.to_string();
     }
+
+    /// The client as agents see it: the same address rate limiting and the
+    /// upstream's X-Forwarded-For use. This was the raw peer formatted as
+    /// "ip:port", and the port was always sent as 0. The port is now the
+    /// peer's when the peer is the client, and 0 when the client address
+    /// came from a trusted proxy's X-Forwarded-For (its port is unknown).
+    fn agent_client(session: &Session, ctx: &RequestContext) -> (String, u16) {
+        let peer = session.client_addr().and_then(to_socket_addr);
+        let client_addr = if ctx.client_ip.is_empty() {
+            "unknown".to_string()
+        } else {
+            ctx.client_ip.clone()
+        };
+        let client_port = peer
+            .filter(|p| super::listener_addr::canonical_ip(p.ip()).to_string() == client_addr)
+            .map(|p| p.port())
+            .unwrap_or(0);
+        (client_addr, client_port)
+    }
+
+    /// Answer a request an agent filter stopped, with an error from
+    /// [`Self::process_agents`] (or the body decision that follows it).
+    ///
+    /// An `HTTPStatus` error -- an agent's block, redirect or challenge, or a
+    /// fail-closed filter -- is written to the client as a response, and
+    /// `Ok(true)` tells `request_filter` the request is complete. Any other
+    /// error is returned as it is.
+    async fn answer_agent_refusal(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestContext,
+        e: Box<Error>,
+    ) -> Result<bool, Box<Error>> {
+        // Check if this is an HTTPStatus error (e.g., agent block or fail-closed)
+        // In that case, we need to send a proper HTTP response instead of just closing the connection
+        if let ErrorType::HTTPStatus(status) = e.etype() {
+            // Extract the message from the error (the context part after "HTTPStatus context:")
+            let error_msg = e.to_string();
+            let body = error_msg
+                .split("context:")
+                .nth(1)
+                .map(|s| s.trim())
+                .unwrap_or("Request blocked");
+            // An agent's own body is sent as it is: the agent chose what
+            // to tell the client. A block without one gets the route's
+            // error page for the status, when it has one (#557).
+            let default = handlers::ProxyError::text(*status, body);
+            match ctx.agent_block.take().filter(|b| b.status == *status) {
+                Some(block) => {
+                    debug!(
+                        correlation_id = %ctx.trace_id,
+                        status = status,
+                        "Sending the agent's block response"
+                    );
+                    let (header, body) = self.agent_block_response(ctx, &block, default).await?;
+                    session.set_keepalive(None);
+                    session
+                        .write_response_header(Box::new(header), false)
+                        .await?;
+                    session.write_response_body(Some(body), true).await?;
+                }
+                None => {
+                    debug!(
+                        correlation_id = %ctx.trace_id,
+                        status = status,
+                        body = %body,
+                        "Sending HTTP error response for agent block"
+                    );
+                    self.write_proxy_error(session, ctx, default).await?;
+                }
+            }
+            return Ok(true); // Request complete, don't continue to upstream
+        }
+        // For other errors, propagate them
+        Err(e)
+    }
 }
 
 /// One RFC 9211 `Cache-Status` List member describing what this cache did.
@@ -1908,6 +1984,19 @@ impl ProxyHttp for ZentinelProxy {
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                     "Handling static file route"
                 );
+                // The route's agent filters decide before the file is served,
+                // as they do before a request is proxied. Only request headers
+                // are sent: the route serves GET and HEAD, and its body is
+                // never read. A route without filters pays nothing.
+                if !route_config.filters.is_empty() {
+                    let (client_addr, client_port) = Self::agent_client(session, ctx);
+                    if let Err(e) = self
+                        .process_agents(session, ctx, &client_addr, client_port)
+                        .await
+                    {
+                        return self.answer_agent_refusal(session, ctx, e).await;
+                    }
+                }
                 // Create a minimal RouteMatch for the handler
                 let route_match = crate::routing::RouteMatch {
                     route_id: zentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
@@ -1953,21 +2042,7 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
-        // The client as agents see it: the same address rate limiting and the
-        // upstream's X-Forwarded-For use. This was the raw peer formatted as
-        // "ip:port", and the port was always sent as 0. The port is now the
-        // peer's when the peer is the client, and 0 when the client address
-        // came from a trusted proxy's X-Forwarded-For (its port is unknown).
-        let peer = session.client_addr().and_then(to_socket_addr);
-        let client_addr = if ctx.client_ip.is_empty() {
-            "unknown".to_string()
-        } else {
-            ctx.client_ip.clone()
-        };
-        let client_port = peer
-            .filter(|p| super::listener_addr::canonical_ip(p.ip()).to_string() == client_addr)
-            .map(|p| p.port())
-            .unwrap_or(0);
+        let (client_addr, client_port) = Self::agent_client(session, ctx);
 
         let req_header = session.req_header_mut();
 
@@ -2045,49 +2120,7 @@ impl ProxyHttp for ZentinelProxy {
             Err(e) => Err(e),
         };
         if let Err(e) = agents {
-            // Check if this is an HTTPStatus error (e.g., agent block or fail-closed)
-            // In that case, we need to send a proper HTTP response instead of just closing the connection
-            if let ErrorType::HTTPStatus(status) = e.etype() {
-                // Extract the message from the error (the context part after "HTTPStatus context:")
-                let error_msg = e.to_string();
-                let body = error_msg
-                    .split("context:")
-                    .nth(1)
-                    .map(|s| s.trim())
-                    .unwrap_or("Request blocked");
-                // An agent's own body is sent as it is: the agent chose what
-                // to tell the client. A block without one gets the route's
-                // error page for the status, when it has one (#557).
-                let default = handlers::ProxyError::text(*status, body);
-                match ctx.agent_block.take().filter(|b| b.status == *status) {
-                    Some(block) => {
-                        debug!(
-                            correlation_id = %ctx.trace_id,
-                            status = status,
-                            "Sending the agent's block response"
-                        );
-                        let (header, body) =
-                            self.agent_block_response(ctx, &block, default).await?;
-                        session.set_keepalive(None);
-                        session
-                            .write_response_header(Box::new(header), false)
-                            .await?;
-                        session.write_response_body(Some(body), true).await?;
-                    }
-                    None => {
-                        debug!(
-                            correlation_id = %ctx.trace_id,
-                            status = status,
-                            body = %body,
-                            "Sending HTTP error response for agent block"
-                        );
-                        self.write_proxy_error(session, ctx, default).await?;
-                    }
-                }
-                return Ok(true); // Request complete, don't continue to upstream
-            }
-            // For other errors, propagate them
-            return Err(e);
+            return self.answer_agent_refusal(session, ctx, e).await;
         }
 
         trace!(
