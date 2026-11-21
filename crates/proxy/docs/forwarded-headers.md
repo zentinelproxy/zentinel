@@ -46,10 +46,28 @@ the same character, because some servers read `X_Real_IP` as `X-Real-IP`. A
 copy of `X-Forwarded-For`, `X-Forwarded-Proto` or `X-Forwarded-Host` spelled
 that way is removed too, so it cannot sit next to the one Zentinel writes.
 
-**Trusted peer.** The incoming chain is believed. The peer is appended to
-`X-Forwarded-For`, an incoming `X-Forwarded-Proto` or `X-Forwarded-Host` is
-kept (and written as above when absent), and the headers in the list below
-are passed on unchanged.
+**Trusted peer.** The incoming chain is believed, and what the peer sent is
+checked before it is passed on:
+
+| Header | From a trusted peer |
+|--------|---------------------|
+| `X-Forwarded-For` | The peer is appended, and the chain that is passed on starts at the client IP Zentinel chose (see below). Everything to the left of the client, whether an address or not (`unknown`, a host name), is left out, because no trusted hop vouched for it. The client and the trusted hops to its right stay as written, in their order. An upstream that reads the chain from the right with the same trusted networks reaches the same client. |
+| `X-Forwarded-Proto` | Kept as sent when every element is `http` or `https` (any letter case). Otherwise replaced by the scheme of the listener, as in the table above. |
+| `X-Forwarded-Host` | Kept as sent when every element reads as a host with an optional port: a name of letters, digits, `-`, `.` and `_`, an IPv4 address, or an IPv6 address in brackets. Otherwise (an element that is empty or contains a space, a control character, `/` or `@`) replaced by the request's own host, or removed when the request has none. |
+| `X-Real-IP` | Rewritten to the client IP Zentinel chose. Not added when the peer did not send one. |
+| `Forwarded` and the other headers in the list below | Passed on as sent. Zentinel does not read or write them, so it does not check them either; an upstream that reads `Forwarded` gets what the trusted peer put there, including, in its `for=` elements, the addresses that were left out of `X-Forwarded-For`. |
+
+For `X-Forwarded-Proto` and `X-Forwarded-Host`, all lines of the header are
+read as one comma-separated list, the way a proxy that adds its own value to
+the one it received writes it (`https, http`). The value stays as sent when
+every element is accepted; one element that is not accepted replaces all of
+it, so no element that was not checked reaches the upstream.
+
+A copy of `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` or
+`X-Real-IP` spelled with `_` instead of `-` (`X_Real_IP`) is removed, because
+some servers read it as the hyphenated name; otherwise a value that was not
+checked would reach the upstream next to the one that was. The other headers
+in the list below are passed on in any spelling.
 
 If Zentinel sits behind a load balancer or CDN, list that peer in
 `trusted-proxies`; otherwise the upstream sees the load balancer's address and
@@ -58,6 +76,22 @@ is chosen, so a route's `matches { header ... }` condition and a rate limit
 keyed on a header (`key "header:..."`) also read the request without them: if
 the peer in front of Zentinel is not listed, those headers count as absent, and
 a header-keyed rate limit uses the shared key `unknown`.
+
+The chain that is passed on starts at the first address, counting from the
+right end of the chain, that is not listed (or at the last listed hop before an
+element that is not an address). To keep a proxy that sits between
+the client and the listed peer, and the addresses before it, in
+`X-Forwarded-For`, list that proxy as well. A listed proxy is trusted in every
+respect, so this also has effects beyond the chain:
+
+- The client IP Zentinel chooses (the `client-ip` rate-limit key, geo filters,
+  access logs, `ip-hash` and the agents' `client_ip`) becomes the address to
+  the left of that proxy.
+- A listed proxy that connects to Zentinel directly is exempt from
+  `max-connections-per-client`, which counts the TCP peer only (see
+  `crates/proxy/src/connection_limit.rs`).
+- The forwarding headers of a request that reaches Zentinel directly from that
+  proxy are believed as well.
 
 ## Headers removed from untrusted peers
 

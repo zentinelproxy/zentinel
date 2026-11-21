@@ -398,7 +398,9 @@ fn untrusted_peer_forwarding_headers_reach_neither_agent_nor_upstream() {
     }
 }
 
-/// From a peer in `trusted-proxies`, the same headers are passed on as sent.
+/// From a peer in `trusted-proxies`, the same headers are passed on as sent,
+/// except the ones the proxy checks and rewrites (`X-Forwarded-*` and
+/// `X-Real-IP`): a copy of those spelled with underscores is removed.
 #[test]
 fn trusted_peer_forwarding_headers_reach_agent_and_upstream() {
     let setup = setup();
@@ -408,12 +410,24 @@ fn trusted_peer_forwarding_headers_reach_agent_and_upstream() {
         for name in FORWARDING_HEADERS {
             for spelled in spellings(name) {
                 let lower = spelled.to_ascii_lowercase();
+                // `VALUE` is also the client IP the proxy chose for `X-Real-IP`.
+                let expected = if lower == "x_real_ip" {
+                    None
+                } else {
+                    Some(&[VALUE.to_string()][..])
+                };
                 assert_eq!(
                     headers.get(&lower).map(Vec::as_slice),
-                    Some(&[VALUE.to_string()][..]),
+                    expected,
                     "{who}: {spelled}: {headers:?}"
                 );
             }
+        }
+        for name in ["x_forwarded_for", "x_forwarded_proto", "x_forwarded_host"] {
+            assert!(
+                !headers.contains_key(name),
+                "{who} received {name}: {headers:?}"
+            );
         }
         assert_eq!(
             headers.get("x-forwarded-for").map(Vec::as_slice),
@@ -445,4 +459,61 @@ fn headers_written_by_an_agent_or_a_policy_survive_the_removal() {
         Some(&[POLICY_VALUE.to_string()][..]),
         "{backend:?}"
     );
+}
+
+/// From a peer in `trusted-proxies`, a chain element that is not an address,
+/// a scheme other than `http` and `https`, and a value that is not a host are
+/// not passed on, and `X-Real-IP` is the client IP the proxy chose. Agents and
+/// the upstream see the same request.
+#[test]
+fn trusted_peer_invalid_forwarding_values_reach_neither_agent_nor_upstream() {
+    let setup = setup();
+    let path = "/trusted-invalid";
+    let extra = [
+        ("X-Forwarded-For", "unknown, 198.51.100.7"),
+        ("X-Forwarded-Proto", "ftp"),
+        ("X-Forwarded-Host", "a.example/path"),
+        ("X-Real-IP", "192.0.2.99"),
+        ("Forwarded", "for=198.51.100.7;proto=https"),
+    ];
+    assert_eq!(get(setup.trusted_port, path, &extra), 200);
+    let agent = setup.seen.agent.lock().unwrap().get(path).cloned().unwrap();
+    let backend = setup
+        .seen
+        .backend
+        .lock()
+        .unwrap()
+        .get(path)
+        .cloned()
+        .unwrap();
+
+    for (who, headers) in [("agent", &agent), ("upstream", &backend)] {
+        let one = |name: &str| headers.get(name).map(Vec::as_slice);
+        assert_eq!(
+            one("x-forwarded-for"),
+            Some(&["198.51.100.7, 127.0.0.1".to_string()][..]),
+            "{who}: {headers:?}"
+        );
+        assert_eq!(
+            one("x-forwarded-proto"),
+            Some(&["http".to_string()][..]),
+            "{who}: {headers:?}"
+        );
+        assert_eq!(
+            one("x-forwarded-host"),
+            Some(&["a.example".to_string()][..]),
+            "{who}: {headers:?}"
+        );
+        assert_eq!(
+            one("x-real-ip"),
+            Some(&["198.51.100.7".to_string()][..]),
+            "{who}: {headers:?}"
+        );
+        // `Forwarded` is passed on as the peer sent it.
+        assert_eq!(
+            one("forwarded"),
+            Some(&["for=198.51.100.7;proto=https".to_string()][..]),
+            "{who}: {headers:?}"
+        );
+    }
 }

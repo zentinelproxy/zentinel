@@ -145,9 +145,11 @@ pub struct ListenerConfig {
     ///
     /// When the peer is inside one of these networks (a load balancer or CDN
     /// in front of Zentinel), the peer's address is appended to the incoming
-    /// `X-Forwarded-For`, incoming `X-Forwarded-Proto`/`-Host` are kept, and the
-    /// client IP Zentinel itself uses is the right-most chain entry that is not
-    /// a trusted proxy.
+    /// `X-Forwarded-For` (which then starts at the client IP; entries to its
+    /// left are left out), incoming `X-Forwarded-Proto`/`-Host` are kept when
+    /// they are a scheme (`http` or `https`) and a host and replaced otherwise,
+    /// `X-Real-IP` is rewritten to the client IP, and the client IP Zentinel
+    /// itself uses is the right-most chain entry that is not a trusted proxy.
     ///
     /// This is per listener because trust is a property of who can connect to
     /// a socket: an internal port behind a load balancer and a public port on
