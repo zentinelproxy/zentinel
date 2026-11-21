@@ -138,7 +138,10 @@ pub struct ListenerConfig {
     /// is replaced by the TCP peer's address, and `X-Forwarded-Proto` /
     /// `X-Forwarded-Host` by what this listener itself observed. Anything else
     /// would let any client choose the IP address that backends and agents (IP
-    /// reputation, rate limiting) see.
+    /// reputation, rate limiting) see. The other headers that carry the same
+    /// kind of information (`Forwarded`, `X-Real-IP`, `True-Client-IP`,
+    /// `X-Forwarded-Port`, `X-Original-URL`, ...) are removed from such a
+    /// request; the full list is in the proxy crate's `docs/forwarded-headers.md`.
     ///
     /// When the peer is inside one of these networks (a load balancer or CDN
     /// in front of Zentinel), the peer's address is appended to the incoming
