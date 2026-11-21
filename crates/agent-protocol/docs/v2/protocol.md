@@ -128,6 +128,33 @@ deduplicated). This is independent of whether the agent's `events` list includes
 Failures are logged and do not affect the client response. Correlation affinity
 is released only after these notifications.
 
+### Events the agent cannot decode
+
+An `AgentResponse` is a decision, and the proxy acts on whichever one it is
+given, so none of them can mean "this event could not be read". A server that
+cannot decode an event from the proxy therefore does not answer it.
+`UdsAgentServerV2` logs the failure at ERROR, with the agent id and the
+event's `correlation_id`, and closes the connection. The payload is not
+logged, and the decoder's own message, which can quote a value from it, goes
+only to the DEBUG log. The proxy sees the connection end and fails the calls
+waiting on it, and the filter's `failure-mode` applies as for any failed call:
+
+- **`RequestHeaders`, `RequestBodyChunk`, `ResponseHeaders`,
+  `ResponseBodyChunk`:** `closed` blocks, with a 503 (504 for a timeout);
+  `open` carries on without that agent's decision.
+- **`WebSocketFrame`:** `closed` closes the WebSocket with code 1011 and the
+  reason "Agent error"; `open` passes the frame on.
+- **`Configure`:** the connection counts as failed rather than as having
+  accepted its configuration.
+- **`RequestComplete`:** the proxy does not use the result and it never
+  affects the client.
+
+A closed connection keeps being chosen until the pool marks it unhealthy
+(after three consecutive failures on it, or at the next health check, every
+10 s by default), and the calls sent to it in the meantime fail too. The
+pool's maintenance then opens a replacement. A handler that panics ends the
+connection's task and has the same effect.
+
 ### Example Frame
 
 ```
