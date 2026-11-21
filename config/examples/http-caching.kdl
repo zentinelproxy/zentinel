@@ -341,37 +341,9 @@ routes {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Cache purge endpoint (builtin handler)
-    // -------------------------------------------------------------------------
-    route "cache-purge" {
-        priority "critical"
-
-        matches {
-            path-prefix "/_cache/purge"
-            method "POST" "DELETE"
-        }
-
-        builtin-handler "cache-purge"
-
-        policies {
-            failure-mode "closed"
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Cache stats endpoint (builtin handler)
-    // -------------------------------------------------------------------------
-    route "cache-stats" {
-        priority "critical"
-
-        matches {
-            path "/_cache/stats"
-            method "GET"
-        }
-
-        builtin-handler "cache-stats"
-    }
+    // The cache purge and cache stats routes are not here: a route written in
+    // this block is served on every listener, including the public one above.
+    // They are in the "admin" namespace below.
 
     // Health check
     route "health" {
@@ -382,6 +354,52 @@ routes {
         }
 
         builtin-handler "health"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Cache administration (builtin handlers)
+//
+// A namespace with a listener of its own is served only on that listener, and
+// that listener serves only the namespace's routes. These two routes therefore
+// answer on 127.0.0.1:9091 and nowhere else. The port is not 9090 because the
+// metrics server below already binds it.
+// -----------------------------------------------------------------------------
+namespace "admin" {
+    listeners {
+        listener "http" {
+            address "127.0.0.1:9091"
+            protocol "http"
+            request-timeout-secs 5
+        }
+    }
+
+    routes {
+        route "cache-purge" {
+            priority "critical"
+
+            matches {
+                path-prefix "/_cache/purge"
+                method "POST" "DELETE"
+            }
+
+            builtin-handler "cache-purge"
+
+            policies {
+                failure-mode "closed"
+            }
+        }
+
+        route "cache-stats" {
+            priority "critical"
+
+            matches {
+                path "/_cache/stats"
+                method "GET"
+            }
+
+            builtin-handler "cache-stats"
+        }
     }
 }
 

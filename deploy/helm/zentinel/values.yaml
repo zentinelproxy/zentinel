@@ -108,10 +108,13 @@ proxy:
           upstream "default"
       }
 
-      metrics {
-          enabled true
-          port 9090
-          path "/metrics"
+      observability {
+          metrics {
+              enabled #true
+              // Prometheus scrapes the pod IP, so not loopback.
+              address "0.0.0.0:9090"
+              path "/metrics"
+          }
       }
 
     # External configuration

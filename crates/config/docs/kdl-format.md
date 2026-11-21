@@ -267,6 +267,64 @@ such a qualified name must be a filter, and a configuration where it is an
 agent, an upstream or a route is rejected. Scoped routes appear in logs and metrics under
 their qualified id (`api:main`, `api:users:list`).
 
+#### Builtin routes and listeners
+
+A route is served on a listener according to the rules above, and a builtin
+route is no different: a `builtin-handler` route in the top-level `routes` block
+answers on **every** listener without a `namespace`, whichever listener it was
+written for.
+
+The `metrics`, `config`, `upstreams`, `cache-stats` and `cache-purge` handlers
+report or change the state of the whole proxy, so they belong on a listener of
+their own. Declare them in a namespace that has a listener bound to a loopback
+address (or to an interface only your operators can reach). The embedded
+default configuration is laid out this way:
+
+```kdl
+listeners {
+    listener "default-http" {
+        address "0.0.0.0:8080"
+        protocol "http"
+    }
+}
+
+routes {
+    // Served on the main listener only
+    route "status" {
+        priority "low"
+        matches { path-prefix "/" }
+        service-type "builtin"
+        builtin-handler "status"
+    }
+}
+
+namespace "admin" {
+    listeners {
+        listener "http" {
+            address "127.0.0.1:9090"
+            protocol "http"
+        }
+    }
+
+    routes {
+        // Served on 127.0.0.1:9090 only
+        route "metrics" {
+            priority "high"
+            matches { path "/metrics" }
+            service-type "builtin"
+            builtin-handler "metrics"
+        }
+    }
+}
+```
+
+The conditions in a `matches` block must all hold (only several `host`
+conditions are alternatives), so a route that lists two `path` conditions that
+cannot both hold, such as two different exact paths or two prefixes that do not
+contain one another, matches no request. To answer several paths with one
+route, use one `path-regex`, as the embedded default does for its health
+probes: `path-regex "^/(health|healthz|ready)$"`.
+
 ### Routes Block
 
 ```kdl
@@ -594,6 +652,11 @@ A request with no `Content-Type` is inspected only when the list has an empty
 entry (`content-types "" "application/json"`); an empty list inspects every body.
 
 ### Observability Block
+
+The metrics server binds `127.0.0.1:9090` unless `address` says otherwise. The
+example below sets `0.0.0.0:9090`, which every network interface of the host
+can reach; use it when the scraper runs on another host or in another
+container.
 
 ```kdl
 observability {

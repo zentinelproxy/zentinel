@@ -454,15 +454,10 @@ routes {
         builtin-handler "health"
     }
 
-    route "metrics" {
-        priority "critical"
-
-        matches {
-            path "/metrics"
-        }
-
-        builtin-handler "metrics"
-    }
+    // There is no /metrics route here: a route without a listener of its own
+    // is served on every global listener, so one written in this block would
+    // answer on the public ports. Metrics are served by the metrics server in
+    // the observability block below.
 
     // Catch-all fallback
     route "fallback" {
