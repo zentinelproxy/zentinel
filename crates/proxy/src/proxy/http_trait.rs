@@ -39,6 +39,7 @@ use super::model_routing;
 use super::model_routing_metrics::get_model_routing_metrics;
 use super::ZentinelProxy;
 use zentinel_common::observability::RequestMetrics;
+use zentinel_common::types::is_idempotent_method;
 
 /// The IP socket address behind a Pingora endpoint, if it has one.
 ///
@@ -385,12 +386,36 @@ impl ProxyHttp for ZentinelProxy {
         // safe for any method, and it is bounded by the name's addresses:
         // once all of them have failed there is nothing new to retry on.
         // Targets given as socket addresses are never retried here.
-        let retry_elsewhere = match (peer.address(), ctx.selected_pool.as_ref()) {
+        //
+        // The retry is another attempt at the request: the route's
+        // `max-attempts` counts it, as it counts a retry after an error.
+        let mut retry_elsewhere = match (peer.address(), ctx.selected_pool.as_ref()) {
             (pingora::protocols::l4::socket::SocketAddr::Inet(addr), Some(pool)) => {
                 pool.connect_failed(*addr)
             }
             _ => false,
         };
+        if retry_elsewhere {
+            let max_attempts = ctx
+                .route_config()
+                .and_then(|route| route.retry_policy.as_ref())
+                .map(|policy| policy.max_attempts);
+            if attempts_used_up(ctx.request_attempts, max_attempts) {
+                retry_elsewhere = false;
+                e.set_retry(false);
+                self.metrics
+                    .record_retry_refused(ReplayRefusal::MaxAttempts.as_str());
+                info!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    upstream = ctx.upstream.as_deref().unwrap_or("unknown"),
+                    peer_address = %peer.address(),
+                    attempts = ctx.request_attempts,
+                    reason = ReplayRefusal::MaxAttempts.as_str(),
+                    "Not retrying on another address of the target: the route's max-attempts is used up"
+                );
+            }
+        }
         if retry_elsewhere {
             e.set_retry(true);
             warn!(
@@ -1049,6 +1074,19 @@ impl ProxyHttp for ZentinelProxy {
         const PEER_SELECTION_ATTEMPTS: u32 = 2;
         let max_retries = PEER_SELECTION_ATTEMPTS;
 
+        // A call that finds an earlier attempt's target is a retry: that
+        // attempt is over, and the selection below replaces its target. If it
+        // was a half-open trial that reported nothing, give its slot back
+        // first. (Where it did report a failure the breaker has moved on, and
+        // the slot is no longer there to give back.)
+        if let (Some(pool), Some(ticket)) = (ctx.selected_pool.clone(), ctx.half_open_trial.take())
+        {
+            pool.release_half_open_slot(ticket).await;
+        }
+        // The mark `error_while_proxy` sets belongs to one attempt: clear it
+        // for the attempt that starts here.
+        ctx.attempt_failure_reported = false;
+
         // Delay before this attempt at the *request*, from the route's policy.
         // upstream_peer is re-entered by Pingora's retry loop, so this is where
         // the backoff belongs.
@@ -1098,7 +1136,7 @@ impl ProxyHttp for ZentinelProxy {
             );
 
             match pool.select_peer_with_metadata(Some(&selection_ctx)).await {
-                Ok((mut peer, metadata)) => {
+                Ok((mut peer, metadata, trial)) => {
                     let selection_duration = selection_start.elapsed();
                     // Track active request for drain lifecycle. Once per
                     // request: Pingora re-enters upstream_peer on a retry, and
@@ -1110,6 +1148,7 @@ impl ProxyHttp for ZentinelProxy {
                     let peer_addr = peer.address().to_string();
                     ctx.selected_upstream_address = Some(peer_addr.clone());
                     ctx.selected_pool = Some(pool.clone());
+                    ctx.half_open_trial = trial;
 
                     // Copy sticky session metadata to context for response_filter
                     if metadata.contains_key("sticky_session_new") {
@@ -2819,11 +2858,6 @@ impl ProxyHttp for ZentinelProxy {
                 .record_outcome(upstream, success, error_msg.as_deref())
                 .await;
 
-            // Report to upstream pool
-            if let Some(pool) = self.upstream_pools.get(upstream).await {
-                pool.report_result(upstream, success).await;
-            }
-
             if !success {
                 warn!(
                     correlation_id = %ctx.trace_id,
@@ -4163,16 +4197,19 @@ impl ProxyHttp for ZentinelProxy {
         // Record failure with circuit breaker via upstream pool
         // This is done asynchronously since we can't await in a sync fn.
         //
+        // Only for an error of the upstream itself (its connection, a
+        // timeout, a read or write error), not one raised by a filter or the
+        // proxy.
+        //
         // Not for an error the client caused -- an oversized body refused
         // mid-stream, a client that went away. The peer did nothing wrong,
         // and counting these let a client trip the circuit breaker on a
         // healthy upstream. The same goes for a request an agent refused on
         // its body: the upstream request is abandoned because of the
         // refusal, not because the peer failed (#610).
-        if *e.esource() != pingora::ErrorSource::Downstream
-            && !ctx.response_blocked
-            && !ctx.request_refused_by_agent
-        {
+        if is_upstream_error(&e) && !ctx.response_blocked && !ctx.request_refused_by_agent {
+            // Counted here, once for this attempt; `logging` leaves it out.
+            ctx.attempt_failure_reported = true;
             let peer_address = peer.address().to_string();
             let upstream_pools = self.upstream_pools.clone();
             let upstream_id_owned = upstream_id.to_string();
@@ -4195,32 +4232,57 @@ impl ProxyHttp for ZentinelProxy {
             ctx.upstream_attempts
         ));
 
-        // Determine if retry should be attempted:
-        // - Only retry if error is retryable type
-        // - Only retry reused connections if buffer isn't truncated
-        // - Track retry metrics
-        if is_retryable {
-            let can_retry = if client_reused {
-                // For reused connections, check if retry buffer is intact
-                !session.as_ref().retry_buffer_truncated()
-            } else {
-                // Fresh connections can always retry
-                true
-            };
+        // The error type decides whether another attempt is worth making.
+        // Whether this request may be sent again is decided below.
+        enhanced_error.retry.decide_reuse(is_retryable);
 
-            enhanced_error.retry.decide_reuse(can_retry);
-
-            if can_retry {
-                debug!(
+        // This hook replaces Pingora's default policy, which never sends a
+        // request again when its method is not idempotent or its body no
+        // longer fits the retry buffer. Both are checked here, whether or not
+        // the connection was reused: the upstream may have received the
+        // request and acted on it, and a body that was not kept cannot be
+        // replayed.
+        //
+        // The route's `max-attempts` bounds these retries too. It counts the
+        // attempt that just failed, as it does for a retryable status code.
+        if enhanced_error.retry == RetryType::Decided(true) {
+            let retry_policy = ctx
+                .route_config()
+                .and_then(|route| route.retry_policy.as_ref());
+            let method = session.req_header().method.as_str();
+            let refusal = ReplayCheck {
+                method,
+                route_allows_non_idempotent: retry_policy
+                    .is_some_and(|policy| policy.retry_non_idempotent),
+                retry_buffer_truncated: session.as_ref().retry_buffer_truncated(),
+                attempts: ctx.request_attempts,
+                max_attempts: retry_policy.map(|policy| policy.max_attempts),
+            }
+            .refusal();
+            match refusal {
+                Some(refusal) => {
+                    enhanced_error.set_retry(false);
+                    self.metrics.record_retry_refused(refusal.as_str());
+                    info!(
+                        correlation_id = %ctx.trace_id,
+                        route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                        upstream = %upstream_id,
+                        peer_address = %peer.address(),
+                        method = method,
+                        error_type = ?error_type,
+                        client_reused = client_reused,
+                        attempts = ctx.request_attempts,
+                        reason = refusal.as_str(),
+                        "Not retrying a request that may have been sent to the upstream"
+                    );
+                }
+                None => debug!(
                     correlation_id = %ctx.trace_id,
                     upstream = %upstream_id,
                     error_type = ?error_type,
                     "Error is retryable, will attempt retry"
-                );
+                ),
             }
-        } else {
-            // Non-retryable error - don't retry
-            enhanced_error.retry.decide_reuse(false);
         }
 
         enhanced_error
@@ -4295,28 +4357,44 @@ impl ProxyHttp for ZentinelProxy {
         if let (Some(ref peer_addr), Some(ref upstream_id)) =
             (&ctx.selected_upstream_address, &ctx.upstream)
         {
-            // Success = status code < 500 (client errors are not upstream failures)
-            let success = status > 0 && status < 500;
+            let outcome = target_outcome(
+                error,
+                status,
+                ctx.request_refused_by_agent || ctx.response_blocked,
+            );
+            let success = outcome == TargetOutcome::Success;
 
             if let Some(pool) = self.upstream_pools.get(upstream_id).await {
-                // A request an agent refused says nothing about the target,
-                // either way: its status is the agent's, and its latency is
-                // the agent's decision time (#610). Counting it as a success
-                // would also reset the breaker's run of real failures.
-                if !ctx.request_refused_by_agent {
-                    pool.report_result_with_latency(peer_addr, success, Some(duration))
-                        .await;
+                // `error_while_proxy` reports an upstream error when it
+                // happens. That attempt is already counted: reporting it
+                // here too would count one failure twice.
+                if !ctx.attempt_failure_reported {
+                    match outcome {
+                        TargetOutcome::Success | TargetOutcome::Failure => {
+                            pool.report_result_with_latency(peer_addr, success, Some(duration))
+                                .await;
+                        }
+                        // Neither a success, which would also reset the
+                        // breaker's run of real failures, nor a failure. If
+                        // the request was a half-open trial, it gives its
+                        // slot back: nothing else will.
+                        TargetOutcome::NoResult => {
+                            if let Some(ticket) = ctx.half_open_trial.take() {
+                                pool.release_half_open_slot(ticket).await;
+                            }
+                        }
+                    }
+                    trace!(
+                        correlation_id = %ctx.trace_id,
+                        upstream = %upstream_id,
+                        peer_address = %peer_addr,
+                        outcome = ?outcome,
+                        duration_ms = duration.as_millis(),
+                        status = status,
+                        "Reported result to adaptive load balancer"
+                    );
                 }
                 pool.decrement_active();
-                trace!(
-                    correlation_id = %ctx.trace_id,
-                    upstream = %upstream_id,
-                    peer_address = %peer_addr,
-                    success = success,
-                    duration_ms = duration.as_millis(),
-                    status = status,
-                    "Reported result to adaptive load balancer"
-                );
             }
 
             // Track warmth for inference routes (cold model detection)
@@ -4639,6 +4717,115 @@ fn rate_limit_refusal<'a>(
         default_content_type: "text/plain; charset=utf-8",
         headers,
         ..handlers::ProxyError::text(status, body)
+    }
+}
+
+/// What a finished request says about the upstream target it was sent to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetOutcome {
+    /// The target answered: a status below 500.
+    Success,
+    /// The target failed: its connection, a timeout, a read or write error,
+    /// or a status of 500 or more.
+    Failure,
+    /// The request ended for a reason of its own, which says nothing about
+    /// the target: the client went away or sent a body over its limit, a
+    /// filter or an agent refused the request or its response.
+    NoResult,
+}
+
+/// Why a request that failed is not sent to the upstream again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayRefusal {
+    /// The method is not idempotent, and the route's `retry-policy` does not
+    /// set `retry-non-idempotent`.
+    NonIdempotentMethod,
+    /// The request body was larger than the retry buffer, so it cannot be
+    /// sent a second time.
+    RetryBufferTruncated,
+    /// The request has made as many attempts as the `max-attempts` of its
+    /// route's `retry-policy`.
+    MaxAttempts,
+}
+
+impl ReplayRefusal {
+    /// The fixed value logged, and used as the `reason` label of
+    /// `zentinel_upstream_retries_refused_total`.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NonIdempotentMethod => "non_idempotent_method",
+            Self::RetryBufferTruncated => "retry_buffer_truncated",
+            Self::MaxAttempts => "max_attempts",
+        }
+    }
+}
+
+/// What decides whether a request that failed after it may have been sent to
+/// the upstream can be sent again.
+struct ReplayCheck<'a> {
+    /// The request method, as received.
+    method: &'a str,
+    /// The route's `retry-policy` sets `retry-non-idempotent`.
+    route_allows_non_idempotent: bool,
+    /// The request body was larger than the retry buffer.
+    retry_buffer_truncated: bool,
+    /// Attempts the request has made, the one that just failed included.
+    attempts: u32,
+    /// The `max-attempts` of the route's `retry-policy`, if it has one.
+    max_attempts: Option<u32>,
+}
+
+impl ReplayCheck<'_> {
+    /// Why the request may not be sent again, if it may not.
+    ///
+    /// A method that is not idempotent
+    /// ([`zentinel_common::types::is_idempotent_method`]) is replayed only
+    /// where the route's `retry-policy` says `retry-non-idempotent`. A request
+    /// whose body was larger than the retry buffer is never replayed, whatever
+    /// its method. Nor is a request that has made the `max-attempts` of its
+    /// route's `retry-policy`; a route without one sets no limit here.
+    fn refusal(&self) -> Option<ReplayRefusal> {
+        if !is_idempotent_method(self.method) && !self.route_allows_non_idempotent {
+            Some(ReplayRefusal::NonIdempotentMethod)
+        } else if self.retry_buffer_truncated {
+            Some(ReplayRefusal::RetryBufferTruncated)
+        } else if attempts_used_up(self.attempts, self.max_attempts) {
+            Some(ReplayRefusal::MaxAttempts)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether a request that has made `attempts` attempts, the first one
+/// included, has used up the route's `max-attempts`. A route without a
+/// `retry-policy` has no such limit.
+fn attempts_used_up(attempts: u32, max_attempts: Option<u32>) -> bool {
+    max_attempts.is_some_and(|max| attempts >= max)
+}
+
+/// Whether an error is the upstream's own: its connection, a timeout, a read
+/// or write error. One from the client, or raised by the proxy or a filter,
+/// is not.
+fn is_upstream_error(error: &Error) -> bool {
+    *error.esource() == pingora::ErrorSource::Upstream
+}
+
+/// Classify a finished request for the circuit breaker of its target.
+///
+/// `refused` is set when an agent refused the request or blocked the
+/// response. `error` is the error the request ended with, if any: only one
+/// from the upstream side of the exchange counts against the target. Without
+/// an error, the status the client got decides.
+fn target_outcome(error: Option<&Error>, status: u16, refused: bool) -> TargetOutcome {
+    if refused {
+        return TargetOutcome::NoResult;
+    }
+    match error {
+        Some(e) if is_upstream_error(e) => TargetOutcome::Failure,
+        Some(_) => TargetOutcome::NoResult,
+        None if (1..500).contains(&status) => TargetOutcome::Success,
+        None => TargetOutcome::Failure,
     }
 }
 
@@ -6087,6 +6274,272 @@ mod cache_status_tests {
             1,
             "insert_header replaces; this test documents why append is required"
         );
+    }
+}
+
+#[cfg(test)]
+mod target_outcome_tests {
+    use super::{is_upstream_error, target_outcome, TargetOutcome};
+    use pingora::{Error, ErrorType};
+
+    #[test]
+    fn only_an_error_from_the_upstream_side_is_the_upstreams() {
+        let upstream = Error::new(ErrorType::ReadError).into_up();
+        let downstream = Error::new(ErrorType::ReadError).into_down();
+        let internal = Error::new(ErrorType::ReadError).into_in();
+        let unset = Error::new(ErrorType::ReadError);
+        assert!(is_upstream_error(&upstream));
+        assert!(!is_upstream_error(&downstream));
+        assert!(!is_upstream_error(&internal));
+        assert!(!is_upstream_error(&unset));
+    }
+
+    #[test]
+    fn a_status_below_500_is_a_success() {
+        assert_eq!(target_outcome(None, 200, false), TargetOutcome::Success);
+        assert_eq!(target_outcome(None, 404, false), TargetOutcome::Success);
+        assert_eq!(target_outcome(None, 499, false), TargetOutcome::Success);
+    }
+
+    #[test]
+    fn a_status_of_500_or_more_is_a_failure() {
+        assert_eq!(target_outcome(None, 500, false), TargetOutcome::Failure);
+        assert_eq!(target_outcome(None, 503, false), TargetOutcome::Failure);
+    }
+
+    #[test]
+    fn errors_of_the_upstream_are_failures_whatever_the_status() {
+        for etype in [
+            ErrorType::ConnectRefused,
+            ErrorType::ConnectTimedout,
+            ErrorType::ReadTimedout,
+            ErrorType::WriteTimedout,
+            ErrorType::ReadError,
+            ErrorType::WriteError,
+            ErrorType::ConnectionClosed,
+        ] {
+            let error = Error::new(etype.clone()).into_up();
+            assert_eq!(
+                target_outcome(Some(&error), 502, false),
+                TargetOutcome::Failure,
+                "{etype:?}"
+            );
+            // The response was under way when the upstream failed.
+            assert_eq!(
+                target_outcome(Some(&error), 200, false),
+                TargetOutcome::Failure,
+                "{etype:?} after the header"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_of_the_client_are_no_result_whatever_the_status() {
+        for etype in [
+            ErrorType::ConnectionClosed,
+            ErrorType::ReadError,
+            ErrorType::WriteError,
+            ErrorType::HTTPStatus(413),
+        ] {
+            let error = Error::new(etype.clone()).into_down();
+            for status in [0, 200, 413, 502] {
+                assert_eq!(
+                    target_outcome(Some(&error), status, false),
+                    TargetOutcome::NoResult,
+                    "{etype:?} with {status}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn errors_raised_by_the_proxy_itself_are_no_result() {
+        for error in [
+            Error::new(ErrorType::HTTPStatus(503)),
+            Error::new(ErrorType::InternalError).into_in(),
+        ] {
+            assert_eq!(
+                target_outcome(Some(&error), 503, false),
+                TargetOutcome::NoResult
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_request_is_no_result_even_after_an_upstream_error() {
+        let error = Error::new(ErrorType::ConnectionClosed).into_up();
+        assert_eq!(
+            target_outcome(Some(&error), 403, true),
+            TargetOutcome::NoResult
+        );
+        assert_eq!(target_outcome(None, 403, true), TargetOutcome::NoResult);
+        assert_eq!(target_outcome(None, 503, true), TargetOutcome::NoResult);
+    }
+}
+
+#[cfg(test)]
+mod replay_refusal_tests {
+    use super::{attempts_used_up, ReplayCheck, ReplayRefusal};
+
+    fn refusal(
+        method: &str,
+        route_allows_non_idempotent: bool,
+        retry_buffer_truncated: bool,
+    ) -> Option<ReplayRefusal> {
+        ReplayCheck {
+            method,
+            route_allows_non_idempotent,
+            retry_buffer_truncated,
+            attempts: 1,
+            max_attempts: None,
+        }
+        .refusal()
+    }
+
+    fn refusal_after(attempts: u32, max_attempts: Option<u32>) -> Option<ReplayRefusal> {
+        ReplayCheck {
+            method: "GET",
+            route_allows_non_idempotent: false,
+            retry_buffer_truncated: false,
+            attempts,
+            max_attempts,
+        }
+        .refusal()
+    }
+
+    const IDEMPOTENT: [&str; 6] = ["GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE"];
+
+    #[test]
+    fn an_idempotent_request_may_be_sent_again() {
+        for method in IDEMPOTENT {
+            assert_eq!(refusal(method, false, false), None, "{method}");
+        }
+    }
+
+    #[test]
+    fn a_request_that_is_not_idempotent_is_not_sent_again() {
+        for method in ["POST", "PATCH", "CONNECT"] {
+            assert_eq!(
+                refusal(method, false, false),
+                Some(ReplayRefusal::NonIdempotentMethod),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_extension_method_is_not_idempotent() {
+        assert_eq!(
+            refusal("PURGE", false, false),
+            Some(ReplayRefusal::NonIdempotentMethod)
+        );
+    }
+
+    /// QUERY is not in RFC 9110, although `http::Method::is_idempotent` says
+    /// it is.
+    #[test]
+    fn query_is_not_idempotent() {
+        let method = http::Method::from_bytes(b"QUERY").unwrap();
+        assert_eq!(
+            refusal(method.as_str(), false, false),
+            Some(ReplayRefusal::NonIdempotentMethod)
+        );
+    }
+
+    /// Method names are case-sensitive (RFC 9110 section 9.1).
+    #[test]
+    fn a_method_in_another_case_is_not_idempotent() {
+        for method in ["get", "Get", "put", "delete"] {
+            assert_eq!(
+                refusal(method, false, false),
+                Some(ReplayRefusal::NonIdempotentMethod),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_route_may_allow_a_request_that_is_not_idempotent_to_be_sent_again() {
+        assert_eq!(refusal("POST", true, false), None);
+    }
+
+    #[test]
+    fn a_request_whose_body_was_truncated_is_not_sent_again_whatever_its_method() {
+        for method in IDEMPOTENT {
+            assert_eq!(
+                refusal(method, false, true),
+                Some(ReplayRefusal::RetryBufferTruncated),
+                "{method}"
+            );
+        }
+        assert_eq!(
+            refusal("POST", true, true),
+            Some(ReplayRefusal::RetryBufferTruncated)
+        );
+    }
+
+    #[test]
+    fn the_method_is_named_first_when_both_apply() {
+        assert_eq!(
+            refusal("POST", false, true),
+            Some(ReplayRefusal::NonIdempotentMethod)
+        );
+    }
+
+    #[test]
+    fn a_request_is_sent_again_while_the_route_has_attempts_left() {
+        assert_eq!(refusal_after(1, Some(3)), None);
+        assert_eq!(refusal_after(2, Some(3)), None);
+    }
+
+    /// `max-attempts` counts the first try, so with 3 the third attempt is
+    /// the last.
+    #[test]
+    fn a_request_is_not_sent_again_once_it_made_the_routes_max_attempts() {
+        assert_eq!(refusal_after(3, Some(3)), Some(ReplayRefusal::MaxAttempts));
+        assert_eq!(refusal_after(1, Some(1)), Some(ReplayRefusal::MaxAttempts));
+    }
+
+    #[test]
+    fn a_route_without_a_retry_policy_sets_no_attempt_limit() {
+        assert_eq!(refusal_after(16, None), None);
+        assert!(!attempts_used_up(u32::MAX, None));
+    }
+
+    #[test]
+    fn the_method_and_the_body_are_named_before_the_attempts() {
+        let check = |method, retry_buffer_truncated| ReplayCheck {
+            method,
+            route_allows_non_idempotent: false,
+            retry_buffer_truncated,
+            attempts: 3,
+            max_attempts: Some(3),
+        };
+        assert_eq!(
+            check("POST", false).refusal(),
+            Some(ReplayRefusal::NonIdempotentMethod)
+        );
+        assert_eq!(
+            check("GET", true).refusal(),
+            Some(ReplayRefusal::RetryBufferTruncated)
+        );
+        assert_eq!(
+            check("GET", false).refusal(),
+            Some(ReplayRefusal::MaxAttempts)
+        );
+    }
+
+    #[test]
+    fn the_reasons_are_fixed_values() {
+        assert_eq!(
+            ReplayRefusal::NonIdempotentMethod.as_str(),
+            "non_idempotent_method"
+        );
+        assert_eq!(
+            ReplayRefusal::RetryBufferTruncated.as_str(),
+            "retry_buffer_truncated"
+        );
+        assert_eq!(ReplayRefusal::MaxAttempts.as_str(), "max_attempts");
     }
 }
 

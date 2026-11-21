@@ -62,7 +62,7 @@ pub use inference::{
 
 // Re-export circuit breaker (runtime only)
 #[cfg(feature = "runtime")]
-pub use circuit_breaker::CircuitBreaker;
+pub use circuit_breaker::{Admission, CircuitBreaker, TrialSlot};
 
 // Re-export registries (runtime only)
 #[cfg(feature = "runtime")]
