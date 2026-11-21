@@ -631,6 +631,14 @@ Structured logging for access, errors, and audit.
 - `Json` - Structured JSON
 - `Combined` - Apache/nginx combined format
 
+An access log entry records the request as it arrived. In the `Combined` format
+the request line is the method, the path, the query string when there is one, and
+the HTTP version (`HTTP/1.0`, `HTTP/1.1` or `HTTP/2.0`): `GET /search?q=a HTTP/2.0`.
+In the `Json` format the query string is the `query` field, left out when the
+request has none, and the entry has no field for the HTTP version. The
+`access-log` setting `fields { query #false }` leaves the query string out of
+both formats. See `AccessLogConfig` in `crates/config/docs/schema.md`.
+
 Each log file is opened independently: an access or error log that cannot be
 opened is reported and left off without affecting the others, while a
 configured audit log that cannot be opened fails startup.

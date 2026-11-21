@@ -622,7 +622,59 @@ stops startup, so a deployment never runs without the audit trail it asked for.
 | `file` | `string` | `/var/log/zentinel/access.log` | Log file path |
 | `format` | `string` | `"json"` | Log format |
 | `sample-rate` | `f64` | `1.0` | Sampling rate (0.0-1.0) |
-| `include-trace-id` | `bool` | `true` | Include trace ID |
+| `include-trace-id` | `bool` | `true` | Include trace ID (the same setting as `fields { trace-id }`) |
+| `fields` | block | every field `#true` | Which fields an entry has |
+
+Each entry records the request's method, path and query string (when the
+request has one), as the request arrived:
+
+- `json` format: the query string is the `query` field (absent when the request
+  has none). A field set to `#false` in `fields` is left out of the entry. The
+  entry has no field for the HTTP version.
+- `combined` format: the request line is `METHOD path?query PROTOCOL`, for
+  example `GET /search?q=a HTTP/2.0`. `PROTOCOL` is `HTTP/1.0`, `HTTP/1.1` or
+  `HTTP/2.0`, the version the request came in on. This format has fixed columns,
+  so of `fields` it applies only `query`: with `query #false` the request line
+  has no `?query`.
+
+The query string is written as the client sent it, percent-encoding included,
+and `query` is on by default. To keep it out of the log:
+
+```kdl
+access-log {
+    fields {
+        query #false
+    }
+}
+```
+
+`fields` takes one `#true` or `#false` setting per field. A field that is not
+written stays on.
+
+| Key | `json` entry field |
+|-----|--------------------|
+| `timestamp` | `timestamp` |
+| `trace-id` | `trace_id` |
+| `method` | `method` |
+| `path` | `path` |
+| `query` | `query` |
+| `status` | `status` |
+| `latency-ms` | `duration_ms` |
+| `body-bytes-sent` | `body_bytes_sent` |
+| `upstream-addr` | `upstream_addr` |
+| `connection-reused` | `connection_reused` |
+| `rate-limit-hit` | `rate_limit_hit` |
+| `geo-country` | `geo_country` |
+| `user-agent` | `user_agent` |
+| `referer` | `referer` |
+| `client-ip` | `client_ip` |
+
+`fields` is a block, and each key takes its value as an argument (`query #false`).
+Anything else is a config error: a `fields` without a block, a value that is not
+`#true` or `#false`, or a value written as a property. A key that is not in the
+table is reported by `zentinel test` as ignored. `include-trace-id` and
+`fields { trace-id }` set the same field, so when both are written they must
+agree; different values are a config error.
 
 ### TracingConfig
 
