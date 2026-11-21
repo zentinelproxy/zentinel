@@ -337,8 +337,9 @@ impl ZentinelProxy {
             agent_manager.clone(),
         ));
 
-        // Initialize geo filter manager
-        let geo_filter_manager = Arc::new(Self::initialize_geo_filters(&config));
+        // Initialize geo filter manager. A geo filter whose database cannot be
+        // opened stops startup; it is not left unregistered.
+        let geo_filter_manager = Arc::new(GeoFilterManager::from_config(&config)?);
 
         // Start periodic cleanup task for rate limiters and geo caches
         Self::spawn_cleanup_task(rate_limit_manager.clone(), geo_filter_manager.clone());
@@ -961,45 +962,6 @@ impl ZentinelProxy {
             info!(enabled_routes = enabled_count, "HTTP caching initialized");
         } else {
             debug!("HTTP cache manager initialized (no routes with caching enabled)");
-        }
-
-        manager
-    }
-
-    /// Initialize geo filters from configuration
-    fn initialize_geo_filters(config: &Config) -> GeoFilterManager {
-        let manager = GeoFilterManager::new();
-
-        for (filter_id, filter_config) in &config.filters {
-            if let zentinel_config::Filter::Geo(ref geo_filter) = filter_config.filter {
-                match manager.register_filter(filter_id, geo_filter.clone()) {
-                    Ok(_) => {
-                        info!(
-                            filter_id = %filter_id,
-                            database_path = %geo_filter.database_path,
-                            action = ?geo_filter.action,
-                            countries_count = geo_filter.countries.len(),
-                            "Registered geo filter"
-                        );
-                    }
-                    Err(e) => {
-                        error!(
-                            filter_id = %filter_id,
-                            error = %e,
-                            "Failed to register geo filter"
-                        );
-                    }
-                }
-            }
-        }
-
-        let filter_ids = manager.filter_ids();
-        if !filter_ids.is_empty() {
-            info!(
-                filter_count = filter_ids.len(),
-                filter_ids = ?filter_ids,
-                "GeoIP filtering initialized"
-            );
         }
 
         manager

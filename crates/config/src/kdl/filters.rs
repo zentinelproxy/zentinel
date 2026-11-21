@@ -624,53 +624,58 @@ fn parse_log_filter(node: &kdl::KdlNode) -> Result<Filter> {
 }
 
 fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
+    // Names the filter in every refusal below, so that one of several geo
+    // filters can be found.
+    let id = get_first_arg_string(node).unwrap_or_default();
+    let refuse = |message: String| anyhow::anyhow!("Filter '{id}': geo filter: {message}");
+
     let database_path = get_string_entry(node, "database-path")?.ok_or_else(|| {
         anyhow::anyhow!("Geo filter requires 'database-path' pointing to a GeoIP database file")
     })?;
 
-    // Auto-detect database type from file extension if not specified
-    let database_type = get_string_entry(node, "database-type")?
-        .and_then(|s| match s.as_str() {
-            "maxmind" => Some(GeoDatabaseType::MaxMind),
-            "ip2location" => Some(GeoDatabaseType::Ip2Location),
-            _ => None,
-        })
-        .or_else(|| {
-            if database_path.ends_with(".mmdb") {
-                Some(GeoDatabaseType::MaxMind)
-            } else if database_path.ends_with(".bin") || database_path.ends_with(".BIN") {
-                Some(GeoDatabaseType::Ip2Location)
-            } else {
-                None
-            }
-        });
+    // Taken from the file extension if not specified
+    let database_type = match get_string_entry(node, "database-type")?.as_deref() {
+        Some("maxmind") => Some(GeoDatabaseType::MaxMind),
+        Some("ip2location") => Some(GeoDatabaseType::Ip2Location),
+        Some(other) => {
+            return Err(refuse(format!(
+                "unknown database-type '{other}'. Valid values: maxmind, ip2location"
+            )))
+        }
+        // `GeoFilter::validate` refuses a path that says nothing either.
+        None => GeoDatabaseType::from_path(&database_path),
+    };
 
-    let action = get_string_entry(node, "action")?
-        .map(|s| match s.as_str() {
-            "block" => GeoFilterAction::Block,
-            "allow" => GeoFilterAction::Allow,
-            "log-only" => GeoFilterAction::LogOnly,
-            _ => GeoFilterAction::Block,
-        })
-        .unwrap_or_default();
+    let action = match get_string_entry(node, "action")?.as_deref() {
+        None => GeoFilterAction::default(),
+        Some("block") => GeoFilterAction::Block,
+        Some("allow") => GeoFilterAction::Allow,
+        Some("log-only") => GeoFilterAction::LogOnly,
+        Some(other) => {
+            return Err(refuse(format!(
+                "unknown action '{other}'. Valid actions: block, allow, log-only"
+            )))
+        }
+    };
 
-    // Parse countries - comma-separated list of ISO 3166-1 alpha-2 codes
-    let countries = get_string_entry(node, "countries")?
-        .map(|s| {
-            s.split(',')
-                .map(|c| c.trim().to_uppercase())
-                .filter(|c| !c.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    // ISO 3166-1 alpha-2 codes: every argument, each also split on commas.
+    // The codes themselves are checked by `GeoFilter::validate`.
+    let countries = get_string_list(node, "countries")?
+        .unwrap_or_default()
+        .iter()
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
 
-    let on_failure = get_string_entry(node, "on-failure")?
-        .map(|s| match s.as_str() {
-            "open" => GeoFailureMode::Open,
-            "closed" => GeoFailureMode::Closed,
-            _ => GeoFailureMode::Open,
-        })
-        .unwrap_or_default();
+    let on_failure = match get_string_entry(node, "on-failure")?.as_deref() {
+        None => GeoFailureMode::default(),
+        Some("open") => GeoFailureMode::Open,
+        Some("closed") => GeoFailureMode::Closed,
+        Some(other) => {
+            return Err(refuse(format!(
+                "unknown on-failure '{other}'. Valid values: open, closed"
+            )))
+        }
+    };
 
     let status_code = get_int_entry(node, "status-code")?
         .map(|v| v as u16)
@@ -684,7 +689,7 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
 
     let add_country_header = get_bool_entry(node, "add-country-header")?.unwrap_or(true);
 
-    Ok(Filter::Geo(GeoFilter {
+    let geo = GeoFilter {
         database_path,
         database_type,
         action,
@@ -694,7 +699,10 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
         block_message,
         cache_ttl_secs,
         add_country_header,
-    }))
+    };
+    geo.validate()
+        .map_err(|message| anyhow::anyhow!("Filter '{id}': {message}"))?;
+    Ok(Filter::Geo(geo))
 }
 
 fn parse_redirect_filter(node: &kdl::KdlNode) -> Result<Filter> {
@@ -983,6 +991,274 @@ mod tests {
         fn supported_algorithms_load() {
             let config = config_with(r#"algorithms "zstd" "br" "gzip""#);
             config.validate().expect("supported algorithms load");
+        }
+    }
+
+    /// The geo filter's settings are read back as written, and a setting that
+    /// cannot be read as written is refused instead of replaced by a default.
+    mod geo {
+        use super::*;
+
+        const DATABASE: &str = r#"database-path "/etc/zentinel/GeoLite2-Country.mmdb""#;
+
+        fn geo_with(database: &str, body: &str) -> Result<GeoFilter> {
+            let kdl = format!("filter \"g\" {{\n  type \"geo\"\n  {database}\n{body}\n}}\n");
+            let doc: kdl::KdlDocument = kdl.parse().expect("kdl parses");
+            match parse_single_filter_definition(doc.nodes().first().expect("filter node"))? {
+                Filter::Geo(g) => Ok(g),
+                other => panic!("expected a geo filter, got {other:?}"),
+            }
+        }
+
+        fn geo(body: &str) -> Result<GeoFilter> {
+            geo_with(DATABASE, body)
+        }
+
+        fn countries(body: &str) -> Vec<String> {
+            geo(body).expect("geo filter parses").countries
+        }
+
+        fn refusal(body: &str) -> String {
+            refusal_with(DATABASE, body)
+        }
+
+        fn refusal_with(database: &str, body: &str) -> String {
+            geo_with(database, body)
+                .expect_err("geo filter must not load")
+                .to_string()
+        }
+
+        #[test]
+        fn every_argument_of_countries_is_read() {
+            // Only the first argument used to be read: this came back as ["RU"].
+            assert_eq!(countries(r#"countries "RU" "CN" "KP""#), ["RU", "CN", "KP"]);
+        }
+
+        #[test]
+        fn comma_separated_countries_still_work() {
+            assert_eq!(countries(r#"countries "RU,CN""#), ["RU", "CN"]);
+            assert_eq!(countries(r#"countries "RU, CN , KP""#), ["RU", "CN", "KP"]);
+        }
+
+        #[test]
+        fn arguments_and_commas_can_be_mixed() {
+            assert_eq!(countries(r#"countries "RU,CN" "KP""#), ["RU", "CN", "KP"]);
+        }
+
+        #[test]
+        fn country_codes_are_upper_cased() {
+            assert_eq!(countries(r#"countries "ru" "Cn,kp""#), ["RU", "CN", "KP"]);
+        }
+
+        #[test]
+        fn a_country_code_that_is_not_two_ascii_letters_is_refused() {
+            for code in ["RUS", "R", "R1", "1A", "R-", "R U", "\u{c9}\u{c9}"] {
+                let message = refusal(&format!("countries \"US\" \"{code}\""));
+                assert!(
+                    message.contains(&format!("'{}'", code.to_ascii_uppercase())),
+                    "{code}: {message}"
+                );
+                assert!(message.contains("Filter 'g'"), "{code}: {message}");
+            }
+        }
+
+        #[test]
+        fn empty_parts_of_a_country_list_are_left_out() {
+            assert_eq!(countries(r#"countries "RU,,CN""#), ["RU", "CN"]);
+            assert_eq!(
+                countries(r#"countries "RU," ",CN" "" "KP""#),
+                ["RU", "CN", "KP"]
+            );
+        }
+
+        #[test]
+        fn a_country_argument_of_another_type_is_refused() {
+            let message = refusal(r#"countries "US" 1"#);
+            assert!(message.contains("'countries'"), "{message}");
+            assert!(message.contains("found an integer"), "{message}");
+        }
+
+        #[test]
+        fn the_database_type_is_taken_from_the_extension_in_any_case() {
+            for (path, expected) in [
+                ("/db/Country.mmdb", GeoDatabaseType::MaxMind),
+                ("/db/Country.MMDB", GeoDatabaseType::MaxMind),
+                ("/db/country.bin", GeoDatabaseType::Ip2Location),
+                ("/db/COUNTRY.BIN", GeoDatabaseType::Ip2Location),
+                ("/db/country.Bin", GeoDatabaseType::Ip2Location),
+            ] {
+                let g = geo_with(&format!("database-path \"{path}\""), "").unwrap();
+                assert_eq!(g.database_type, Some(expected), "{path}");
+            }
+        }
+
+        #[test]
+        fn a_database_whose_type_cannot_be_told_is_refused() {
+            // Used to be left unset, and then opened as IP2Location.
+            for path in ["/db/country", "/db/country.dat", "/db/country.mmdb.gz"] {
+                let message = refusal_with(&format!("database-path \"{path}\""), "");
+                assert!(message.contains(&format!("'{path}'")), "{path}: {message}");
+                assert!(message.contains("'database-type'"), "{path}: {message}");
+                assert!(message.contains("Filter 'g'"), "{path}: {message}");
+            }
+        }
+
+        #[test]
+        fn database_type_names_a_database_whose_extension_says_nothing() {
+            let g = geo_with(
+                r#"database-path "/db/country.dat""#,
+                r#"database-type "maxmind""#,
+            )
+            .unwrap();
+            assert_eq!(g.database_type, Some(GeoDatabaseType::MaxMind));
+        }
+
+        #[test]
+        fn unknown_on_failure_is_refused() {
+            // Used to read as "open".
+            let message = refusal(r#"on-failure "close""#);
+            assert!(message.contains("'close'"), "{message}");
+            assert!(message.contains("open, closed"), "{message}");
+            assert!(message.contains("Filter 'g'"), "{message}");
+        }
+
+        #[test]
+        fn unknown_action_is_refused() {
+            // Used to read as "block".
+            let message = refusal(r#"action "deny""#);
+            assert!(message.contains("'deny'"), "{message}");
+            assert!(message.contains("block, allow, log-only"), "{message}");
+            assert!(message.contains("Filter 'g'"), "{message}");
+        }
+
+        #[test]
+        fn unknown_database_type_is_refused() {
+            // Used to be replaced by a guess from the file extension.
+            let message = refusal(r#"database-type "geoip2""#);
+            assert!(message.contains("'geoip2'"), "{message}");
+            assert!(message.contains("maxmind, ip2location"), "{message}");
+            assert!(message.contains("Filter 'g'"), "{message}");
+        }
+
+        #[test]
+        fn known_values_are_read() {
+            let g = geo(r#"action "allow"
+                   countries "US" "CA"
+                   on-failure "closed"
+                   database-type "ip2location""#)
+            .unwrap();
+            assert_eq!(g.action, GeoFilterAction::Allow);
+            assert_eq!(g.on_failure, GeoFailureMode::Closed);
+            assert_eq!(g.database_type, Some(GeoDatabaseType::Ip2Location));
+            for (value, expected) in [
+                ("block", GeoFilterAction::Block),
+                ("allow", GeoFilterAction::Allow),
+                ("log-only", GeoFilterAction::LogOnly),
+            ] {
+                let g = geo(&format!("action \"{value}\"\ncountries \"US\"")).unwrap();
+                assert_eq!(g.action, expected, "{value}");
+            }
+        }
+
+        #[test]
+        fn allow_without_countries_is_refused() {
+            // Used to allow every request.
+            for body in [
+                r#"action "allow""#,
+                "action \"allow\"\ncountries",
+                "action \"allow\"\ncountries \"\" \",\"",
+            ] {
+                let message = refusal(body);
+                assert!(message.contains("'countries'"), "{body}: {message}");
+                assert!(message.contains("Filter 'g'"), "{body}: {message}");
+            }
+        }
+
+        #[test]
+        fn an_empty_list_is_fine_when_it_does_not_decide_anything() {
+            assert!(geo(r#"action "block""#).is_ok());
+            assert!(geo(r#"action "log-only""#).is_ok());
+            assert!(geo("").is_ok());
+        }
+
+        #[test]
+        fn an_empty_database_path_is_refused() {
+            let kdl = "filter \"g\" {\n  type \"geo\"\n  database-path \"\"\n}\n";
+            let doc: kdl::KdlDocument = kdl.parse().expect("kdl parses");
+            let err = parse_single_filter_definition(doc.nodes().first().expect("filter node"))
+                .expect_err("an empty database-path must not load");
+            assert!(err.to_string().contains("database-path"), "{err}");
+        }
+
+        /// The refusal reaches a caller that loads a whole document.
+        #[test]
+        fn the_document_does_not_load() {
+            for body in [
+                r#"action "deny""#,
+                r#"on-failure "close""#,
+                r#"countries "RUS""#,
+                r#"action "allow""#,
+            ] {
+                let kdl = format!(
+                    r#"
+                    schema-version "1.0"
+                    system {{ worker-threads 0 }}
+                    listeners {{ listener "http" {{ address "127.0.0.1:8080" }} }}
+                    filters {{
+                        filter "g" {{
+                            type "geo"
+                            {DATABASE}
+                            {body}
+                        }}
+                    }}
+                    routes {{
+                        route "r" {{
+                            matches {{ path-prefix "/" }}
+                            upstream "backend"
+                            filters "g"
+                        }}
+                    }}
+                    upstreams {{ upstream "backend" {{ target "127.0.0.1:3000" }} }}
+                    "#
+                );
+                let err = crate::Config::from_kdl(&kdl).expect_err(body);
+                let text = format!("{err:#}");
+                assert!(text.contains("Filter 'g'"), "{body}: {text}");
+            }
+        }
+
+        /// A filter inside a namespace or a service is parsed by the same
+        /// function, so it is refused the same way; `Config::validate` does
+        /// not look at it.
+        #[test]
+        fn a_geo_filter_inside_a_namespace_or_service_is_refused() {
+            let filters = format!(
+                r#"filters {{
+                    filter "g" {{
+                        type "geo"
+                        {DATABASE}
+                        countries "US" "RUS"
+                    }}
+                }}"#
+            );
+            for (scope, block) in [
+                ("namespace", filters.clone()),
+                ("service", format!(r#"service "svc" {{ {filters} }}"#)),
+            ] {
+                let kdl = format!(
+                    r#"
+                    schema-version "1.0"
+                    system {{ worker-threads 0 }}
+                    namespace "ns" {{
+                        {block}
+                    }}
+                    "#
+                );
+                let err = crate::Config::from_kdl(&kdl).expect_err(scope);
+                let text = format!("{err:#}");
+                assert!(text.contains("Filter 'g'"), "{scope}: {text}");
+                assert!(text.contains("'RUS'"), "{scope}: {text}");
+            }
         }
     }
 }

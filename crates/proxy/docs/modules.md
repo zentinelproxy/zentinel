@@ -582,10 +582,24 @@ filter "geo-block" {
     database-type "maxmind"
     action "block"
     countries "CN" "RU" "KP"
-    fail-mode "open"
-    cache-ttl 3600
+    on-failure "open"
+    cache-ttl-secs 3600
 }
 ```
+
+Every argument of `countries` is read; each may also hold a comma-separated
+list. `action`, `database-type` and `on-failure` take only the values listed in
+the config schema, and `action "allow"` needs at least one country: all of
+these are refused when a KDL configuration loads. `database-type` can be left
+out when `database-path` ends in `.mmdb` or `.bin`, in any case; any other
+name needs it.
+
+The database file must open at startup. If it cannot, the proxy does not
+start, and one error lists every geo filter that failed, in the order of their
+ids, with its file and the reason. `zentinel test` and `zentinel validate` open
+the databases the same way. Geo filters are registered once, at startup: a
+configuration reload does not add, remove or change them. A changed database
+file is re-read on its own.
 
 ### `decompression`
 
