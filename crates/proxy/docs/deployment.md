@@ -133,8 +133,8 @@ fault and exits with a non-zero status, so systemd reports the unit as failed
 instead of `active (running)` without a listener on its port. Relative paths
 are read from `system { working-directory }` when it is set, otherwise from the
 directory the proxy is started in. A default certificate managed by an `acme`
-block on an `https` listener is issued while the proxy starts and is not
-checked by `zentinel test`.
+block on an `https` or `h2` listener is issued while the proxy starts and is
+not checked by `zentinel test`.
 
 ## Uninstalling
 

@@ -67,13 +67,10 @@ can build. A relative path is read from `system { working-directory }` when it
 is set (startup changes into it as well) and from the current directory
 otherwise.
 
-ACME is the exception. For an `https` listener whose default certificate comes
-from an `acme` block, `zentinel test` does not require the certificate to exist
-yet, because ACME issues it while the proxy starts; the listener's `sni`
-certificates and `ca-file` are still loaded. ACME issues certificates only for
-`https` listeners, so an `h2` listener with an `acme` block is checked like any
-other: `zentinel test` and startup stop on it unless its certificate files
-already exist.
+ACME is the exception. For an `https` or `h2` listener whose default
+certificate comes from an `acme` block, `zentinel test` does not require the
+certificate to exist yet, because ACME issues it while the proxy starts; the
+listener's `sni` certificates and `ca-file` are still loaded.
 
 A reload keeps the certificates it already has when the new files cannot be
 loaded; only startup refuses.

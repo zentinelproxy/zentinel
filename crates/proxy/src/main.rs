@@ -475,7 +475,7 @@ async fn initialize_acme(
     let mut acme_configs: Vec<(String, AcmeConfig)> = Vec::new();
 
     for listener in &config.listeners {
-        if listener.protocol == zentinel_config::ListenerProtocol::Https {
+        if serves_tls(listener.protocol) {
             if let Some(ref tls) = listener.tls {
                 // Root-level ACME
                 if let Some(ref acme) = tls.acme {
@@ -828,12 +828,23 @@ fn manual_cert_files(
     }
 }
 
-/// Whether ACME initialization issues this listener's default certificate.
+/// Whether listeners of this protocol terminate TLS, so that their `tls`
+/// block applies: the certificate resolver is built from it and an `acme`
+/// block in it is initialized.
 ///
-/// `initialize_acme` only visits `https` listeners, so an `h2` listener with
-/// an `acme` block is never issued one.
+/// `https` and `h2` are built the same way. `h3` is not: configuration
+/// validation and startup both reject it, so no TLS listener is ever built for
+/// one and nothing is issued for it.
+fn serves_tls(protocol: zentinel_config::ListenerProtocol) -> bool {
+    matches!(
+        protocol,
+        zentinel_config::ListenerProtocol::Https | zentinel_config::ListenerProtocol::Http2
+    )
+}
+
+/// Whether ACME initialization issues this listener's default certificate.
 fn default_cert_issued_by_acme(listener: &zentinel_config::ListenerConfig) -> bool {
-    listener.protocol == zentinel_config::ListenerProtocol::Https
+    serves_tls(listener.protocol)
         && listener
             .tls
             .as_ref()
@@ -887,14 +898,10 @@ fn build_tls_listener(listener: &zentinel_config::ListenerConfig) -> Result<TlsL
     // a missing file means issuance did not leave one behind.
     for (what, path) in [("certificate", &cert_path), ("key", &key_path)] {
         if !path.exists() {
-            let hint = match (acme_managed, listener.protocol) {
-                (false, _) => "",
-                (true, zentinel_config::ListenerProtocol::Https) => {
-                    " (expected from the acme block's storage after ACME initialization)"
-                }
-                (true, _) => {
-                    " (ACME issues certificates only for listeners with protocol \"https\")"
-                }
+            let hint = if acme_managed {
+                " (expected from the acme block's storage after ACME initialization)"
+            } else {
+                ""
             };
             anyhow::bail!(
                 "{}: {what} file not found: {}{hint}",
@@ -979,12 +986,7 @@ fn check_tls_listeners(config: &Config) -> Result<()> {
     let tls_listeners: Vec<_> = config
         .listeners
         .iter()
-        .filter(|listener| {
-            matches!(
-                listener.protocol,
-                zentinel_config::ListenerProtocol::Https | zentinel_config::ListenerProtocol::Http2
-            )
-        })
+        .filter(|listener| serves_tls(listener.protocol))
         .collect();
     if tls_listeners.is_empty() {
         return Ok(());
@@ -1392,10 +1394,7 @@ fn run_server(
     // that reports `active (running)`.
     let mut tls_listeners = std::collections::HashMap::new();
     for listener in &config.listeners {
-        if !matches!(
-            listener.protocol,
-            zentinel_config::ListenerProtocol::Https | zentinel_config::ListenerProtocol::Http2
-        ) {
+        if !serves_tls(listener.protocol) {
             continue;
         }
         match build_tls_listener(listener) {
@@ -2013,5 +2012,83 @@ mod tests {
         assert!(ignored[0].contains("'adress'") && ignored[0].contains("is being ignored"));
 
         assert!(ignored_settings(None).is_empty());
+    }
+
+    #[test]
+    fn tls_is_served_by_https_and_h2_listeners_only() {
+        use zentinel_config::ListenerProtocol;
+
+        assert!(serves_tls(ListenerProtocol::Https));
+        assert!(serves_tls(ListenerProtocol::Http2));
+        assert!(!serves_tls(ListenerProtocol::Http));
+        assert!(!serves_tls(ListenerProtocol::H2c));
+        // Rejected by validation and by startup: no TLS listener is built.
+        assert!(!serves_tls(ListenerProtocol::Http3));
+    }
+
+    /// What a listener's `tls` block names besides its `acme` block.
+    #[derive(Clone, Copy, Debug)]
+    enum CertFiles {
+        /// No `cert-file` and `key-file`: ACME issues the default certificate.
+        None,
+        /// A `cert-file` and `key-file`: they are the default certificate.
+        Named,
+    }
+
+    fn listener_with_acme(
+        protocol: zentinel_config::ListenerProtocol,
+        cert_files: CertFiles,
+    ) -> zentinel_config::ListenerConfig {
+        let kdl = format!(
+            r#"
+            system {{
+                worker-threads 1
+            }}
+            listeners {{
+                listener "edge" {{
+                    address "127.0.0.1:8443"
+                    protocol "{}"
+                    tls {{
+                        {}
+                        acme {{
+                            email "admin@example.com"
+                            domains "a.example"
+                            storage "/var/lib/zentinel/acme"
+                        }}
+                    }}
+                }}
+            }}
+            "#,
+            match protocol {
+                zentinel_config::ListenerProtocol::Https => "https",
+                zentinel_config::ListenerProtocol::Http2 => "h2",
+                other => panic!("no TLS listener for {other:?}"),
+            },
+            match cert_files {
+                CertFiles::Named => {
+                    "cert-file \"/etc/zentinel/a.crt\"\nkey-file \"/etc/zentinel/a.key\""
+                }
+                CertFiles::None => "",
+            },
+        );
+        let config = Config::from_kdl(&kdl).unwrap();
+        config.listeners.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn acme_issues_the_default_certificate_of_https_and_h2_listeners() {
+        use zentinel_config::ListenerProtocol;
+
+        for protocol in [ListenerProtocol::Https, ListenerProtocol::Http2] {
+            assert!(
+                default_cert_issued_by_acme(&listener_with_acme(protocol, CertFiles::None)),
+                "{protocol:?}"
+            );
+            // A certificate named in the `tls` block is the default one.
+            assert!(
+                !default_cert_issued_by_acme(&listener_with_acme(protocol, CertFiles::Named)),
+                "{protocol:?} with cert-file and key-file"
+            );
+        }
     }
 }

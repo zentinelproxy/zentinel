@@ -78,11 +78,15 @@ fn good_cert_and_key() -> String {
 /// An `acme` block that stores under `dir` and names a CA that is not there:
 /// if the proxy ever tried to reach it, the attempt would fail at once.
 fn acme_block(dir: &Path) -> String {
+    acme_block_for_ca(dir, free_port())
+}
+
+/// An `acme` block that stores under `dir` and names a CA on `ca_port`.
+fn acme_block_for_ca(dir: &Path, ca_port: u16) -> String {
     format!(
         "acme {{\nemail \"admin@example.com\"\ndomains \"a.example\"\nstorage \"{}\"\n\
-         server-url \"https://127.0.0.1:{}/directory\"\n}}\n",
+         server-url \"https://127.0.0.1:{ca_port}/directory\"\n}}\n",
         dir.join("acme").display(),
-        free_port()
     )
 }
 
@@ -97,17 +101,16 @@ enum Fault {
     MissingClientCa,
     /// A `protocol "h2"` listener, which is built like an `https` one.
     Http2MissingCertificate,
-    /// An `https` listener whose default certificate ACME would issue, but
-    /// whose `sni` certificate is a file that does not exist.
-    AcmeListenerMissingSniCertificate,
-    /// ACME issues certificates for `https` listeners only.
-    Http2ListenerWithAcme,
+    /// A listener, of the given protocol, whose default certificate ACME
+    /// would issue, but whose `sni` certificate is a file that does not exist.
+    AcmeListenerMissingSniCertificate(&'static str),
 }
 
 impl Fault {
     fn protocol(self) -> &'static str {
         match self {
-            Fault::Http2MissingCertificate | Fault::Http2ListenerWithAcme => "h2",
+            Fault::Http2MissingCertificate => "h2",
+            Fault::AcmeListenerMissingSniCertificate(protocol) => protocol,
             _ => "https",
         }
     }
@@ -165,17 +168,9 @@ impl Fault {
                     culprit,
                 )
             }
-            Fault::AcmeListenerMissingSniCertificate => {
+            Fault::AcmeListenerMissingSniCertificate(_) => {
                 let (sni, culprit) = missing_sni(dir);
                 (format!("{}{sni}", acme_block(dir)), culprit)
-            }
-            Fault::Http2ListenerWithAcme => {
-                let culprit = dir
-                    .join("acme")
-                    .join("domains")
-                    .join("a.example")
-                    .join("cert.pem");
-                (acme_block(dir), culprit)
             }
         }
     }
@@ -489,8 +484,10 @@ fault_tests! {
     missing_sni_certificate_file => Fault::MissingSniCertificate,
     missing_client_ca_file => Fault::MissingClientCa,
     h2_listener_with_a_missing_certificate_file => Fault::Http2MissingCertificate,
-    acme_listener_with_a_missing_sni_certificate_file => Fault::AcmeListenerMissingSniCertificate,
-    h2_listener_with_an_acme_block => Fault::Http2ListenerWithAcme,
+    acme_listener_with_a_missing_sni_certificate_file =>
+        Fault::AcmeListenerMissingSniCertificate("https"),
+    acme_h2_listener_with_a_missing_sni_certificate_file =>
+        Fault::AcmeListenerMissingSniCertificate("h2"),
 }
 
 /// A manual certificate that is missing must stop startup before ACME is
@@ -583,20 +580,247 @@ fn config_test_accepts_a_tls_listener_that_can_be_built() {
     assert!(text.contains("test is successful"), "{text}");
 }
 
-/// The default certificate of an `https` listener that ACME manages is issued
+/// The default certificate of a TLS listener that ACME manages is issued
 /// while the proxy starts, so it need not exist when the configuration is
 /// tested.
-#[test]
-fn config_test_does_not_require_acme_certificates_to_exist_yet() {
+fn check_config_test_does_not_require_acme_certificates(protocol: &'static str) {
     let fixture = Fixture::new(|dir| {
         vec![TlsListener {
             id: TLS_LISTENER_ID,
-            protocol: "https",
+            protocol,
             block: acme_block(dir),
         }]
     });
 
     let (output, text) = fixture.run_config_test();
 
-    assert!(output.status.success(), "{text}");
+    assert!(output.status.success(), "{protocol}: {text}");
+}
+
+#[test]
+fn config_test_does_not_require_acme_certificates_to_exist_yet() {
+    check_config_test_does_not_require_acme_certificates("https");
+}
+
+#[test]
+fn config_test_does_not_require_acme_certificates_to_exist_yet_for_an_h2_listener() {
+    check_config_test_does_not_require_acme_certificates("h2");
+}
+
+/// A TLS listener's `acme` block is acted on whichever of `https` and `h2` the
+/// listener uses: ACME is initialized for it, and when issuing the first
+/// certificate fails, startup stops there.
+fn check_startup_stops_when_the_first_acme_certificate_cannot_be_issued(protocol: &'static str) {
+    let fixture = Fixture::new(|dir| {
+        vec![TlsListener {
+            id: TLS_LISTENER_ID,
+            protocol,
+            block: acme_block(dir),
+        }]
+    });
+    let mut proxy = fixture.start(&[]);
+
+    let Outcome::Exited(status) = proxy.wait() else {
+        panic!("{protocol}: the proxy did not stop:\n{}", proxy.log());
+    };
+    let log = proxy.log();
+    assert!(!status.success(), "{protocol}: exited with {status}\n{log}");
+    assert!(
+        log.contains(ACME_INITIALIZATION),
+        "{protocol}: ACME was not initialized for the listener:\n{log}"
+    );
+    assert!(
+        log.contains("ACME initialization failed"),
+        "{protocol}: startup did not stop at ACME initialization:\n{log}"
+    );
+}
+
+#[test]
+fn startup_stops_when_the_first_acme_certificate_of_an_https_listener_cannot_be_issued() {
+    check_startup_stops_when_the_first_acme_certificate_cannot_be_issued("https");
+}
+
+#[test]
+fn startup_stops_when_the_first_acme_certificate_of_an_h2_listener_cannot_be_issued() {
+    check_startup_stops_when_the_first_acme_certificate_cannot_be_issued("h2");
+}
+
+/// A stand-in for the CA that only counts the connections made to it and
+/// closes each one at once. The proxy treats that as a transient failure, so a
+/// listener whose certificate is already stored still starts.
+struct FakeCa {
+    port: u16,
+    connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FakeCa {
+    fn start() -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let port = free_port();
+        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let (connections, stop) = (Arc::clone(&connections), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok(_) => {
+                            connections.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                    }
+                }
+            })
+        };
+        Self {
+            port,
+            connections,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn connections(&self) -> usize {
+        self.connections.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for FakeCa {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Put the fixture certificate where an `acme` block for `a.example` that
+/// stores under `dir` keeps the one it has issued.
+fn store_issued_certificate(dir: &Path) {
+    let storage = zentinel_proxy::acme::CertificateStorage::new(&dir.join("acme")).unwrap();
+    storage
+        .save_certificate(
+            "a.example",
+            &std::fs::read_to_string(fixtures().join("server-default.crt")).unwrap(),
+            &std::fs::read_to_string(fixtures().join("server-default.key")).unwrap(),
+            chrono::Utc::now() + chrono::Duration::days(90),
+            &["a.example".to_string()],
+        )
+        .unwrap();
+}
+
+/// What a client offering `h2` and `http/1.1` sees of a TLS handshake.
+struct Handshake {
+    /// The DER of the certificate the listener presents.
+    certificate: Vec<u8>,
+    /// The application protocol the listener selected.
+    alpn: Option<Vec<u8>>,
+}
+
+fn handshake_with(port: u16) -> Handshake {
+    use rustls::pki_types::ServerName;
+
+    let mut roots = rustls::RootCertStore::empty();
+    let ca = std::fs::File::open(fixtures().join("ca.crt")).unwrap();
+    for cert in rustls_pemfile::certs(&mut std::io::BufReader::new(ca)) {
+        roots.add(cert.unwrap()).unwrap();
+    }
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mut client_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let mut connection = rustls::ClientConnection::new(
+        std::sync::Arc::new(client_config),
+        ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let mut tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    tcp.set_write_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    while connection.is_handshaking() {
+        connection.complete_io(&mut tcp).unwrap();
+    }
+    Handshake {
+        certificate: connection.peer_certificates().unwrap()[0].as_ref().to_vec(),
+        alpn: connection.alpn_protocol().map(<[u8]>::to_vec),
+    }
+}
+
+/// An `acme` block on a TLS listener is acted on: the proxy initializes ACME
+/// for it, which contacts the CA, and the listener serves the certificate
+/// kept in the block's storage and negotiates HTTP/2 with it.
+fn check_stored_acme_certificate_is_served(protocol: &'static str) {
+    let ca = FakeCa::start();
+    let fixture = Fixture::new(|dir| {
+        store_issued_certificate(dir);
+        vec![TlsListener {
+            id: TLS_LISTENER_ID,
+            protocol,
+            block: acme_block_for_ca(dir, ca.port),
+        }]
+    });
+    let mut proxy = fixture.start(&[]);
+
+    assert!(
+        matches!(proxy.wait(), Outcome::Started),
+        "{protocol}: the proxy did not start:\n{}",
+        proxy.log()
+    );
+    let deadline = Instant::now() + STARTUP_DEADLINE;
+    while !accepts(fixture.tls_port) {
+        assert!(
+            proxy.child.0.try_wait().unwrap().is_none(),
+            "{protocol}: the proxy exited:\n{}",
+            proxy.log()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "{protocol}: the listener never came up:\n{}",
+            proxy.log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    assert!(
+        ca.connections() > 0,
+        "{protocol}: the proxy never contacted the CA of the listener's acme block:\n{}",
+        proxy.log()
+    );
+    let stored = rustls_pemfile::certs(&mut std::io::BufReader::new(
+        std::fs::File::open(fixtures().join("server-default.crt")).unwrap(),
+    ))
+    .next()
+    .unwrap()
+    .unwrap();
+    let handshake = handshake_with(fixture.tls_port);
+    assert_eq!(
+        handshake.certificate,
+        stored.as_ref(),
+        "{protocol}: the listener does not serve the stored certificate"
+    );
+    assert_eq!(
+        handshake.alpn.as_deref(),
+        Some(&b"h2"[..]),
+        "{protocol}: the listener does not negotiate HTTP/2"
+    );
+}
+
+#[test]
+fn an_https_listener_with_acme_initializes_it_and_serves_the_stored_certificate() {
+    check_stored_acme_certificate_is_served("https");
+}
+
+#[test]
+fn an_h2_listener_with_acme_initializes_it_and_serves_the_stored_certificate() {
+    check_stored_acme_certificate_is_served("h2");
 }
