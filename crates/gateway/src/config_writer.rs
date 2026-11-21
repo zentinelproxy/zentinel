@@ -1035,6 +1035,7 @@ mod tests {
             trace_id_format: Default::default(),
             auto_reload: true,
             route_cache_size: 1000,
+            client_ipv6_prefix_length: Default::default(),
         }
     }
 
