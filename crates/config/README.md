@@ -197,6 +197,11 @@ When no configuration file is provided, Zentinel uses an embedded default:
 - Built-in status, health, and metrics endpoints
 - Sensible resource limits
 
+The default is used only when no path is given at all. A path given with
+`--config` or `ZENTINEL_CONFIG` that cannot be read (it does not exist, or
+permission is denied) is an error: Zentinel stops with a non-zero exit code
+and does not create the file or switch to the embedded default.
+
 ## Validation
 
 Configuration is validated for:

@@ -45,7 +45,9 @@ const VERSION: &str = concat!(
 #[command(author, version = VERSION, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
-    /// Configuration file, or a directory of KDL files read as one configuration
+    /// Configuration file, or a directory of KDL files read as one
+    /// configuration. Zentinel stops if the path cannot be read; with no path
+    /// it uses the embedded default configuration
     #[arg(short = 'c', long = "config", env = "ZENTINEL_CONFIG")]
     config: Option<String>,
 
@@ -841,25 +843,21 @@ fn run_server(
     // Get config path with priority: CLI arg > env var > None (embedded default)
     let effective_config_path = config_path.or_else(|| std::env::var("ZENTINEL_CONFIG").ok());
 
-    // Handle config file creation/loading
+    // A path that was given names a configuration the operator wrote. When
+    // nothing can be found there, stop: starting on a default the operator
+    // never wrote, or writing one to that path, hides a mistyped path. The
+    // check comes before logging is set up and before the daemon forks, so the
+    // error stops the process in the foreground and reaches whoever started it.
     let effective_config_path = match effective_config_path {
         Some(path) => {
-            let config_path = std::path::Path::new(&path);
-            if config_path.exists() {
-                startup_log.info(format!("Loading configuration from: {path}"));
-                Some(path)
-            } else {
-                // Config file doesn't exist - create it with default content
-                startup_log.info(format!("Configuration file not found: {path}"));
-                if let Err(e) = create_default_config_file(config_path) {
-                    startup_log.warn(format!("Failed to create default config file: {e}"));
-                    startup_log.info("Using embedded default configuration instead".to_string());
-                    None
-                } else {
-                    startup_log.info(format!("Created default configuration at: {path}"));
-                    Some(path)
-                }
-            }
+            std::fs::metadata(&path).with_context(|| {
+                format!(
+                    "Cannot load configuration file '{path}', given with --config or \
+                     ZENTINEL_CONFIG"
+                )
+            })?;
+            startup_log.info(format!("Loading configuration from: {path}"));
+            Some(path)
         }
         None => {
             startup_log.info(
@@ -1542,28 +1540,6 @@ fn spawn_shutdown_watchdog(graceful_shutdown_timeout_secs: u64) {
         );
         std::process::exit(1);
     });
-}
-
-/// Create a default configuration file at the specified path
-///
-/// Creates parent directories if needed and writes the embedded default config.
-fn create_default_config_file(path: &std::path::Path) -> Result<()> {
-    use std::fs;
-    use zentinel_config::DEFAULT_CONFIG_KDL;
-
-    // Create parent directories if they don't exist
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
-        }
-    }
-
-    // Write the default config
-    fs::write(path, DEFAULT_CONFIG_KDL.trim_start())
-        .with_context(|| format!("Failed to write default config to: {:?}", path))?;
-
-    Ok(())
 }
 
 /// Start a reload task for each certificate folder that asks for one.
