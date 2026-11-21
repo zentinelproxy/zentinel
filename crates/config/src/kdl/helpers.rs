@@ -123,6 +123,143 @@ impl std::fmt::Display for WrongValueType {
 
 impl std::error::Error for WrongValueType {}
 
+/// A setting written with an integer outside the range it takes.
+///
+/// `default-ttl-secs -1` is an integer, so it passes for a duration, but it is
+/// not one a `u64` can hold, and `port 70000` is not one a port can. Such a value
+/// used to be cut down to the width of the setting's type without a word:
+/// `-1` read as `18446744073709551615`, and `70000` as `4464`. The parser
+/// refuses it instead, and says which setting it was, what was written, and
+/// what the setting takes.
+///
+/// [`parse_kdl_document`](super::parse_kdl_document) adds where in the document
+/// the node is (see [`locate_error`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IntegerOutOfRange {
+    /// The setting: the name of the node, or of the property on it.
+    pub(crate) name: String,
+    /// The integer that was written.
+    pub(crate) value: i128,
+    /// The least value the setting takes.
+    pub(crate) min: i128,
+    /// The greatest value the setting takes.
+    pub(crate) max: i128,
+    /// Byte offset of the node that carries the value in the parsed text, when
+    /// the node carries a position.
+    pub(crate) offset: Option<usize>,
+    /// Where the node is, e.g. `in routes > route "api"`; `None` until the
+    /// position has been resolved.
+    pub(crate) location: Option<String>,
+}
+
+impl std::fmt::Display for IntegerOutOfRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Value out of range for '{}'", self.name)?;
+        if let Some(location) = &self.location {
+            write!(f, " {}", location)?;
+        }
+        write!(
+            f,
+            ": {} is not between {} and {}.",
+            self.value, self.min, self.max
+        )
+    }
+}
+
+impl std::error::Error for IntegerOutOfRange {}
+
+/// An integer type that a setting is stored in, and the range it covers.
+///
+/// Reading a setting as one of these refuses a value that does not fit, where
+/// `as` would keep its low bits. The range is that of the type on the platform
+/// that runs the parser, which for `usize` is its pointer width.
+pub(crate) trait IntSetting: Copy + TryFrom<i128> {
+    /// The least value of the type.
+    const MIN: i128;
+    /// The greatest value of the type.
+    const MAX: i128;
+}
+
+macro_rules! int_setting {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl IntSetting for $ty {
+                const MIN: i128 = <$ty>::MIN as i128;
+                const MAX: i128 = <$ty>::MAX as i128;
+            }
+        )*
+    };
+}
+
+int_setting!(u8, u16, u32, u64, usize, i32);
+
+/// The values of an HTTP status code.
+const HTTP_STATUS_MIN: i128 = 100;
+/// The greatest value of an HTTP status code.
+const HTTP_STATUS_MAX: i128 = 599;
+
+/// The error for `value`, written for `name` on `node`, outside `min..=max`.
+pub(crate) fn out_of_range(
+    node: &kdl::KdlNode,
+    name: &str,
+    value: i128,
+    min: i128,
+    max: i128,
+) -> anyhow::Error {
+    IntegerOutOfRange {
+        name: name.to_string(),
+        value,
+        min,
+        max,
+        offset: Some(node.span().offset()).filter(|o| *o > 0),
+        location: None,
+    }
+    .into()
+}
+
+/// `value`, which is the setting `name` on `node`, in the type `T`, within
+/// `min..=max` where that is narrower than the type.
+///
+/// # Errors
+///
+/// [`IntegerOutOfRange`] when the value is outside the range, which is
+/// reported as the part of `min..=max` that the type covers.
+pub(crate) fn int_setting_in<T: IntSetting>(
+    node: &kdl::KdlNode,
+    name: &str,
+    value: i128,
+    min: i128,
+    max: i128,
+) -> Result<T> {
+    let (min, max) = (min.max(T::MIN), max.min(T::MAX));
+    if value < min || value > max {
+        return Err(out_of_range(node, name, value, min, max));
+    }
+    T::try_from(value).map_err(|_| out_of_range(node, name, value, min, max))
+}
+
+/// `value`, which is the setting `name` on `node`, in the type `T`.
+///
+/// # Errors
+///
+/// [`IntegerOutOfRange`] when the value does not fit the type.
+pub(crate) fn int_setting<T: IntSetting>(
+    node: &kdl::KdlNode,
+    name: &str,
+    value: i128,
+) -> Result<T> {
+    int_setting_in(node, name, value, T::MIN, T::MAX)
+}
+
+/// An HTTP status code: `value`, which is the setting `name` on `node`.
+///
+/// # Errors
+///
+/// [`IntegerOutOfRange`] when the value is not from 100 to 599.
+pub(crate) fn http_status(node: &kdl::KdlNode, name: &str, value: i128) -> Result<u16> {
+    int_setting_in(node, name, value, HTTP_STATUS_MIN, HTTP_STATUS_MAX)
+}
+
 /// The type of a value as it reads in a [`WrongValueType`].
 fn found_type(value: &kdl::KdlValue) -> &'static str {
     match value {
@@ -206,6 +343,30 @@ pub(crate) fn node_int(node: &kdl::KdlNode) -> Result<Option<i128>> {
     node_value(node, EXPECT_INTEGER, |v| v.as_integer())
 }
 
+/// The first value of `node` as an integer that fits `T`; see [`node_value`].
+///
+/// # Errors
+///
+/// [`WrongValueType`] when the node has no value or its value is not an
+/// integer, and [`IntegerOutOfRange`] when the integer does not fit `T`.
+pub(crate) fn node_int_as<T: IntSetting>(node: &kdl::KdlNode) -> Result<Option<T>> {
+    node_int(node)?
+        .map(|value| int_setting(node, node.name().value(), value))
+        .transpose()
+}
+
+/// The first value of `node` as an HTTP status code; see [`node_value`].
+///
+/// # Errors
+///
+/// [`WrongValueType`] when the node has no value or its value is not an
+/// integer, and [`IntegerOutOfRange`] when the integer is not from 100 to 599.
+pub(crate) fn node_status(node: &kdl::KdlNode) -> Result<Option<u16>> {
+    node_int(node)?
+        .map(|value| http_status(node, node.name().value(), value))
+        .transpose()
+}
+
 /// The first value of `node` as a boolean; see [`node_value`].
 ///
 /// # Errors
@@ -286,6 +447,19 @@ pub(crate) fn string_args(node: &kdl::KdlNode) -> Result<Vec<String>> {
 /// [`WrongValueType`] for the first entry that is not an integer.
 pub(crate) fn int_args(node: &kdl::KdlNode) -> Result<Vec<i128>> {
     node_args(node, EXPECT_INTEGER, |v| v.as_integer())
+}
+
+/// Every argument of `node` as an HTTP status code; see [`node_args`].
+///
+/// # Errors
+///
+/// [`WrongValueType`] for the first entry that is not an integer, and
+/// [`IntegerOutOfRange`] for the first integer that is not from 100 to 599.
+pub(crate) fn status_args(node: &kdl::KdlNode) -> Result<Vec<u16>> {
+    int_args(node)?
+        .into_iter()
+        .map(|value| http_status(node, node.name().value(), value))
+        .collect()
 }
 
 /// Every string argument of every child of `parent` named `name`.
@@ -373,8 +547,21 @@ pub(crate) fn property_int(node: &kdl::KdlNode, name: &str) -> Result<Option<i12
     property_value(node, name, EXPECT_INTEGER, |v| v.as_integer())
 }
 
-/// Say where in `doc` a [`DuplicateNode`] or [`WrongValueType`] error is, when
-/// `error` is one.
+/// The property `name` of `node` as an integer that fits `T`; see
+/// [`property_value`].
+///
+/// # Errors
+///
+/// [`WrongValueType`] when the property is not an integer, and
+/// [`IntegerOutOfRange`] when the integer does not fit `T`.
+pub(crate) fn property_int_as<T: IntSetting>(node: &kdl::KdlNode, name: &str) -> Result<Option<T>> {
+    property_int(node, name)?
+        .map(|value| int_setting(node, name, value))
+        .transpose()
+}
+
+/// Say where in `doc` a [`DuplicateNode`], [`WrongValueType`] or
+/// [`IntegerOutOfRange`] error is, when `error` is one.
 ///
 /// The nodes carry their byte offsets in the text that was parsed, so the
 /// enclosing blocks can be found from the offset alone, however deep the
@@ -399,6 +586,16 @@ pub(crate) fn locate_error(error: anyhow::Error, doc: &kdl::KdlDocument) -> anyh
         return WrongValueType {
             location: Some(location),
             ..wrong.clone()
+        }
+        .into();
+    }
+    if let Some(range) = error.downcast_ref::<IntegerOutOfRange>() {
+        let Some(location) = range.offset.and_then(|o| describe_location(doc, o)) else {
+            return error;
+        };
+        return IntegerOutOfRange {
+            location: Some(location),
+            ..range.clone()
         }
         .into();
     }
@@ -592,6 +789,62 @@ pub fn get_int_entry(node: &kdl::KdlNode, name: &str) -> Result<Option<i128>> {
     read_child(node, name, node_int)
 }
 
+/// An integer entry of a KDL node, in the type `T` it is stored in.
+///
+/// Returns `Ok(None)` when the node has no child `name`, or its value is `#null`.
+///
+/// # Errors
+///
+/// [`DuplicateNode`] when `name` is written more than once,
+/// [`WrongValueType`] when it is written with no value or one that is not an
+/// integer, and [`IntegerOutOfRange`] when the integer does not fit `T`. The
+/// value used to be cut down to the width of `T`, so `-1` read as the largest
+/// value of an unsigned type.
+pub(crate) fn get_int_entry_as<T: IntSetting>(
+    node: &kdl::KdlNode,
+    name: &str,
+) -> Result<Option<T>> {
+    read_child(node, name, node_int_as::<T>)
+}
+
+/// An unsigned 8-bit entry; see [`get_int_entry_as`].
+pub(crate) fn get_u8_entry(node: &kdl::KdlNode, name: &str) -> Result<Option<u8>> {
+    get_int_entry_as(node, name)
+}
+
+/// An unsigned 16-bit entry; see [`get_int_entry_as`].
+pub(crate) fn get_u16_entry(node: &kdl::KdlNode, name: &str) -> Result<Option<u16>> {
+    get_int_entry_as(node, name)
+}
+
+/// An unsigned 32-bit entry; see [`get_int_entry_as`].
+pub(crate) fn get_u32_entry(node: &kdl::KdlNode, name: &str) -> Result<Option<u32>> {
+    get_int_entry_as(node, name)
+}
+
+/// An unsigned 64-bit entry; see [`get_int_entry_as`].
+pub(crate) fn get_u64_entry(node: &kdl::KdlNode, name: &str) -> Result<Option<u64>> {
+    get_int_entry_as(node, name)
+}
+
+/// A pointer-sized unsigned entry; see [`get_int_entry_as`].
+pub(crate) fn get_usize_entry(node: &kdl::KdlNode, name: &str) -> Result<Option<usize>> {
+    get_int_entry_as(node, name)
+}
+
+/// An HTTP status code entry of a KDL node.
+///
+/// Returns `Ok(None)` when the node has no child `name`, or its value is `#null`.
+///
+/// # Errors
+///
+/// [`DuplicateNode`] when `name` is written more than once,
+/// [`WrongValueType`] when it is written with no value or one that is not an
+/// integer, and [`IntegerOutOfRange`] when the integer is not from 100 to 599.
+pub(crate) fn get_status_entry(node: &kdl::KdlNode, name: &str) -> Result<Option<u16>> {
+    read_child(node, name, node_status)
+}
+
 /// Helper to get a boolean entry from a KDL node
 ///
 /// Returns `Ok(None)` when the node has no child `name`, or its value is `#null`.
@@ -619,19 +872,21 @@ pub fn get_float_entry(node: &kdl::KdlNode, name: &str) -> Result<Option<f64>> {
     read_child(node, name, node_number)
 }
 
-/// An integer setting under its documented name, or else under its alias.
+/// An integer setting under its documented name, or else under its alias, in
+/// the type `T` it is stored in.
 ///
 /// # Errors
 ///
-/// [`DuplicateNode`] when the name that is read is written more than once.
-pub(crate) fn get_int_entry_or(
+/// [`DuplicateNode`] when the name that is read is written more than once, and
+/// the errors of [`get_int_entry_as`].
+pub(crate) fn get_int_entry_or_as<T: IntSetting>(
     node: &kdl::KdlNode,
     name: &str,
     alias: &str,
-) -> Result<Option<i128>> {
-    match get_int_entry(node, name)? {
+) -> Result<Option<T>> {
+    match get_int_entry_as(node, name)? {
         Some(value) => Ok(Some(value)),
-        None => get_int_entry(node, alias),
+        None => get_int_entry_as(node, alias),
     }
 }
 
@@ -720,11 +975,10 @@ fn parse_single_target(node: &kdl::KdlNode) -> Result<Option<UpstreamTarget>> {
     };
 
     // Weight: `weight=N` property, else `weight N` child node; defaults to 1.
-    let weight = match property_int(node, "weight")? {
+    let weight = match property_int_as(node, "weight")? {
         Some(weight) => Some(weight),
-        None => get_int_entry(node, "weight")?,
+        None => get_u32_entry(node, "weight")?,
     }
-    .map(|v| v as u32)
     .unwrap_or(1);
 
     Ok(Some(UpstreamTarget {
@@ -1024,7 +1278,7 @@ mod tests {
         let doc = parse("n {\n  idle-timeout 30\n  flag-alias #true\n}\n");
         let node = &doc.nodes()[0];
         assert_eq!(
-            get_int_entry_or(node, "idle-timeout-secs", "idle-timeout").unwrap(),
+            get_int_entry_or_as::<u64>(node, "idle-timeout-secs", "idle-timeout").unwrap(),
             Some(30)
         );
         assert_eq!(
@@ -1266,5 +1520,288 @@ mod tests {
         let error = locate_error(duplicate.clone().into(), &doc);
         assert_eq!(error.to_string(), duplicate.to_string());
         assert!(error.to_string().starts_with("Duplicate node 'filters': "));
+    }
+
+    fn out_of_range_of(error: anyhow::Error) -> IntegerOutOfRange {
+        error
+            .downcast::<IntegerOutOfRange>()
+            .expect("the error is an IntegerOutOfRange")
+    }
+
+    /// The node of `source`, whose entries are read by name.
+    fn read<T>(
+        source: &str,
+        read: impl Fn(&kdl::KdlNode, &str) -> Result<Option<T>>,
+    ) -> Result<Option<T>> {
+        let doc = parse(source);
+        read(&doc.nodes()[0], "n")
+    }
+
+    #[test]
+    fn an_unsigned_entry_takes_zero_and_the_largest_value_of_its_type() {
+        assert_eq!(read("p {\n n 0\n}\n", get_u8_entry).unwrap(), Some(0));
+        assert_eq!(
+            read("p {\n n 255\n}\n", get_u8_entry).unwrap(),
+            Some(u8::MAX)
+        );
+        assert_eq!(
+            read("p {\n n 65535\n}\n", get_u16_entry).unwrap(),
+            Some(u16::MAX)
+        );
+        assert_eq!(
+            read("p {\n n 4294967295\n}\n", get_u32_entry).unwrap(),
+            Some(u32::MAX)
+        );
+        assert_eq!(
+            read("p {\n n 18446744073709551615\n}\n", get_u64_entry).unwrap(),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            read("p {\n n 18446744073709551615\n}\n", get_usize_entry).unwrap(),
+            Some(usize::MAX)
+        );
+    }
+
+    #[test]
+    fn an_unsigned_entry_refuses_a_negative_value() {
+        let source = "p {\n n -1\n}\n";
+        let ranges = [
+            (
+                get_u8_entry(&parse(source).nodes()[0], "n").map(|_| ()),
+                u8::MAX as i128,
+            ),
+            (
+                get_u16_entry(&parse(source).nodes()[0], "n").map(|_| ()),
+                u16::MAX as i128,
+            ),
+            (
+                get_u32_entry(&parse(source).nodes()[0], "n").map(|_| ()),
+                u32::MAX as i128,
+            ),
+            (
+                get_u64_entry(&parse(source).nodes()[0], "n").map(|_| ()),
+                u64::MAX as i128,
+            ),
+            (
+                get_usize_entry(&parse(source).nodes()[0], "n").map(|_| ()),
+                usize::MAX as i128,
+            ),
+        ];
+        for (result, max) in ranges {
+            let error = out_of_range_of(result.unwrap_err());
+            assert_eq!(error.name, "n");
+            assert_eq!((error.value, error.min, error.max), (-1, 0, max));
+        }
+    }
+
+    #[test]
+    fn an_unsigned_entry_refuses_one_more_than_the_largest_value_of_its_type() {
+        let error = out_of_range_of(read("p {\n n 256\n}\n", get_u8_entry).unwrap_err());
+        assert_eq!((error.value, error.min, error.max), (256, 0, 255));
+        let error = out_of_range_of(read("p {\n n 65536\n}\n", get_u16_entry).unwrap_err());
+        assert_eq!((error.value, error.min, error.max), (65536, 0, 65535));
+        let error = out_of_range_of(read("p {\n n 4294967296\n}\n", get_u32_entry).unwrap_err());
+        assert_eq!(
+            (error.value, error.min, error.max),
+            (4_294_967_296, 0, 4_294_967_295)
+        );
+        let error =
+            out_of_range_of(read("p {\n n 18446744073709551616\n}\n", get_u64_entry).unwrap_err());
+        assert_eq!(
+            (error.value, error.min, error.max),
+            (18_446_744_073_709_551_616, 0, 18_446_744_073_709_551_615)
+        );
+    }
+
+    #[test]
+    fn an_unsigned_entry_refuses_an_integer_wider_than_64_bits() {
+        // 2^100 and 2^64 + 5 keep only their low bits under `as`: 0 and 5.
+        for source in [
+            "p {\n n 1267650600228229401496703205376\n}\n",
+            "p {\n n 18446744073709551621\n}\n",
+        ] {
+            let error = out_of_range_of(read(source, get_u64_entry).unwrap_err());
+            assert_eq!(error.name, "n");
+            assert!(error.value > i128::from(u64::MAX));
+        }
+    }
+
+    #[test]
+    fn a_signed_entry_takes_the_whole_range_of_its_type() {
+        let i32_entry = |source: &str| get_int_entry_as::<i32>(&parse(source).nodes()[0], "n");
+        assert_eq!(
+            i32_entry("p {\n n -2147483648\n}\n").unwrap(),
+            Some(i32::MIN)
+        );
+        assert_eq!(
+            i32_entry("p {\n n 2147483647\n}\n").unwrap(),
+            Some(i32::MAX)
+        );
+        let error = out_of_range_of(i32_entry("p {\n n -2147483649\n}\n").unwrap_err());
+        assert_eq!((error.min, error.max), (-2_147_483_648, 2_147_483_647));
+        assert!(i32_entry("p {\n n 2147483648\n}\n").is_err());
+    }
+
+    #[test]
+    fn an_entry_that_is_absent_or_null_reads_as_none_whatever_the_type() {
+        assert_eq!(read("p {\n m 1\n}\n", get_u16_entry).unwrap(), None);
+        assert_eq!(read("p {\n n #null\n}\n", get_u16_entry).unwrap(), None);
+        assert_eq!(read("p {\n n #null\n}\n", get_status_entry).unwrap(), None);
+    }
+
+    #[test]
+    fn an_unsigned_entry_still_refuses_a_value_of_another_type() {
+        let wrong = wrong_type_of(read("p {\n n \"5\"\n}\n", get_u32_entry).unwrap_err());
+        assert_eq!(wrong.expected, EXPECT_INTEGER);
+        assert_eq!(wrong.found, Some("a string"));
+        let wrong = wrong_type_of(read("p {\n n 1.5\n}\n", get_u32_entry).unwrap_err());
+        assert_eq!(wrong.found, Some("a number"));
+    }
+
+    #[test]
+    fn a_status_entry_takes_100_to_599() {
+        for (value, ok) in [
+            (-1, false),
+            (0, false),
+            (99, false),
+            (100, true),
+            (404, true),
+            (599, true),
+            (600, false),
+            (1000, false),
+            (65535, false),
+            (65536, false),
+            (70000, false),
+        ] {
+            let result = read(&format!("p {{\n n {value}\n}}\n"), get_status_entry);
+            if ok {
+                assert_eq!(result.unwrap(), Some(u16::try_from(value).unwrap()));
+            } else {
+                let error = out_of_range_of(result.unwrap_err());
+                assert_eq!(
+                    (error.value, error.min, error.max),
+                    (value, 100, 599),
+                    "{value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn status_args_refuses_the_first_code_outside_100_to_599() {
+        let doc = parse("codes 200 404 599\n");
+        assert_eq!(status_args(&doc.nodes()[0]).unwrap(), vec![200, 404, 599]);
+        let doc = parse("codes 200 1000 70000\n");
+        let error = out_of_range_of(status_args(&doc.nodes()[0]).unwrap_err());
+        assert_eq!((error.name.as_str(), error.value), ("codes", 1000));
+        let doc = parse("codes 200 \"404\"\n");
+        assert!(status_args(&doc.nodes()[0]).is_err());
+    }
+
+    #[test]
+    fn a_range_narrower_than_the_type_is_the_one_reported() {
+        let doc = parse("n 5\n");
+        let node = &doc.nodes()[0];
+        assert_eq!(int_setting_in::<u8>(node, "n", 5, 1, 10).unwrap(), 5);
+        let error = out_of_range_of(int_setting_in::<u8>(node, "n", 11, 1, 10).unwrap_err());
+        assert_eq!((error.min, error.max), (1, 10));
+    }
+
+    #[test]
+    fn a_range_wider_than_the_type_is_cut_to_the_type() {
+        let doc = parse("n 5\n");
+        let node = &doc.nodes()[0];
+        let error = out_of_range_of(int_setting_in::<u8>(node, "n", 300, -5, 1000).unwrap_err());
+        assert_eq!((error.min, error.max), (0, 255));
+    }
+
+    #[test]
+    fn a_property_is_read_as_the_type_it_is_stored_in() {
+        let doc = parse("target weight=2\ntarget weight=-1\ntarget weight=4294967296\ntarget\n");
+        let nodes = doc.nodes();
+        assert_eq!(
+            property_int_as::<u32>(&nodes[0], "weight").unwrap(),
+            Some(2)
+        );
+        let error = out_of_range_of(property_int_as::<u32>(&nodes[1], "weight").unwrap_err());
+        assert_eq!((error.name.as_str(), error.value), ("weight", -1));
+        assert!(property_int_as::<u32>(&nodes[2], "weight").is_err());
+        assert_eq!(property_int_as::<u32>(&nodes[3], "weight").unwrap(), None);
+    }
+
+    #[test]
+    fn a_node_value_is_read_as_the_type_it_is_stored_in() {
+        let doc = parse("n 7\nn -7\n");
+        assert_eq!(node_int_as::<u64>(&doc.nodes()[0]).unwrap(), Some(7));
+        assert!(node_int_as::<u64>(&doc.nodes()[1]).is_err());
+        assert_eq!(node_int_as::<i32>(&doc.nodes()[1]).unwrap(), Some(-7));
+    }
+
+    #[test]
+    fn the_alias_of_a_setting_is_range_checked_too() {
+        let doc = parse("n {\n  idle-timeout -5\n}\n");
+        let error =
+            get_int_entry_or_as::<u64>(&doc.nodes()[0], "idle-timeout-secs", "idle-timeout")
+                .unwrap_err();
+        let error = out_of_range_of(error);
+        assert_eq!((error.name.as_str(), error.value), ("idle-timeout", -5));
+    }
+
+    #[test]
+    fn the_out_of_range_error_names_the_setting_the_value_and_the_range() {
+        let doc = parse(
+            "routes {\n  route \"api\" {\n    cache {\n      default-ttl-secs -1\n    }\n  }\n}\n",
+        );
+        let cache = get_unique_child(&doc.nodes()[0], "route")
+            .unwrap()
+            .and_then(|r| get_unique_child(r, "cache").unwrap())
+            .expect("cache block");
+        let error = get_u64_entry(cache, "default-ttl-secs").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Value out of range for 'default-ttl-secs': -1 is not between 0 and 18446744073709551615."
+        );
+        let located = out_of_range_of(locate_error(error, &doc));
+        assert_eq!(
+            located.location.as_deref(),
+            Some("in routes > route \"api\" > cache")
+        );
+        assert_eq!(
+            located.to_string(),
+            "Value out of range for 'default-ttl-secs' in routes > route \"api\" > cache: \
+             -1 is not between 0 and 18446744073709551615."
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_error_without_a_position_is_reported_without_one() {
+        let range = IntegerOutOfRange {
+            name: "port".to_string(),
+            value: 70000,
+            min: 0,
+            max: 65535,
+            offset: None,
+            location: None,
+        };
+        let doc = parse("a 1\n");
+        let error = locate_error(range.clone().into(), &doc);
+        assert_eq!(error.to_string(), range.to_string());
+        assert_eq!(
+            error.to_string(),
+            "Value out of range for 'port': 70000 is not between 0 and 65535."
+        );
+    }
+
+    #[test]
+    fn an_upstream_target_weight_that_does_not_fit_u32_is_an_error() {
+        let doc = parse("upstream \"u\" {\n  target \"a.example:80\" weight=4294967296\n}\n");
+        assert!(parse_upstream_targets(&doc.nodes()[0]).is_err());
+        let doc = parse("upstream \"u\" {\n  target \"a.example:80\" weight=-1\n}\n");
+        assert!(parse_upstream_targets(&doc.nodes()[0]).is_err());
+        let doc = parse("upstream \"u\" {\n  target \"a.example:80\" weight=4294967295\n}\n");
+        assert_eq!(
+            parse_upstream_targets(&doc.nodes()[0]).unwrap()[0].weight,
+            u32::MAX
+        );
     }
 }

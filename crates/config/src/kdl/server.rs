@@ -17,8 +17,8 @@ use crate::server::{
 use std::time::Duration;
 
 use super::helpers::{
-    get_arg_string, get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry,
-    get_unique_child, string_args_of_children,
+    get_arg_string, get_bool_entry, get_first_arg_string, get_string_entry, get_u32_entry,
+    get_u64_entry, get_unique_child, get_usize_entry, string_args_of_children,
 };
 
 /// Parse server configuration block
@@ -168,14 +168,11 @@ pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
         .unwrap_or_default();
 
     let config = ServerConfig {
-        worker_threads: get_int_entry(node, "worker-threads")?
-            .map(|v| v as usize)
+        worker_threads: get_usize_entry(node, "worker-threads")?
             .unwrap_or_else(default_worker_threads),
-        max_connections: get_int_entry(node, "max-connections")?
-            .map(|v| v as usize)
+        max_connections: get_usize_entry(node, "max-connections")?
             .unwrap_or_else(default_max_connections),
-        graceful_shutdown_timeout_secs: get_int_entry(node, "graceful-shutdown-timeout-secs")?
-            .map(|v| v as u64)
+        graceful_shutdown_timeout_secs: get_u64_entry(node, "graceful-shutdown-timeout-secs")?
             .unwrap_or_else(default_graceful_shutdown_timeout),
         daemon: get_bool_entry(node, "daemon")?.unwrap_or(false),
         pid_file: get_string_entry(node, "pid-file")?.map(PathBuf::from),
@@ -184,8 +181,7 @@ pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
         working_directory: get_string_entry(node, "working-directory")?.map(PathBuf::from),
         trace_id_format,
         auto_reload: get_bool_entry(node, "auto-reload")?.unwrap_or(false),
-        route_cache_size: get_int_entry(node, "route-cache-size")?
-            .map(|v| v as usize)
+        route_cache_size: get_usize_entry(node, "route-cache-size")?
             .unwrap_or_else(crate::server::default_route_cache_size),
     };
 
@@ -265,17 +261,13 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                     tls,
                     default_route: get_string_entry(child, "default-route")?,
                     namespace: get_string_entry(child, "namespace")?,
-                    request_timeout_secs: get_int_entry(child, "request-timeout-secs")?
-                        .map(|v| v as u64)
+                    request_timeout_secs: get_u64_entry(child, "request-timeout-secs")?
                         .unwrap_or_else(default_request_timeout),
-                    keepalive_timeout_secs: get_int_entry(child, "keepalive-timeout-secs")?
-                        .map(|v| v as u64)
+                    keepalive_timeout_secs: get_u64_entry(child, "keepalive-timeout-secs")?
                         .unwrap_or_else(default_keepalive_timeout),
-                    max_concurrent_streams: get_int_entry(child, "max-concurrent-streams")?
-                        .map(|v| v as u32)
+                    max_concurrent_streams: get_u32_entry(child, "max-concurrent-streams")?
                         .unwrap_or_else(default_max_concurrent_streams),
-                    keepalive_max_requests: get_int_entry(child, "keepalive-max-requests")?
-                        .map(|v| v as u32),
+                    keepalive_max_requests: get_u32_entry(child, "keepalive-max-requests")?,
                     trusted_proxies,
                 });
             }
@@ -555,9 +547,8 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     let storage = get_string_entry(node, "storage")?
         .map(PathBuf::from)
         .unwrap_or_else(default_acme_storage);
-    let renew_before_days = get_int_entry(node, "renew-before-days")?
-        .map(|v| v as u32)
-        .unwrap_or_else(default_renewal_days);
+    let renew_before_days =
+        get_u32_entry(node, "renew-before-days")?.unwrap_or_else(default_renewal_days);
 
     // Parse challenge type
     let challenge_type = get_string_entry(node, "challenge-type")?
@@ -677,9 +668,7 @@ fn parse_dns_provider_config(node: &kdl::KdlNode, listener_id: &str) -> Result<D
     }
 
     // API timeout
-    let api_timeout_secs = get_int_entry(node, "api-timeout-secs")?
-        .map(|v| v as u64)
-        .unwrap_or(30);
+    let api_timeout_secs = get_u64_entry(node, "api-timeout-secs")?.unwrap_or(30);
 
     // Propagation configuration
     let propagation = get_unique_child(node, "propagation")?
@@ -734,17 +723,11 @@ fn parse_dns_provider_type(
 
 /// Parse propagation check configuration
 fn parse_propagation_config(node: &kdl::KdlNode) -> Result<PropagationCheckConfig> {
-    let initial_delay_secs = get_int_entry(node, "initial-delay-secs")?
-        .map(|v| v as u64)
-        .unwrap_or(10);
+    let initial_delay_secs = get_u64_entry(node, "initial-delay-secs")?.unwrap_or(10);
 
-    let check_interval_secs = get_int_entry(node, "check-interval-secs")?
-        .map(|v| v as u64)
-        .unwrap_or(5);
+    let check_interval_secs = get_u64_entry(node, "check-interval-secs")?.unwrap_or(5);
 
-    let timeout_secs = get_int_entry(node, "timeout-secs")?
-        .map(|v| v as u64)
-        .unwrap_or(120);
+    let timeout_secs = get_u64_entry(node, "timeout-secs")?.unwrap_or(120);
 
     // Parse nameservers
     let nameservers = string_args_of_children(node, "nameservers")?;

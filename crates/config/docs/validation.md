@@ -129,6 +129,57 @@ expected, and so on, is an error and not the setting's default. See
 | `max-header-count` | `> 0` |
 | `max-body-size` | `> 0` |
 
+## Integer Ranges
+
+An integer is also checked against the range of the type the setting is stored
+in, when the file is parsed. A value outside the range is an error, and not the
+value its low bits make:
+
+| Stored as | Range | Settings, for example |
+|-----------|-------|-----------------------|
+| `u8` | 0 to 255 | `paranoia-level`, `min-version`, `max-version` |
+| `u16` | 0 to 65535 | `port` on a `redirect` filter |
+| `u32` | 0 to 4294967295 | `max-rps`, `burst`, `weight`, `healthy-threshold`, `max-concurrent-streams`, `renew-before-days`, `memcached-ttl-secs`, `stale-while-revalidate-secs`, `stale-if-error-secs` |
+| `u64` | 0 to 18446744073709551615 | most `*-secs` and `*-ms` durations (`default-ttl-secs`, `timeout-secs`, `request-timeout-secs`, `timeout-ms`), `limit` and `tokens-per-minute` of an inference budget |
+| `usize` | 0 to the pointer width of the platform (18446744073709551615 on a 64-bit one) | `max-connections`, `worker-threads`, `max-header-size`, `max-size-bytes`, `buffer-size` |
+| `i32` | -2147483648 to 2147483647 | `priority` on a route |
+
+A setting that holds an HTTP status code (`status-code` on the `rate-limit`,
+`geo` and `redirect` filters, `block-status` of a guardrail,
+`cacheable-status-codes`, `on-error-codes` of a fallback, and `expected-status`
+of an HTTP health check) takes 100 to 599. `retryable-status-codes` of a retry
+policy takes the same range. A narrower range that a setting has, such as the
+1 to 4 of `paranoia-level`, is checked after this one.
+
+The error names the setting, the value that was written, the range, and where:
+
+```
+Value out of range for 'default-ttl-secs' in routes > route "api" > cache: -1 is
+not between 0 and 18446744073709551615.
+```
+
+A value that fits is read as written. The range is that of the type, except for two
+groups of settings, which take less:
+
+- A setting that holds an HTTP status code takes 100 to 599, so `status-code 0`,
+  `status-code 700` and `expected-status 700`, which used to load, are errors.
+- `stale-while-revalidate-secs` and `stale-if-error-secs` take at most 4294967295,
+  so a value from 4294967296 up, which used to load, is an error.
+
+For every other setting, a value that was accepted and fits is still accepted,
+including `0`. What `0` means is up to the setting, as before.
+
+A duration written as a string (`cookie-ttl "1h"`, the `reload-interval` of an
+`sni-certs` block, a retry policy's `backoff`, `max-backoff` and
+`per-attempt-timeout`) must not be negative, and must not be too long to count in a
+`u64` of seconds or milliseconds. `cookie-ttl "-1h"` used to read as `0`, and a
+duration too long to count used to read as the largest value; each is an error now.
+
+Values outside these ranges used to be accepted, and stored as their low bits:
+`default-ttl-secs -1` as `18446744073709551615`, `port 70000` as `4464`, and
+`status-code 70000` as `4464`. A configuration that carries one now fails to load;
+write the value that was meant.
+
 ## Reference Integrity
 
 The validator ensures all cross-references are valid:
@@ -345,6 +396,11 @@ Duplicate upstream ID 'backend' found. Each upstream ID must be unique.
 ```
 Wrong value type for 'max-connections-per-client' in limits: expected an integer
 (without quotes), found a string.
+```
+
+```
+Value out of range for 'status-code' in filters > filter "limit": 1000 is not
+between 100 and 599.
 ```
 
 ```

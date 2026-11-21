@@ -17,6 +17,8 @@ mod duplicate_nodes_tests;
 pub(crate) mod error_pages;
 pub(crate) mod filters;
 mod helpers;
+#[cfg(test)]
+mod int_range_tests;
 pub(crate) mod namespace;
 mod retrypolicy_helper;
 pub(crate) mod routes;
@@ -29,8 +31,8 @@ use tracing::{debug, trace, warn};
 
 // Re-export commonly used items
 use helpers::{
-    get_arg_string, get_float_entry, get_unique, get_unique_child, node_bool, node_int,
-    property_string, string_args,
+    get_arg_string, get_float_entry, get_u32_entry, get_u8_entry, get_unique, get_unique_child,
+    get_usize_entry, node_bool, node_int_as, property_string, string_args,
 };
 pub use helpers::{
     get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, offset_to_line_col,
@@ -62,7 +64,9 @@ use crate::{AgentConfig, Config, CURRENT_SCHEMA_VERSION};
 ///
 /// A [`DuplicateNode`](helpers::DuplicateNode) when a block that is read once
 /// is written twice, a [`WrongValueType`](helpers::WrongValueType) when a
-/// setting has a value of a type it does not take, each with where in the
+/// setting has a value of a type it does not take, an
+/// [`IntegerOutOfRange`](helpers::IntegerOutOfRange) when an integer is outside
+/// the range of the type the setting is stored in, each with where in the
 /// document it is, and any error the parsers raise for a block or value they
 /// cannot use.
 pub fn parse_kdl_document(doc: kdl::KdlDocument) -> Result<Config> {
@@ -449,19 +453,19 @@ fn kdl_to_json(node: &kdl::KdlNode) -> Result<serde_json::Value> {
             let name = child.name().value().to_string();
 
             // Collect arguments (unnamed entries)
-            let args: Vec<serde_json::Value> = child
-                .entries()
-                .iter()
-                .filter(|e| e.name().is_none())
-                .filter_map(|e| kdl_value_to_json(e.value()))
-                .collect();
+            let mut args: Vec<serde_json::Value> = Vec::new();
+            for entry in child.entries().iter().filter(|e| e.name().is_none()) {
+                args.extend(kdl_value_to_json(child, &name, entry.value())?);
+            }
 
             // Collect named entries as properties
             let mut child_obj = serde_json::Map::new();
             for entry in child.entries().iter().filter(|e| e.name().is_some()) {
-                if let Some(name) = entry.name() {
-                    if let Some(value) = kdl_value_to_json(entry.value()) {
-                        child_obj.insert(name.value().to_string(), value);
+                if let Some(entry_name) = entry.name() {
+                    if let Some(value) =
+                        kdl_value_to_json(child, entry_name.value(), entry.value())?
+                    {
+                        child_obj.insert(entry_name.value().to_string(), value);
                     }
                 }
             }
@@ -501,12 +505,38 @@ fn kdl_to_json(node: &kdl::KdlNode) -> Result<serde_json::Value> {
     Ok(serde_json::Value::Object(obj))
 }
 
-/// Convert a single KDL value to JSON
-fn kdl_value_to_json(value: &kdl::KdlValue) -> Option<serde_json::Value> {
-    if let Some(s) = value.as_string() {
+/// Convert a single KDL value, written as `name` on `node`, to JSON
+///
+/// An integer is a JSON number when it is from `i64::MIN` to `u64::MAX`, which
+/// is what `serde_json` holds; a value outside that range used to be cut down to
+/// its low 64 bits.
+///
+/// # Errors
+///
+/// [`IntegerOutOfRange`](helpers::IntegerOutOfRange) for an integer outside that
+/// range.
+fn kdl_value_to_json(
+    node: &kdl::KdlNode,
+    name: &str,
+    value: &kdl::KdlValue,
+) -> Result<Option<serde_json::Value>> {
+    Ok(if let Some(s) = value.as_string() {
         Some(serde_json::Value::String(s.to_string()))
     } else if let Some(n) = value.as_integer() {
-        Some(serde_json::Value::Number((n as i64).into()))
+        let number = match (i64::try_from(n), u64::try_from(n)) {
+            (Ok(signed), _) => serde_json::Number::from(signed),
+            (_, Ok(unsigned)) => serde_json::Number::from(unsigned),
+            _ => {
+                return Err(helpers::out_of_range(
+                    node,
+                    name,
+                    n,
+                    i128::from(i64::MIN),
+                    i128::from(u64::MAX),
+                ))
+            }
+        };
+        Some(serde_json::Value::Number(number))
     } else if let Some(f) = value.as_float() {
         serde_json::Number::from_f64(f).map(serde_json::Value::Number)
     } else if let Some(b) = value.as_bool() {
@@ -515,7 +545,7 @@ fn kdl_value_to_json(value: &kdl::KdlValue) -> Option<serde_json::Value> {
         Some(serde_json::Value::Null)
     } else {
         None
-    }
+    })
 }
 
 /// Parse a single agent configuration
@@ -598,13 +628,13 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 transport = Some(AgentTransport::Http { url, tls });
             }
             "timeout-ms" => {
-                if let Some(v) = node_int(child)? {
-                    timeout_ms = v as u64;
+                if let Some(v) = node_int_as(child)? {
+                    timeout_ms = v;
                 }
             }
             "connect-timeout-ms" => {
-                if let Some(v) = node_int(child)? {
-                    connect_timeout_ms = Some(v.clamp(0, u64::MAX as i128) as u64);
+                if let Some(v) = node_int_as(child)? {
+                    connect_timeout_ms = Some(v);
                 }
             }
             "failure-mode" => {
@@ -633,13 +663,13 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 circuit_breaker = Some(parse_circuit_breaker_faildefault(child)?);
             }
             "max-request-body-bytes" => {
-                if let Some(v) = node_int(child)? {
-                    max_request_body_bytes = Some(v as usize);
+                if let Some(v) = node_int_as(child)? {
+                    max_request_body_bytes = Some(v);
                 }
             }
             "max-response-body-bytes" => {
-                if let Some(v) = node_int(child)? {
-                    max_response_body_bytes = Some(v as usize);
+                if let Some(v) = node_int_as(child)? {
+                    max_response_body_bytes = Some(v);
                 }
             }
             "request-body-mode" => {
@@ -661,16 +691,16 @@ fn parse_single_agent(node: &kdl::KdlNode) -> Result<AgentConfig> {
                 }
             }
             "chunk-timeout-ms" => {
-                if let Some(v) = node_int(child)? {
-                    chunk_timeout_ms = v as u64;
+                if let Some(v) = node_int_as(child)? {
+                    chunk_timeout_ms = v;
                 }
             }
             "config" => {
                 config = Some(kdl_to_json(child)?);
             }
             "max-concurrent-calls" => {
-                if let Some(v) = node_int(child)? {
-                    max_concurrent_calls = v as usize;
+                if let Some(v) = node_int_as(child)? {
+                    max_concurrent_calls = v;
                 }
             }
             "protocol-version" => {
@@ -974,9 +1004,7 @@ fn parse_waf_ruleset(node: &kdl::KdlNode) -> Result<crate::waf::WafRuleset> {
 
     let custom_rules_dir = get_string_entry(node, "custom-rules-dir")?.map(PathBuf::from);
 
-    let paranoia_level = get_int_entry(node, "paranoia-level")?
-        .map(|v| v as u8)
-        .unwrap_or(1);
+    let paranoia_level = get_u8_entry(node, "paranoia-level")?.unwrap_or(1);
 
     // Validate paranoia level (1-4)
     if !(1..=4).contains(&paranoia_level) {
@@ -986,9 +1014,7 @@ fn parse_waf_ruleset(node: &kdl::KdlNode) -> Result<crate::waf::WafRuleset> {
         ));
     }
 
-    let anomaly_threshold = get_int_entry(node, "anomaly-threshold")?
-        .map(|v| v as u32)
-        .unwrap_or(5);
+    let anomaly_threshold = get_u32_entry(node, "anomaly-threshold")?.unwrap_or(5);
 
     // Parse exclusions.
     //
@@ -1100,9 +1126,8 @@ fn parse_body_inspection_policy(node: &kdl::KdlNode) -> Result<crate::waf::BodyI
 
     let inspect_request_body = get_bool_entry(node, "inspect-request-body")?.unwrap_or(true);
     let inspect_response_body = get_bool_entry(node, "inspect-response-body")?.unwrap_or(false);
-    let max_inspection_bytes = get_int_entry(node, "max-inspection-bytes")?
-        .map(|v| v as usize)
-        .unwrap_or(1024 * 1024); // 1MB default
+    let max_inspection_bytes =
+        get_usize_entry(node, "max-inspection-bytes")?.unwrap_or(1024 * 1024); // 1MB default
     let decompress = get_bool_entry(node, "decompress")?.unwrap_or(false);
     // A ratio, so a fractional value is a number too: the shipped config
     // writes `max-decompression-ratio 100.0`, which was never read.
@@ -1173,9 +1198,7 @@ const CONCURRENCY_LIMIT_KEYS: &[&str] = &[
 
 /// A concurrency limit's value: `None` (unlimited) when absent or `0`.
 fn concurrency_limit(node: &kdl::KdlNode, key: &str) -> Result<Option<usize>> {
-    Ok(get_int_entry(node, key)?
-        .filter(|v| *v != 0)
-        .map(|v| v as usize))
+    Ok(get_usize_entry(node, key)?.filter(|v| *v != 0))
 }
 
 /// Settings in a `limits` block that are read but not applied.
@@ -1236,14 +1259,14 @@ pub fn parse_scope_limits_config(node: &kdl::KdlNode, kind: &str, id: &str) -> R
 
 /// Apply the keys a `limits` block writes on top of `limits`.
 fn parse_limits_onto(node: &kdl::KdlNode, mut limits: Limits) -> Result<Limits> {
-    if let Some(v) = get_int_entry(node, "max-header-size")? {
-        limits.max_header_size_bytes = v as usize;
+    if let Some(v) = get_usize_entry(node, "max-header-size")? {
+        limits.max_header_size_bytes = v;
     }
-    if let Some(v) = get_int_entry(node, "max-header-count")? {
-        limits.max_header_count = v as usize;
+    if let Some(v) = get_usize_entry(node, "max-header-count")? {
+        limits.max_header_count = v;
     }
-    if let Some(v) = get_int_entry(node, "max-body-size")? {
-        limits.max_body_size_bytes = v as usize;
+    if let Some(v) = get_usize_entry(node, "max-body-size")? {
+        limits.max_body_size_bytes = v;
         // The body buffer cannot exceed the body it buffers, and validation
         // rejects a config where it does. A single-file config has no key for
         // the buffer, so with its 1 MiB default any `max-body-size` below
@@ -1308,26 +1331,26 @@ pub fn parse_cache_config(node: &kdl::KdlNode) -> Result<CacheStorageConfig> {
     // Parse size limits. `max-size-bytes` is the spelling the field and much
     // of the documentation use; it was ignored until #553.
     if let Some(v) = cache_entry_with_alias(node, CACHE_KEY_ALIASES[0])? {
-        config.max_size_bytes = v as usize;
+        config.max_size_bytes = v;
     }
-    if let Some(v) = get_int_entry(node, "eviction-limit")? {
-        config.eviction_limit_bytes = Some(v as usize);
+    if let Some(v) = get_usize_entry(node, "eviction-limit")? {
+        config.eviction_limit_bytes = Some(v);
     }
 
     // Parse lock timeout, in seconds under either spelling.
     if let Some(v) = cache_entry_with_alias(node, CACHE_KEY_ALIASES[1])? {
-        config.lock_timeout_secs = v as u64;
+        config.lock_timeout_secs = v;
     }
 
     // Parse disk options
     if let Some(path) = get_string_entry(node, "disk-path")? {
         config.disk_path = Some(std::path::PathBuf::from(path));
     }
-    if let Some(v) = get_int_entry(node, "disk-shards")? {
-        config.disk_shards = v as u32;
+    if let Some(v) = get_u32_entry(node, "disk-shards")? {
+        config.disk_shards = v;
     }
-    if let Some(v) = get_int_entry(node, "disk-max-size")? {
-        config.disk_max_size_bytes = Some(v as usize);
+    if let Some(v) = get_usize_entry(node, "disk-max-size")? {
+        config.disk_max_size_bytes = Some(v);
     }
 
     // Parse status-header flag (Cache-Status response header, RFC 9211)
@@ -1365,11 +1388,11 @@ pub(crate) const CACHE_KEY_ALIASES: [(&str, &str); 2] = [
 ///
 /// The original name wins when both are written, which is what configs
 /// carrying both have been running on.
-fn cache_entry_with_alias(
+fn cache_entry_with_alias<T: helpers::IntSetting>(
     node: &kdl::KdlNode,
     (name, alias): (&str, &str),
-) -> Result<Option<i128>> {
-    helpers::get_int_entry_or(node, name, alias)
+) -> Result<Option<T>> {
+    helpers::get_int_entry_or_as(node, name, alias)
 }
 
 /// Settings of a top-level `cache` block written under both spellings, of
@@ -1425,11 +1448,11 @@ pub fn parse_rate_limits_config(node: &kdl::KdlNode) -> Result<GlobalRateLimitCo
     let mut config = GlobalRateLimitConfig::default();
 
     // Parse direct properties
-    if let Some(v) = get_int_entry(node, "default-rps")? {
-        config.default_rps = Some(v as u32);
+    if let Some(v) = get_u32_entry(node, "default-rps")? {
+        config.default_rps = Some(v);
     }
-    if let Some(v) = get_int_entry(node, "default-burst")? {
-        config.default_burst = Some(v as u32);
+    if let Some(v) = get_u32_entry(node, "default-burst")? {
+        config.default_burst = Some(v);
     }
     if let Some(key) = get_string_entry(node, "key")? {
         config.key = parse_rate_limit_key(&key)?;
@@ -1445,11 +1468,10 @@ pub fn parse_rate_limits_config(node: &kdl::KdlNode) -> Result<GlobalRateLimitCo
 
 /// Parse a global limit configuration block
 fn parse_global_limit_config(node: &kdl::KdlNode) -> Result<GlobalLimitConfig> {
-    let max_rps = get_int_entry(node, "max-rps")?
-        .ok_or_else(|| anyhow::anyhow!("global rate limit requires 'max-rps'"))?
-        as u32;
+    let max_rps = get_u32_entry(node, "max-rps")?
+        .ok_or_else(|| anyhow::anyhow!("global rate limit requires 'max-rps'"))?;
 
-    let burst = get_int_entry(node, "burst")?.unwrap_or(10) as u32;
+    let burst = get_u32_entry(node, "burst")?.unwrap_or(10);
 
     let key = if let Some(key_str) = get_string_entry(node, "key")? {
         parse_rate_limit_key(&key_str)?
@@ -1663,8 +1685,8 @@ fn parse_access_log_config(node: &kdl::KdlNode) -> Result<crate::observability::
         config.include_trace_id = include_trace_id;
         config.fields.trace_id = include_trace_id;
     }
-    if let Some(buffer_size) = get_int_entry(node, "buffer-size")? {
-        config.buffer_size = buffer_size as usize;
+    if let Some(buffer_size) = get_usize_entry(node, "buffer-size")? {
+        config.buffer_size = buffer_size;
     }
 
     Ok(config)
@@ -1686,8 +1708,8 @@ fn parse_error_log_config(node: &kdl::KdlNode) -> Result<crate::observability::E
     if let Some(level) = get_string_entry(node, "level")? {
         config.level = level;
     }
-    if let Some(buffer_size) = get_int_entry(node, "buffer-size")? {
-        config.buffer_size = buffer_size as usize;
+    if let Some(buffer_size) = get_usize_entry(node, "buffer-size")? {
+        config.buffer_size = buffer_size;
     }
 
     Ok(config)
@@ -1706,8 +1728,8 @@ fn parse_audit_log_config(node: &kdl::KdlNode) -> Result<crate::observability::A
     if let Some(file) = get_string_entry(node, "file")? {
         config.file = PathBuf::from(file);
     }
-    if let Some(buffer_size) = get_int_entry(node, "buffer-size")? {
-        config.buffer_size = buffer_size as usize;
+    if let Some(buffer_size) = get_usize_entry(node, "buffer-size")? {
+        config.buffer_size = buffer_size;
     }
     if let Some(log_blocked) = get_bool_entry(node, "log-blocked")? {
         config.log_blocked = log_blocked;

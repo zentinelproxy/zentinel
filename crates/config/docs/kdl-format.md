@@ -811,6 +811,10 @@ To fix a configuration that now fails, write the value with the type the error
 names: add the quotes around a string, or remove them from an integer or a
 boolean.
 
+An integer has to fit the setting too: `default-ttl-secs -1` and `port 70000` are
+errors, where they used to be stored as `18446744073709551615` and `4464`. See
+[Integer Ranges](validation.md#integer-ranges).
+
 ## One Node, One Value
 
 A block reads each of its settings once, so a node that is written twice in the

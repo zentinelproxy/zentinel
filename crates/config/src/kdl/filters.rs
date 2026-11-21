@@ -10,8 +10,9 @@ use crate::FilterConfig;
 
 use super::helpers::{
     get_arg_string, get_bool_entry, get_bool_entry_or, get_first_arg_string, get_int_entry,
-    get_int_entry_or, get_string_entry, get_unique, get_unique_child, reject_repeated_header_names,
-    string_args,
+    get_int_entry_or_as, get_status_entry, get_string_entry, get_u16_entry, get_u32_entry,
+    get_u64_entry, get_unique, get_unique_child, get_usize_entry, int_setting,
+    reject_repeated_header_names, string_args,
 };
 
 /// Parse top-level filter definitions block
@@ -116,15 +117,9 @@ pub(crate) const RECOGNIZED_RATE_LIMIT_FILTER_KEYS: &[&str] = &[
 ];
 
 fn parse_rate_limit_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let max_rps = get_int_entry(node, "max-rps")?
-        .map(|v| v as u32)
-        .unwrap_or(100);
-    let burst = get_int_entry(node, "burst")?
-        .map(|v| v as u32)
-        .unwrap_or(10);
-    let status_code = get_int_entry(node, "status-code")?
-        .map(|v| v as u16)
-        .unwrap_or(429);
+    let max_rps = get_u32_entry(node, "max-rps")?.unwrap_or(100);
+    let burst = get_u32_entry(node, "burst")?.unwrap_or(10);
+    let status_code = get_status_entry(node, "status-code")?.unwrap_or(429);
 
     let key = get_string_entry(node, "key")?
         .map(|s| match s.as_str() {
@@ -161,11 +156,8 @@ fn parse_rate_limit_filter(node: &kdl::KdlNode) -> Result<Filter> {
         status_code,
         limit_message: get_string_entry(node, "message")?,
         backend,
-        max_delay_ms: get_int_entry(node, "max-delay-ms")?
-            .map(|v| v as u64)
-            .unwrap_or(5000),
-        max_keys: get_int_entry(node, "max-keys")?
-            .map(|v| v as usize)
+        max_delay_ms: get_u64_entry(node, "max-delay-ms")?.unwrap_or(5000),
+        max_keys: get_usize_entry(node, "max-keys")?
             .unwrap_or_else(crate::filters::default_max_keys),
     }))
 }
@@ -182,12 +174,8 @@ fn parse_rate_limit_backend(node: &kdl::KdlNode) -> Result<RateLimitBackend> {
                 .unwrap_or_else(|| "redis://127.0.0.1:6379".to_string());
             let key_prefix = get_string_entry(node, "redis-prefix")?
                 .unwrap_or_else(|| "zentinel:ratelimit:".to_string());
-            let pool_size = get_int_entry(node, "redis-pool-size")?
-                .map(|v| v as u32)
-                .unwrap_or(10);
-            let timeout_ms = get_int_entry(node, "redis-timeout-ms")?
-                .map(|v| v as u64)
-                .unwrap_or(50);
+            let pool_size = get_u32_entry(node, "redis-pool-size")?.unwrap_or(10);
+            let timeout_ms = get_u64_entry(node, "redis-timeout-ms")?.unwrap_or(50);
             // Every config writes `redis-fallback-local`; this read only
             // `redis-fallback`. It looked correct because the default is also
             // true, so the discarded setting matched intent by coincidence —
@@ -209,21 +197,16 @@ fn parse_rate_limit_backend(node: &kdl::KdlNode) -> Result<RateLimitBackend> {
                 .unwrap_or_else(|| "memcache://127.0.0.1:11211".to_string());
             let key_prefix = get_string_entry(node, "memcached-prefix")?
                 .unwrap_or_else(|| "zentinel:ratelimit:".to_string());
-            let pool_size = get_int_entry(node, "memcached-pool-size")?
-                .map(|v| v as u32)
-                .unwrap_or(10);
-            let timeout_ms = get_int_entry(node, "memcached-timeout-ms")?
-                .map(|v| v as u64)
-                .unwrap_or(50);
+            let pool_size = get_u32_entry(node, "memcached-pool-size")?.unwrap_or(10);
+            let timeout_ms = get_u64_entry(node, "memcached-timeout-ms")?.unwrap_or(50);
             // Same mismatch as the Redis branch above, plus the TTL: configs
             // write `memcached-ttl-secs`, this read `memcached-ttl`, and the
             // default of 2 matched what the examples asked for.
             let fallback_local =
                 get_bool_entry_or(node, "memcached-fallback-local", "memcached-fallback")?
                     .unwrap_or(true);
-            let ttl_secs = get_int_entry_or(node, "memcached-ttl-secs", "memcached-ttl")?
-                .map(|v| v as u32)
-                .unwrap_or(2);
+            let ttl_secs =
+                get_int_entry_or_as(node, "memcached-ttl-secs", "memcached-ttl")?.unwrap_or(2);
 
             Ok(RateLimitBackend::Memcached(MemcachedBackendConfig {
                 url: memcached_url,
@@ -288,17 +271,21 @@ pub(crate) fn resolve_agent_filter_failure_mode(
 /// # Errors
 ///
 /// A [`DuplicateNode`](super::helpers::DuplicateNode) when `timeout-ms` is
-/// written more than once.
+/// written more than once, and an
+/// [`IntegerOutOfRange`](super::helpers::IntegerOutOfRange) for a positive
+/// value that a `u64` cannot hold.
 pub(crate) fn resolve_agent_filter_timeout(
     node: &kdl::KdlNode,
     filter_id: &str,
 ) -> Result<(Option<u64>, Option<String>)> {
-    let Some(entry) = get_unique_child(node, "timeout-ms")?.and_then(|n| n.entries().first())
-    else {
+    let Some(timeout_node) = get_unique_child(node, "timeout-ms")? else {
+        return Ok((None, None));
+    };
+    let Some(entry) = timeout_node.entries().first() else {
         return Ok((None, None));
     };
     Ok(match entry.value().as_integer() {
-        Some(v) if v > 0 => (Some(v.min(u64::MAX as i128) as u64), None),
+        Some(v) if v > 0 => (Some(int_setting(timeout_node, "timeout-ms", v)?), None),
         _ => (
             None,
             Some(format!(
@@ -357,17 +344,21 @@ pub(crate) fn resolve_agent_filter_inspect_body(
 /// # Errors
 ///
 /// A [`DuplicateNode`](super::helpers::DuplicateNode) when `max-body-bytes` is
-/// written more than once.
+/// written more than once, and an
+/// [`IntegerOutOfRange`](super::helpers::IntegerOutOfRange) for a positive
+/// value that a `usize` cannot hold.
 pub(crate) fn resolve_agent_filter_max_body_bytes(
     node: &kdl::KdlNode,
     filter_id: &str,
 ) -> Result<(Option<usize>, Option<String>)> {
-    let Some(entry) = get_unique_child(node, "max-body-bytes")?.and_then(|n| n.entries().first())
-    else {
+    let Some(limit_node) = get_unique_child(node, "max-body-bytes")? else {
+        return Ok((None, None));
+    };
+    let Some(entry) = limit_node.entries().first() else {
         return Ok((None, None));
     };
     Ok(match entry.value().as_integer() {
-        Some(v) if v > 0 => (Some(v.min(usize::MAX as i128) as usize), None),
+        Some(v) if v > 0 => (Some(int_setting(limit_node, "max-body-bytes", v)?), None),
         _ => (
             None,
             Some(format!(
@@ -574,9 +565,7 @@ fn parse_compress_filter(node: &kdl::KdlNode) -> Result<Filter> {
         }
     };
 
-    let min_size = get_int_entry(node, "min-size")?
-        .map(|v| v as usize)
-        .unwrap_or(1024);
+    let min_size = get_usize_entry(node, "min-size")?.unwrap_or(1024);
 
     let content_types = get_string_list(node, "content-types")?.unwrap_or_else(|| {
         vec![
@@ -604,9 +593,9 @@ fn parse_compress_filter(node: &kdl::KdlNode) -> Result<Filter> {
 
 fn parse_timeout_filter(node: &kdl::KdlNode) -> Result<Filter> {
     Ok(Filter::Timeout(TimeoutFilter {
-        request_timeout_secs: get_int_entry(node, "request-timeout-secs")?.map(|v| v as u64),
-        upstream_timeout_secs: get_int_entry(node, "upstream-timeout-secs")?.map(|v| v as u64),
-        connect_timeout_secs: get_int_entry(node, "connect-timeout-secs")?.map(|v| v as u64),
+        request_timeout_secs: get_u64_entry(node, "request-timeout-secs")?,
+        upstream_timeout_secs: get_u64_entry(node, "upstream-timeout-secs")?,
+        connect_timeout_secs: get_u64_entry(node, "connect-timeout-secs")?,
     }))
 }
 
@@ -615,9 +604,7 @@ fn parse_log_filter(node: &kdl::KdlNode) -> Result<Filter> {
         log_request: get_bool_entry(node, "log-request")?.unwrap_or(true),
         log_response: get_bool_entry(node, "log-response")?.unwrap_or(true),
         log_body: get_bool_entry(node, "log-body")?.unwrap_or(false),
-        max_body_log_size: get_int_entry(node, "max-body-log-size")?
-            .map(|v| v as usize)
-            .unwrap_or(4096),
+        max_body_log_size: get_usize_entry(node, "max-body-log-size")?.unwrap_or(4096),
         fields: vec![],
         level: get_string_entry(node, "level")?.unwrap_or_else(|| "info".to_string()),
     }))
@@ -672,15 +659,11 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
         })
         .unwrap_or_default();
 
-    let status_code = get_int_entry(node, "status-code")?
-        .map(|v| v as u16)
-        .unwrap_or(403);
+    let status_code = get_status_entry(node, "status-code")?.unwrap_or(403);
 
     let block_message = get_string_entry(node, "block-message")?;
 
-    let cache_ttl_secs = get_int_entry(node, "cache-ttl-secs")?
-        .map(|v| v as u64)
-        .unwrap_or(3600);
+    let cache_ttl_secs = get_u64_entry(node, "cache-ttl-secs")?.unwrap_or(3600);
 
     let add_country_header = get_bool_entry(node, "add-country-header")?.unwrap_or(true);
 
@@ -698,12 +681,10 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
 }
 
 fn parse_redirect_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let status_code = get_int_entry(node, "status-code")?
-        .map(|v| v as u16)
-        .unwrap_or(302);
+    let status_code = get_status_entry(node, "status-code")?.unwrap_or(302);
     let hostname = get_string_entry(node, "hostname")?;
     let scheme = get_string_entry(node, "scheme")?;
-    let port = get_int_entry(node, "port")?.map(|v| v as u16);
+    let port = get_u16_entry(node, "port")?;
     let path = parse_path_modifier(node)?;
 
     Ok(Filter::Redirect(RedirectFilter {

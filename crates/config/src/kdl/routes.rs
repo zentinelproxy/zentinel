@@ -15,10 +15,11 @@ use crate::{kdl::retrypolicy_helper::parse_retry_policy, routes::*};
 use zentinel_common::types::ByteSize;
 
 use super::helpers::{
-    get_arg_string, get_bool_entry, get_first_arg_string, get_float_entry, get_int_entry,
-    get_string_entry, get_unique, get_unique_child, int_args, node_args, node_value, number_of,
-    property_string, reject_repeated, reject_repeated_header_names, reject_repeated_names,
-    string_arg_at, string_args, EXPECT_NUMBER,
+    get_arg_string, get_bool_entry, get_first_arg_string, get_float_entry, get_status_entry,
+    get_string_entry, get_u32_entry, get_u64_entry, get_unique, get_unique_child, get_usize_entry,
+    int_setting, node_args, node_value, number_of, property_string, reject_repeated,
+    reject_repeated_header_names, reject_repeated_names, status_args, string_arg_at, string_args,
+    EXPECT_NUMBER,
 };
 
 /// Recognized child node names inside a `route` block.
@@ -378,16 +379,16 @@ pub(crate) fn resolve_priority(
 ) -> Result<(zentinel_common::types::Priority, Option<String>)> {
     use zentinel_common::types::Priority;
 
-    let Some(value) = get_unique_child(node, "priority")?
-        .and_then(|n| n.entries().first())
-        .map(|e| e.value())
-    else {
+    let Some(priority_node) = get_unique_child(node, "priority")? else {
+        return Ok((Priority::NORMAL, None));
+    };
+    let Some(value) = priority_node.entries().first().map(|e| e.value()) else {
         return Ok((Priority::NORMAL, None));
     };
 
     // Integer form: `priority 100`
     if let Some(n) = value.as_integer() {
-        return Ok((Priority(n as i32), None));
+        return Ok((Priority(int_setting(priority_node, "priority", n)?), None));
     }
 
     // Named string alias: `priority "high"`
@@ -896,7 +897,7 @@ fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettin
         });
     };
 
-    let timeout_secs = get_int_entry(policies, "timeout-secs")?.map(|v| v as u64);
+    let timeout_secs = get_u64_entry(policies, "timeout-secs")?;
 
     // Accepts both `max-body-size "10MB"` and a plain byte count.
     enum Size {
@@ -918,7 +919,7 @@ fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettin
                 s.parse::<ByteSize>()
                     .map_err(|e| anyhow::anyhow!("Invalid max-body-size '{s}': {e}"))?,
             ),
-            Some(Size::Bytes(v)) => Some(ByteSize(v as usize)),
+            Some(Size::Bytes(v)) => Some(ByteSize(int_setting(node, "max-body-size", v)?)),
         },
     };
 
@@ -947,19 +948,15 @@ fn parse_route_policy_settings(route: &kdl::KdlNode) -> Result<RoutePolicySettin
 
 /// Parse a route-level `rate-limit` block.
 fn parse_route_rate_limit(node: &kdl::KdlNode) -> Result<RateLimitPolicy> {
-    let requests_per_second = get_int_entry(node, "requests-per-second")?
-        .map(|v| v as u32)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Route rate-limit requires 'requests-per-second', e.g. requests-per-second 100"
-            )
-        })?;
+    let requests_per_second = get_u32_entry(node, "requests-per-second")?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Route rate-limit requires 'requests-per-second', e.g. requests-per-second 100"
+        )
+    })?;
 
     // A burst below the sustained rate would throttle below the configured
     // rate, which is never what an operator means by "burst".
-    let burst = get_int_entry(node, "burst")?
-        .map(|v| v as u32)
-        .unwrap_or(requests_per_second);
+    let burst = get_u32_entry(node, "burst")?.unwrap_or(requests_per_second);
 
     let key = match get_string_entry(node, "key")?.as_deref() {
         None => RateLimitKey::default(),
@@ -1120,13 +1117,13 @@ fn parse_cache_config_opt(node: &kdl::KdlNode) -> Result<Option<RouteCacheConfig
 /// ```
 fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     let enabled = get_bool_entry(node, "enabled")?.unwrap_or(false);
-    let default_ttl_secs = get_int_entry(node, "default-ttl-secs")?.unwrap_or(3600) as u64;
-    let max_size_bytes =
-        get_int_entry(node, "max-size-bytes")?.unwrap_or(10 * 1024 * 1024) as usize;
+    let default_ttl_secs = get_u64_entry(node, "default-ttl-secs")?.unwrap_or(3600);
+    let max_size_bytes = get_usize_entry(node, "max-size-bytes")?.unwrap_or(10 * 1024 * 1024);
     let cache_private = get_bool_entry(node, "cache-private")?.unwrap_or(false);
+    // Passed on as a `u32` number of seconds, so they take no more than one.
     let stale_while_revalidate_secs =
-        get_int_entry(node, "stale-while-revalidate-secs")?.unwrap_or(60) as u64;
-    let stale_if_error_secs = get_int_entry(node, "stale-if-error-secs")?.unwrap_or(300) as u64;
+        get_u32_entry(node, "stale-while-revalidate-secs")?.map_or(60, u64::from);
+    let stale_if_error_secs = get_u32_entry(node, "stale-if-error-secs")?.map_or(300, u64::from);
 
     // Parse cacheable methods (string arguments)
     let cacheable_methods = if let Some(children) = node.children() {
@@ -1142,10 +1139,7 @@ fn parse_cache_config(node: &kdl::KdlNode) -> Result<RouteCacheConfig> {
     // Parse cacheable status codes (integer arguments)
     let cacheable_status_codes = if let Some(children) = node.children() {
         if let Some(codes_node) = get_unique(children, "cacheable-status-codes")? {
-            int_args(codes_node)?
-                .into_iter()
-                .map(|v| v as u16)
-                .collect()
+            status_args(codes_node)?
         } else {
             vec![200, 203, 204, 206, 300, 301, 308, 404, 410]
         }
@@ -1454,9 +1448,9 @@ fn parse_shadow_config(node: &kdl::KdlNode) -> Result<ShadowConfig> {
         ));
     }
 
-    let timeout_ms = get_int_entry(node, "timeout-ms")?.unwrap_or(5000) as u64;
+    let timeout_ms = get_u64_entry(node, "timeout-ms")?.unwrap_or(5000);
     let buffer_body = get_bool_entry(node, "buffer-body")?.unwrap_or(false);
-    let max_body_bytes = get_int_entry(node, "max-body-bytes")?.unwrap_or(1048576) as usize;
+    let max_body_bytes = get_usize_entry(node, "max-body-bytes")?.unwrap_or(1048576);
 
     // Parse sample-header if present (tuple of name, value)
     let sample_header = if let Some(children) = node.children() {
@@ -1539,7 +1533,7 @@ fn parse_fallback_config_opt(node: &kdl::KdlNode) -> Result<Option<FallbackConfi
 /// }
 /// ```
 fn parse_fallback_config(node: &kdl::KdlNode) -> Result<FallbackConfig> {
-    let max_attempts = get_int_entry(node, "max-attempts")?.unwrap_or(3) as u32;
+    let max_attempts = get_u32_entry(node, "max-attempts")?.unwrap_or(3);
 
     // Parse triggers
     let triggers = if let Some(children) = node.children() {
@@ -1574,23 +1568,20 @@ fn parse_fallback_config(node: &kdl::KdlNode) -> Result<FallbackConfig> {
 fn parse_fallback_triggers(node: &kdl::KdlNode) -> Result<FallbackTriggers> {
     let on_health_failure = get_bool_entry(node, "on-health-failure")?.unwrap_or(true);
     let on_budget_exhausted = get_bool_entry(node, "on-budget-exhausted")?.unwrap_or(false);
-    let on_latency_threshold_ms = get_int_entry(node, "on-latency-threshold-ms")?.map(|v| v as u64);
+    let on_latency_threshold_ms = get_u64_entry(node, "on-latency-threshold-ms")?;
     let on_connection_error = get_bool_entry(node, "on-connection-error")?.unwrap_or(true);
 
     // Parse error codes (integer arguments)
     let on_error_codes = if let Some(children) = node.children() {
         if let Some(codes_node) = get_unique(children, "on-error-codes")? {
-            int_args(codes_node)?
-                .into_iter()
-                .map(|v| v as u16)
-                .collect()
+            status_args(codes_node)?
         } else {
             Vec::new()
         }
     } else {
         // Also check for inline arguments
         match get_unique_child(node, "on-error-codes")? {
-            Some(n) => int_args(n)?.into_iter().map(|v| v as u16).collect(),
+            Some(n) => status_args(n)?,
             None => Vec::new(),
         }
     };
@@ -1932,13 +1923,12 @@ fn parse_inference_config(node: &kdl::KdlNode) -> Result<InferenceConfig> {
 
 /// Parse token rate limit configuration
 fn parse_token_rate_limit(node: &kdl::KdlNode) -> Result<TokenRateLimit> {
-    let tokens_per_minute = get_int_entry(node, "tokens-per-minute")?
-        .ok_or_else(|| anyhow::anyhow!("Token rate limit requires 'tokens-per-minute'"))?
-        as u64;
+    let tokens_per_minute = get_u64_entry(node, "tokens-per-minute")?
+        .ok_or_else(|| anyhow::anyhow!("Token rate limit requires 'tokens-per-minute'"))?;
 
-    let requests_per_minute = get_int_entry(node, "requests-per-minute")?.map(|v| v as u64);
+    let requests_per_minute = get_u64_entry(node, "requests-per-minute")?;
 
-    let burst_tokens = get_int_entry(node, "burst-tokens")?.unwrap_or(10000) as u64;
+    let burst_tokens = get_u64_entry(node, "burst-tokens")?.unwrap_or(10000);
 
     let estimation_method = match get_string_entry(node, "estimation-method")?.as_deref() {
         Some("chars") | Some("characters") | None => TokenEstimation::Chars,
@@ -2015,8 +2005,8 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
         }
     };
 
-    let limit = get_int_entry(node, "limit")?
-        .ok_or_else(|| anyhow::anyhow!("Token budget requires 'limit'"))? as u64;
+    let limit = get_u64_entry(node, "limit")?
+        .ok_or_else(|| anyhow::anyhow!("Token budget requires 'limit'"))?;
 
     // Parse alert-thresholds as a list of floats from arguments
     let alert_thresholds = if let Some(children) = node.children() {
@@ -2032,8 +2022,7 @@ fn parse_token_budget(node: &kdl::KdlNode) -> Result<TokenBudgetConfig> {
     let enforce = get_bool_entry(node, "enforce")?.unwrap_or(true);
     let rollover = get_bool_entry(node, "rollover")?.unwrap_or(false);
     let burst_allowance = get_float_entry(node, "burst-allowance")?;
-    let max_tenants = get_int_entry(node, "max-tenants")?
-        .map(|v| v as usize)
+    let max_tenants = get_usize_entry(node, "max-tenants")?
         .unwrap_or_else(zentinel_common::budget::default_max_tenants);
 
     trace!(
@@ -2243,9 +2232,9 @@ fn parse_prompt_injection_config(node: &kdl::KdlNode) -> Result<PromptInjectionC
         }
     };
 
-    let block_status = get_int_entry(node, "block-status")?.unwrap_or(400) as u16;
+    let block_status = get_status_entry(node, "block-status")?.unwrap_or(400);
     let block_message = get_string_entry(node, "block-message")?;
-    let timeout_ms = get_int_entry(node, "timeout-ms")?.unwrap_or(500) as u64;
+    let timeout_ms = get_u64_entry(node, "timeout-ms")?.unwrap_or(500);
 
     let failure_mode = match get_string_entry(node, "failure-mode")?.as_deref() {
         Some("open") | None => GuardrailFailureMode::Open,
@@ -2309,7 +2298,7 @@ fn parse_pii_detection_config(node: &kdl::KdlNode) -> Result<PiiDetectionConfig>
         Vec::new()
     };
 
-    let timeout_ms = get_int_entry(node, "timeout-ms")?.unwrap_or(1000) as u64;
+    let timeout_ms = get_u64_entry(node, "timeout-ms")?.unwrap_or(1000);
 
     let failure_mode = match get_string_entry(node, "failure-mode")?.as_deref() {
         Some("open") | None => GuardrailFailureMode::Open,

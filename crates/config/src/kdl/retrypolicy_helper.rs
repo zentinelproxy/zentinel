@@ -130,6 +130,11 @@ fn parse_short_duration(text: &str) -> Option<std::time::Duration> {
         "m" | "min" | "mins" => value * 60_000.0,
         _ => return None,
     };
+    // More milliseconds than a `u64` counts is not a duration; the cast would
+    // read it as the largest value.
+    if millis >= u64::MAX as f64 {
+        return None;
+    }
     Some(std::time::Duration::from_millis(millis as u64))
 }
 
@@ -154,6 +159,25 @@ mod tests {
         let rp = parse_retry_policy(rp_node).unwrap();
 
         assert_eq!(rp.max_attempts, 10);
+    }
+
+    /// A duration a `u64` of milliseconds cannot count is not a duration.
+    #[test]
+    fn a_backoff_too_long_to_count_in_milliseconds_is_an_error() {
+        let kdl = r#"
+            retry-policy {
+                backoff "99999999999999999999999999999m"
+            }
+        "#;
+
+        let doc: kdl::KdlDocument = kdl.parse().unwrap();
+        let rp_node = doc.get("retry-policy").unwrap();
+
+        let err_msg = parse_retry_policy(rp_node).unwrap_err().to_string();
+        assert!(
+            err_msg.contains("backoff has an invalid duration"),
+            "{err_msg}"
+        );
     }
 
     /// retry-policy stanza present, one key unrecognized, expect to Err and panic out

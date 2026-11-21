@@ -234,11 +234,11 @@ Per-route cache configuration, nested under `policies.cache`.
 |----------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable caching for this route |
 | `default-ttl-secs` | `u64` | `300` | Default TTL in seconds |
-| `max-size-bytes` | `u64` | - | Max cached response size |
+| `max-size-bytes` | `usize` | - | Max cached response size |
 | `cacheable-methods` | `[string]` | `["GET", "HEAD"]` | HTTP methods to cache |
-| `cacheable-status-codes` | `[u16]` | `[200, 203, 204, 206, 300, 301]` | Status codes to cache |
-| `stale-while-revalidate-secs` | `u64` | - | Serve stale while refreshing |
-| `stale-if-error-secs` | `u64` | - | Serve stale on upstream error |
+| `cacheable-status-codes` | `[u16]` | `[200, 203, 204, 206, 300, 301]` | Status codes to cache (each 100 to 599) |
+| `stale-while-revalidate-secs` | `u32` | - | Serve stale while refreshing (at most `4294967295`) |
+| `stale-if-error-secs` | `u32` | - | Serve stale on upstream error (at most `4294967295`) |
 | `vary-headers` | `[string]` | `[]` | Headers to vary cache key by |
 | `ignore-query-params` | `[string]` | `[]` | Query params to exclude from cache key |
 | `exclude-extensions` | `[string]` | `[]` | File extensions to exclude from caching (without dot, e.g., `"php"`, `"html"`) |
@@ -421,7 +421,7 @@ Reusable filter definitions.
 | `burst` | `u32` | `10` | Burst size |
 | `key` | `string` | `"client-ip"` | Rate limit key |
 | `on-limit` | `string` | `"reject"` | Action: `reject`, `delay`, `log-only` |
-| `status-code` | `u16` | `429` | Response status when limited |
+| `status-code` | `u16` | `429` | Response status when limited (100 to 599) |
 | `backend` | `string` | `"local"` | Storage: `local`, `redis`, `memcached` |
 | `max-keys` | `usize` | `100000` | Max distinct keys tracked in memory; idle keys are evicted at the cap (see `zentinel_rate_limit_keys` / `zentinel_rate_limit_key_evictions_total` metrics) |
 
@@ -463,7 +463,7 @@ Reusable filter definitions.
 | `action` | `string` | `"block"` | Action: `block`, `allow`, `log-only` |
 | `countries` | `[string]` | `[]` | ISO country codes |
 | `on-failure` | `string` | `"open"` | Failure mode: `open`, `closed` |
-| `status-code` | `u16` | `403` | Block status code |
+| `status-code` | `u16` | `403` | Block status code (100 to 599) |
 | `cache-ttl-secs` | `u64` | `3600` | Lookup cache TTL |
 
 #### agent
@@ -667,9 +667,9 @@ HTTP response caching configuration.
 |----------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable caching |
 | `backend` | `string` | `"memory"` | Backend: `memory`, `disk`, `hybrid` |
-| `max-size` | `u64` | `104857600` | Max cache size in bytes (100MB); `max-size-bytes` is accepted as well |
-| `eviction-limit` | `u64` | - | Eviction trigger threshold in bytes |
+| `max-size` | `usize` | `104857600` | Max cache size in bytes (100MB); `max-size-bytes` is accepted as well |
+| `eviction-limit` | `usize` | - | Eviction trigger threshold in bytes |
 | `lock-timeout` | `u64` | `10` | Cache lock timeout in seconds; `lock-timeout-secs` is accepted as well |
 | `disk-path` | `string` | - | Disk cache path |
 | `disk-shards` | `u32` | `16` | Number of disk shards |
-| `disk-max-size` | `u64` | - | Disk tier max size (hybrid only) |
+| `disk-max-size` | `usize` | - | Disk tier max size (hybrid only) |

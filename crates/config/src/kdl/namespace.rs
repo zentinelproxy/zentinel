@@ -218,7 +218,7 @@ pub(crate) const RECOGNIZED_SERVICE_LISTENER_KEYS: &[&str] = &[
 /// }
 /// ```
 fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
-    use super::helpers::{get_int_entry, get_string_entry, get_unique_child};
+    use super::helpers::{get_string_entry, get_u32_entry, get_u64_entry, get_unique_child};
     use crate::server::ListenerProtocol;
 
     // Get ID from first argument or from 'id' property in node
@@ -264,16 +264,10 @@ fn parse_single_listener(node: &kdl::KdlNode) -> Result<ListenerConfig> {
         tls,
         default_route: get_string_entry(node, "default-route")?,
         namespace: get_string_entry(node, "namespace")?,
-        request_timeout_secs: get_int_entry(node, "request-timeout-secs")?
-            .map(|v| v as u64)
-            .unwrap_or(60),
-        keepalive_timeout_secs: get_int_entry(node, "keepalive-timeout-secs")?
-            .map(|v| v as u64)
-            .unwrap_or(75),
-        max_concurrent_streams: get_int_entry(node, "max-concurrent-streams")?
-            .map(|v| v as u32)
-            .unwrap_or(100),
-        keepalive_max_requests: get_int_entry(node, "keepalive-max-requests")?.map(|v| v as u32),
+        request_timeout_secs: get_u64_entry(node, "request-timeout-secs")?.unwrap_or(60),
+        keepalive_timeout_secs: get_u64_entry(node, "keepalive-timeout-secs")?.unwrap_or(75),
+        max_concurrent_streams: get_u32_entry(node, "max-concurrent-streams")?.unwrap_or(100),
+        keepalive_max_requests: get_u32_entry(node, "keepalive-max-requests")?,
         trusted_proxies,
     })
 }

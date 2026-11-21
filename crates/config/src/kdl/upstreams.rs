@@ -10,9 +10,11 @@ use zentinel_common::types::{HealthCheckType, LoadBalancingAlgorithm};
 use crate::{kdl::circuitbreaker_helper::parse_circuit_breaker_faildefault, upstreams::*};
 
 use super::helpers::{
-    get_arg_string, get_bool_entry, get_first_arg_string, get_int_entry, get_int_entry_or,
-    get_string_entry, get_unique_arg_string, get_unique_child, get_unique_in_nodes, node_bool,
-    node_int, node_number, node_string, node_value, parse_upstream_targets, string_args,
+    get_arg_string, get_bool_entry, get_first_arg_string, get_int_entry, get_int_entry_or_as,
+    get_string_entry, get_u32_entry, get_u64_entry, get_u8_entry, get_unique_arg_string,
+    get_unique_child, get_unique_in_nodes, get_usize_entry, http_status, int_setting, node_bool,
+    node_int_as, node_number, node_string, node_value, parse_upstream_targets, string_args,
+    IntSetting,
 };
 
 //Parse a single upstream block
@@ -479,23 +481,26 @@ pub(crate) fn resolve_sticky_session_config(
         find_string_entry(nodes, "cookie-name")?.unwrap_or_else(|| "SERVERID".to_string());
 
     // Parse cookie TTL - support both integer seconds and duration strings
-    let cookie_ttl_secs = get_unique_in_nodes(nodes, "cookie-ttl")?
-        .map(|node| {
-            node_value(
-                node,
-                "an integer number of seconds, or a duration string such as \"1h\"",
-                |v| match v.as_integer() {
-                    Some(secs) => Some(secs as u64),
+    let cookie_ttl_secs = match get_unique_in_nodes(nodes, "cookie-ttl")? {
+        None => None,
+        Some(node) => node_value(
+            node,
+            "an integer number of seconds, or a duration string such as \"1h\"",
+            |v| {
+                v.as_integer().or_else(|| {
                     // `"1h"`, `"30m"`, `"3600s"`; a bare `"3600"` is seconds.
-                    None => v.as_string().and_then(|text| {
-                        parse_duration_string(text).or_else(|| text.trim().parse().ok())
-                    }),
-                },
-            )
-        })
-        .transpose()?
-        .flatten()
-        .unwrap_or(3600); // Default 1 hour
+                    v.as_string().and_then(|text| {
+                        parse_duration_string(text)
+                            .map(i128::from)
+                            .or_else(|| text.trim().parse().ok())
+                    })
+                })
+            },
+        )?
+        .map(|secs| int_setting(node, "cookie-ttl", secs))
+        .transpose()?,
+    }
+    .unwrap_or(3600); // Default 1 hour
 
     let cookie_path = find_string_entry(nodes, "cookie-path")?.unwrap_or_else(|| "/".to_string());
 
@@ -571,14 +576,20 @@ pub(crate) fn parse_duration_string(s: &str) -> Option<u64> {
     let value: f64 = num_part.trim().parse().ok()?;
 
     let multiplier = match unit_part.to_lowercase().as_str() {
-        "s" | "sec" | "secs" | "second" | "seconds" => 1,
-        "m" | "min" | "mins" | "minute" | "minutes" => 60,
-        "h" | "hr" | "hrs" | "hour" | "hours" => 3600,
-        "d" | "day" | "days" => 86400,
+        "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
+        "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
+        "h" | "hr" | "hrs" | "hour" | "hours" => 3600.0,
+        "d" | "day" | "days" => 86400.0,
         _ => return None,
     };
 
-    Some((value * multiplier as f64) as u64)
+    // A negative duration, or one a `u64` cannot count, is not a duration; the
+    // cast would read the first as 0 and the second as the largest value.
+    let secs = value * multiplier;
+    if !secs.is_finite() || secs < 0.0 || secs >= u64::MAX as f64 {
+        return None;
+    }
+    Some(secs as u64)
 }
 
 /// Parse HTTP version configuration
@@ -593,21 +604,13 @@ pub(crate) fn parse_duration_string(s: &str) -> Option<u64> {
 /// }
 /// ```
 fn parse_http_version(node: &kdl::KdlNode) -> Result<HttpVersionConfig> {
-    let min_version = get_int_entry(node, "min-version")?
-        .map(|v| v as u8)
-        .unwrap_or(1);
+    let min_version = get_u8_entry(node, "min-version")?.unwrap_or(1);
 
-    let max_version = get_int_entry(node, "max-version")?
-        .map(|v| v as u8)
-        .unwrap_or(2); // Default to HTTP/2 support
+    let max_version = get_u8_entry(node, "max-version")?.unwrap_or(2); // Default to HTTP/2 support
 
-    let h2_ping_interval_secs = get_int_entry(node, "h2-ping-interval")?
-        .map(|v| v as u64)
-        .unwrap_or(0);
+    let h2_ping_interval_secs = get_u64_entry(node, "h2-ping-interval")?.unwrap_or(0);
 
-    let max_h2_streams = get_int_entry(node, "max-h2-streams")?
-        .map(|v| v as usize)
-        .unwrap_or(100);
+    let max_h2_streams = get_usize_entry(node, "max-h2-streams")?.unwrap_or(100);
 
     Ok(HttpVersionConfig {
         min_version,
@@ -697,13 +700,9 @@ fn check_http_version_transport(
 /// `idle-timeout` and `max-lifetime` are accepted as aliases for the two
 /// `-secs` names.
 fn parse_connection_pool(node: &kdl::KdlNode) -> Result<ConnectionPoolConfig> {
-    let max_connections = get_int_entry(node, "max-connections")?
-        .map(|v| v as usize)
-        .unwrap_or(100);
+    let max_connections = get_usize_entry(node, "max-connections")?.unwrap_or(100);
 
-    let max_idle = get_int_entry(node, "max-idle")?
-        .map(|v| v as usize)
-        .unwrap_or(20);
+    let max_idle = get_usize_entry(node, "max-idle")?.unwrap_or(20);
 
     // `-secs` is the documented spelling and the one every shipped config and
     // example uses; the bare form appears only in this function's own doc
@@ -711,12 +710,10 @@ fn parse_connection_pool(node: &kdl::KdlNode) -> Result<ConnectionPoolConfig> {
     // config/zentinel.kdl was discarded and pools ran with no lifetime cap at
     // all. Both are accepted so anyone who followed the old rustdoc keeps
     // working, with the documented name taking precedence.
-    let idle_timeout_secs = get_int_entry_or(node, "idle-timeout-secs", "idle-timeout")?
-        .map(|v| v as u64)
-        .unwrap_or(60);
+    let idle_timeout_secs =
+        get_int_entry_or_as(node, "idle-timeout-secs", "idle-timeout")?.unwrap_or(60);
 
-    let max_lifetime_secs =
-        get_int_entry_or(node, "max-lifetime-secs", "max-lifetime")?.map(|v| v as u64);
+    let max_lifetime_secs = get_int_entry_or_as(node, "max-lifetime-secs", "max-lifetime")?;
 
     Ok(ConnectionPoolConfig {
         max_connections,
@@ -747,9 +744,7 @@ fn parse_upstream_timeouts(node: &kdl::KdlNode) -> Result<UpstreamTimeouts> {
     // every shipped config was discarded in favour of the default — an
     // upstream asking for `request-secs 300` was cut off at 60.
     let timeout = |suffixed: &str, bare: &str, default: u64| -> Result<u64> {
-        Ok(get_int_entry_or(node, suffixed, bare)?
-            .map(|v| v as u64)
-            .unwrap_or(default))
+        Ok(get_int_entry_or_as(node, suffixed, bare)?.unwrap_or(default))
     };
 
     let connect_secs = timeout("connect-secs", "connect", 10)?;
@@ -878,7 +873,7 @@ fn refresh_secs(node: &kdl::KdlNode, key: &str, default: u64, upstream_id: &str)
             key,
             v
         )),
-        Some(v) => Ok(v as u64),
+        Some(v) => int_setting(node, key, v),
     }
 }
 
@@ -1018,10 +1013,10 @@ fn parse_health_check(node: &kdl::KdlNode) -> Result<HealthCheck> {
     };
 
     // Parse other health check settings
-    let interval_secs = get_int_entry(node, "interval-secs")?.unwrap_or(10) as u64;
-    let timeout_secs = get_int_entry(node, "timeout-secs")?.unwrap_or(5) as u64;
-    let healthy_threshold = get_int_entry(node, "healthy-threshold")?.unwrap_or(2) as u32;
-    let unhealthy_threshold = get_int_entry(node, "unhealthy-threshold")?.unwrap_or(3) as u32;
+    let interval_secs = get_u64_entry(node, "interval-secs")?.unwrap_or(10);
+    let timeout_secs = get_u64_entry(node, "timeout-secs")?.unwrap_or(5);
+    let healthy_threshold = get_u32_entry(node, "healthy-threshold")?.unwrap_or(2);
+    let unhealthy_threshold = get_u32_entry(node, "unhealthy-threshold")?.unwrap_or(3);
 
     Ok(HealthCheck {
         check_type,
@@ -1050,10 +1045,12 @@ fn parse_health_check_type(type_node: &kdl::KdlNode) -> Result<HealthCheckType> 
                         n,
                         "an HTTP status code: an integer, or a string such as \"200\"",
                         |v| match v.as_integer() {
-                            Some(code) => u16::try_from(code).ok(),
+                            Some(code) => Some(code),
                             None => v.as_string().and_then(|s| s.trim().parse().ok()),
                         },
-                    )
+                    )?
+                    .map(|code| http_status(n, "expected-status", code))
+                    .transpose()
                 })
                 .transpose()?
                 .flatten()
@@ -1137,9 +1134,9 @@ fn parse_inference_readiness(
                     .unwrap_or_else(|| "/v1/completions".to_string()),
                 model: find_string_entry(nodes, "model")?.unwrap_or_default(),
                 prompt: find_string_entry(nodes, "prompt")?.unwrap_or_else(|| ".".to_string()),
-                max_tokens: find_int_entry(nodes, "max-tokens")?.unwrap_or(1) as u32,
-                timeout_secs: find_int_entry(nodes, "timeout-secs")?.unwrap_or(30) as u64,
-                max_latency_ms: find_int_entry(nodes, "max-latency-ms")?.map(|v| v as u64),
+                max_tokens: find_int_entry::<u32>(nodes, "max-tokens")?.unwrap_or(1),
+                timeout_secs: find_int_entry::<u64>(nodes, "timeout-secs")?.unwrap_or(30),
+                max_latency_ms: find_int_entry::<u64>(nodes, "max-latency-ms")?,
             })
         })
         .transpose()?;
@@ -1162,7 +1159,7 @@ fn parse_inference_readiness(
                     .unwrap_or_else(|| "ready".to_string()),
                 status_field: find_string_entry(nodes, "status-field")?
                     .unwrap_or_else(|| "status".to_string()),
-                timeout_secs: find_int_entry(nodes, "timeout-secs")?.unwrap_or(5) as u64,
+                timeout_secs: find_int_entry::<u64>(nodes, "timeout-secs")?.unwrap_or(5),
             })
         })
         .transpose()?;
@@ -1176,11 +1173,11 @@ fn parse_inference_readiness(
                 header: find_string_entry(nodes, "header")?,
                 body_field: find_string_entry(nodes, "body-field")?,
                 endpoint: find_string_entry(nodes, "endpoint")?,
-                degraded_threshold: find_int_entry(nodes, "degraded-threshold")?.unwrap_or(50)
-                    as u64,
-                unhealthy_threshold: find_int_entry(nodes, "unhealthy-threshold")?.unwrap_or(200)
-                    as u64,
-                timeout_secs: find_int_entry(nodes, "timeout-secs")?.unwrap_or(5) as u64,
+                degraded_threshold: find_int_entry::<u64>(nodes, "degraded-threshold")?
+                    .unwrap_or(50),
+                unhealthy_threshold: find_int_entry::<u64>(nodes, "unhealthy-threshold")?
+                    .unwrap_or(200),
+                timeout_secs: find_int_entry::<u64>(nodes, "timeout-secs")?.unwrap_or(5),
             })
         })
         .transpose()?;
@@ -1200,11 +1197,11 @@ fn parse_inference_readiness(
                 .unwrap_or_default();
 
             Ok(WarmthDetectionConfig {
-                sample_size: find_int_entry(nodes, "sample-size")?.unwrap_or(10) as u32,
+                sample_size: find_int_entry::<u32>(nodes, "sample-size")?.unwrap_or(10),
                 cold_threshold_multiplier: find_float_entry(nodes, "cold-threshold-multiplier")?
                     .unwrap_or(3.0),
-                idle_cold_timeout_secs: find_int_entry(nodes, "idle-cold-timeout-secs")?
-                    .unwrap_or(300) as u64,
+                idle_cold_timeout_secs: find_int_entry::<u64>(nodes, "idle-cold-timeout-secs")?
+                    .unwrap_or(300),
                 cold_action,
             })
         })
@@ -1227,12 +1224,11 @@ fn find_string_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<String
 }
 
 /// Find an integer entry in nodes by name
-fn find_int_entry(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<i64>> {
-    Ok(get_unique_in_nodes(nodes, name)?
-        .map(node_int)
-        .transpose()?
-        .flatten()
-        .map(|v| v as i64))
+fn find_int_entry<T: IntSetting>(nodes: &[kdl::KdlNode], name: &str) -> Result<Option<T>> {
+    get_unique_in_nodes(nodes, name)?
+        .map(node_int_as::<T>)
+        .transpose()
+        .map(Option::flatten)
 }
 
 /// Find a boolean entry in nodes by name

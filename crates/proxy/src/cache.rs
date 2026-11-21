@@ -267,6 +267,17 @@ impl Default for CacheConfig {
     }
 }
 
+/// A stale grace period, in seconds, as the `u32` that Pingora's `CacheMeta`
+/// takes.
+///
+/// The config parser reads `stale-while-revalidate-secs` and
+/// `stale-if-error-secs` as at most `u32::MAX`. A longer period, which only a
+/// config built in code can hold, is passed on as the longest one there is,
+/// not as the few seconds its low 32 bits would make.
+pub(crate) fn grace_period_secs(secs: u64) -> u32 {
+    u32::try_from(secs).unwrap_or(u32::MAX)
+}
+
 /// HTTP cache statistics
 #[derive(Debug, Default)]
 pub struct HttpCacheStats {
@@ -835,6 +846,21 @@ mod tests {
             Some("page=1&limit=10"),
         );
         assert_eq!(key_with_query, "GET:example.com:/api/users?page=1&limit=10");
+    }
+
+    #[test]
+    fn a_grace_period_that_fits_u32_is_passed_on_as_it_is() {
+        assert_eq!(grace_period_secs(0), 0);
+        assert_eq!(grace_period_secs(60), 60);
+        assert_eq!(grace_period_secs(u64::from(u32::MAX)), u32::MAX);
+    }
+
+    #[test]
+    fn a_grace_period_longer_than_u32_is_the_longest_one_not_a_wrapped_one() {
+        // 2^32 is 0 and 2^32 + 5 is 5 under `as u32`.
+        assert_eq!(grace_period_secs(u64::from(u32::MAX) + 1), u32::MAX);
+        assert_eq!(grace_period_secs(u64::from(u32::MAX) + 6), u32::MAX);
+        assert_eq!(grace_period_secs(u64::MAX), u32::MAX);
     }
 
     #[test]
