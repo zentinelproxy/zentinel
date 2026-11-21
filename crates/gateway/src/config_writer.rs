@@ -171,25 +171,31 @@ impl ConfigWriter {
                             expected_status,
                             host,
                         } => {
-                            out.push_str("            type \"http\"\n");
-                            out.push_str(&format!("            path {}\n", kdl_string(path)));
+                            // The proxy reads these as children of the `type` node,
+                            // and reads `expected-status` only when it is a string.
+                            out.push_str("            type \"http\" {\n");
+                            out.push_str(&format!("                path {}\n", kdl_string(path)));
                             out.push_str(&format!(
-                                "            expected-status {expected_status}\n"
+                                "                expected-status \"{expected_status}\"\n"
                             ));
                             if let Some(ref h) = host {
-                                out.push_str(&format!("            host {}\n", kdl_string(h)));
+                                out.push_str(&format!("                host {}\n", kdl_string(h)));
                             }
+                            out.push_str("            }\n");
                         }
                         zentinel_common::types::HealthCheckType::Tcp => {
                             out.push_str("            type \"tcp\"\n");
                         }
                         zentinel_common::types::HealthCheckType::Grpc { service } => {
-                            out.push_str("            type \"grpc\"\n");
-                            if !service.is_empty() {
+                            if service.is_empty() {
+                                out.push_str("            type \"grpc\"\n");
+                            } else {
+                                out.push_str("            type \"grpc\" {\n");
                                 out.push_str(&format!(
-                                    "            service {}\n",
+                                    "                service {}\n",
                                     kdl_string(service)
                                 ));
+                                out.push_str("            }\n");
                             }
                         }
                         _ => {
@@ -1244,6 +1250,74 @@ mod tests {
         }
     }
 
+    /// Writes `check_type` on an upstream, parses the generated KDL with the
+    /// proxy parser and returns the health check the proxy would run.
+    ///
+    /// The interval and timeout differ from the parser defaults (10 and 5), so
+    /// a value that is dropped is noticed. `healthy-threshold` and
+    /// `unhealthy-threshold` are not written by the controller, so the parser
+    /// defaults apply to them and they are not checked here.
+    fn health_check_after_round_trip(check_type: &HealthCheckType) -> HealthCheck {
+        let mut upstreams = HashMap::new();
+        upstreams.insert(
+            "backend".to_string(),
+            test_upstream(
+                "backend",
+                "a.example:8080",
+                Some(HealthCheck {
+                    check_type: check_type.clone(),
+                    interval_secs: 7,
+                    timeout_secs: 3,
+                    healthy_threshold: 2,
+                    unhealthy_threshold: 3,
+                }),
+            ),
+        );
+        let parsed = render_and_parse(&test_config(
+            vec![test_listener("http", "0.0.0.0:8080", None)],
+            vec![],
+            upstreams,
+            HashMap::new(),
+        ));
+        parsed.upstreams["backend"]
+            .health_check
+            .clone()
+            .expect("the upstream keeps its health check")
+    }
+
+    #[test]
+    fn http_health_check_settings_are_read_by_the_proxy_parser() {
+        let cases = [
+            HealthCheckType::Http {
+                path: "/ready".to_string(),
+                expected_status: 204,
+                host: Some("a.example".to_string()),
+            },
+            HealthCheckType::Http {
+                path: "/".to_string(),
+                expected_status: 200,
+                host: None,
+            },
+        ];
+        for check_type in cases {
+            let health_check = health_check_after_round_trip(&check_type);
+            assert_eq!(health_check.check_type, check_type);
+            assert_eq!(health_check.interval_secs, 7);
+            assert_eq!(health_check.timeout_secs, 3);
+        }
+    }
+
+    #[test]
+    fn grpc_health_check_service_is_read_by_the_proxy_parser() {
+        let check_type = HealthCheckType::Grpc {
+            service: "example.v1.Health".to_string(),
+        };
+        let health_check = health_check_after_round_trip(&check_type);
+        assert_eq!(health_check.check_type, check_type);
+        assert_eq!(health_check.interval_secs, 7);
+        assert_eq!(health_check.timeout_secs, 3);
+    }
+
     #[test]
     fn listener_upstream_and_filter_values_survive_a_round_trip() {
         for &v in AWKWARD_VALUES {
@@ -1326,6 +1400,28 @@ mod tests {
                 assert_eq!(upstream.targets[0].weight, 2);
                 assert!(upstream.health_check.is_some(), "value {v:?}");
             }
+            let check_type = |id: &str| {
+                parsed.upstreams[id]
+                    .health_check
+                    .as_ref()
+                    .map(|hc| hc.check_type.clone())
+            };
+            assert_eq!(
+                check_type(v),
+                Some(HealthCheckType::Http {
+                    path: v.to_string(),
+                    expected_status: 200,
+                    host: Some(v.to_string()),
+                }),
+                "value {v:?}"
+            );
+            assert_eq!(
+                check_type(&grpc_id),
+                Some(HealthCheckType::Grpc {
+                    service: v.to_string(),
+                }),
+                "value {v:?}"
+            );
 
             assert_eq!(parsed.filters.len(), 2, "value {v:?}");
             match &parsed.filters[&redirect_id].filter {
