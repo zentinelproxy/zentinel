@@ -479,46 +479,67 @@ impl ZentinelProxy {
                     self.agent_manager.request_body_mode(&body_agents).await;
                 ctx.body_inspection_agents = body_agents;
 
-                // Set up decompression if enabled in WAF config
+                // How the body is coded. Every `Content-Encoding` header is
+                // read, each as a list (RFC 9110 section 8.4): a body in one
+                // supported coding is decoded for the agents when
+                // `decompress` is on; any other coded body cannot be
+                // inspected as sent, and the agents' `failure-mode` decides
+                // when it arrives (`body_not_decoded`).
                 let decompress_enabled = config
                     .waf
                     .as_ref()
                     .map(|w| w.body_inspection.decompress)
-                    .unwrap_or(false);
+                    .unwrap_or(zentinel_config::waf::DEFAULT_DECOMPRESS);
 
-                if decompress_enabled {
-                    // Get Content-Encoding header
-                    let content_encoding = session
+                // Chunks that are sent as they arrive cannot be decoded.
+                let can_decode = decompress_enabled
+                    && ctx.request_body_streaming_mode
+                        != zentinel_config::BodyStreamingMode::Stream;
+
+                let coding = crate::decompression::BodyCoding::classify(
+                    session
                         .req_header()
                         .headers
-                        .get("content-encoding")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
+                        .get_all("content-encoding")
+                        .iter()
+                        .map(|v| v.as_bytes()),
+                    can_decode,
+                );
 
-                    if let Some(ref encoding) = content_encoding {
-                        if crate::decompression::is_supported_encoding(encoding) {
-                            ctx.decompression_enabled = true;
-                            ctx.body_content_encoding = Some(encoding.clone());
-                            ctx.max_decompression_ratio = config
-                                .waf
-                                .as_ref()
-                                .map(|w| w.body_inspection.max_decompression_ratio as f64)
-                                .unwrap_or(100.0);
-                            // Use 10x max inspection bytes as decompression limit
-                            ctx.max_decompression_bytes = config
-                                .waf
-                                .as_ref()
-                                .map(|w| w.body_inspection.max_inspection_bytes * 10)
-                                .unwrap_or(10 * 1024 * 1024);
+                match coding {
+                    crate::decompression::BodyCoding::Identity => {}
+                    crate::decompression::BodyCoding::Decode(encoding) => {
+                        ctx.decompression_enabled = true;
+                        ctx.body_content_encoding = Some(encoding);
+                        ctx.max_decompression_ratio = config
+                            .waf
+                            .as_ref()
+                            .map(|w| w.body_inspection.max_decompression_ratio as f64)
+                            .unwrap_or(100.0);
+                        // Use 10x max inspection bytes as decompression limit
+                        ctx.max_decompression_bytes = config
+                            .waf
+                            .as_ref()
+                            .map(|w| w.body_inspection.max_inspection_bytes * 10)
+                            .unwrap_or(10 * 1024 * 1024);
 
-                            debug!(
-                                correlation_id = %ctx.trace_id,
-                                encoding = %encoding,
-                                max_ratio = ctx.max_decompression_ratio,
-                                max_bytes = ctx.max_decompression_bytes,
-                                "Decompression enabled for body inspection"
-                            );
-                        }
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            encoding = %encoding,
+                            max_ratio = ctx.max_decompression_ratio,
+                            max_bytes = ctx.max_decompression_bytes,
+                            "Decompression enabled for body inspection"
+                        );
+                    }
+                    crate::decompression::BodyCoding::NotDecoded(undecoded) => {
+                        debug!(
+                            correlation_id = %ctx.trace_id,
+                            encoding = %undecoded.declared,
+                            decompress = decompress_enabled,
+                            streaming_mode = ?ctx.request_body_streaming_mode,
+                            "Request body is content-coded and will not be decoded for inspection"
+                        );
+                        ctx.body_not_decoded = Some(undecoded);
                     }
                 }
 

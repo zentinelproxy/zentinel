@@ -72,7 +72,14 @@ agents {
     // max-response-body-bytes (default 1 MiB each) follow the filter's
     // failure-mode — "closed" blocks the request with 413, "open" skips
     // this agent's inspection with a warning and a body_size_skips metric.
-    // Agents whose limit accommodates the body still inspect it.
+    // Agents whose limit accommodates the body still inspect it. In buffer
+    // mode the same holds for a request body longer than the waf block's
+    // body-inspection max-inspection-bytes: an agent is sent the whole body
+    // or none of it, never the buffered start of a longer one.
+    // A request body in a Content-Encoding is sent decoded when it is in one
+    // supported coding and body-inspection decompress (on by default) is on;
+    // any other coded body follows the filter's failure-mode too: "closed"
+    // refuses it with 415, "open" sends the agent none of the body.
 
     // gRPC transport
     agent "auth-agent" {
@@ -284,12 +291,15 @@ the audit log as an agent decision with `phase` `response_headers` or
 | `closed` | Block request if agent fails (fail-closed) |
 
 A failed call -- the agent is not loaded, unreachable, behind an open
-circuit breaker, too slow, or the body is over its inspection limit --
+circuit breaker, too slow, or the body is over its inspection limit (the
+agent's own, or `max-inspection-bytes` for a request body in buffer mode) --
 follows the **filter's** `failure-mode`, else the route's `policies
 { failure-mode }` (closed by default). This holds on every path: request
 headers and body, response headers and body. On the request side a
 fail-closed failure answers 503 (504 for a timeout, 413 for a body over the
-limit); on response headers the upstream response is replaced by that
+limit, 415 for a body in a content coding that is not decoded, see
+[Content-coded request bodies](../../config/docs/schema.md#content-coded-request-bodies));
+on response headers the upstream response is replaced by that
 refusal; on the response body the response is aborted as above. WebSocket
 frames follow the same rule: only the route's agents see them, and a
 fail-closed failure closes the connection with 1011 (#586).

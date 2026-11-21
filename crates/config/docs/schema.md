@@ -473,7 +473,7 @@ Reusable filter definitions.
 | `agent` | `string` | **required** | Agent ID reference |
 | `phase` | `string` | `"request"` | Execution phase |
 | `timeout-ms` | `u64` | - | Timeout override for every call this filter's agent gets on the route (request and response headers and bodies); can only shorten the agent's `timeout-ms` |
-| `failure-mode` | `string` | - | What a failed call to the agent means on routes using the filter: `open` continues, `closed` refuses (503; on a response body, the response is aborted). Unset uses the route's `policies { failure-mode }`. Applies to every request and response path and to WebSocket frames |
+| `failure-mode` | `string` | - | What a failed call to the agent means on routes using the filter: `open` continues, `closed` refuses (503; on a response body, the response is aborted). Unset uses the route's `policies { failure-mode }`. Applies to every request and response path and to WebSocket frames. A request body longer than the agent's limit, or than `body-inspection { max-inspection-bytes }`, follows it too: `closed` refuses with 413, `open` skips the agent |
 | `inspect-body` | `bool` | - | `#false` sends this agent no request body on routes using the filter; unset or `#true` leaves it to the agent's `events` |
 | `max-body-bytes` | `u64` | - | Lowers the agent's `max-request-body-bytes` for routes using the filter; cannot raise it |
 
@@ -497,7 +497,7 @@ External processing agent configuration.
 | `circuit-breaker` | `CircuitBreakerConfig` | - | Circuit breaker |
 | `max-request-body-bytes` | `u64` | `1048576` (1 MiB) | Max request body inspected by this agent. Larger bodies follow the filter's `failure-mode`: `closed` blocks with 413, `open` skips this agent with a warning and metric |
 | `max-response-body-bytes` | `u64` | `1048576` (1 MiB) | Max response body inspected by this agent (same failure-mode semantics) |
-| `request-body-mode` | `string` | `"buffer"` | How the request body is sent: `buffer` (whole, up to `max-inspection-bytes`), `stream` (each chunk as it arrives), `hybrid` / `hybrid:<bytes>` (buffer up to the threshold, default 64 KiB, then stream), `inspect-first` (the whole body, up to the route's body-size limit, decided on before the upstream is contacted; request-header changes apply; #608). One body goes to all of a route's body agents in one mode; when they disagree, `inspect-first` wins over `buffer` over `hybrid` (largest threshold) over `stream` |
+| `request-body-mode` | `string` | `"buffer"` | How the request body is sent: `buffer` (the whole body, held back until the agents have decided; one longer than `max-inspection-bytes` is not sent, see [BodyInspectionPolicy](#bodyinspectionpolicy)), `stream` (each chunk as it arrives), `hybrid` / `hybrid:<bytes>` (buffer up to the threshold, default 64 KiB, then stream), `inspect-first` (the whole body, up to the route's body-size limit, decided on before the upstream is contacted; request-header changes apply; #608). One body goes to all of a route's body agents in one mode; when they disagree, `inspect-first` wins over `buffer` over `hybrid` (largest threshold) over `stream` |
 | `max-concurrent-calls` | `u32` | `100` | Max concurrent calls |
 
 ### AgentTransport
@@ -568,10 +568,125 @@ Web Application Firewall configuration.
 |----------|------|---------|-------------|
 | `inspect-request-body` | `bool` | `true` | Send request bodies to the route's agents that subscribe to `request_body`. `#false` keeps them from every agent. Without a `waf` block, request bodies go to those agents too, with the defaults below except `content-types` (every content type is sent) |
 | `inspect-response-body` | `bool` | `false` | Inspect response bodies |
-| `max-inspection-bytes` | `u64` | `1048576` | Max bytes to inspect |
+| `max-inspection-bytes` | `u64` | `1048576` | The most of a request body held for the agents in `request-body-mode "buffer"`, counted as received, before any decompression (`decompress`). A body of up to this many bytes is sent whole; a longer one is not sent to any agent, and each agent's filter `failure-mode` decides (see below). With `0`, every body that is not empty is a longer one. The response-body byte count kept for `inspect-response-body` is capped by it too; it is only traced, and never refuses or changes a response |
 | `content-types` | `[string]` | *form/json/xml* | Content types to inspect |
-| `decompress` | `bool` | `false` | Decompress for inspection |
-| `max-decompression-ratio` | `f32` | `100.0` | Max decompression ratio |
+| `decompress` | `bool` | `true` | Decode a request body in a supported `Content-Encoding` (`gzip`, `x-gzip`, `deflate`, `br`) for the agents, within `max-decompression-ratio` and ten times `max-inspection-bytes`. With `#false`, such a body is not decoded and follows the agents' `failure-mode` (see below) |
+| `max-decompression-ratio` | `f32` | `100.0` | The largest ratio of decoded to received size |
+
+#### Request bodies longer than `max-inspection-bytes`
+
+In `request-body-mode "buffer"` (the default) an agent is sent the whole
+body, or none of it: a fragment is not the body an agent decides on. A body
+longer than `max-inspection-bytes` is handled by each agent's filter
+`failure-mode`, as a body over the agent's own `max-request-body-bytes` is:
+
+- `closed` (the default, from the route's `policies { failure-mode }` when
+  the filter sets none): the request is refused with 413, and no part of the
+  body reaches the upstream.
+- `open`: the agent is skipped, with a warning and the agent's
+  `body_size_skips` metric, and is sent nothing. The request goes on with
+  the whole body.
+
+A body of exactly `max-inspection-bytes` is within the limit and is sent
+whole, with `is_last` set. With `max-inspection-bytes 0`, every body that is
+not empty is over the limit, so each agent's `failure-mode` decides; before,
+an agent was sent nothing and the body passed. To keep bodies from the
+agents, use `inspect-request-body #false` instead.
+
+This is a change for routes whose bodies are inspected: before, an agent was
+sent the first `max-inspection-bytes` bytes of a longer body, the rest was
+passed on without being inspected, and the agent's `failure-mode` was never
+applied to it. Only bodies that are inspected are affected: those of agents
+that subscribe to `request_body` (and whose filter does not set
+`inspect-body #false`), unless `inspect-request-body` is `#false`, and only
+of a content type that `content-types` allows. With a `waf` block that is
+`content-types`, by default `application/x-www-form-urlencoded`,
+`multipart/form-data`, `application/json`, `application/xml` and `text/xml`;
+without a `waf` block it is every content type. On such a route, by default
+a body over 1 MiB is now refused with 413.
+
+To accept larger bodies:
+
+- raise `max-inspection-bytes` (and the agent's `max-request-body-bytes`,
+  1 MiB by default). Setting it needs a `waf` block, which brings in the
+  default `content-types` allowlist: if the route's bodies are of other
+  types, list them in `content-types` too;
+- or set the filter's `failure-mode "open"`, to skip the agent for them;
+- or give the agent `request-body-mode "stream"` or `"hybrid"`, which send it
+  the body in chunks as it arrives instead of holding it to
+  `max-inspection-bytes` (the agent's own `max-request-body-bytes` still
+  applies). A body in a `Content-Encoding` cannot be decoded in chunks: with
+  these modes it is refused with 415 by a `closed` agent (see
+  [Content-coded request bodies](#content-coded-request-bodies));
+- or keep the bodies from the agents: `inspect-body #false` on the agent's
+  filter for one agent, `inspect-request-body #false` for all of them.
+
+#### Content-coded request bodies
+
+Every `Content-Encoding` header of a request is read, each as a
+comma-separated list, without regard to case or to the spaces around a
+name; `identity` stands for no coding (RFC 9110 section 8.4). A body in one
+supported coding is decoded for the agents when `decompress` is on, which
+it is by default, and the body is held whole: `gzip` (`x-gzip`), `deflate`
+(the zlib format, or a raw deflate stream) and `br` (`brotli` is accepted
+for it too).
+
+A body that is not decoded cannot be inspected as sent, so each body
+agent's filter `failure-mode` decides, as it does for a body that cannot be
+decoded:
+
+- `closed` (the default): the request is refused with 415, and no part of
+  the body reaches the upstream.
+- `open`: the request goes on, with a warning and the
+  `zentinel_decompression_total` count with the reason `not_decoded`. The
+  agent is sent none of the body, as for a body over `max-inspection-bytes`,
+  and the upstream is sent the body as the client sent it.
+
+A body is not decoded when `decompress` is `#false`, when its coding is not
+one of those above (`zstd`, for one), when there are several codings
+(`gzip, br`), and when the agent is sent the body in pieces: with
+`request-body-mode "stream"` always, even with `decompress #true`, and with
+`"hybrid"` for a body longer than the buffer threshold, which is not held
+whole.
+
+A body that cannot be decoded because its data is not valid, or because it
+goes over `max-decompression-ratio` or ten times `max-inspection-bytes`
+decoded, is refused with 400 by a `closed` agent; an `open` one is sent none
+of it. The upstream is always sent the body as the client sent it.
+
+What the agents get of a body that is decoded:
+
+- The `Content-Encoding` header stays as the client sent it in the request
+  headers event, and the body arrives decoded. An agent that decodes the body
+  itself has to expect that; with `decompress #true` set explicitly, that is
+  how it was before.
+- The decoded size is what is compared with the agent's own
+  `max-request-body-bytes`, so a body that is small as received can be over
+  it: a `closed` agent refuses the request with 413, and an `open` one is
+  skipped. The decoded body is held in memory as well, up to ten times
+  `max-inspection-bytes` for a request.
+- The `encoding` label of `zentinel_decompression_total` and
+  `zentinel_decompression_ratio` is `gzip`, `deflate` or `br`, where it was
+  the value of the header as the client wrote it; `other` stands for any
+  other coding or several (see [observability](../../common/docs/observability.md)).
+
+This is a change for routes whose bodies are inspected (see above for
+which): before, `decompress` was `#false` by default, and the agents were
+sent a body in any `Content-Encoding` still compressed, without a warning.
+So was a body whose header was a list or was sent as more than one header,
+even with `decompress #true`. By default, a `gzip`, `deflate` or `br` body
+is now decoded for the agents, and a body that is not decoded is refused
+with 415 where an agent fails `closed`; that includes a coded body for an
+agent with `request-body-mode "stream"`, even with `decompress #true`. There
+is no setting that sends a coded body to the agents compressed. To let such
+bodies through without inspecting them, set the filter's
+`failure-mode "open"` (with the warning and the metric), or keep the bodies
+from the agents with `inspect-body #false` on the filter or
+`inspect-request-body #false`. With `decompress #false`, bodies are not
+decoded, and each one in a coding follows the `failure-mode` as above,
+where before it was sent to the agents compressed. Where decoding fails, an
+`open` agent used to be sent the body compressed, and is now sent none of
+it.
 
 ---
 

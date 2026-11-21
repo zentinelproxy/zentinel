@@ -606,7 +606,13 @@ impl AgentManager {
     ) -> ZentinelResult<AgentDecision> {
         // Enforce per-agent body inspection limits before dispatch
         let inspecting_agents = match self
-            .apply_body_limits(ctx, route_agents, data.len(), EventType::RequestBodyChunk)
+            .apply_body_limits(
+                &ctx.correlation_id,
+                route_agents,
+                data.len(),
+                None,
+                EventType::RequestBodyChunk,
+            )
             .await
         {
             BodyLimitsResult::Block(decision) => return Ok(*decision),
@@ -624,6 +630,42 @@ impl AgentManager {
 
         self.process_event(EventType::RequestBodyChunk, &event, &inspecting_agents, ctx)
             .await
+    }
+
+    /// Apply the agents' failure modes to a request body longer than
+    /// `max_inspection_bytes`, the most the proxy buffers for inspection
+    /// (buffer mode).
+    ///
+    /// No agent can be sent the whole body, and none is sent part of it: an
+    /// agent decides on the body it is sent, and a fragment is not that. The
+    /// body is over every agent's limit, so, as for a body over an agent's
+    /// own limit, an agent whose filter fails `closed` refuses the request
+    /// with 413 and one that fails `open` is skipped, with a warning and a
+    /// metric. Returns the refusal, or `Allow` when every agent was skipped.
+    ///
+    /// `bytes_received` is how much of the body has arrived; it is taken as
+    /// over the limit however small it is given.
+    pub async fn process_request_body_over_inspection_limit(
+        &self,
+        correlation_id: &zentinel_common::CorrelationId,
+        bytes_received: usize,
+        max_inspection_bytes: usize,
+        route_agents: &[BodyAgent],
+    ) -> AgentDecision {
+        let body_size = bytes_received.max(max_inspection_bytes.saturating_add(1));
+        match self
+            .apply_body_limits(
+                correlation_id,
+                route_agents,
+                body_size,
+                Some(max_inspection_bytes),
+                EventType::RequestBodyChunk,
+            )
+            .await
+        {
+            BodyLimitsResult::Block(decision) => *decision,
+            BodyLimitsResult::Proceed(_) => AgentDecision::default_allow(),
+        }
     }
 
     /// Process a single request body chunk through agents (streaming mode).
@@ -652,9 +694,10 @@ impl AgentManager {
         // Enforce per-agent body inspection limits on the cumulative size
         let inspecting_agents = match self
             .apply_body_limits(
-                ctx,
+                &ctx.correlation_id,
                 route_agents,
                 bytes_received,
+                None,
                 EventType::RequestBodyChunk,
             )
             .await
@@ -700,7 +743,13 @@ impl AgentManager {
         // Agent filters' body settings concern request bodies only.
         let route_agents: Vec<BodyAgent> = route_agents.iter().map(BodyAgent::from).collect();
         let inspecting_agents = match self
-            .apply_body_limits(ctx, &route_agents, bytes_sent, EventType::ResponseBodyChunk)
+            .apply_body_limits(
+                &ctx.correlation_id,
+                &route_agents,
+                bytes_sent,
+                None,
+                EventType::ResponseBodyChunk,
+            )
             .await
         {
             BodyLimitsResult::Block(decision) => return Ok(*decision),
@@ -1794,16 +1843,21 @@ impl AgentManager {
     /// Enforce per-agent body inspection limits for a body of `body_size` bytes.
     ///
     /// An agent's limit is its own `max-request-body-bytes` (or
-    /// `max-response-body-bytes`), lowered by its filter's `max-body-bytes`.
+    /// `max-response-body-bytes`), lowered by its filter's `max-body-bytes`
+    /// and by `inspection_cap`, the most the proxy will send any agent
+    /// (`None` where it sends the body however long it is). A `body_size`
+    /// over the cap is how much of a longer body has arrived, not its
+    /// length.
     /// Agents whose limit is exceeded are handled according to their filter's
     /// failure mode: fail-closed produces a 413 Block decision, fail-open skips that
     /// agent loudly (warn + metric) while agents within their limit still
     /// inspect the body.
     async fn apply_body_limits(
         &self,
-        ctx: &AgentCallContext,
+        correlation_id: &zentinel_common::CorrelationId,
         route_agents: &[BodyAgent],
         body_size: usize,
+        inspection_cap: Option<usize>,
         event_type: EventType,
     ) -> BodyLimitsResult {
         let resolved = self.resolve_agents(route_agents, Some(event_type)).await;
@@ -1819,14 +1873,21 @@ impl AgentManager {
                     (
                         agent.id().to_string(),
                         body_agent.failure_mode,
-                        body_agent.effective_limit(limit),
+                        inspection_cap.map_or(body_agent.effective_limit(limit), |cap| {
+                            body_agent.effective_limit(limit).min(cap)
+                        }),
                     )
                 }
-                // No limit to enforce; passed on to the dispatch, which
-                // answers it as a failed call.
-                Resolved::NotLoaded(body_agent) => {
-                    (body_agent.id.clone(), body_agent.failure_mode, usize::MAX)
-                }
+                // No limit of its own to enforce. Without a cap it is passed
+                // on to the dispatch, which answers it as a failed call. A
+                // body over the cap is not dispatched at all, so the cap is
+                // its limit as it is every loaded agent's, and its failure
+                // mode decides.
+                Resolved::NotLoaded(body_agent) => (
+                    body_agent.id.clone(),
+                    body_agent.failure_mode,
+                    inspection_cap.unwrap_or(usize::MAX),
+                ),
             })
             .collect();
 
@@ -1834,9 +1895,10 @@ impl AgentManager {
 
         for (agent_id, limit) in &outcome.skipped {
             warn!(
-                correlation_id = %ctx.correlation_id,
+                correlation_id = %correlation_id,
                 agent_id = %agent_id,
                 body_size = body_size,
+                body_size_is_partial = inspection_cap.is_some(),
                 limit = limit,
                 event_type = ?event_type,
                 "Body exceeds agent inspection limit, skipping agent (fail-open)"
@@ -1853,9 +1915,10 @@ impl AgentManager {
 
         if let Some((agent_id, limit)) = outcome.blocked_by {
             warn!(
-                correlation_id = %ctx.correlation_id,
+                correlation_id = %correlation_id,
                 agent_id = %agent_id,
                 body_size = body_size,
+                body_size_is_partial = inspection_cap.is_some(),
                 limit = limit,
                 event_type = ?event_type,
                 "Body exceeds agent inspection limit, blocking request (fail-closed)"
@@ -2257,6 +2320,81 @@ mod tests {
                 "the agent's own limit was not exceeded"
             );
         }
+    }
+
+    /// A request body longer than `max-inspection-bytes` is over every
+    /// agent's limit, however large the agent's own is: the filter of a
+    /// `closed` agent refuses it with 413, that of an `open` agent skips the
+    /// agent, and no agent is left to be sent the part that was buffered.
+    #[tokio::test]
+    async fn a_body_over_the_inspection_limit_is_over_every_agents_limit() {
+        let kdl = r#"
+            system { worker-threads 1 }
+            listeners { listener "l" { address "127.0.0.1:8080" } }
+            upstreams { upstream "u" { target "127.0.0.1:9000" } }
+            routes { route "r" { matches { path-prefix "/" }
+                                 upstream "u" } }
+            agents {
+                agent "waf" type="custom" {
+                    unix-socket "/nonexistent/zentinel-inspection-limit.sock"
+                    events "request_headers" "request_body"
+                    max-request-body-bytes 1024
+                }
+            }
+        "#;
+        let config = zentinel_config::Config::from_kdl(kdl).expect("parses");
+        let manager = AgentManager::new(config.agents).await.expect("manager");
+        let closed = [BodyAgent {
+            id: "waf".to_string(),
+            max_body_bytes: None,
+            failure_mode: FailureMode::Closed,
+            timeout_ms: None,
+        }];
+        let open = [BodyAgent {
+            id: "waf".to_string(),
+            max_body_bytes: None,
+            failure_mode: FailureMode::Open,
+            timeout_ms: None,
+        }];
+        let ctx = call_context();
+        let id = &ctx.correlation_id;
+
+        // At the inspection limit the agent's own 1024 bytes allow the body.
+        match manager
+            .apply_body_limits(id, &closed, 64, Some(64), EventType::RequestBodyChunk)
+            .await
+        {
+            BodyLimitsResult::Proceed(agents) => assert_eq!(agents.len(), 1),
+            BodyLimitsResult::Block(_) => panic!("a body of exactly the limit is within it"),
+        }
+
+        // Over it, though within the agent's own limit: refused for the
+        // closed agent...
+        let decision = manager
+            .process_request_body_over_inspection_limit(id, 65, 64, &closed)
+            .await;
+        assert_eq!(status_of(&decision), Some(413));
+
+        // ... and for the open one, skipped: nothing is sent to it.
+        let decision = manager
+            .process_request_body_over_inspection_limit(id, 65, 64, &open)
+            .await;
+        assert!(matches!(decision.action, crate::agents::AgentAction::Allow));
+        match manager
+            .apply_body_limits(id, &open, 65, Some(64), EventType::RequestBodyChunk)
+            .await
+        {
+            BodyLimitsResult::Proceed(agents) => {
+                assert!(agents.is_empty(), "the agent is skipped: {agents:?}")
+            }
+            BodyLimitsResult::Block(_) => panic!("an open agent never refuses on size"),
+        }
+
+        // However little of the body has arrived, it is over the limit.
+        let decision = manager
+            .process_request_body_over_inspection_limit(id, 0, 64, &closed)
+            .await;
+        assert_eq!(status_of(&decision), Some(413));
     }
 
     // ------------------------------------------------------------------

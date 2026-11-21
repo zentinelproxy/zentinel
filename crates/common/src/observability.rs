@@ -697,11 +697,15 @@ impl RequestMetrics {
             .observe(ratio);
     }
 
-    /// Record a failed body decompression
+    /// Record a failed body decompression, or a request body that is not
+    /// decoded
     ///
     /// # Arguments
-    /// * `encoding` - Content-Encoding (gzip, deflate, br)
-    /// * `reason` - Failure reason (ratio_exceeded, size_exceeded, invalid_data, unsupported)
+    /// * `encoding` - Content-Encoding (`gzip`, `deflate`, `br`, or `other`
+    ///   for any other coding or for several): a fixed set, so the label
+    ///   stays bounded
+    /// * `reason` - Failure reason (ratio_exceeded, size_exceeded,
+    ///   invalid_data, unsupported, io_error, not_decoded)
     pub fn record_decompression_failure(&self, encoding: &str, reason: &str) {
         self.decompression_total
             .with_label_values(&[encoding, reason])

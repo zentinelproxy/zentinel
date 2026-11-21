@@ -576,7 +576,7 @@ waf {
         inspect-response-body #false
         max-inspection-bytes 1048576
         content-types "application/json" "application/x-www-form-urlencoded" "multipart/form-data"
-        decompress #false
+        decompress #true
         max-decompression-ratio 100.0
     }
 }
