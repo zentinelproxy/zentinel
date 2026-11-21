@@ -814,32 +814,38 @@ impl<'a> RequestInfo<'a> {
         })
     }
 
-    /// Parse query parameters from path (only call when needed)
-    pub fn parse_query_params(path: &str) -> HashMap<String, String> {
+    /// Parse query parameters from a request target, `path?query` (only call
+    /// when needed).
+    ///
+    /// The request's `path` as the proxy holds it (`Uri::path()`) has no query
+    /// string, so pass the query itself to [`Self::parse_query_string`]
+    /// instead; this one finds the `?` in whatever it is given.
+    pub fn parse_query_params(target: &str) -> HashMap<String, String> {
+        target
+            .split_once('?')
+            .map(|(_, query)| Self::parse_query_string(query))
+            .unwrap_or_default()
+    }
+
+    /// Parse a query string, without its leading `?` (only call when needed).
+    ///
+    /// Pairs are separated by `&` and split at the first `=`; a pair with no
+    /// `=` is a parameter with an empty value, and an empty pair is skipped.
+    /// Names and values are percent-decoded, and are left as written when the
+    /// decoding is not valid UTF-8; `+` stays a `+`. When a name appears more
+    /// than once, the last value is the one that is kept.
+    pub fn parse_query_string(query: &str) -> HashMap<String, String> {
         let mut params = HashMap::new();
-        if let Some(query_start) = path.find('?') {
-            let query = &path[query_start + 1..];
-            for pair in query.split('&') {
-                if let Some(eq_pos) = pair.find('=') {
-                    let key = &pair[..eq_pos];
-                    let value = &pair[eq_pos + 1..];
-                    params.insert(
-                        urlencoding::decode(key)
-                            .unwrap_or_else(|_| key.into())
-                            .into_owned(),
-                        urlencoding::decode(value)
-                            .unwrap_or_else(|_| value.into())
-                            .into_owned(),
-                    );
-                } else {
-                    params.insert(
-                        urlencoding::decode(pair)
-                            .unwrap_or_else(|_| pair.into())
-                            .into_owned(),
-                        String::new(),
-                    );
-                }
-            }
+        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            params.insert(
+                urlencoding::decode(key)
+                    .unwrap_or_else(|_| key.into())
+                    .into_owned(),
+                urlencoding::decode(value)
+                    .unwrap_or_else(|_| value.into())
+                    .into_owned(),
+            );
         }
         params
     }
@@ -1123,6 +1129,149 @@ mod tests {
         assert_eq!(params.get("foo"), Some(&"bar".to_string()));
         assert_eq!(params.get("baz"), Some(&"qux".to_string()));
         assert_eq!(params.get("empty"), Some(&"".to_string()));
+    }
+
+    fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn parse_query_string_reads_a_query_without_its_question_mark() {
+        assert_eq!(
+            RequestInfo::parse_query_string("foo=bar&baz=qux&empty="),
+            params(&[("foo", "bar"), ("baz", "qux"), ("empty", "")]),
+        );
+    }
+
+    #[test]
+    fn parse_query_string_of_an_empty_query_has_no_parameters() {
+        assert!(RequestInfo::parse_query_string("").is_empty());
+        assert!(RequestInfo::parse_query_string("&&").is_empty());
+    }
+
+    #[test]
+    fn parse_query_string_reads_a_name_without_equals_as_an_empty_value() {
+        assert_eq!(
+            RequestInfo::parse_query_string("debug&a=1&&trace"),
+            params(&[("debug", ""), ("a", "1"), ("trace", "")]),
+        );
+    }
+
+    #[test]
+    fn parse_query_string_splits_a_pair_at_the_first_equals() {
+        assert_eq!(
+            RequestInfo::parse_query_string("expr=a=b"),
+            params(&[("expr", "a=b")]),
+        );
+    }
+
+    #[test]
+    fn parse_query_string_keeps_the_last_value_of_a_repeated_name() {
+        assert_eq!(
+            RequestInfo::parse_query_string("v=1&v=2"),
+            params(&[("v", "2")]),
+        );
+    }
+
+    #[test]
+    fn parse_query_string_percent_decodes_names_and_values() {
+        assert_eq!(
+            RequestInfo::parse_query_string("%76ersion=v%32&name=caf%C3%A9"),
+            params(&[("version", "v2"), ("name", "caf\u{e9}")]),
+        );
+    }
+
+    #[test]
+    fn parse_query_string_leaves_a_plus_and_invalid_utf8_as_written() {
+        assert_eq!(
+            RequestInfo::parse_query_string("q=a+b&bad=%FF"),
+            params(&[("q", "a+b"), ("bad", "%FF")]),
+        );
+    }
+
+    #[test]
+    fn parse_query_params_reads_the_query_of_a_request_target() {
+        assert_eq!(
+            RequestInfo::parse_query_params("/path?foo=bar&flag"),
+            params(&[("foo", "bar"), ("flag", "")]),
+        );
+        // A path alone has no query, so no parameters.
+        assert!(RequestInfo::parse_query_params("/path").is_empty());
+        assert!(RequestInfo::parse_query_params("/path?").is_empty());
+    }
+
+    #[test]
+    fn query_param_condition_matches_the_parsed_query_of_a_request() {
+        let routes = vec![
+            create_test_route(
+                "versioned",
+                vec![
+                    MatchCondition::PathPrefix("/api".to_string()),
+                    MatchCondition::QueryParam {
+                        name: "version".to_string(),
+                        value: Some("v2".to_string()),
+                    },
+                ],
+            ),
+            create_test_route(
+                "catch-all",
+                vec![MatchCondition::PathPrefix("/".to_string())],
+            ),
+        ];
+        let matcher = RouteMatcher::new(routes, None).unwrap();
+        assert!(matcher.needs_query_params());
+
+        let route_for = |query: &str| {
+            let request = RequestInfo::new("GET", "/api/items", "example.com")
+                .with_query_params(RequestInfo::parse_query_string(query));
+            matcher
+                .match_request(&request)
+                .map(|m| m.route_id.to_string())
+        };
+
+        assert_eq!(route_for("version=v2").as_deref(), Some("versioned"));
+        assert_eq!(route_for("page=1&version=v2").as_deref(), Some("versioned"));
+        assert_eq!(route_for("version=v1").as_deref(), Some("catch-all"));
+        assert_eq!(route_for("").as_deref(), Some("catch-all"));
+    }
+
+    #[test]
+    fn query_params_that_decode_to_the_same_text_get_their_own_cache_entries() {
+        let routes = vec![
+            create_test_route(
+                "equals-in-value",
+                vec![
+                    MatchCondition::PathPrefix("/api".to_string()),
+                    MatchCondition::QueryParam {
+                        name: "a".to_string(),
+                        value: Some("b=c".to_string()),
+                    },
+                ],
+            ),
+            create_test_route(
+                "catch-all",
+                vec![MatchCondition::PathPrefix("/".to_string())],
+            ),
+        ];
+        let matcher = RouteMatcher::new(routes, None).unwrap();
+
+        // `a=b%3Dc` is `a` with the value `b=c`; `a%3Db=c` is `a=b` with the
+        // value `c`. Each is asked for twice, so the second answer of each
+        // comes from the cache when the two share an entry.
+        let route_for = |query: &str| {
+            let request = RequestInfo::new("GET", "/api", "example.com")
+                .with_query_params(RequestInfo::parse_query_string(query));
+            matcher
+                .match_request(&request)
+                .map(|m| m.route_id.to_string())
+        };
+        for _ in 0..2 {
+            assert_eq!(route_for("a=b%3Dc").as_deref(), Some("equals-in-value"));
+            assert_eq!(route_for("a%3Db=c").as_deref(), Some("catch-all"));
+        }
     }
 
     #[test]

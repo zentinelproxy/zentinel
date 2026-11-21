@@ -495,8 +495,12 @@ impl ProxyHttp for ZentinelProxy {
         // (isolated); every other listener uses the global matcher.
         let listener_matcher = self.listener_matcher_for(session);
 
-        // Match route to determine service type
+        // Match route to determine service type. The route chosen here is the
+        // one `upstream_peer` uses, so this match sees the same headers and
+        // query parameters that one would: a route with a query-parameter
+        // condition is otherwise passed over in favour of a later one.
         let route_match = {
+            let query = req_header.uri.query().unwrap_or("");
             let mut request_info = RequestInfo::new(method, path, host);
             let matched = if let Some(ref matcher) = listener_matcher {
                 // Include headers for header-based route matching (Gateway API)
@@ -504,12 +508,20 @@ impl ProxyHttp for ZentinelProxy {
                     request_info = request_info
                         .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
                 }
+                if matcher.needs_query_params() {
+                    request_info =
+                        request_info.with_query_params(RequestInfo::parse_query_string(query));
+                }
                 matcher.match_request(&request_info)
             } else {
                 let route_matcher = self.route_matcher.read();
                 if route_matcher.needs_headers() {
                     request_info = request_info
                         .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
+                }
+                if route_matcher.needs_query_params() {
+                    request_info =
+                        request_info.with_query_params(RequestInfo::parse_query_string(query));
                 }
                 route_matcher.match_request(&request_info)
             };
@@ -665,6 +677,10 @@ impl ProxyHttp for ZentinelProxy {
             let (match_result, route_duration) = {
                 let host = ctx.host.as_deref().unwrap_or("");
 
+                // `ctx.path` carries no query string; it is the request's
+                // query that holds the parameters.
+                let query = req_header.uri.query().unwrap_or("");
+
                 // Build request info (zero-copy for common case)
                 let mut request_info = RequestInfo::new(&ctx.method, &ctx.path, host);
 
@@ -675,8 +691,8 @@ impl ProxyHttp for ZentinelProxy {
                             .with_headers(RequestInfo::build_headers(req_header.headers.iter()));
                     }
                     if matcher.needs_query_params() {
-                        request_info = request_info
-                            .with_query_params(RequestInfo::parse_query_params(&ctx.path));
+                        request_info =
+                            request_info.with_query_params(RequestInfo::parse_query_string(query));
                     }
                     matcher.match_request(&request_info)
                 } else {
@@ -688,8 +704,8 @@ impl ProxyHttp for ZentinelProxy {
                     }
                     // Only parse query params if any route needs query param matching
                     if route_matcher.needs_query_params() {
-                        request_info = request_info
-                            .with_query_params(RequestInfo::parse_query_params(&ctx.path));
+                        request_info =
+                            request_info.with_query_params(RequestInfo::parse_query_string(query));
                     }
                     route_matcher.match_request(&request_info)
                 };
@@ -730,8 +746,9 @@ impl ProxyHttp for ZentinelProxy {
             }
 
             // early_request_filter parses the trace context and starts the
-            // span only for requests it matched; this one it did not (a
-            // query-parameter route, say), so neither has happened yet.
+            // span only for requests it matched; this one it did not (the
+            // route set may have been reloaded since), so neither has
+            // happened yet.
             if ctx.otel_span.is_none() && ctx.trace_context.is_none() {
                 // Parse incoming W3C trace context if present
                 if let Some(traceparent) = req_header.headers.get(crate::otel::TRACEPARENT_HEADER) {
