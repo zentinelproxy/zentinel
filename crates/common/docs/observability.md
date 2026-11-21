@@ -365,6 +365,7 @@ zentinel_scoped_circuit_breaker_state{namespace="production", service="payments"
 | `zentinel_decompression_ratio` | Histogram | encoding | Decompression ratio |
 | `zentinel_shadow_requests_total` | Counter | route, upstream, result | Shadow requests |
 | `zentinel_pii_detected_total` | Counter | route, category | PII detections |
+| `zentinel_cache_not_stored_total` | Counter | route, reason | Responses the response cache did not store under the shared-cache rules. `reason` is `authorization`, `set_cookie`, `vary_any` or `vary_invalid` |
 
 ## Structured Logging
 

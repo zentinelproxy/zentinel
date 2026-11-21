@@ -10,6 +10,7 @@ use pingora::prelude::*;
 use pingora::protocols::Digest;
 use pingora::proxy::{ProxyHttp, Session};
 use pingora::upstreams::peer::Peer;
+use pingora_cache::key::HashBinary;
 use pingora_cache::{
     CacheKey, CacheMeta, ForcedFreshness, HitHandler, NoCacheReason, RespCacheable,
 };
@@ -1348,6 +1349,12 @@ impl ProxyHttp for ZentinelProxy {
             route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
             "Starting request filter phase"
         );
+
+        // Note whether the client sent `Authorization` before anything can
+        // change the request's headers: the response cache decides on what
+        // the client sent, not on what an agent left of it.
+        ctx.client_authorization =
+            crate::cache_policy::RequestAuthorization::of(&session.req_header().headers);
 
         // Apply per-listener timeouts from config. Resolved against the local
         // address the same way namespace matchers are, so these reach
@@ -3826,7 +3833,7 @@ impl ProxyHttp for ZentinelProxy {
     /// if it should be stored in the cache.
     fn response_cache_filter(
         &self,
-        _session: &Session,
+        session: &Session,
         resp: &ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<RespCacheable> {
@@ -3872,6 +3879,38 @@ impl ProxyHttp for ZentinelProxy {
                     return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
                 }
             }
+        }
+
+        // The check above reads the first `Cache-Control` line, by substring.
+        // This one reads every line, by directive name.
+        if crate::cache_policy::cache_control_forbids_storing(&resp.headers) {
+            trace!(
+                correlation_id = %ctx.trace_id,
+                route_id = %route_id,
+                "Response has a no-store, no-cache or private directive"
+            );
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
+        }
+
+        // Shared-cache rules: `Authorization` on the request (as the client
+        // sent it, or as it stands now), `Set-Cookie` and `Vary: *` on the
+        // response (see `cache_policy`).
+        let authorization =
+            ctx.client_authorization
+                .or(crate::cache_policy::RequestAuthorization::of(
+                    &session.req_header().headers,
+                ));
+        if let Err(reason) = crate::cache_policy::check_storable(authorization, &resp.headers) {
+            crate::cache_policy::record_not_stored(route_id, reason);
+            debug!(
+                correlation_id = %ctx.trace_id,
+                route_id = %route_id,
+                reason = reason.as_str(),
+                "Response not stored by the shared cache"
+            );
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                reason.as_str(),
+            )));
         }
 
         // Calculate TTL from Cache-Control or use default
@@ -3926,6 +3965,20 @@ impl ProxyHttp for ZentinelProxy {
         );
 
         Ok(RespCacheable::Cacheable(cache_meta))
+    }
+
+    /// Choose which stored variant of a response answers this request.
+    ///
+    /// A response with a `Vary` field is kept once per value of the request
+    /// headers it names, and answers only requests with the same values.
+    /// `None` means the response has no `Vary` field and a single variant.
+    fn cache_vary_filter(
+        &self,
+        meta: &CacheMeta,
+        _ctx: &mut Self::CTX,
+        req: &RequestHeader,
+    ) -> Option<HashBinary> {
+        crate::cache_policy::variance(meta.headers(), &req.headers)
     }
 
     /// Decide whether to serve stale content on error or during revalidation.
