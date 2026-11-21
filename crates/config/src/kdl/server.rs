@@ -4,6 +4,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tracing::{debug, trace, warn};
 
+use zentinel_common::limits::Ipv6PrefixLen;
 use zentinel_common::types::{TlsVersion, TraceIdFormat};
 
 use crate::server::{
@@ -36,6 +37,7 @@ pub(crate) const RECOGNIZED_SYSTEM_KEYS: &[&str] = &[
     "trace-id-format",
     "auto-reload",
     "route-cache-size",
+    "client-ipv6-prefix-length",
 ];
 
 /// Every key the listener parsers read.
@@ -145,6 +147,39 @@ pub(crate) fn parse_trusted_proxies(
     Ok(trusted)
 }
 
+/// Parse `client-ipv6-prefix-length`: a whole number of bits from 1 to 128,
+/// and the default when absent.
+///
+/// A value that is not an integer, or is out of range, is an error and not
+/// the default: a prefix length read as some other length would count
+/// clients differently than the file says.
+fn parse_client_ipv6_prefix_length(node: &kdl::KdlNode) -> Result<Ipv6PrefixLen> {
+    const KEY: &str = "client-ipv6-prefix-length";
+    let Some(child) = node.children().and_then(|children| children.get(KEY)) else {
+        return Ok(Ipv6PrefixLen::DEFAULT);
+    };
+    let block = node.name().value();
+    let bits = child
+        .entries()
+        .first()
+        .and_then(|entry| entry.value().as_integer())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "'{KEY}' in the '{block}' block must be a whole number of bits from 1 to 128, \
+                 e.g. {KEY} 64"
+            )
+        })?;
+    u8::try_from(bits)
+        .ok()
+        .and_then(|bits| Ipv6PrefixLen::new(bits).ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "'{KEY}' in the '{block}' block is {bits}, but must be a whole number of \
+                 bits from 1 to 128. Use 128 to count each IPv6 address as its own client."
+            )
+        })
+}
+
 pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
     trace!("Parsing server configuration block");
 
@@ -176,6 +211,7 @@ pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
         route_cache_size: get_int_entry(node, "route-cache-size")
             .map(|v| v as usize)
             .unwrap_or_else(crate::server::default_route_cache_size),
+        client_ipv6_prefix_length: parse_client_ipv6_prefix_length(node)?,
     };
 
     trace!(
@@ -183,6 +219,7 @@ pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
         max_connections = config.max_connections,
         daemon = config.daemon,
         auto_reload = config.auto_reload,
+        client_ipv6_prefix_length = config.client_ipv6_prefix_length.get(),
         "Parsed server configuration"
     );
 
@@ -1230,5 +1267,41 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("Unknown node 'hostname'"));
         assert!(message.contains("`sni` block"));
+    }
+
+    fn parse_system(input: &str) -> Result<ServerConfig> {
+        let doc: kdl::KdlDocument = input.parse().unwrap();
+        parse_server_config(doc.nodes().first().unwrap())
+    }
+
+    #[test]
+    fn client_ipv6_prefix_length_defaults_to_64_and_parses_1_to_128() {
+        let length = |system: &str| {
+            parse_system(system)
+                .unwrap()
+                .client_ipv6_prefix_length
+                .get()
+        };
+        assert_eq!(length("system { worker-threads 1 }"), 64);
+        assert_eq!(length("system { client-ipv6-prefix-length 1 }"), 1);
+        assert_eq!(length("system { client-ipv6-prefix-length 56 }"), 56);
+        assert_eq!(length("system { client-ipv6-prefix-length 128 }"), 128);
+        // The deprecated spelling of the block reads the same key.
+        assert_eq!(length("server { client-ipv6-prefix-length 48 }"), 48);
+    }
+
+    /// An IPv6 prefix length is a whole number of bits from 1 to 128. Anything
+    /// else is refused when the file is loaded, because a value read as some
+    /// other length would count clients differently than the file says.
+    #[test]
+    fn client_ipv6_prefix_length_outside_1_to_128_or_not_an_integer_is_an_error() {
+        for bad in ["0", "129", "-1", "256", "64.5", "\"64\"", "#true"] {
+            let err = parse_system(&format!("system {{ client-ipv6-prefix-length {bad} }}"))
+                .expect_err(bad);
+            assert!(
+                err.to_string().contains("client-ipv6-prefix-length"),
+                "{bad}: {err}"
+            );
+        }
     }
 }

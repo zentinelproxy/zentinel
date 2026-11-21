@@ -1101,7 +1101,8 @@ fn run_server(
             )
         },
     )
-    .with_handshakes(Arc::clone(&handshakes));
+    .with_handshakes(Arc::clone(&handshakes))
+    .with_client_ipv6_prefix(config.server.client_ipv6_prefix_length);
     // h2c listeners get a service of their own. Pingora's h2c switch is per
     // app, and once on it makes every cleartext connection of that app peek
     // for the HTTP/2 preface and fall back to HTTP/1.1 without it: plain

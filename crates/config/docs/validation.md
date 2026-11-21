@@ -36,6 +36,7 @@ Minimum supported: `1.0`
 | `max-connections` | `> 0` |
 | `graceful-shutdown-timeout-secs` | `> 0` |
 | `trace-id-format` | Must be `tinyflake` or `uuid` |
+| `client-ipv6-prefix-length` | Must be a whole number from `1` to `128` |
 
 ### Listeners
 
@@ -154,6 +155,7 @@ Configuration validation failed:
 | `daemon` | `false` | Prefer systemd/container orchestration |
 | `trace-id-format` | `tinyflake` | Compact, operator-friendly IDs |
 | `auto-reload` | `false` | Explicit reload preferred in production |
+| `client-ipv6-prefix-length` | `64` | The addresses of one IPv6 prefix usually belong to the same subscriber or site, so a `/64` is counted as one client |
 
 ### Listener Defaults
 
@@ -283,7 +285,7 @@ Configuration validation failed:
 | `max-header-size` | `8192` | 8KB header limit |
 | `max-header-count` | `100` | Reasonable header count |
 | `max-body-size` | `10485760` | 10MB body limit |
-| `max-connections-per-client` | `100` | Per-client limit |
+| `max-connections-per-client` | unlimited | Per-client limit |
 
 ### Cache Defaults
 

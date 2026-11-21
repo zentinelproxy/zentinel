@@ -1521,8 +1521,11 @@ impl ProxyHttp for ZentinelProxy {
                     // Try to get buffered body, or use empty (will estimate from headers only)
                     let body = ctx.body_buffer.as_slice();
 
-                    // Use client IP as the rate limit key (could be enhanced to use API key header)
-                    let rate_limit_key = &ctx.client_ip;
+                    // Use the client as the rate limit key (could be enhanced to use API key
+                    // header). An IPv6 client is keyed by its network, like every other
+                    // per-client limit.
+                    let client_key = self.rate_limit_manager.client_key(&ctx.client_ip);
+                    let rate_limit_key: &str = &client_key;
 
                     if let Some(check_result) = self.inference_rate_limit_manager.check(
                         route_id,

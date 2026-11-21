@@ -10,9 +10,15 @@
 //! [`ConnectionPermit`] across that call, so the slot is released exactly when
 //! the connection ends, whichever way it ends.
 //!
-//! The client is the TCP peer. Behind a load balancer every connection comes
-//! from the balancer, and no request (so no `X-Forwarded-For`) has been read
-//! when the connection is counted, so the real clients cannot be told apart.
+//! The client is the TCP peer, counted by [`client_key`]: an IPv6 peer by the
+//! first `system { client-ipv6-prefix-length }` bits of its address (64 unless
+//! set), since the addresses of one IPv6 prefix usually belong to the same
+//! subscriber or site; an IPv4 peer by its address. Where unrelated hosts share
+//! one `/64`, `128` counts each address on its own.
+//!
+//! Behind a load balancer every connection comes from the balancer, and no
+//! request (so no `X-Forwarded-For`) has been read when the connection is
+//! counted, so the real clients cannot be told apart.
 //! A peer in the listener's `trusted-proxies` is therefore exempt from
 //! `max-connections-per-client`: it carries many clients by definition, and
 //! counting it as one would cap all of them together (an existing install
@@ -34,7 +40,7 @@ use pingora_core::server::ShutdownWatch;
 use tracing::{debug, warn};
 
 use zentinel_common::ids::Scope;
-use zentinel_common::limits::{ConnectionLimiter, ConnectionPermit};
+use zentinel_common::limits::{client_key, ConnectionLimiter, ConnectionPermit, Ipv6PrefixLen};
 use zentinel_config::Config;
 
 use crate::proxy::listener_addr::{canonical_ip, listener_for_addr};
@@ -139,10 +145,12 @@ pub fn per_client_limit_notes(config: &Config) -> Vec<String> {
                 .min()?;
             Some(format!(
                 "Listener '{}' limits each client to {limit} connections, counted by TCP \
-                 peer address. Behind a load balancer or NAT the balancer counts as one \
-                 client; list it in the listener's trusted-proxies to exempt it from \
-                 max-connections-per-client.",
-                listener.id
+                 peer address (an IPv6 peer by the first {} bits of its address, \
+                 client-ipv6-prefix-length in the system block). Behind a load balancer or \
+                 NAT the balancer counts as one client; list it in the listener's \
+                 trusted-proxies to exempt it from max-connections-per-client.",
+                listener.id,
+                config.server.client_ipv6_prefix_length.get()
             ))
         })
         .collect()
@@ -265,6 +273,10 @@ pub struct ConnectionLimitedApp<A> {
     /// Set for the h2c listeners' app: how long a connection has to send the
     /// HTTP/2 connection preface before it is refused.
     h2_preface: Option<Duration>,
+    /// How a client's IPv6 address is cut down to the key it is counted
+    /// under. Fixed when the app is built, like the rest of `system`: a
+    /// reload does not change it.
+    client_prefix: Ipv6PrefixLen,
 }
 
 /// What a client speaking HTTP/2 with prior knowledge sends first (RFC 9113
@@ -299,6 +311,7 @@ impl<A> ConnectionLimitedApp<A> {
             limits: Arc::new(limits),
             handshakes: None,
             h2_preface: None,
+            client_prefix: Ipv6PrefixLen::DEFAULT,
         }
     }
 
@@ -313,6 +326,7 @@ impl<A> ConnectionLimitedApp<A> {
             limits: Arc::clone(&self.limits),
             handshakes: self.handshakes.clone(),
             h2_preface: None,
+            client_prefix: self.client_prefix,
         }
     }
 
@@ -322,6 +336,14 @@ impl<A> ConnectionLimitedApp<A> {
     /// time is closed. Pingora's own h2c mode instead falls back to HTTP/1.1.
     pub fn requiring_h2_preface(mut self, timeout: Duration) -> Self {
         self.h2_preface = Some(timeout);
+        self
+    }
+
+    /// Count an IPv6 client by the first `prefix` bits of its address, so the
+    /// addresses of one network share one client's per-client limits. The
+    /// default is 64 bits.
+    pub fn with_client_ipv6_prefix(mut self, prefix: Ipv6PrefixLen) -> Self {
+        self.client_prefix = prefix;
         self
     }
 
@@ -344,9 +366,18 @@ impl<A> ConnectionLimitedApp<A> {
     /// Take the slots for a connection from `peer`, or log why there are none.
     fn admit(&self, peer: Option<IpAddr>, local: Option<SocketAddr>) -> Option<Permits> {
         let limits = (self.limits)(peer, local);
+        // Who the connection is counted as, for the global, namespace and
+        // service counts alike.
+        let client = peer.map(|ip| client_key(ip, self.client_prefix));
         let refused = |scope: &str, refusal| {
             warn!(
                 client_ip = peer.map(|ip| ip.to_string()).unwrap_or_default(),
+                client_key = client
+                    .map(|ip| match ip {
+                        IpAddr::V6(_) => format!("{ip}/{}", self.client_prefix.get()),
+                        IpAddr::V4(_) => ip.to_string(),
+                    })
+                    .unwrap_or_default(),
                 scope = scope,
                 reason = %refusal,
                 "Connection refused: connection limit reached"
@@ -354,7 +385,7 @@ impl<A> ConnectionLimitedApp<A> {
         };
         let global = match self
             .limiter
-            .try_acquire(peer, limits.max_total, limits.max_per_client)
+            .try_acquire(client, limits.max_total, limits.max_per_client)
         {
             Ok(permit) => permit,
             Err(refusal) => {
@@ -365,7 +396,7 @@ impl<A> ConnectionLimitedApp<A> {
         let mut scoped_permits = Vec::new();
         for scope in [limits.namespace, limits.service].into_iter().flatten() {
             let limiter = Arc::clone(self.namespaces.lock().entry(scope.id.clone()).or_default());
-            match limiter.try_acquire(peer, scope.max_total, scope.max_per_client) {
+            match limiter.try_acquire(client, scope.max_total, scope.max_per_client) {
                 Ok(permit) => scoped_permits.push(permit),
                 Err(refusal) => {
                     // The slots already taken are given back on drop.
@@ -709,6 +740,160 @@ mod tests {
         done.send(()).unwrap();
         first.await.unwrap();
         assert_eq!((limiter.total(), app.namespace_connections("ns")), (0, 0));
+    }
+
+    /// An app for tests that call `admit` with peers no loopback socket can
+    /// come from.
+    fn app_with_limits(limits: ConnectionLimits) -> ConnectionLimitedApp<HoldingApp> {
+        let (started, _) = mpsc::unbounded_channel();
+        ConnectionLimitedApp::new(
+            HoldingApp { started },
+            ConnectionLimiter::new(),
+            move |_, _| limits.clone(),
+        )
+    }
+
+    fn peer(addr: &str) -> Option<IpAddr> {
+        Some(addr.parse().unwrap())
+    }
+
+    /// Only a per-client limit, at the global level.
+    fn per_client(limit: usize) -> ConnectionLimits {
+        ConnectionLimits {
+            max_total: None,
+            max_per_client: Some(limit),
+            namespace: None,
+            service: None,
+        }
+    }
+
+    /// The addresses of one IPv6 `/64` are counted as one client, not one
+    /// client per address.
+    #[test]
+    fn ipv6_peers_in_one_64_count_as_one_client() {
+        let app = app_with_limits(per_client(1));
+
+        let held = app.admit(peer("2001:db8:0:1::1"), None);
+        assert!(
+            held.is_some(),
+            "the first connection of the /64 was refused"
+        );
+        for same_64 in ["2001:db8:0:1::2", "2001:db8:0:1:ffff:ffff:ffff:ffff"] {
+            assert!(
+                app.admit(peer(same_64), None).is_none(),
+                "{same_64} was counted apart from 2001:db8:0:1::1"
+            );
+        }
+        // Another /64 is another client.
+        assert!(app.admit(peer("2001:db8:0:2::1"), None).is_some());
+
+        // The slot comes back with the connection, for any address of the /64.
+        drop(held);
+        assert!(app.admit(peer("2001:db8:0:1::2"), None).is_some());
+    }
+
+    #[test]
+    fn ipv4_peers_are_still_counted_one_address_each() {
+        let app = app_with_limits(per_client(1));
+
+        let _first = app.admit(peer("192.0.2.1"), None).unwrap();
+        assert!(app.admit(peer("192.0.2.1"), None).is_none());
+        assert!(
+            app.admit(peer("192.0.2.2"), None).is_some(),
+            "a neighbouring IPv4 address shares the slot"
+        );
+    }
+
+    /// The namespace's and the service's per-client limits count clients the
+    /// way the global one does.
+    #[test]
+    fn scoped_per_client_limits_count_an_ipv6_prefix_as_one_client() {
+        let scoped = |id: &str| NamespaceConnectionLimits {
+            id: id.to_string(),
+            max_total: None,
+            max_per_client: Some(1),
+        };
+        for limits in [
+            ConnectionLimits {
+                max_total: None,
+                max_per_client: None,
+                namespace: Some(scoped("ns")),
+                service: None,
+            },
+            ConnectionLimits {
+                max_total: None,
+                max_per_client: None,
+                namespace: None,
+                service: Some(scoped("ns:svc")),
+            },
+        ] {
+            let app = app_with_limits(limits);
+            let _held = app.admit(peer("2001:db8:0:1::1"), None).unwrap();
+            assert!(app.admit(peer("2001:db8:0:1::2"), None).is_none());
+            assert!(app.admit(peer("2001:db8:0:2::1"), None).is_some());
+        }
+    }
+
+    #[test]
+    fn a_prefix_length_of_128_counts_each_ipv6_address_on_its_own() {
+        let app = app_with_limits(per_client(1))
+            .with_client_ipv6_prefix(Ipv6PrefixLen::new(128).unwrap());
+
+        let _first = app.admit(peer("2001:db8:0:1::1"), None).unwrap();
+        assert!(app.admit(peer("2001:db8:0:1::1"), None).is_none());
+        assert!(
+            app.admit(peer("2001:db8:0:1::2"), None).is_some(),
+            "a neighbouring address shared the slot at /128"
+        );
+    }
+
+    #[test]
+    fn a_shorter_prefix_counts_a_wider_network_as_one_client() {
+        let app =
+            app_with_limits(per_client(1)).with_client_ipv6_prefix(Ipv6PrefixLen::new(48).unwrap());
+
+        let _first = app.admit(peer("2001:db8:0:1::1"), None).unwrap();
+        assert!(app.admit(peer("2001:db8:0:2::1"), None).is_none());
+        assert!(app.admit(peer("2001:db8:1:1::1"), None).is_some());
+    }
+
+    /// An IPv4 peer that arrived over a dual-stack socket is the IPv4 client,
+    /// whatever the prefix: cut to a prefix it would be `::` for all of them.
+    #[test]
+    fn ipv4_mapped_peers_are_never_pooled_by_the_ipv6_prefix() {
+        let app = app_with_limits(per_client(1));
+
+        let _first = app.admit(peer("::ffff:192.0.2.1"), None).unwrap();
+        assert!(app.admit(peer("192.0.2.1"), None).is_none());
+        assert!(app.admit(peer("::ffff:192.0.2.2"), None).is_some());
+    }
+
+    /// The h2c listeners' app counts against the same limits and the same way.
+    #[test]
+    fn a_sibling_app_counts_clients_the_way_its_parent_does() {
+        let parent =
+            app_with_limits(per_client(1)).with_client_ipv6_prefix(Ipv6PrefixLen::new(48).unwrap());
+        let (started, _) = mpsc::unbounded_channel();
+        let sibling = parent.sibling(HoldingApp { started });
+
+        let _held = parent.admit(peer("2001:db8:0:1::1"), None).unwrap();
+        assert!(sibling.admit(peer("2001:db8:0:2::1"), None).is_none());
+    }
+
+    #[test]
+    fn the_startup_note_names_the_prefix_length() {
+        let config = Config::from_kdl(
+            r#"
+            schema-version "1.0"
+            system { worker-threads 1; client-ipv6-prefix-length 56 }
+            listeners { listener "public" { address "0.0.0.0:19790"; } }
+            limits { max-connections-per-client 10 }
+            "#,
+        )
+        .unwrap();
+        let notes = per_client_limit_notes(&config);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("first 56 bits"), "{}", notes[0]);
     }
 
     /// A balancer in `trusted-proxies` carries many clients, so

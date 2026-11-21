@@ -1377,6 +1377,7 @@ mod tests {
                 trace-id-format "uuid"
                 auto-reload #false
                 route-cache-size 1024
+                client-ipv6-prefix-length 56
             }
         "#;
         assert!(warnings_for(kdl).is_empty(), "{:?}", warnings_for(kdl));

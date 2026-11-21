@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use validator::Validate;
 
+use zentinel_common::limits::Ipv6PrefixLen;
 use zentinel_common::types::{TlsVersion, TraceIdFormat};
 
 // ============================================================================
@@ -65,6 +66,19 @@ pub struct ServerConfig {
     /// `zentinel_route_cache_evictions_total`). Default: 1000.
     #[serde(default = "default_route_cache_size")]
     pub route_cache_size: usize,
+
+    /// How many leading bits of an IPv6 client address identify one client in
+    /// the per-client limits: the connection counts
+    /// (`max-connections-per-client`) and every rate limit keyed on the
+    /// client's address. The addresses of one prefix are counted as one
+    /// client; IPv4 addresses and IPv4-mapped IPv6 addresses are counted one
+    /// by one.
+    ///
+    /// KDL: `client-ipv6-prefix-length 64`. A whole number from 1 to 128;
+    /// `128` counts each IPv6 address on its own. Default: 64. Read once at
+    /// startup; a reload that changes it warns that a restart is needed.
+    #[serde(default)]
+    pub client_ipv6_prefix_length: Ipv6PrefixLen,
 }
 
 // ============================================================================
