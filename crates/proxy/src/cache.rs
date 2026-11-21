@@ -20,6 +20,7 @@ use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::RwLock;
 use pingora_cache::eviction::simple_lru::Manager as LruEvictionManager;
 use pingora_cache::eviction::EvictionManager;
+use pingora_cache::key::CacheKey;
 use pingora_cache::lock::CacheLock;
 use pingora_cache::storage::Storage;
 use pingora_cache::MemCache;
@@ -813,6 +814,66 @@ fn extract_path_from_cache_key(cache_key: &str) -> Option<&str> {
     None
 }
 
+/// Build the key under which a request's response is stored and looked up.
+///
+/// The key is made of the route, the method, the host, the path and the query:
+///
+/// * The route is part of the key because the response depends on which route
+///   handled the request: its upstream, filters and headers. Two routes that
+///   match the same host, path and query keep separate entries.
+/// * The host is normalized with the same rules route matching uses (port and
+///   trailing dot removed, lowercased), so requests for different hosts never
+///   share an entry, while spellings of one host do.
+/// * `HEAD` uses the key of `GET`. Pingora fetches a cacheable `HEAD` from the
+///   upstream as a `GET`, stores the full response, and answers `HEAD` from
+///   that entry without a body. Any other method gets an entry of its own.
+/// * Each component is length-prefixed, so two requests that differ in any
+///   component can never encode to the same bytes, whatever characters the
+///   components contain.
+///
+/// Only the primary key is hashed by Pingora. The user tag is left empty
+/// because `rebuild_eviction_state` in `disk_cache.rs` re-admits entries found
+/// on disk at startup with an empty tag; a different tag here would make the
+/// eviction state disagree with the keys requests use.
+///
+/// This is the key of the stored response. [`CacheManager::generate_cache_key`]
+/// builds a different, readable string that purge requests are matched against.
+pub(crate) fn response_cache_key(
+    route_id: &str,
+    method: &str,
+    host: &str,
+    path: &str,
+    query: Option<&str>,
+) -> CacheKey {
+    let method = if method == "HEAD" { "GET" } else { method };
+    let host = crate::routing::normalize_host(host);
+
+    // Four 8-byte lengths (route, method, host, path), plus the 1-byte query
+    // marker and, if there is a query, its 8-byte length: 32 + 1 + 8 = 41.
+    let mut primary = Vec::with_capacity(
+        route_id.len() + method.len() + host.len() + path.len() + query.map_or(0, str::len) + 41,
+    );
+    push_length_prefixed(&mut primary, route_id.as_bytes());
+    push_length_prefixed(&mut primary, method.as_bytes());
+    push_length_prefixed(&mut primary, host.as_bytes());
+    push_length_prefixed(&mut primary, path.as_bytes());
+    match query {
+        None => primary.push(0),
+        Some(query) => {
+            primary.push(1);
+            push_length_prefixed(&mut primary, query.as_bytes());
+        }
+    }
+
+    CacheKey::new(primary, "")
+}
+
+/// Append `component` to `buf`, preceded by its length as eight big-endian bytes.
+fn push_length_prefixed(buf: &mut Vec<u8>, component: &[u8]) {
+    buf.extend_from_slice(&(component.len() as u64).to_be_bytes());
+    buf.extend_from_slice(component);
+}
+
 impl Default for CacheManager {
     fn default() -> Self {
         Self::new()
@@ -822,6 +883,7 @@ impl Default for CacheManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pingora_cache::key::{CacheHashKey, HashBinary};
 
     #[test]
     fn test_cache_key_generation() {
@@ -835,6 +897,169 @@ mod tests {
             Some("page=1&limit=10"),
         );
         assert_eq!(key_with_query, "GET:example.com:/api/users?page=1&limit=10");
+    }
+
+    /// The storage hash of the key, which is what a cache lookup compares.
+    fn stored_in(
+        route_id: &str,
+        method: &str,
+        host: &str,
+        path: &str,
+        query: Option<&str>,
+    ) -> HashBinary {
+        response_cache_key(route_id, method, host, path, query).primary_bin()
+    }
+
+    /// The same, for a request handled by the route `api`.
+    fn stored(method: &str, host: &str, path: &str, query: Option<&str>) -> HashBinary {
+        stored_in("api", method, host, path, query)
+    }
+
+    #[test]
+    fn response_cache_key_is_stable_for_identical_requests() {
+        assert_eq!(
+            stored("GET", "example.com", "/api/users", Some("page=1")),
+            stored("GET", "example.com", "/api/users", Some("page=1")),
+        );
+    }
+
+    #[test]
+    fn response_cache_key_differs_when_only_the_host_differs() {
+        assert_ne!(
+            stored("GET", "a.example", "/api/users", None),
+            stored("GET", "b.example", "/api/users", None),
+        );
+        assert_ne!(
+            stored("GET", "a.example", "/api/users", Some("page=1")),
+            stored("GET", "b.example", "/api/users", Some("page=1")),
+        );
+    }
+
+    #[test]
+    fn response_cache_key_differs_when_only_the_route_differs() {
+        assert_ne!(
+            stored_in("alpha", "GET", "example.com", "/x", None),
+            stored_in("beta", "GET", "example.com", "/x", None),
+        );
+        assert_eq!(
+            stored_in("alpha", "GET", "example.com", "/x", None),
+            stored_in("alpha", "GET", "example.com", "/x", None),
+        );
+    }
+
+    #[test]
+    fn response_cache_key_differs_when_only_the_path_or_query_differs() {
+        let base = stored("GET", "example.com", "/api/users", Some("page=1"));
+        assert_ne!(
+            base,
+            stored("GET", "example.com", "/api/posts", Some("page=1"))
+        );
+        assert_ne!(
+            base,
+            stored("GET", "example.com", "/api/users", Some("page=2"))
+        );
+        assert_ne!(base, stored("GET", "example.com", "/api/users", None));
+    }
+
+    #[test]
+    fn response_cache_key_ignores_host_case_port_and_trailing_dot() {
+        let canonical = stored("GET", "example.com", "/x", None);
+        for host in [
+            "Example.COM",
+            "example.com:8080",
+            "example.com.",
+            "EXAMPLE.com.:443",
+        ] {
+            assert_eq!(canonical, stored("GET", host, "/x", None), "host {host:?}");
+        }
+        assert_eq!(
+            stored("GET", "[::1]", "/x", None),
+            stored("GET", "[::1]:8080", "/x", None),
+        );
+    }
+
+    #[test]
+    fn response_cache_key_does_not_merge_hosts_that_normalize_differently() {
+        assert_ne!(
+            stored("GET", "example.com", "/x", None),
+            stored("GET", "www.example.com", "/x", None),
+        );
+        assert_ne!(
+            stored("GET", "[::1]", "/x", None),
+            stored("GET", "[::2]", "/x", None),
+        );
+    }
+
+    #[test]
+    fn response_cache_key_keeps_host_path_and_query_boundaries_distinct() {
+        // The same characters split differently between components.
+        assert_ne!(
+            stored("GET", "ab", "/c", None),
+            stored("GET", "a", "b/c", None),
+        );
+        assert_ne!(
+            stored("GET", "a", "/b/c", None),
+            stored("GET", "a/b", "/c", None),
+        );
+        assert_ne!(
+            stored("GET", "a", "/b", Some("c")),
+            stored("GET", "a", "/b?c", None),
+        );
+        assert_ne!(
+            stored("GET", "a", "/b", Some("c:d")),
+            stored("GET", "a", "/b:c", Some("d")),
+        );
+        // An empty query is not the same request as no query.
+        assert_ne!(
+            stored("GET", "a", "/b", Some("")),
+            stored("GET", "a", "/b", None),
+        );
+        // The method and host boundary, for methods other than GET and HEAD.
+        assert_ne!(stored("X", "ab", "/c", None), stored("Xa", "b", "/c", None));
+        // The route and method boundary.
+        assert_ne!(
+            stored_in("r", "GETx", "a", "/b", None),
+            stored_in("rGET", "x", "a", "/b", None),
+        );
+    }
+
+    #[test]
+    fn response_cache_key_shares_one_entry_between_get_and_head() {
+        assert_eq!(
+            stored("GET", "example.com", "/x", Some("q=1")),
+            stored("HEAD", "example.com", "/x", Some("q=1")),
+        );
+    }
+
+    #[test]
+    fn response_cache_key_separates_other_methods_from_get() {
+        let get = stored("GET", "example.com", "/x", None);
+        assert_ne!(get, stored("POST", "example.com", "/x", None));
+        assert_ne!(
+            stored("POST", "example.com", "/x", None),
+            stored("PUT", "example.com", "/x", None)
+        );
+    }
+
+    #[test]
+    fn response_cache_key_carries_no_user_tag() {
+        assert_eq!(
+            response_cache_key("api", "GET", "example.com", "/x", None).user_tag(),
+            ""
+        );
+    }
+
+    #[test]
+    fn purge_matches_a_path_whatever_host_the_cached_entry_was_requested_for() {
+        let manager = CacheManager::new();
+        manager.purge("/api/users/123");
+
+        for host in ["a.example", "b.example", "localhost"] {
+            let cache_key = CacheManager::generate_cache_key("GET", host, "/api/users/123", None);
+            assert!(manager.should_invalidate(&cache_key), "host {host:?}");
+        }
+        let other = CacheManager::generate_cache_key("GET", "a.example", "/api/users/456", None);
+        assert!(!manager.should_invalidate(&other));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use pingora::prelude::*;
 use pingora::protocols::Digest;
 use pingora::proxy::{ProxyHttp, Session};
 use pingora::upstreams::peer::Peer;
+use pingora_cache::key::CacheHashKey;
 use pingora_cache::{
     CacheKey, CacheMeta, ForcedFreshness, HitHandler, NoCacheReason, RespCacheable,
 };
@@ -3601,27 +3602,44 @@ impl ProxyHttp for ZentinelProxy {
 
     /// Generate the cache key for this request.
     ///
-    /// The cache key uniquely identifies the cached response. It typically
-    /// includes the method, host, path, and potentially query parameters.
+    /// The cache key uniquely identifies the cached response. It is made of
+    /// the route, the method, the normalized host, the path and the query
+    /// (see `response_cache_key` in the `cache` module).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no route has been matched for the request. Pingora
+    /// then disables caching for that request and logs a warning.
     fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey> {
+        // The cache is only enabled once a route has matched
+        // (`request_cache_filter`), so this is not expected to fail.
+        let Some(route_id) = ctx.route_id.as_deref() else {
+            return Err(Error::explain(
+                ErrorType::InternalError,
+                "response cache key requested before a route was matched",
+            ));
+        };
+
         let req_header = session.req_header();
         let method = req_header.method.as_str();
         let path = req_header.uri.path();
-        let host = ctx.host.as_deref().unwrap_or("unknown");
+        let host = ctx.host.as_deref().unwrap_or("");
         let query = req_header.uri.query();
 
-        // Generate cache key using our cache manager
-        let key_string = crate::cache::CacheManager::generate_cache_key(method, host, path, query);
+        let cache_key = crate::cache::response_cache_key(route_id, method, host, path, query);
 
         trace!(
             correlation_id = %ctx.trace_id,
-            cache_key = %key_string,
+            cache_key = %cache_key.primary(),
+            route_id = %route_id,
+            method = %method,
+            host = %crate::routing::normalize_host(host),
+            path = %path,
+            query = query.unwrap_or(""),
             "Generated cache key"
         );
 
-        // Generate cache key from request URI (namespace empty, user_tag empty)
-        // CacheKey::default() was removed in Pingora 0.8.0
-        Ok(CacheKey::new(format!("{}", req_header.uri), ""))
+        Ok(cache_key)
     }
 
     /// Called when a cache miss occurs.

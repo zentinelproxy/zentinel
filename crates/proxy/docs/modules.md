@@ -273,6 +273,7 @@ impl CacheManager {
 - TTL calculation with defaults
 - Stale-while-revalidate support
 - Stale-if-error support
+- Cache entries are keyed by route, method, host, path and query. Two routes that match the same host, path and query keep separate entries. The host is normalized the same way as for route matching (port and trailing dot removed, lowercased), so requests for different hosts never share an entry. `HEAD` shares the entry of `GET`; any other cacheable method has its own. The key components are length-prefixed, so no two different requests encode to the same key.
 - Path and extension-based cache exclusions (`exclude-extensions`, `exclude-paths`)
 
 ### `memory_cache`

@@ -493,7 +493,7 @@ impl CompiledMatcher {
 /// * **Lowercased.** Host comparison is case-insensitive (RFC 3986 §3.2.2).
 ///   Both sides are normalized, so neither a mixed-case request nor a
 ///   mixed-case config silently matches nothing.
-fn normalize_host(host: &str) -> String {
+pub(crate) fn normalize_host(host: &str) -> String {
     // An IPv6 literal is bracketed and full of colons, so its port is
     // whatever follows the closing bracket. Splitting on the first colon
     // would reduce `[::1]:8080` to `[`.
