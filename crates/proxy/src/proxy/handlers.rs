@@ -118,8 +118,14 @@ impl ZentinelProxy {
         let route_id = route_match.route_id.as_str();
 
         if let Some(handler) = route_match.config.builtin_handler {
-            let request_id = self.get_trace_id(session);
-            ctx.trace_id = request_id.clone();
+            // The id the request got in `early_request_filter` stays: the
+            // route's agents were called under it, and a request without a
+            // trace header would otherwise get a new one here, in the
+            // handler's `X-Request-Id` and the logs that follow.
+            if ctx.trace_id.is_empty() {
+                ctx.trace_id = self.get_trace_id(session);
+            }
+            let request_id = ctx.trace_id.clone();
 
             // Get current config for config dump handler
             let config = Some(self.config_manager.current());

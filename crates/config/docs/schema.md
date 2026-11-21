@@ -214,6 +214,19 @@ Request routing configuration.
 | `cache-purge` | Cache purge (admin) |
 | `cache-stats` | Cache statistics (admin) |
 
+A `builtin` route's `filters` apply to it as they do to a proxied route's
+request: rate limit, geo, redirect and CORS preflight, and agent filters run
+before the handler answers (agents get the `request-headers` event only), and
+`headers` and CORS filters apply to its response. A route with `filters` passes
+every check a proxied route passes first: `rate-limits` (`global`,
+`default-rps`) and the route's own rate limit, the request-body limit,
+`max-header-count` and `max-header-size`, and the WebSocket upgrade check. Do
+not put `filters` on a route that is probed for health. A route with no
+`filters` is answered first, before any of these checks, and calls no agent:
+`policies { rate-limit }`, `max-body-size`, `rate-limits { global }` and
+`default-rps` do not apply to it. No `builtin` route is refused by
+`limits { max-in-flight-requests }`.
+
 ### RoutePolicies
 
 | Property | Type | Default | Description |
@@ -654,6 +667,10 @@ which a single-file config ignores.
 | `max-header-count` | `u32` | `100` | Max number of headers |
 | `max-body-size` | `u64` | `10485760` | Max request body size |
 | `max-connections-per-client` | `u32` | `100` | Max connections per client IP |
+
+`max-header-size` and `max-header-count` apply to every request that reaches
+the route's filters: proxied routes, `static` routes, and `builtin` routes
+that have `filters`.
 
 ---
 

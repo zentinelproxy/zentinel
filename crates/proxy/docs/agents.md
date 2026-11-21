@@ -149,6 +149,24 @@ request-header changes are applied to the request, but the route reads only
 its method and URI to find the file, so they do not change the file that is
 served. A static route without `filters` calls no agent.
 
+### Builtin Routes
+
+A route with `service-type "builtin"` that has `filters` runs them, agents
+included, before its handler answers, in the same order as a proxied route.
+The agents' decisions apply as they do on a static route: `Block`,
+`Redirect` and `Challenge` answer the request instead of the handler's
+response, an `Allow` decision's response-header changes are applied to the
+handler's response, and a filter's `failure-mode` decides what happens when
+its agent cannot be reached or does not answer in time. Only the
+`request-headers` event and the request-complete notice are sent.
+
+A builtin route with `filters` passes every check a proxied route passes
+before its agents run; see [Built-in Handlers](modules.md#built-in-handlers).
+A builtin route without `filters` is answered first, before any of them, and
+calls no agent. No builtin route is counted against
+`limits { max-in-flight-requests }`: a health check is not refused because
+the proxy is busy.
+
 ## Event Model
 
 ### Event Types
