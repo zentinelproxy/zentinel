@@ -231,9 +231,12 @@ impl InferenceHealthCheck {
             }
         }
 
+        // The preview is at most 200 bytes, shortened to end on a character
+        // boundary rather than inside a multi-byte character.
+        let preview_end = json_body.floor_char_boundary(200);
         Err(format!(
             "Failed to parse models response. Body preview: {}",
-            &json_body[..json_body.len().min(200)]
+            &json_body[..preview_end]
         ))
     }
 
@@ -406,5 +409,50 @@ mod tests {
         let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"data\":[]}";
         let body = check.extract_body(response).unwrap();
         assert_eq!(body, "{\"data\":[]}");
+    }
+
+    fn health_check() -> InferenceHealthCheck {
+        InferenceHealthCheck::new(
+            "/v1/models".to_string(),
+            vec!["gpt-4".to_string()],
+            Duration::from_secs(5),
+        )
+    }
+
+    #[test]
+    fn a_body_preview_ending_inside_a_character_is_cut_before_it() {
+        // "\u{e9}" occupies bytes 199 and 200, so byte offset 200 is inside it.
+        let body = format!("{}\u{e9}tail", "x".repeat(199));
+        let err = health_check()
+            .parse_models_response(&body)
+            .expect_err("not a models document");
+
+        let preview = err
+            .strip_prefix("Failed to parse models response. Body preview: ")
+            .expect("preview prefix");
+        assert_eq!(preview, "x".repeat(199));
+    }
+
+    #[test]
+    fn a_body_preview_keeps_a_character_that_fits_in_200_bytes() {
+        // "\u{e9}" occupies bytes 198 and 199, so the 200-byte preview holds it.
+        let body = format!("{}\u{e9}tail", "x".repeat(198));
+        let err = health_check()
+            .parse_models_response(&body)
+            .expect_err("not a models document");
+
+        let preview = err
+            .strip_prefix("Failed to parse models response. Body preview: ")
+            .expect("preview prefix");
+        assert_eq!(preview, format!("{}\u{e9}", "x".repeat(198)));
+        assert_eq!(preview.len(), 200);
+    }
+
+    #[test]
+    fn a_short_body_is_previewed_whole() {
+        let err = health_check()
+            .parse_models_response("not json: caf\u{e9}")
+            .expect_err("not a models document");
+        assert!(err.ends_with("Body preview: not json: caf\u{e9}"), "{err}");
     }
 }

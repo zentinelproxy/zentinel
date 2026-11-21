@@ -53,7 +53,7 @@ impl ZentinelProxy {
 
             match static_server.serve(&static_req, &path).await {
                 Ok(response) => {
-                    self.write_http_response(session, response).await?;
+                    self.write_http_response(session, ctx, response).await?;
 
                     info!(
                         correlation_id = %ctx.trace_id,
@@ -89,7 +89,8 @@ impl ZentinelProxy {
                             &ctx.trace_id,
                             None,
                         ) {
-                            self.write_http_response(session, error_response).await?;
+                            self.write_http_response(session, ctx, error_response)
+                                .await?;
                         }
                     }
 
@@ -152,7 +153,7 @@ impl ZentinelProxy {
                 Some(&self.cache_manager),
             );
 
-            self.write_http_response(session, response).await?;
+            self.write_http_response(session, ctx, response).await?;
 
             info!(
                 correlation_id = %ctx.trace_id,
@@ -313,7 +314,8 @@ impl ZentinelProxy {
                     &ctx.trace_id,
                     Some(error_details),
                 ) {
-                    self.write_http_response(session, error_response).await?;
+                    self.write_http_response(session, ctx, error_response)
+                        .await?;
                     self.metrics.record_blocked_request("validation_failed");
                     return Ok(Some(true)); // Skip upstream on validation failure
                 }
@@ -1062,6 +1064,7 @@ impl ZentinelProxy {
     pub(super) async fn write_http_response(
         &self,
         session: &mut Session,
+        ctx: &mut RequestContext,
         response: http::Response<http_body_util::Full<bytes::Bytes>>,
     ) -> Result<(), Box<Error>> {
         let status = response.status().as_u16();
@@ -1083,6 +1086,19 @@ impl ZentinelProxy {
         let mut resp_header = ResponseHeader::build(status, None)?;
         for (key, value) in headers_owned {
             resp_header.insert_header(key, &value)?;
+        }
+
+        // A response written here never reaches `response_filter`, so the
+        // route's response-header policy and response filters (Headers, CORS,
+        // Log) are applied here, in the same order (#682).
+        if let Some(route_config) = ctx.route_config.clone() {
+            super::filters::apply_response_header_policy(
+                &mut resp_header,
+                &route_config.policies.response_headers,
+            );
+        }
+        if let Some(config) = ctx.config.clone() {
+            super::filters::apply_response_filters(&mut resp_header, ctx, &config);
         }
 
         session.set_keepalive(None);

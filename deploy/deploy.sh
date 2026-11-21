@@ -196,7 +196,7 @@ deploy_config() {
         chmod 644 "$CONFIG_DIR/zentinel.kdl"
         log_info "Deployed starter configuration"
     else
-        log_warn "No configuration file found, using defaults"
+        log_warn "No configuration file found; $CONFIG_DIR/zentinel.kdl must exist before the service starts"
     fi
 
     # Deploy agent configs if they exist

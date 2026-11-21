@@ -10,8 +10,9 @@ use pingora_core::protocols::http::compression::{Algorithm, ResponseCompressionC
 use pingora_proxy::Session;
 use tracing::{debug, trace};
 use zentinel_config::{
-    CompressFilter, CompressionAlgorithm, Config, CorsFilter, Filter, FilterPhase, HeadersFilter,
-    LogFilter, PathModifier, RedirectFilter, TimeoutFilter, UrlRewriteFilter,
+    CompressFilter, CompressionAlgorithm, Config, CorsFilter, Filter, FilterPhase,
+    HeaderModifications, HeadersFilter, LogFilter, PathModifier, RedirectFilter, TimeoutFilter,
+    UrlRewriteFilter,
 };
 
 use super::context::RequestContext;
@@ -119,6 +120,27 @@ pub fn apply_response_filters(
             }
             _ => {}
         }
+    }
+}
+
+/// Apply a route's `policies.response-headers` to a response: renames first,
+/// then set, add and remove.
+pub fn apply_response_header_policy(resp: &mut ResponseHeader, mods: &HeaderModifications) {
+    for (old_name, new_name) in &mods.rename {
+        if let Some(value) = resp.headers.get(old_name).and_then(|v| v.to_str().ok()) {
+            let owned = value.to_string();
+            resp.insert_header(new_name.clone(), &owned).ok();
+            resp.remove_header(old_name);
+        }
+    }
+    for (name, value) in &mods.set {
+        resp.insert_header(name.clone(), value.as_str()).ok();
+    }
+    for (name, value) in &mods.add {
+        resp.append_header(name.clone(), value.as_str()).ok();
+    }
+    for name in &mods.remove {
+        resp.remove_header(name);
     }
 }
 

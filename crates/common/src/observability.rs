@@ -115,36 +115,48 @@ pub struct RequestMetrics {
     pii_detected_total: IntCounterVec,
 }
 
-/// Return a static string for common HTTP status codes to avoid
-/// per-request `u16::to_string()` allocation in metrics labels.
-fn status_str(status: u16) -> &'static str {
-    match status {
-        200 => "200",
-        201 => "201",
-        204 => "204",
-        301 => "301",
-        302 => "302",
-        304 => "304",
-        307 => "307",
-        308 => "308",
-        400 => "400",
-        401 => "401",
-        403 => "403",
-        404 => "404",
-        405 => "405",
-        408 => "408",
-        409 => "409",
-        413 => "413",
-        429 => "429",
-        500 => "500",
-        502 => "502",
-        503 => "503",
-        504 => "504",
-        // Leak a boxed string for rare codes — this happens at most once per
-        // unique status code over the process lifetime, bounded by the ~60
-        // defined HTTP status codes.
-        _ => Box::leak(status.to_string().into_boxed_str()),
+/// Lowest status code `http::StatusCode` accepts.
+const STATUS_CODE_MIN: u16 = 100;
+/// Highest status code `http::StatusCode` accepts.
+const STATUS_CODE_MAX: u16 = 999;
+/// Number of status codes in `STATUS_CODE_MIN..=STATUS_CODE_MAX`.
+const STATUS_CODE_COUNT: usize = (STATUS_CODE_MAX - STATUS_CODE_MIN) as usize + 1;
+
+/// Label used for values outside `STATUS_CODE_MIN..=STATUS_CODE_MAX`.
+const STATUS_LABEL_OUT_OF_RANGE: &str = "<other>";
+
+/// ASCII digits of every status code from 100 to 999, indexed by
+/// `status - STATUS_CODE_MIN`. Built at compile time, so looking up a label
+/// never allocates and never takes a lock. `http::StatusCode::as_str` is not
+/// used because the `&str` it returns is not `'static`.
+static STATUS_CODE_DIGITS: [[u8; 3]; STATUS_CODE_COUNT] = {
+    let mut table = [[0u8; 3]; STATUS_CODE_COUNT];
+    let mut i = 0;
+    while i < STATUS_CODE_COUNT {
+        let code = STATUS_CODE_MIN as usize + i;
+        table[i] = [
+            b'0' + (code / 100) as u8,
+            b'0' + (code / 10 % 10) as u8,
+            b'0' + (code % 10) as u8,
+        ];
+        i += 1;
     }
+    table
+};
+
+/// Return the metrics label for an HTTP status code without allocating.
+///
+/// Codes from 100 to 999 (the range `http::StatusCode` accepts) are labelled
+/// with their decimal digits. Any other value is labelled `"<other>"`, which
+/// keeps the number of distinct label values bounded.
+fn status_str(status: u16) -> &'static str {
+    if !(STATUS_CODE_MIN..=STATUS_CODE_MAX).contains(&status) {
+        return STATUS_LABEL_OUT_OF_RANGE;
+    }
+    let digits = &STATUS_CODE_DIGITS[usize::from(status - STATUS_CODE_MIN)];
+    // The table holds only ASCII digits, so this cannot fail; the unit tests
+    // check every code in the range.
+    std::str::from_utf8(digits).unwrap_or(STATUS_LABEL_OUT_OF_RANGE)
 }
 
 impl RequestMetrics {
@@ -946,6 +958,36 @@ mod tests {
 
         // Record upstream attempt
         metrics.record_upstream_attempt("backend1", "test_route");
+    }
+
+    #[test]
+    fn status_label_is_the_decimal_code_for_every_valid_status() {
+        for status in 100..=999u16 {
+            assert_eq!(status_str(status), status.to_string());
+        }
+    }
+
+    #[test]
+    fn status_label_is_the_same_string_on_every_call() {
+        // Common codes (200, 404, 503) and uncommon ones, including both ends
+        // of the range (100, 299, 418, 599, 999).
+        for status in [100u16, 200, 299, 404, 418, 503, 599, 999] {
+            let first = status_str(status);
+            let second = status_str(status);
+            assert_eq!(first, status.to_string());
+            assert_eq!(
+                first.as_ptr(),
+                second.as_ptr(),
+                "status {status} produced a new string on the second call"
+            );
+        }
+    }
+
+    #[test]
+    fn status_label_groups_values_outside_the_status_code_range() {
+        for status in [0u16, 1, 99, 1000, 1234, u16::MAX] {
+            assert_eq!(status_str(status), "<other>", "status {status}");
+        }
     }
 
     #[test]

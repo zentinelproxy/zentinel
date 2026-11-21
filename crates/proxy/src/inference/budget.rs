@@ -355,9 +355,18 @@ impl TokenBudgetTracker {
             self.evict_tenants();
         }
 
-        self.tenants
+        // Keep the entry locked from insertion to the return. Looking it up
+        // again after releasing it would let a concurrent `evict_tenants`
+        // remove the state this call just created.
+        //
+        // The count below is taken while the guard is held. That relies on
+        // dashmap's documented locking for `len`: it may deadlock only when
+        // called while holding a mutable reference, and this guard is shared.
+        let state = self
+            .tenants
             .entry(tenant.to_string())
-            .or_insert_with(TenantBudgetState::new);
+            .or_insert_with(TenantBudgetState::new)
+            .downgrade();
 
         if let Some(metrics) = TRACKER_METRICS.as_ref() {
             metrics
@@ -366,7 +375,7 @@ impl TokenBudgetTracker {
                 .set(self.tenants.len() as i64);
         }
 
-        self.tenants.get(tenant).expect("Just inserted")
+        state
     }
 
     /// Evict tenant state so a new tenant can be admitted without unbounded growth.
@@ -623,5 +632,27 @@ mod tests {
             !result.is_allowed(),
             "exhausted tenant must still be blocked after evictions"
         );
+    }
+
+    /// Admitting tenants from several threads while the map is at capacity
+    /// evicts state concurrently with the lookups that just created it. Every
+    /// call must still get the state it asked for.
+    #[test]
+    fn concurrent_admission_at_capacity_returns_every_tenant_it_created() {
+        let mut config = test_config();
+        config.max_tenants = 4;
+        let tracker = TokenBudgetTracker::new(config, "test-route");
+
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let tracker = &tracker;
+                scope.spawn(move || {
+                    for i in 0..2_000 {
+                        let tenant = format!("tenant-{worker}-{i}");
+                        assert!(tracker.check(&tenant, 1).is_allowed());
+                    }
+                });
+            }
+        });
     }
 }
