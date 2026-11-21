@@ -347,8 +347,8 @@ rule decides whether a request is sent again on a status code listed in
 
 When the proxy does not send the request again, the client gets the error, a
 502 for a dropped connection. The log says `Not retrying a request that may
-have been sent to the upstream`, with a `reason` of `non_idempotent_method` or
-`retry_buffer_truncated`, and
+have been sent to the upstream`, with a `reason` of `non_idempotent_method`,
+`retry_buffer_truncated` or `max_attempts`, and
 `zentinel_upstream_retries_refused_total{reason}` counts it.
 
 The case likely to come up first is a connection the proxy kept for reuse,
@@ -363,7 +363,51 @@ reads the whole body (API schema validation, body inspection, MCP) it is
 sized to that route's limit instead: the route's body size limit, never
 above the global one, or the MCP envelope limit.
 
-A failure to connect happens before the request is sent and is not affected.
+A failure to connect happens before the request is sent, so the method and the
+body do not matter. When the target is a host name with another address, the
+request is tried on that address. The method and body rules above do not apply
+to that retry; `max-attempts` below does, so a route whose `retry-policy` sets
+`max-attempts 1` does not try it.
+
+#### Attempts per request
+
+`max-attempts` in a route's `retry-policy` is how many attempts one request may
+make, the first one included, whatever made the proxy try again: a retryable
+status code, an error after the connection was established, or a failed
+connection to one address of a host name that has another. With
+`max-attempts 3`, a GET whose connection the upstream keeps dropping is sent
+three times, and the client then gets the error. After a retryable status code
+the last attempt lets the upstream's response through instead.
+
+When `max-attempts` stops a retry after an error, the log says `Not retrying a
+request that may have been sent to the upstream` with `reason` `max_attempts`.
+When it stops a retry on another address of a host name, the log says `Not
+retrying on another address of the target`. Both are counted by
+`zentinel_upstream_retries_refused_total{reason="max_attempts"}`, and the
+client gets the error of the last attempt.
+
+`max-attempts` is a number of attempts, counted the same way for a status
+code, an error and another address, so `max-attempts 1` asks for no retry at
+all. On such a route:
+
+- When the first address of a host name target does not accept the connection,
+  the request fails instead of moving to the next address. The failed address
+  is passed over for 30 seconds, so the following requests use the next one.
+- A request sent on a connection kept for reuse that the upstream had closed
+  while it was idle is not sent again on a new connection, whatever its
+  method, and the client gets a 502.
+
+To keep these retries, set `max-attempts` to 2 or more. A `retry-policy` that
+does not set `max-attempts` allows 3 attempts.
+
+A route without a `retry-policy` has no limit of its own: a request that fails
+after an error is sent again until the server's limit of 16 attempts per
+request is reached, or the circuit breaker of the target opens. That limit
+also applies to a route whose `max-attempts` is above 16: the request stops
+after 16 attempts.
+
+`backoff` and `max-backoff` delay each attempt after the first, whichever of
+these made the proxy try again.
 
 ## Rate Limiting Architecture
 

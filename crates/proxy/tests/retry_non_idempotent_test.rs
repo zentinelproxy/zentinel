@@ -261,8 +261,8 @@ fn start_proxy(dir: &Path, backend: &Backend, retry_policy: &str) -> Proxy {
     )
 }
 
-/// A `retry-policy` with a short backoff. `max-attempts` is left out: it
-/// bounds the retries made on a status code, not those after an error.
+/// A `retry-policy` with a short backoff. `max-attempts` is left out, so its
+/// default of 3 applies.
 fn retry_policy(retry_non_idempotent: &str) -> String {
     format!(
         r#"retry-policy {{

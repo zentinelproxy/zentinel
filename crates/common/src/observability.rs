@@ -485,11 +485,12 @@ impl RequestMetrics {
     }
 
     /// Record a request that was not sent to the upstream again after an
-    /// error because it might have been acted on, or its body could not be
-    /// replayed.
+    /// error because it might have been acted on, its body could not be
+    /// replayed, or it had made the route's `max-attempts`.
     ///
-    /// `reason` is one of a fixed set of values, `non_idempotent_method` or
-    /// `retry_buffer_truncated`, never taken from the request.
+    /// `reason` is one of a fixed set of values, `non_idempotent_method`,
+    /// `retry_buffer_truncated` or `max_attempts`, never taken from the
+    /// request.
     pub fn record_retry_refused(&self, reason: &str) {
         self.retries_refused.with_label_values(&[reason]).inc();
     }

@@ -170,14 +170,27 @@ Request routing configuration.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `max-attempts` | `u32` | `1` | Upstream peer selection attempts (initial attempt + retries) |
+| `max-attempts` | `u32` | `3` | Attempts at one request, the first one included |
 
-> **Only `max-attempts` is implemented.** It bounds how many times the proxy
-> will pick a peer from the upstream pool when selection fails; it does not
-> re-send a request that reached an upstream. `timeout-ms`, `backoff-base-ms`,
-> `backoff-max-ms` and `retryable-status-codes` appeared in older examples but
-> were never implemented, and are now rejected at parse time rather than
-> silently ignored. Tracked in issue #279.
+`max-attempts` bounds how often one request is sent to the upstream, whatever
+made the proxy try again: a retryable status code, an error after the
+connection was established, or a failed connection to one address of a host
+name target that has another. With `max-attempts 3` a request is attempted at
+most three times. `max-attempts 1` asks for no retry at all: a request that
+fails on a connection kept for reuse, or on the first address of a host name
+target, is not tried again. A `max-attempts` above 16 changes nothing beyond
+16, where the server stops a request.
+
+A route without a `retry-policy` has no such limit. A request that fails after
+an error on such a route is sent again until the server's limit of 16 attempts
+per request is reached, or the circuit breaker of the target opens. See
+[Retrying After an Upstream Error](../../proxy/docs/architecture.md) for what
+is retried and when a retry is refused.
+
+> The other keys of `retry-policy` (`retryable-status-codes`, `backoff`,
+> `max-backoff`, `per-attempt-timeout`, `retry-non-idempotent`) are not listed
+> in this table yet. `timeout-ms`, `backoff-base-ms` and `backoff-max-ms`,
+> which appeared in older examples, are rejected at parse time.
 
 ### MatchCondition
 

@@ -386,12 +386,36 @@ impl ProxyHttp for ZentinelProxy {
         // safe for any method, and it is bounded by the name's addresses:
         // once all of them have failed there is nothing new to retry on.
         // Targets given as socket addresses are never retried here.
-        let retry_elsewhere = match (peer.address(), ctx.selected_pool.as_ref()) {
+        //
+        // The retry is another attempt at the request: the route's
+        // `max-attempts` counts it, as it counts a retry after an error.
+        let mut retry_elsewhere = match (peer.address(), ctx.selected_pool.as_ref()) {
             (pingora::protocols::l4::socket::SocketAddr::Inet(addr), Some(pool)) => {
                 pool.connect_failed(*addr)
             }
             _ => false,
         };
+        if retry_elsewhere {
+            let max_attempts = ctx
+                .route_config()
+                .and_then(|route| route.retry_policy.as_ref())
+                .map(|policy| policy.max_attempts);
+            if attempts_used_up(ctx.request_attempts, max_attempts) {
+                retry_elsewhere = false;
+                e.set_retry(false);
+                self.metrics
+                    .record_retry_refused(ReplayRefusal::MaxAttempts.as_str());
+                info!(
+                    correlation_id = %ctx.trace_id,
+                    route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
+                    upstream = ctx.upstream.as_deref().unwrap_or("unknown"),
+                    peer_address = %peer.address(),
+                    attempts = ctx.request_attempts,
+                    reason = ReplayRefusal::MaxAttempts.as_str(),
+                    "Not retrying on another address of the target: the route's max-attempts is used up"
+                );
+            }
+        }
         if retry_elsewhere {
             e.set_retry(true);
             warn!(
@@ -4218,16 +4242,21 @@ impl ProxyHttp for ZentinelProxy {
         // the connection was reused: the upstream may have received the
         // request and acted on it, and a body that was not kept cannot be
         // replayed.
+        //
+        // The route's `max-attempts` bounds these retries too. It counts the
+        // attempt that just failed, as it does for a retryable status code.
         if enhanced_error.retry == RetryType::Decided(true) {
-            let route_allows_non_idempotent = ctx
+            let retry_policy = ctx
                 .route_config()
-                .and_then(|route| route.retry_policy.as_ref())
-                .is_some_and(|policy| policy.retry_non_idempotent);
+                .and_then(|route| route.retry_policy.as_ref());
             let method = session.req_header().method.as_str();
             let refusal = ReplayCheck {
                 method,
-                route_allows_non_idempotent,
+                route_allows_non_idempotent: retry_policy
+                    .is_some_and(|policy| policy.retry_non_idempotent),
                 retry_buffer_truncated: session.as_ref().retry_buffer_truncated(),
+                attempts: ctx.request_attempts,
+                max_attempts: retry_policy.map(|policy| policy.max_attempts),
             }
             .refusal();
             match refusal {
@@ -4242,6 +4271,7 @@ impl ProxyHttp for ZentinelProxy {
                         method = method,
                         error_type = ?error_type,
                         client_reused = client_reused,
+                        attempts = ctx.request_attempts,
                         reason = refusal.as_str(),
                         "Not retrying a request that may have been sent to the upstream"
                     );
@@ -4704,8 +4734,7 @@ enum TargetOutcome {
     NoResult,
 }
 
-/// Why a request that failed after it may have been sent to the upstream is
-/// not sent again.
+/// Why a request that failed is not sent to the upstream again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplayRefusal {
     /// The method is not idempotent, and the route's `retry-policy` does not
@@ -4714,6 +4743,9 @@ enum ReplayRefusal {
     /// The request body was larger than the retry buffer, so it cannot be
     /// sent a second time.
     RetryBufferTruncated,
+    /// The request has made as many attempts as the `max-attempts` of its
+    /// route's `retry-policy`.
+    MaxAttempts,
 }
 
 impl ReplayRefusal {
@@ -4723,6 +4755,7 @@ impl ReplayRefusal {
         match self {
             Self::NonIdempotentMethod => "non_idempotent_method",
             Self::RetryBufferTruncated => "retry_buffer_truncated",
+            Self::MaxAttempts => "max_attempts",
         }
     }
 }
@@ -4736,6 +4769,10 @@ struct ReplayCheck<'a> {
     route_allows_non_idempotent: bool,
     /// The request body was larger than the retry buffer.
     retry_buffer_truncated: bool,
+    /// Attempts the request has made, the one that just failed included.
+    attempts: u32,
+    /// The `max-attempts` of the route's `retry-policy`, if it has one.
+    max_attempts: Option<u32>,
 }
 
 impl ReplayCheck<'_> {
@@ -4745,16 +4782,26 @@ impl ReplayCheck<'_> {
     /// ([`zentinel_common::types::is_idempotent_method`]) is replayed only
     /// where the route's `retry-policy` says `retry-non-idempotent`. A request
     /// whose body was larger than the retry buffer is never replayed, whatever
-    /// its method.
+    /// its method. Nor is a request that has made the `max-attempts` of its
+    /// route's `retry-policy`; a route without one sets no limit here.
     fn refusal(&self) -> Option<ReplayRefusal> {
         if !is_idempotent_method(self.method) && !self.route_allows_non_idempotent {
             Some(ReplayRefusal::NonIdempotentMethod)
         } else if self.retry_buffer_truncated {
             Some(ReplayRefusal::RetryBufferTruncated)
+        } else if attempts_used_up(self.attempts, self.max_attempts) {
+            Some(ReplayRefusal::MaxAttempts)
         } else {
             None
         }
     }
+}
+
+/// Whether a request that has made `attempts` attempts, the first one
+/// included, has used up the route's `max-attempts`. A route without a
+/// `retry-policy` has no such limit.
+fn attempts_used_up(attempts: u32, max_attempts: Option<u32>) -> bool {
+    max_attempts.is_some_and(|max| attempts >= max)
 }
 
 /// Whether an error is the upstream's own: its connection, a timeout, a read
@@ -6332,7 +6379,7 @@ mod target_outcome_tests {
 
 #[cfg(test)]
 mod replay_refusal_tests {
-    use super::{ReplayCheck, ReplayRefusal};
+    use super::{attempts_used_up, ReplayCheck, ReplayRefusal};
 
     fn refusal(
         method: &str,
@@ -6343,6 +6390,19 @@ mod replay_refusal_tests {
             method,
             route_allows_non_idempotent,
             retry_buffer_truncated,
+            attempts: 1,
+            max_attempts: None,
+        }
+        .refusal()
+    }
+
+    fn refusal_after(attempts: u32, max_attempts: Option<u32>) -> Option<ReplayRefusal> {
+        ReplayCheck {
+            method: "GET",
+            route_allows_non_idempotent: false,
+            retry_buffer_truncated: false,
+            attempts,
+            max_attempts,
         }
         .refusal()
     }
@@ -6427,6 +6487,49 @@ mod replay_refusal_tests {
     }
 
     #[test]
+    fn a_request_is_sent_again_while_the_route_has_attempts_left() {
+        assert_eq!(refusal_after(1, Some(3)), None);
+        assert_eq!(refusal_after(2, Some(3)), None);
+    }
+
+    /// `max-attempts` counts the first try, so with 3 the third attempt is
+    /// the last.
+    #[test]
+    fn a_request_is_not_sent_again_once_it_made_the_routes_max_attempts() {
+        assert_eq!(refusal_after(3, Some(3)), Some(ReplayRefusal::MaxAttempts));
+        assert_eq!(refusal_after(1, Some(1)), Some(ReplayRefusal::MaxAttempts));
+    }
+
+    #[test]
+    fn a_route_without_a_retry_policy_sets_no_attempt_limit() {
+        assert_eq!(refusal_after(16, None), None);
+        assert!(!attempts_used_up(u32::MAX, None));
+    }
+
+    #[test]
+    fn the_method_and_the_body_are_named_before_the_attempts() {
+        let check = |method, retry_buffer_truncated| ReplayCheck {
+            method,
+            route_allows_non_idempotent: false,
+            retry_buffer_truncated,
+            attempts: 3,
+            max_attempts: Some(3),
+        };
+        assert_eq!(
+            check("POST", false).refusal(),
+            Some(ReplayRefusal::NonIdempotentMethod)
+        );
+        assert_eq!(
+            check("GET", true).refusal(),
+            Some(ReplayRefusal::RetryBufferTruncated)
+        );
+        assert_eq!(
+            check("GET", false).refusal(),
+            Some(ReplayRefusal::MaxAttempts)
+        );
+    }
+
+    #[test]
     fn the_reasons_are_fixed_values() {
         assert_eq!(
             ReplayRefusal::NonIdempotentMethod.as_str(),
@@ -6436,6 +6539,7 @@ mod replay_refusal_tests {
             ReplayRefusal::RetryBufferTruncated.as_str(),
             "retry_buffer_truncated"
         );
+        assert_eq!(ReplayRefusal::MaxAttempts.as_str(), "max_attempts");
     }
 }
 

@@ -155,7 +155,7 @@ let policy = RetryPolicy::default();
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_attempts` | u32 | 3 | Maximum retry attempts |
+| `max_attempts` | u32 | 3 | Attempts at one request, the first one included, whatever made the proxy try again |
 | `timeout_ms` | u64 | 30000 | Total timeout for all attempts |
 | `backoff_base_ms` | u64 | 100 | Initial backoff delay |
 | `backoff_max_ms` | u64 | 5000 | Maximum backoff delay |
