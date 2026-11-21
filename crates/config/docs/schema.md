@@ -54,8 +54,8 @@ Port binding configuration.
 |----------|------|---------|-------------|
 | `id` | `string` | **required** | Unique listener identifier |
 | `address` | `string` | **required** | Socket address (e.g., `0.0.0.0:8080`) |
-| `protocol` | `string` | **required** | Protocol: `http`, `https`, `h2`, `h3`, `h2c` |
-| `tls` | `TlsConfig` | - | TLS configuration (required for https) |
+| `protocol` | `string` | `"http"` | Protocol: `http`, `https`, `h2`, `h3`, `h2c` |
+| `tls` | `TlsConfig` | - | TLS configuration: required for `https` and `h2`, and an error for `http` (the default) and `h2c` |
 | `default-route` | `string` | - | Default route if no match |
 | `request-timeout-secs` | `u64` | `60` | Request timeout |
 | `keepalive-timeout-secs` | `u64` | `75` | Keep-alive timeout |
@@ -68,20 +68,39 @@ Port binding configuration.
 | `cert-file` | `string` | **required** | Certificate file path |
 | `key-file` | `string` | **required** | Private key file path |
 | `ca-file` | `string` | - | CA certificate for client verification |
-| `min-version` | `string` | `"tls1.2"` | Minimum TLS version |
-| `max-version` | `string` | - | Maximum TLS version |
+| `min-version` | `string` | `"tls1.2"` | Lowest TLS version to accept: `1.2` or `1.3` (see below) |
+| `max-version` | `string` | - | Highest TLS version to accept, written like `min-version`; TLS 1.3 when not set |
 | `cipher-suite` | `string` (repeatable) | `[]` | Cipher suite, one node per suite (empty = defaults) |
 | `client-auth` | `bool` | `false` | Require client certificates (mTLS) |
 | `ocsp-stapling` | `bool` | `true` | Staple OCSP responses fetched from each certificate's AIA responder; `cert-file` must include the issuer |
-| `session-resumption` | `bool` | `true` | Enable session resumption |
+| `session-resumption` | `bool` | `true` | Let clients resume earlier sessions; `#false` makes every connection a full handshake (see below) |
 | `sni` | `SniCertificate` (repeatable) | `[]` | Additional certs for SNI, one block per cert |
 | `acme` | `AcmeConfig` | - | ACME automatic certificate management |
 
-> **Note:** `min-version`, `max-version`, `cipher-suite`, `client-auth`, and
-> per-SNI certificate serving are parsed but not yet applied to the listener
-> (issue #303); the listener currently uses the built-in intermediate TLS
-> profile and serves the primary certificate to all clients. Unknown nodes
-> inside `tls` and `sni` blocks are rejected at parse time.
+Unknown nodes inside `tls` and `sni` blocks are rejected at parse time.
+
+**`min-version` and `max-version`.** Only TLS 1.2 and TLS 1.3 are supported.
+Each is written as `1.2`, `tls1.2` or `tlsv1.2` (likewise `1.3`), in any letter
+case, and the listener accepts the versions from `min-version` up to
+`max-version`. Any other value, such as `"TLS 1.3"`, `"tls13"`, `"1.4"` or
+`"1.0"`, is a load error that names the listener, the value and the accepted
+values; TLS 1.0 and 1.1 are not supported. A `min-version` above `max-version`
+(for example `min-version "1.3"` with `max-version "1.2"`) leaves no version to
+serve and is an error: at load for KDL, in `validate` for a config built from
+JSON, TOML or code. The same value for both pins one version.
+
+**`session-resumption`.** With `true`, each listener keeps rustls's default
+session cache in process memory: up to 256 sessions, dropping the oldest first
+when it is full, with no time-based expiry on the server and nothing kept
+across a restart. Clients that kept their session state can then skip the full
+handshake: over TLS 1.2 by session ID, over TLS 1.3 by ticket. Every TLS 1.3
+handshake, a resumed one included, sends two tickets (none when the client does
+not offer `psk_dhe_ke`); each takes one cache entry, is good for one
+resumption, and is advertised to the client as valid for 24 hours. TLS 1.2
+session tickets are not used. A session resumes only for the same server name
+and cipher suite. Write
+`session-resumption #false` to turn this off: no session is stored, no ticket
+is issued, and every connection does a full handshake.
 
 ### AcmeConfig
 

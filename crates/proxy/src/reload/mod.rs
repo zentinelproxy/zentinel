@@ -1169,6 +1169,83 @@ routes {
         );
     }
 
+    /// A listener in a namespace is lowered after validation runs, so a TLS
+    /// version range with no version has to stop at load. The reload fails and
+    /// the running configuration stays.
+    #[tokio::test]
+    async fn reload_rejects_an_empty_tls_version_range_in_a_namespace_listener() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("zentinel.kdl");
+        let document = |versions: &str| {
+            format!(
+                r#"
+system {{
+    worker-threads 1
+}}
+listeners {{
+    listener "http" {{
+        address "127.0.0.1:8080"
+        protocol "http"
+    }}
+}}
+upstreams {{
+    upstream "backend" {{
+        target "127.0.0.1:3000"
+    }}
+}}
+routes {{
+    route "api" {{
+        matches {{
+            path-prefix "/api"
+        }}
+        upstream "backend"
+    }}
+}}
+namespace "ns" {{
+    listeners {{
+        listener "ns-https" {{
+            address "127.0.0.1:8443"
+            protocol "https"
+            tls {{
+                cert-file "/etc/zentinel/x.crt"
+                key-file "/etc/zentinel/x.key"
+                {versions}
+            }}
+        }}
+    }}
+}}
+"#
+            )
+        };
+
+        std::fs::write(&config_path, document("min-version \"1.2\"")).unwrap();
+        let initial = Config::from_file(&config_path).unwrap();
+        let manager = ConfigManager::new(&config_path, initial).await.unwrap();
+        let listeners_before = manager.current().listeners.len();
+
+        std::fs::write(
+            &config_path,
+            document("min-version \"1.3\"\n max-version \"1.2\""),
+        )
+        .unwrap();
+        let result = manager.reload(ReloadTrigger::Manual).await;
+
+        let error = result.expect_err("an empty TLS version range must not reload");
+        assert!(error.to_string().contains("ns-https"), "{error}");
+        assert_eq!(
+            manager.current().listeners.len(),
+            listeners_before,
+            "the running configuration should be kept"
+        );
+        assert_eq!(
+            manager
+                .stats()
+                .failed_reloads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
     /// A configuration directory split the way `config/example-multi-file`
     /// is: an entry file including the routes, which live in their own file.
     fn write_config_directory(dir: &Path, route_prefix: &str) {

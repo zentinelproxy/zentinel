@@ -110,6 +110,7 @@ struct HandshakeOutcome {
     peer_certificates: Vec<CertificateDer<'static>>,
     protocol_version: Option<rustls::ProtocolVersion>,
     cipher_suite: Option<rustls::CipherSuite>,
+    handshake_kind: Option<rustls::HandshakeKind>,
 }
 
 /// Marker the server sends once it considers the connection established.
@@ -183,6 +184,7 @@ fn handshake(
                 .unwrap_or_default(),
             protocol_version: conn.protocol_version(),
             cipher_suite: conn.negotiated_cipher_suite().map(|s| s.suite()),
+            handshake_kind: conn.handshake_kind(),
         })
     })();
 
@@ -331,6 +333,82 @@ fn min_version_rejects_a_client_below_the_floor() {
     assert!(
         result.is_err(),
         "a TLS 1.2 only client must be rejected when min-version is TLS 1.3"
+    );
+}
+
+/// A `min-version` above the `max-version` leaves no protocol to offer. The
+/// config must be refused, not widened to every version.
+#[test]
+fn an_empty_version_range_is_an_error() {
+    install_crypto_provider();
+    let mut config = base_tls_config();
+    config.min_version = zentinel_common::types::TlsVersion::Tls13;
+    config.max_version = Some(zentinel_common::types::TlsVersion::Tls12);
+
+    let err = build_server_config(&config, "version-test")
+        .expect_err("min-version TLS1.3 with max-version TLS1.2 enables no protocol version");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("min-version") && message.contains("max-version"),
+        "the error should name both settings: {message}"
+    );
+    assert!(
+        message.contains("'version-test'"),
+        "the error should name the listener: {message}"
+    );
+}
+
+/// What `session-resumption` does: the second connection from a client that
+/// kept its session state is resumed, over TLS 1.2 (session ID) and TLS 1.3
+/// (ticket), and is a full handshake again once the setting is off.
+fn second_handshake_kind(
+    resumption: bool,
+    min: zentinel_common::types::TlsVersion,
+    max: zentinel_common::types::TlsVersion,
+) -> Option<rustls::HandshakeKind> {
+    install_crypto_provider();
+    let mut config = base_tls_config();
+    config.min_version = min;
+    config.max_version = Some(max);
+    config.session_resumption = resumption;
+
+    // Clones share the session cache, as one listener's connections do.
+    let server_config = build_server_config(&config, "resumption-test").expect("building config");
+    let client_config = verifying_client();
+
+    let first = handshake(server_config.clone(), "localhost", client_config.clone())
+        .expect("first handshake should succeed");
+    assert_eq!(first.handshake_kind, Some(rustls::HandshakeKind::Full));
+
+    handshake(server_config, "localhost", client_config)
+        .expect("second handshake should succeed")
+        .handshake_kind
+}
+
+#[test]
+fn session_resumption_resumes_a_tls_12_session() {
+    use zentinel_common::types::TlsVersion::Tls12;
+    assert_eq!(
+        second_handshake_kind(true, Tls12, Tls12),
+        Some(rustls::HandshakeKind::Resumed)
+    );
+    assert_eq!(
+        second_handshake_kind(false, Tls12, Tls12),
+        Some(rustls::HandshakeKind::Full)
+    );
+}
+
+#[test]
+fn session_resumption_resumes_a_tls_13_session() {
+    use zentinel_common::types::TlsVersion::Tls13;
+    assert_eq!(
+        second_handshake_kind(true, Tls13, Tls13),
+        Some(rustls::HandshakeKind::Resumed)
+    );
+    assert_eq!(
+        second_handshake_kind(false, Tls13, Tls13),
+        Some(rustls::HandshakeKind::Full)
     );
 }
 

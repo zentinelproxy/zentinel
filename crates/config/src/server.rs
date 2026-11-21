@@ -318,6 +318,26 @@ pub struct TlsConfig {
     pub acme: Option<AcmeConfig>,
 }
 
+impl TlsConfig {
+    /// Why this config enables no TLS version, or `None` when it enables at
+    /// least one.
+    ///
+    /// A `min_version` above `max_version` leaves nothing to serve. Both the
+    /// KDL parser and [`Config::validate`](crate::Config::validate) report it,
+    /// so a listener from any source (KDL, JSON, TOML or code) meets the check.
+    pub(crate) fn version_range_error(&self, listener_id: &str) -> Option<String> {
+        let max_version = self.max_version?;
+        (self.min_version > max_version).then(|| {
+            format!(
+                "Invalid TLS version range for listener '{}': min-version {} is above \
+                 max-version {}, so no TLS version is enabled. Raise max-version or \
+                 lower min-version.",
+                listener_id, self.min_version, max_version
+            )
+        })
+    }
+}
+
 /// ACME automatic certificate configuration
 ///
 /// Enables zero-config TLS via Let's Encrypt and compatible CAs.

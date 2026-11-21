@@ -1395,32 +1395,41 @@ pub fn load_client_ca(ca_path: &Path) -> Result<RootCertStore, TlsError> {
 }
 
 /// Resolve TLS protocol versions from config into rustls version references.
-fn resolve_protocol_versions(config: &TlsConfig) -> Vec<&'static rustls::SupportedProtocolVersion> {
+///
+/// The versions enabled are those from `min_version` up to `max_version` (TLS
+/// 1.3 when unset).
+///
+/// # Errors
+///
+/// Returns [`TlsError::ConfigBuild`] when `min_version` is above `max_version`,
+/// which leaves no version to enable. Config validation rejects this too; the
+/// check here covers a `TlsConfig` built in code.
+fn resolve_protocol_versions(
+    config: &TlsConfig,
+) -> Result<Vec<&'static rustls::SupportedProtocolVersion>, TlsError> {
     use zentinel_common::types::TlsVersion;
 
-    let min = &config.min_version;
-    let max = config.max_version.as_ref().unwrap_or(&TlsVersion::Tls13);
+    let min = config.min_version;
+    let max = config.max_version.unwrap_or(TlsVersion::Tls13);
+    let range = min..=max;
 
     let mut versions = Vec::new();
 
-    // Include TLS 1.2 if within the min..=max range
-    if matches!(min, TlsVersion::Tls12) {
+    if range.contains(&TlsVersion::Tls12) {
         versions.push(&rustls::version::TLS12);
     }
 
-    // Include TLS 1.3 if within the min..=max range
-    if matches!(max, TlsVersion::Tls13) {
+    if range.contains(&TlsVersion::Tls13) {
         versions.push(&rustls::version::TLS13);
     }
 
     if versions.is_empty() {
-        // Shouldn't happen with valid config, but be safe
-        warn!("No valid TLS versions resolved from config, falling back to TLS 1.2 + 1.3");
-        versions.push(&rustls::version::TLS12);
-        versions.push(&rustls::version::TLS13);
+        return Err(TlsError::ConfigBuild(format!(
+            "min-version {min} is above max-version {max}, so no TLS version is enabled"
+        )));
     }
 
-    versions
+    Ok(versions)
 }
 
 /// Resolve cipher suite names from config to rustls `SupportedCipherSuite` values.
@@ -1499,12 +1508,22 @@ fn resolve_cipher_suites(names: &[String]) -> Result<Vec<rustls::SupportedCipher
 /// afterwards. Use [`build_server_config_with_resolver`] to supply a
 /// [`HotReloadableSniResolver`] instead, so that certificates reloaded from
 /// disk are picked up by connections already being served.
+///
+/// # Errors
+///
+/// Returns the error of [`build_server_config_with_resolver`]. A
+/// [`TlsError::ConfigBuild`] from it is prefixed with `listener_id`.
 pub fn build_server_config(
     config: &TlsConfig,
     listener_id: &str,
 ) -> Result<ServerConfig, TlsError> {
     let resolver = SniResolver::from_config(config, Some(listener_id))?;
-    build_server_config_with_resolver(config, Arc::new(resolver))
+    build_server_config_with_resolver(config, Arc::new(resolver)).map_err(|e| match e {
+        TlsError::ConfigBuild(message) => {
+            TlsError::ConfigBuild(format!("listener '{listener_id}': {message}"))
+        }
+        other => other,
+    })
 }
 
 /// Build a TLS ServerConfig around a caller-supplied certificate resolver.
@@ -1520,7 +1539,7 @@ pub fn build_server_config_with_resolver(
     resolver: Arc<dyn ResolvesServerCert>,
 ) -> Result<ServerConfig, TlsError> {
     // Resolve protocol versions from config
-    let versions = resolve_protocol_versions(config);
+    let versions = resolve_protocol_versions(config)?;
     info!(
         versions = ?versions.iter().map(|v| format!("{:?}", v.version)).collect::<Vec<_>>(),
         "TLS protocol versions configured"
@@ -1785,6 +1804,62 @@ mod cert_diff_tests {
         assert_eq!(
             CertDiff::render(&["a.test".to_string(), "b.test".to_string()]),
             "a.test, b.test"
+        );
+    }
+}
+
+#[cfg(test)]
+mod protocol_version_tests {
+    use super::*;
+    use zentinel_common::types::TlsVersion::{self, Tls12, Tls13};
+
+    fn config_with_range(min_version: TlsVersion, max_version: Option<TlsVersion>) -> TlsConfig {
+        TlsConfig {
+            cert_folders: Vec::new(),
+            allow_sni_overlaps: false,
+            cert_file: None,
+            key_file: None,
+            additional_certs: Vec::new(),
+            ca_file: None,
+            min_version,
+            max_version,
+            cipher_suites: Vec::new(),
+            client_auth: false,
+            ocsp_stapling: false,
+            session_resumption: true,
+            acme: None,
+        }
+    }
+
+    fn resolved(
+        min_version: TlsVersion,
+        max_version: Option<TlsVersion>,
+    ) -> Vec<rustls::ProtocolVersion> {
+        resolve_protocol_versions(&config_with_range(min_version, max_version))
+            .expect("the range holds at least one version")
+            .iter()
+            .map(|v| v.version)
+            .collect()
+    }
+
+    #[test]
+    fn a_range_enables_the_versions_inside_it() {
+        use rustls::ProtocolVersion::{TLSv1_2, TLSv1_3};
+        assert_eq!(resolved(Tls12, None), vec![TLSv1_2, TLSv1_3]);
+        assert_eq!(resolved(Tls12, Some(Tls13)), vec![TLSv1_2, TLSv1_3]);
+        assert_eq!(resolved(Tls12, Some(Tls12)), vec![TLSv1_2]);
+        assert_eq!(resolved(Tls13, None), vec![TLSv1_3]);
+        assert_eq!(resolved(Tls13, Some(Tls13)), vec![TLSv1_3]);
+    }
+
+    #[test]
+    fn an_empty_range_is_an_error_not_every_version() {
+        let err = resolve_protocol_versions(&config_with_range(Tls13, Some(Tls12)))
+            .expect_err("min-version TLS1.3 with max-version TLS1.2 enables nothing");
+        let message = err.to_string();
+        assert!(
+            message.contains("TLS1.3") && message.contains("TLS1.2"),
+            "the error should name both versions: {message}"
         );
     }
 }

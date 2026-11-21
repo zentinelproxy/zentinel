@@ -16,7 +16,10 @@ use crate::server::{
 };
 use std::time::Duration;
 
-use super::helpers::{get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry};
+use super::helpers::{
+    get_arg_string, get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry,
+    get_unique_child, string_args_of_children,
+};
 
 /// Parse server configuration block
 /// Every key `parse_server_config` reads.
@@ -70,10 +73,11 @@ pub(crate) const RECOGNIZED_LISTENER_KEYS: &[&str] = &[
 /// load and reported by `zentinel lint` through `validate::unknown_keys`.
 pub(crate) fn unapplied_system_settings(node: &kdl::KdlNode, block: &str) -> Vec<String> {
     let mut problems = Vec::new();
-    if node
-        .children()
-        .is_some_and(|c| c.get("max-connections").is_some())
-    {
+    if node.children().is_some_and(|c| {
+        c.nodes()
+            .iter()
+            .any(|n| n.name().value() == "max-connections")
+    }) {
         problems.push(format!(
             "'max-connections' in the '{block}' block is not applied and is being ignored: \
              Zentinel does not limit client connections. Bound load with rate limits, or \
@@ -84,12 +88,19 @@ pub(crate) fn unapplied_system_settings(node: &kdl::KdlNode, block: &str) -> Vec
     problems
 }
 
-/// A listener's protocol and its `tls` block have to agree. `h2c` is
-/// cleartext, so a `tls` block on it would never be read. `https` and `h2`
-/// need one: without it the listener used to pass validation and bind
-/// nothing at startup (an error in the log, no socket).
+/// A listener's protocol and its `tls` block have to agree. `http` and `h2c`
+/// are cleartext, so a `tls` block on them would never be read: the listener
+/// used to bind a plain socket and the block was dropped, with nothing in the
+/// log or the config to say so. `https` and `h2` need one: without it the
+/// listener used to pass validation and bind nothing at startup (an error in
+/// the log, no socket).
 pub(crate) fn check_listener_tls(id: &str, protocol: ListenerProtocol, tls: bool) -> Result<()> {
     match (protocol, tls) {
+        (ListenerProtocol::Http, true) => Err(anyhow::anyhow!(
+            "Listener '{id}': has a 'tls' block, but protocol \"http\" (the protocol when \
+             none is written) serves plain HTTP/1.1, so the block would not be used. Add \
+             protocol \"https\" to serve TLS, or remove the 'tls' block."
+        )),
         (ListenerProtocol::H2c, true) => Err(anyhow::anyhow!(
             "Listener '{id}': protocol \"h2c\" is HTTP/2 over cleartext TCP and cannot have a \
              'tls' block. For HTTP/2 over TLS use protocol \"https\" (or \"h2\"), which \
@@ -152,28 +163,28 @@ pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
         warn!("{}", problem);
     }
 
-    let trace_id_format = get_string_entry(node, "trace-id-format")
+    let trace_id_format = get_string_entry(node, "trace-id-format")?
         .map(|s| TraceIdFormat::from_str_loose(&s))
         .unwrap_or_default();
 
     let config = ServerConfig {
-        worker_threads: get_int_entry(node, "worker-threads")
+        worker_threads: get_int_entry(node, "worker-threads")?
             .map(|v| v as usize)
             .unwrap_or_else(default_worker_threads),
-        max_connections: get_int_entry(node, "max-connections")
+        max_connections: get_int_entry(node, "max-connections")?
             .map(|v| v as usize)
             .unwrap_or_else(default_max_connections),
-        graceful_shutdown_timeout_secs: get_int_entry(node, "graceful-shutdown-timeout-secs")
+        graceful_shutdown_timeout_secs: get_int_entry(node, "graceful-shutdown-timeout-secs")?
             .map(|v| v as u64)
             .unwrap_or_else(default_graceful_shutdown_timeout),
-        daemon: get_bool_entry(node, "daemon").unwrap_or(false),
-        pid_file: get_string_entry(node, "pid-file").map(PathBuf::from),
-        user: get_string_entry(node, "user"),
-        group: get_string_entry(node, "group"),
-        working_directory: get_string_entry(node, "working-directory").map(PathBuf::from),
+        daemon: get_bool_entry(node, "daemon")?.unwrap_or(false),
+        pid_file: get_string_entry(node, "pid-file")?.map(PathBuf::from),
+        user: get_string_entry(node, "user")?,
+        group: get_string_entry(node, "group")?,
+        working_directory: get_string_entry(node, "working-directory")?.map(PathBuf::from),
         trace_id_format,
-        auto_reload: get_bool_entry(node, "auto-reload").unwrap_or(false),
-        route_cache_size: get_int_entry(node, "route-cache-size")
+        auto_reload: get_bool_entry(node, "auto-reload")?.unwrap_or(false),
+        route_cache_size: get_int_entry(node, "route-cache-size")?
             .map(|v| v as usize)
             .unwrap_or_else(crate::server::default_route_cache_size),
     };
@@ -205,7 +216,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
 
                 trace!(listener_id = %id, "Parsing listener");
 
-                let address = get_string_entry(child, "address").ok_or_else(|| {
+                let address = get_string_entry(child, "address")?.ok_or_else(|| {
                     anyhow::anyhow!(
                         "Listener '{}' requires an 'address' field, e.g., address \"0.0.0.0:8080\"",
                         id
@@ -213,7 +224,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                 })?;
 
                 let protocol_str =
-                    get_string_entry(child, "protocol").unwrap_or_else(|| "http".to_string());
+                    get_string_entry(child, "protocol")?.unwrap_or_else(|| "http".to_string());
                 let protocol = match protocol_str.to_lowercase().as_str() {
                     "http" => ListenerProtocol::Http,
                     "https" => ListenerProtocol::Https,
@@ -230,16 +241,9 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                 };
 
                 // Parse TLS configuration if present
-                let tls = if let Some(children) = child.children() {
-                    children
-                        .nodes()
-                        .iter()
-                        .find(|n| n.name().value() == "tls")
-                        .map(|tls_node| parse_tls_config(tls_node, &id))
-                        .transpose()?
-                } else {
-                    None
-                };
+                let tls = get_unique_child(child, "tls")?
+                    .map(|tls_node| parse_tls_config(tls_node, &id))
+                    .transpose()?;
 
                 check_listener_tls(&id, protocol, tls.is_some())?;
 
@@ -259,18 +263,18 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                     address,
                     protocol,
                     tls,
-                    default_route: get_string_entry(child, "default-route"),
-                    namespace: get_string_entry(child, "namespace"),
-                    request_timeout_secs: get_int_entry(child, "request-timeout-secs")
+                    default_route: get_string_entry(child, "default-route")?,
+                    namespace: get_string_entry(child, "namespace")?,
+                    request_timeout_secs: get_int_entry(child, "request-timeout-secs")?
                         .map(|v| v as u64)
                         .unwrap_or_else(default_request_timeout),
-                    keepalive_timeout_secs: get_int_entry(child, "keepalive-timeout-secs")
+                    keepalive_timeout_secs: get_int_entry(child, "keepalive-timeout-secs")?
                         .map(|v| v as u64)
                         .unwrap_or_else(default_keepalive_timeout),
-                    max_concurrent_streams: get_int_entry(child, "max-concurrent-streams")
+                    max_concurrent_streams: get_int_entry(child, "max-concurrent-streams")?
                         .map(|v| v as u32)
                         .unwrap_or_else(default_max_concurrent_streams),
-                    keepalive_max_requests: get_int_entry(child, "keepalive-max-requests")
+                    keepalive_max_requests: get_int_entry(child, "keepalive-max-requests")?
                         .map(|v| v as u32),
                     trusted_proxies,
                 });
@@ -320,20 +324,13 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
     reject_unknown_nodes(node, KNOWN_TLS_NODES, "tls", listener_id)?;
 
     // Parse ACME configuration if present
-    let acme = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "acme")
-            .map(|acme_node| parse_acme_config(acme_node, listener_id))
-            .transpose()?
-    } else {
-        None
-    };
+    let acme = get_unique_child(node, "acme")?
+        .map(|acme_node| parse_acme_config(acme_node, listener_id))
+        .transpose()?;
 
     // cert-file and key-file are required unless ACME is configured
-    let cert_file = get_string_entry(node, "cert-file").map(PathBuf::from);
-    let key_file = get_string_entry(node, "key-file").map(PathBuf::from);
+    let cert_file = get_string_entry(node, "cert-file")?.map(PathBuf::from);
+    let key_file = get_string_entry(node, "key-file")?.map(PathBuf::from);
 
     // Validate that either manual certs or ACME is configured
     if acme.is_none() && (cert_file.is_none() || key_file.is_none()) {
@@ -344,33 +341,36 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
     }
 
     // Optional CA file for client verification (mTLS)
-    let ca_file = get_string_entry(node, "ca-file").map(PathBuf::from);
+    let ca_file = get_string_entry(node, "ca-file")?.map(PathBuf::from);
 
     // TLS version configuration
-    let min_version = get_string_entry(node, "min-version")
-        .map(|s| parse_tls_version(&s))
+    let min_version = get_string_entry(node, "min-version")?
+        .map(|s| parse_tls_version(&s, "min-version", listener_id))
+        .transpose()?
         .unwrap_or(TlsVersion::Tls12);
 
-    let max_version = get_string_entry(node, "max-version").map(|s| parse_tls_version(&s));
+    let max_version = get_string_entry(node, "max-version")?
+        .map(|s| parse_tls_version(&s, "max-version", listener_id))
+        .transpose()?;
 
     // Client authentication (mTLS)
-    let client_auth = get_bool_entry(node, "client-auth").unwrap_or(false);
+    let client_auth = get_bool_entry(node, "client-auth")?.unwrap_or(false);
 
     // OCSP and session options
-    let ocsp_stapling = get_bool_entry(node, "ocsp-stapling").unwrap_or(true);
-    let session_resumption = get_bool_entry(node, "session-resumption").unwrap_or(true);
+    let ocsp_stapling = get_bool_entry(node, "ocsp-stapling")?.unwrap_or(true);
+    let session_resumption = get_bool_entry(node, "session-resumption")?.unwrap_or(true);
 
     // Cipher suites
-    let cipher_suites = if let Some(children) = node.children() {
-        children
+    let mut cipher_suites = Vec::new();
+    if let Some(children) = node.children() {
+        for suite in children
             .nodes()
             .iter()
             .filter(|n| n.name().value() == "cipher-suite")
-            .filter_map(get_first_arg_string)
-            .collect()
-    } else {
-        Vec::new()
-    };
+        {
+            cipher_suites.extend(get_arg_string(suite)?);
+        }
+    }
 
     // Parse SNI certificates
     let additional_certs = if let Some(children) = node.children() {
@@ -396,7 +396,7 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
         Vec::new()
     };
 
-    let allow_sni_overlaps = get_bool_entry(node, "allow-sni-overlaps").unwrap_or(false);
+    let allow_sni_overlaps = get_bool_entry(node, "allow-sni-overlaps")?.unwrap_or(false);
 
     debug!(
         listener_id = %listener_id,
@@ -408,7 +408,7 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
         "Parsed TLS configuration"
     );
 
-    Ok(TlsConfig {
+    let tls = TlsConfig {
         cert_folders,
         allow_sni_overlaps,
         cert_file,
@@ -422,7 +422,15 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
         ocsp_stapling,
         session_resumption,
         acme,
-    })
+    };
+
+    // Checked here, for every listener the KDL defines: a namespace's or a
+    // service's listener is lowered after `Config::validate` has run.
+    if let Some(message) = tls.version_range_error(listener_id) {
+        return Err(anyhow::anyhow!(message));
+    }
+
+    Ok(tls)
 }
 
 /// Child nodes recognized inside a listener `tls` block.
@@ -525,7 +533,7 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     debug!(listener_id = %listener_id, "Parsing ACME configuration");
 
     // Required: email
-    let email = get_string_entry(node, "email").ok_or_else(|| {
+    let email = get_string_entry(node, "email")?.ok_or_else(|| {
         anyhow::anyhow!(
             "ACME configuration for listener '{}' requires 'email'",
             listener_id
@@ -533,20 +541,7 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     })?;
 
     // Required: domains (at least one)
-    let domains: Vec<String> = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .filter(|n| n.name().value() == "domains")
-            .flat_map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let domains = string_args_of_children(node, "domains")?;
 
     if domains.is_empty() {
         return Err(anyhow::anyhow!(
@@ -556,39 +551,32 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     }
 
     // Optional with defaults
-    let server_url = get_string_entry(node, "server-url");
-    let staging = get_bool_entry(node, "staging").unwrap_or(false);
+    let server_url = get_string_entry(node, "server-url")?;
+    let staging = get_bool_entry(node, "staging")?.unwrap_or(false);
     // Parse EAB if present
-    let eab = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "eab")
-            .map(|eab_node| -> Result<ExternalAccountBinding> {
-                let kid = get_string_entry(eab_node, "kid")
-                    .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'kid'"))?;
-                let hmac_key = get_string_entry(eab_node, "hmac-key")
-                    .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'hmac-key'"))?;
-                Ok(ExternalAccountBinding { kid, hmac_key })
-            })
-            .transpose()?
-    } else {
-        None
-    };
-    let storage = get_string_entry(node, "storage")
+    let eab = get_unique_child(node, "eab")?
+        .map(|eab_node| -> Result<ExternalAccountBinding> {
+            let kid = get_string_entry(eab_node, "kid")?
+                .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'kid'"))?;
+            let hmac_key = get_string_entry(eab_node, "hmac-key")?
+                .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'hmac-key'"))?;
+            Ok(ExternalAccountBinding { kid, hmac_key })
+        })
+        .transpose()?;
+    let storage = get_string_entry(node, "storage")?
         .map(PathBuf::from)
         .unwrap_or_else(default_acme_storage);
-    let renew_before_days = get_int_entry(node, "renew-before-days")
+    let renew_before_days = get_int_entry(node, "renew-before-days")?
         .map(|v| v as u32)
         .unwrap_or_else(default_renewal_days);
 
     // Parse challenge type
-    let challenge_type = get_string_entry(node, "challenge-type")
+    let challenge_type = get_string_entry(node, "challenge-type")?
         .map(|s| parse_challenge_type(&s))
         .unwrap_or_default();
 
     // Parse key type
-    let key_type = if let Some(s) = get_string_entry(node, "key-type") {
+    let key_type = if let Some(s) = get_string_entry(node, "key-type")? {
         AcmeKeyType::from_str_loose(&s).ok_or_else(|| {
             anyhow::anyhow!(
                 "Invalid key-type '{}' for listener '{}'. Valid types: ecdsa-p256, ecdsa-p384",
@@ -601,16 +589,9 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     };
 
     // Parse DNS provider configuration if present
-    let dns_provider = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "dns-provider")
-            .map(|dns_node| parse_dns_provider_config(dns_node, listener_id))
-            .transpose()?
-    } else {
-        None
-    };
+    let dns_provider = get_unique_child(node, "dns-provider")?
+        .map(|dns_node| parse_dns_provider_config(dns_node, listener_id))
+        .transpose()?;
 
     // Validate: DNS-01 requires dns-provider
     if challenge_type.is_dns01() && dns_provider.is_none() {
@@ -686,7 +667,7 @@ fn parse_dns_provider_config(node: &kdl::KdlNode, listener_id: &str) -> Result<D
     debug!(listener_id = %listener_id, "Parsing DNS provider configuration");
 
     // Required: type
-    let provider_type = get_string_entry(node, "type").ok_or_else(|| {
+    let provider_type = get_string_entry(node, "type")?.ok_or_else(|| {
         anyhow::anyhow!(
             "DNS provider configuration for listener '{}' requires 'type'",
             listener_id
@@ -696,8 +677,8 @@ fn parse_dns_provider_config(node: &kdl::KdlNode, listener_id: &str) -> Result<D
     let provider = parse_dns_provider_type(&provider_type, node, listener_id)?;
 
     // Credentials (at least one required)
-    let credentials_file = get_string_entry(node, "credentials-file").map(PathBuf::from);
-    let credentials_env = get_string_entry(node, "credentials-env");
+    let credentials_file = get_string_entry(node, "credentials-file")?.map(PathBuf::from);
+    let credentials_env = get_string_entry(node, "credentials-env")?;
 
     if credentials_file.is_none() && credentials_env.is_none() {
         return Err(anyhow::anyhow!(
@@ -707,21 +688,15 @@ fn parse_dns_provider_config(node: &kdl::KdlNode, listener_id: &str) -> Result<D
     }
 
     // API timeout
-    let api_timeout_secs = get_int_entry(node, "api-timeout-secs")
+    let api_timeout_secs = get_int_entry(node, "api-timeout-secs")?
         .map(|v| v as u64)
         .unwrap_or(30);
 
     // Propagation configuration
-    let propagation = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "propagation")
-            .map(parse_propagation_config)
-            .unwrap_or_default()
-    } else {
-        PropagationCheckConfig::default()
-    };
+    let propagation = get_unique_child(node, "propagation")?
+        .map(parse_propagation_config)
+        .transpose()?
+        .unwrap_or_default();
 
     debug!(
         listener_id = %listener_id,
@@ -751,13 +726,13 @@ fn parse_dns_provider_type(
         "hetzner" => Ok(DnsProviderType::Hetzner),
         "cloudflare" => Ok(DnsProviderType::Cloudflare),
         "webhook" => {
-            let url = get_string_entry(node, "url").ok_or_else(|| {
+            let url = get_string_entry(node, "url")?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "DNS provider 'webhook' for listener '{}' requires 'url'",
                     listener_id
                 )
             })?;
-            let auth_header = get_string_entry(node, "auth-header");
+            let auth_header = get_string_entry(node, "auth-header")?;
             Ok(DnsProviderType::Webhook { url, auth_header })
         }
         other => Err(anyhow::anyhow!(
@@ -769,41 +744,28 @@ fn parse_dns_provider_type(
 }
 
 /// Parse propagation check configuration
-fn parse_propagation_config(node: &kdl::KdlNode) -> PropagationCheckConfig {
-    let initial_delay_secs = get_int_entry(node, "initial-delay-secs")
+fn parse_propagation_config(node: &kdl::KdlNode) -> Result<PropagationCheckConfig> {
+    let initial_delay_secs = get_int_entry(node, "initial-delay-secs")?
         .map(|v| v as u64)
         .unwrap_or(10);
 
-    let check_interval_secs = get_int_entry(node, "check-interval-secs")
+    let check_interval_secs = get_int_entry(node, "check-interval-secs")?
         .map(|v| v as u64)
         .unwrap_or(5);
 
-    let timeout_secs = get_int_entry(node, "timeout-secs")
+    let timeout_secs = get_int_entry(node, "timeout-secs")?
         .map(|v| v as u64)
         .unwrap_or(120);
 
     // Parse nameservers
-    let nameservers: Vec<String> = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .filter(|n| n.name().value() == "nameservers")
-            .flat_map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let nameservers = string_args_of_children(node, "nameservers")?;
 
-    PropagationCheckConfig {
+    Ok(PropagationCheckConfig {
         initial_delay_secs,
         check_interval_secs,
         timeout_secs,
         nameservers,
-    }
+    })
 }
 
 /// Parse an SNI certificate configuration
@@ -833,39 +795,11 @@ fn parse_propagation_config(node: &kdl::KdlNode) -> PropagationCheckConfig {
 fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCertificate> {
     reject_unknown_nodes(node, KNOWN_SNI_NODES, "sni", listener_id)?;
 
-    let children = node.children();
-
     // Parse hostnames - explicit override, disables SAN auto-extraction.
-    let hostnames: Vec<String> = if let Some(children) = children {
-        children
-            .nodes()
-            .iter()
-            .filter(|n| n.name().value() == "hostnames")
-            .flat_map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let hostnames = string_args_of_children(node, "hostnames")?;
 
     // Parse priority-hostnames - tie-breaking with full SAN auto-extraction.
-    let priority_hostnames: Vec<String> = if let Some(children) = children {
-        children
-            .nodes()
-            .iter()
-            .filter(|n| n.name().value() == "priority-hostnames")
-            .flat_map(|n| {
-                n.entries()
-                    .iter()
-                    .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let priority_hostnames = string_args_of_children(node, "priority-hostnames")?;
 
     // Validate mutual exclusion
     if !hostnames.is_empty() && !priority_hostnames.is_empty() {
@@ -878,19 +812,12 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
     }
 
     // Parse acme configuration if present
-    let acme = if let Some(children) = children {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "acme")
-            .map(|n| parse_acme_config(n, listener_id))
-            .transpose()?
-    } else {
-        None
-    };
+    let acme = get_unique_child(node, "acme")?
+        .map(|n| parse_acme_config(n, listener_id))
+        .transpose()?;
 
-    let cert_file = get_string_entry(node, "cert-file").map(PathBuf::from);
-    let key_file = get_string_entry(node, "key-file").map(PathBuf::from);
+    let cert_file = get_string_entry(node, "cert-file")?.map(PathBuf::from);
+    let key_file = get_string_entry(node, "key-file")?.map(PathBuf::from);
 
     // Validate mutual exclusion and completeness
     match (&acme, &cert_file, &key_file) {
@@ -962,7 +889,7 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
 /// }
 /// ```
 fn parse_sni_cert_folder(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCertFolder> {
-    let cert_folder = get_string_entry(node, "cert-folder")
+    let cert_folder = get_string_entry(node, "cert-folder")?
         .map(PathBuf::from)
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -972,7 +899,7 @@ fn parse_sni_cert_folder(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
             )
         })?;
 
-    let reload_mode = match get_string_entry(node, "reload-mode") {
+    let reload_mode = match get_string_entry(node, "reload-mode")? {
         None => CertFolderReloadMode::Off,
         Some(mode) => match mode.to_ascii_lowercase().as_str() {
             "off" => CertFolderReloadMode::Off,
@@ -989,7 +916,7 @@ fn parse_sni_cert_folder(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
         },
     };
 
-    let reload_interval = match get_string_entry(node, "reload-interval") {
+    let reload_interval = match get_string_entry(node, "reload-interval")? {
         None => Duration::from_secs(30),
         Some(text) => crate::kdl::upstreams::parse_duration_string(&text)
             .map(Duration::from_secs)
@@ -1038,11 +965,27 @@ fn parse_sni_cert_folder(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
     })
 }
 
-fn parse_tls_version(s: &str) -> TlsVersion {
-    match s.to_lowercase().as_str() {
-        "1.3" | "tls1.3" | "tlsv1.3" => TlsVersion::Tls13,
-        // All other values default to TLS 1.2
-        _ => TlsVersion::Tls12,
+/// Read a `min-version` or `max-version` value.
+///
+/// TLS 1.2 and 1.3 are accepted as `1.2`, `tls1.2` and `tlsv1.2` (likewise for
+/// 1.3), in any letter case. Any other value is an error: reading it as TLS 1.2
+/// would turn a misspelled `max-version` into a listener that cannot speak
+/// TLS 1.3, with nothing in the log to say why.
+///
+/// # Errors
+///
+/// Returns an error naming the listener, the setting, the value written and the
+/// values that are accepted.
+fn parse_tls_version(value: &str, setting: &str, listener_id: &str) -> Result<TlsVersion> {
+    match value.to_lowercase().as_str() {
+        "1.2" | "tls1.2" | "tlsv1.2" => Ok(TlsVersion::Tls12),
+        "1.3" | "tls1.3" | "tlsv1.3" => Ok(TlsVersion::Tls13),
+        _ => Err(anyhow::anyhow!(
+            "Invalid {setting} {value:?} in the tls block of listener '{listener_id}'. \
+             Accepted values are \"1.2\", \"tls1.2\", \"tlsv1.2\", \"1.3\", \"tls1.3\" and \
+             \"tlsv1.3\" (letter case does not matter). Only TLS 1.2 and 1.3 are supported; \
+             TLS 1.0 and 1.1 are not supported."
+        )),
     }
 }
 
@@ -1208,6 +1151,141 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("Unknown node 'tls13-cipher-suites'"));
         assert!(message.contains("Supported nodes:"));
+    }
+
+    /// A `tls` block carrying only the settings under test.
+    fn tls_versions(settings: &str) -> Result<TlsConfig> {
+        parse_tls(&format!(
+            r#"
+            tls {{
+                cert-file "/certs/default.crt"
+                key-file "/certs/default.key"
+                {settings}
+            }}
+            "#
+        ))
+    }
+
+    /// Every way `min-version` and `max-version` may be written: TLS 1.2 and
+    /// 1.3, each as `N`, `tlsN` and `tlsvN`, in any letter case.
+    const ACCEPTED_TLS_VERSIONS: &[(&str, TlsVersion)] = &[
+        ("1.2", TlsVersion::Tls12),
+        ("tls1.2", TlsVersion::Tls12),
+        ("tlsv1.2", TlsVersion::Tls12),
+        ("TLS1.2", TlsVersion::Tls12),
+        ("TLSv1.2", TlsVersion::Tls12),
+        ("Tls1.2", TlsVersion::Tls12),
+        ("1.3", TlsVersion::Tls13),
+        ("tls1.3", TlsVersion::Tls13),
+        ("tlsv1.3", TlsVersion::Tls13),
+        ("TLS1.3", TlsVersion::Tls13),
+        ("TLSv1.3", TlsVersion::Tls13),
+        ("Tls1.3", TlsVersion::Tls13),
+    ];
+
+    /// Values that are not a supported TLS version. They used to be read as
+    /// TLS 1.2 without a word.
+    const REJECTED_TLS_VERSIONS: &[&str] = &[
+        "TLS 1.3", "TLS 1.2", "1.4", "1.0", "1.1", "tls1.0", "TLSv1.1", "tls13", "tls12", "1", "3",
+        "1.30", " 1.3", "1.3 ", "tls", "latest", "",
+    ];
+
+    #[test]
+    fn min_version_accepts_every_spelling_of_tls_12_and_13() {
+        for (written, expected) in ACCEPTED_TLS_VERSIONS {
+            let tls = tls_versions(&format!("min-version \"{written}\"")).unwrap();
+            assert_eq!(tls.min_version, *expected, "min-version \"{written}\"");
+            assert_eq!(tls.max_version, None);
+        }
+    }
+
+    #[test]
+    fn max_version_accepts_every_spelling_of_tls_12_and_13() {
+        for (written, expected) in ACCEPTED_TLS_VERSIONS {
+            let tls = tls_versions(&format!("max-version \"{written}\"")).unwrap();
+            assert_eq!(
+                tls.max_version,
+                Some(*expected),
+                "max-version \"{written}\""
+            );
+            assert_eq!(tls.min_version, TlsVersion::Tls12);
+        }
+    }
+
+    #[test]
+    fn tls_versions_default_to_tls_12_with_no_upper_bound() {
+        let tls = tls_versions("").unwrap();
+        assert_eq!(tls.min_version, TlsVersion::Tls12);
+        assert_eq!(tls.max_version, None);
+    }
+
+    #[test]
+    fn min_version_rejects_a_value_that_is_not_a_supported_tls_version() {
+        for written in REJECTED_TLS_VERSIONS {
+            let err = tls_versions(&format!("min-version \"{written}\""))
+                .expect_err(&format!("min-version \"{written}\" should be rejected"));
+            let message = err.to_string();
+            assert!(message.contains("min-version"), "{message}");
+            assert!(message.contains("test-listener"), "{message}");
+            assert!(
+                message.contains(&format!("{written:?}")),
+                "the error should quote the value {written:?}: {message}"
+            );
+            assert!(
+                message.contains("\"1.2\"") && message.contains("\"tlsv1.3\""),
+                "the error should list the accepted values: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_version_rejects_a_value_that_is_not_a_supported_tls_version() {
+        for written in REJECTED_TLS_VERSIONS {
+            let err = tls_versions(&format!("max-version \"{written}\""))
+                .expect_err(&format!("max-version \"{written}\" should be rejected"));
+            let message = err.to_string();
+            assert!(message.contains("max-version"), "{message}");
+            assert!(message.contains("test-listener"), "{message}");
+            assert!(
+                message.contains(&format!("{written:?}")),
+                "the error should quote the value {written:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tls_version_error_says_tls_1_0_and_1_1_are_not_supported() {
+        for written in ["1.0", "tls1.1", "TLSv1.0"] {
+            let message = tls_versions(&format!("min-version \"{written}\""))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("TLS 1.0 and 1.1 are not supported"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_min_version_above_the_max_version_is_rejected() {
+        let message = tls_versions("min-version \"TLSv1.3\"\nmax-version \"1.2\"")
+            .expect_err("min-version TLS1.3 with max-version TLS1.2 enables no version")
+            .to_string();
+        assert!(message.contains("test-listener"), "{message}");
+        assert!(message.contains("min-version") && message.contains("max-version"));
+        assert!(message.contains("TLS1.3") && message.contains("TLS1.2"));
+    }
+
+    /// Equal bounds pin one version.
+    #[test]
+    fn min_and_max_version_may_be_equal() {
+        let tls = tls_versions("min-version \"1.3\"\nmax-version \"tls1.3\"").unwrap();
+        assert_eq!(tls.min_version, TlsVersion::Tls13);
+        assert_eq!(tls.max_version, Some(TlsVersion::Tls13));
+
+        let tls = tls_versions("min-version \"TLS1.2\"\nmax-version \"1.2\"").unwrap();
+        assert_eq!(tls.min_version, TlsVersion::Tls12);
+        assert_eq!(tls.max_version, Some(TlsVersion::Tls12));
     }
 
     #[test]

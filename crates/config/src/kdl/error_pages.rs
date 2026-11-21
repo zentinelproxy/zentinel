@@ -34,7 +34,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::helpers::{get_first_arg_string, get_string_entry};
+use anyhow::Result;
+
+use super::helpers::{
+    get_first_arg_string, get_string_entry, get_unique_child, reject_repeated_header_names,
+    reject_repeated_names,
+};
 use crate::routes::{ErrorFormat, ErrorPage, ErrorPageConfig, ServiceType};
 
 /// Keys an `error-pages` block reads.
@@ -97,17 +102,22 @@ fn is_header_value(value: &str) -> bool {
 /// Returns `None` for the config when the route has no block. A block whose
 /// pages all turn out unusable still yields a config, since its
 /// `default-format` applies to errors the proxy generates on the route.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when a setting, a page
+/// or a page header is written more than once.
 pub(crate) fn resolve_error_pages(
     route: &kdl::KdlNode,
     route_id: &str,
     service_type: &ServiceType,
-) -> (Option<ErrorPageConfig>, Vec<String>) {
+) -> Result<(Option<ErrorPageConfig>, Vec<String>)> {
     let mut problems = Vec::new();
-    let Some(block) = route.children().and_then(|c| c.get("error-pages")) else {
-        return (None, problems);
+    let Some(block) = get_unique_child(route, "error-pages")? else {
+        return Ok((None, problems));
     };
 
-    let default_format = match get_string_entry(block, "default-format") {
+    let default_format = match get_string_entry(block, "default-format")? {
         None => service_default_format(service_type),
         Some(value) => parse_format(&value).unwrap_or_else(|| {
             problems.push(format!(
@@ -122,7 +132,7 @@ pub(crate) fn resolve_error_pages(
         }),
     };
 
-    let template_dir = get_string_entry(block, "template-dir").map(PathBuf::from);
+    let template_dir = get_string_entry(block, "template-dir")?.map(PathBuf::from);
 
     let mut config = ErrorPageConfig {
         pages: HashMap::new(),
@@ -131,12 +141,11 @@ pub(crate) fn resolve_error_pages(
         template_dir,
     };
 
-    let page_nodes = block
-        .children()
-        .and_then(|c| c.get("pages"))
-        .and_then(|p| p.children())
-        .map(|c| c.nodes())
-        .unwrap_or_default();
+    let pages_block = get_unique_child(block, "pages")?.and_then(|p| p.children());
+    if let Some(pages_block) = pages_block {
+        reject_repeated_names(pages_block)?;
+    }
+    let page_nodes = pages_block.map(|c| c.nodes()).unwrap_or_default();
 
     for page_node in page_nodes {
         let key = page_node.name().value();
@@ -152,7 +161,7 @@ pub(crate) fn resolve_error_pages(
             }
         };
 
-        let format = match get_string_entry(page_node, "format") {
+        let format = match get_string_entry(page_node, "format")? {
             None => default_format,
             Some(value) => parse_format(&value).unwrap_or_else(|| {
                 problems.push(format!(
@@ -169,12 +178,11 @@ pub(crate) fn resolve_error_pages(
         };
 
         let mut headers = HashMap::new();
-        let header_nodes = page_node
-            .children()
-            .and_then(|c| c.get("headers"))
-            .and_then(|h| h.children())
-            .map(|c| c.nodes())
-            .unwrap_or_default();
+        let headers_block = get_unique_child(page_node, "headers")?.and_then(|h| h.children());
+        if let Some(headers_block) = headers_block {
+            reject_repeated_header_names(headers_block)?;
+        }
+        let header_nodes = headers_block.map(|c| c.nodes()).unwrap_or_default();
         for header in header_nodes {
             let name = header.name().value();
             match get_first_arg_string(header) {
@@ -191,8 +199,8 @@ pub(crate) fn resolve_error_pages(
 
         let page = ErrorPage {
             format,
-            template: get_string_entry(page_node, "template").map(PathBuf::from),
-            message: get_string_entry(page_node, "message"),
+            template: get_string_entry(page_node, "template")?.map(PathBuf::from),
+            message: get_string_entry(page_node, "message")?,
             headers,
         };
 
@@ -215,7 +223,7 @@ pub(crate) fn resolve_error_pages(
         config.pages.insert(status, page);
     }
 
-    (Some(config), problems)
+    Ok((Some(config), problems))
 }
 
 fn format_name(format: ErrorFormat) -> &'static str {
@@ -257,7 +265,7 @@ mod tests {
                 }
             }"#,
         );
-        let (config, problems) = resolve_error_pages(&node, "api", &ServiceType::Api);
+        let (config, problems) = resolve_error_pages(&node, "api", &ServiceType::Api).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
         let config = config.expect("block present");
         assert_eq!(config.default_format, ErrorFormat::Text);
@@ -272,9 +280,9 @@ mod tests {
     #[test]
     fn default_format_follows_the_service_type() {
         let block = r#"route "r" { error-pages { pages { "503" { message "x" } } } }"#;
-        let (api, _) = resolve_error_pages(&route(block), "r", &ServiceType::Api);
+        let (api, _) = resolve_error_pages(&route(block), "r", &ServiceType::Api).unwrap();
         assert_eq!(api.unwrap().default_format, ErrorFormat::Json);
-        let (web, _) = resolve_error_pages(&route(block), "r", &ServiceType::Web);
+        let (web, _) = resolve_error_pages(&route(block), "r", &ServiceType::Web).unwrap();
         assert_eq!(web.unwrap().default_format, ErrorFormat::Html);
     }
 
@@ -284,7 +292,8 @@ mod tests {
             &route(r#"route "r" { upstream "u" }"#),
             "r",
             &ServiceType::Web,
-        );
+        )
+        .unwrap();
         assert!(config.is_none());
         assert!(problems.is_empty());
     }
@@ -309,7 +318,7 @@ mod tests {
                 }
             }"#,
         );
-        let (config, problems) = resolve_error_pages(&node, "r", &ServiceType::Web);
+        let (config, problems) = resolve_error_pages(&node, "r", &ServiceType::Web).unwrap();
         let config = config.unwrap();
         assert_eq!(config.default_format, ErrorFormat::Html);
         assert_eq!(config.pages.len(), 1, "only 502 is a usable status");
@@ -334,7 +343,7 @@ mod tests {
             dir.display(),
             name
         ));
-        let (config, problems) = resolve_error_pages(&node, "r", &ServiceType::Web);
+        let (config, problems) = resolve_error_pages(&node, "r", &ServiceType::Web).unwrap();
         std::fs::remove_file(dir.join(&name)).ok();
         assert!(problems.is_empty(), "{problems:?}");
         let config = config.unwrap();

@@ -44,6 +44,8 @@ let json = serde_json::to_string(&version)?;
 - `Tls12` - TLS 1.2 (minimum recommended)
 - `Tls13` - TLS 1.3
 
+Versions are ordered from oldest to newest (`Tls12 < Tls13`).
+
 ## Trace ID Format
 
 ### TraceIdFormat

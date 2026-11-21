@@ -28,6 +28,11 @@ Minimum supported: `1.0`
 
 ## Validation Rules
 
+The type of every value is checked when the file is parsed, before the rules
+below: a string where an integer is expected, a number where a string is
+expected, and so on, is an error and not the setting's default. See
+[Value Types](kdl-format.md#value-types).
+
 ### Server
 
 | Property | Validation |
@@ -43,8 +48,9 @@ Minimum supported: `1.0`
 |----------|------------|
 | `id` | Non-empty, unique |
 | `address` | Valid socket address (host:port) |
-| `protocol` | Must be `http`, `https`, `h2`, `h3` or `h2c`; `https` and `h2` need a `tls` block, `h2c` must not have one |
-| `tls` | Required when protocol is `https` |
+| `protocol` | Must be `http`, `https`, `h2`, `h3` or `h2c`; `http` is the protocol when none is written. `https` and `h2` need a `tls` block; `http` and `h2c` must not have one |
+| `tls` | Required when protocol is `https` or `h2`; an error on `http` (including no `protocol`) and `h2c` |
+| `tls.min-version`, `tls.max-version` | `1.2`, `tls1.2`, `tlsv1.2`, `1.3`, `tls1.3` or `tlsv1.3` (any letter case); any other value is an error. `min-version` must not be above `max-version`; this holds for a listener in a namespace or a service too |
 | `request-timeout-secs` | `> 0` |
 
 **At least one listener is required.**
@@ -325,6 +331,38 @@ Configuration validation failed:
   Filter 'auth' references non-existent agent 'auth-agent'
 
   Available agents: ["waf-agent"]
+```
+
+```
+Duplicate node 'timeouts' in upstreams > upstream "backend": it is written 2 times,
+but only one of them would take effect. Combine them into a single 'timeouts' node,
+or remove the extra ones.
+```
+
+```
+Duplicate upstream ID 'backend' found. Each upstream ID must be unique.
+```
+
+```
+Wrong value type for 'max-connections-per-client' in limits: expected an integer
+(without quotes), found a string.
+```
+
+```
+Listener 'web': has a 'tls' block, but protocol "http" (the protocol when none is
+written) serves plain HTTP/1.1, so the block would not be used. Add protocol
+"https" to serve TLS, or remove the 'tls' block.
+```
+
+```
+Invalid min-version "TLS 1.3" in the tls block of listener 'web'. Accepted values are
+"1.2", "tls1.2", "tlsv1.2", "1.3", "tls1.3" and "tlsv1.3" (letter case does not
+matter). Only TLS 1.2 and 1.3 are supported; TLS 1.0 and 1.1 are not supported.
+```
+
+```
+Invalid TLS version range for listener 'web': min-version TLS1.3 is above max-version
+TLS1.2, so no TLS version is enabled. Raise max-version or lower min-version.
 ```
 
 ```
