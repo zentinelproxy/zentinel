@@ -327,6 +327,13 @@ pub struct ResponseHeadersMessage {
 }
 ```
 
+**Header values.** A header value is bytes, and the `headers` of both messages
+are strings. A value that is valid UTF-8 (`café`) is sent as that text. Any
+other value is sent with each byte as the Unicode code point of the same value
+(U+0000 to U+00FF, as if read as ISO-8859-1): the byte `0xE9` is sent as
+`é`. A value is never sent as an empty string because of its bytes. The
+upstream and the client receive the original bytes.
+
 ### ResponseBodyChunk
 
 Sent for each chunk of the response body.

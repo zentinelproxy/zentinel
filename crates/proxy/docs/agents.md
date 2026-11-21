@@ -167,6 +167,14 @@ filters {
                  └────────────┘
 ```
 
+### Header Values
+
+Header values are bytes; agents receive them as strings. A value that is valid
+UTF-8 is sent as that text. Any other value is sent with each byte as the
+Unicode code point of the same value (U+0000 to U+00FF), so no value reaches an
+agent as an empty string because of its bytes. The upstream and the client keep
+the original bytes. See the [protocol reference](../../agent-protocol/docs/v2/protocol.md).
+
 ## Decision Model
 
 ### Decision Types
