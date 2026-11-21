@@ -3846,7 +3846,16 @@ impl ProxyHttp for ZentinelProxy {
 
         // Create timestamps for cache metadata
         let now = std::time::SystemTime::now();
-        let fresh_until = now + ttl;
+        // `calculate_ttl` caps the lifetime, so the sum fits on any real clock.
+        let Some(fresh_until) = now.checked_add(ttl) else {
+            warn!(
+                correlation_id = %ctx.trace_id,
+                route_id = %route_id,
+                ttl_secs = ttl.as_secs(),
+                "Freshness lifetime does not fit after the current time, not caching"
+            );
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
+        };
 
         // Clone the response header for storage
         let header = resp.clone();

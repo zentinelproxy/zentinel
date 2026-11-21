@@ -233,7 +233,7 @@ Per-route cache configuration, nested under `policies.cache`.
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable caching for this route |
-| `default-ttl-secs` | `u64` | `300` | Default TTL in seconds |
+| `default-ttl-secs` | `u64` | `3600` | Default TTL in seconds, for a response without `max-age` or `s-maxage`. At most 2147483648 (2^31); a larger value is applied as 2147483648, with a warning at startup |
 | `max-size-bytes` | `u64` | - | Max cached response size |
 | `cacheable-methods` | `[string]` | `["GET", "HEAD"]` | HTTP methods to cache |
 | `cacheable-status-codes` | `[u16]` | `[200, 203, 204, 206, 300, 301]` | Status codes to cache |

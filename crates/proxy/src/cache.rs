@@ -46,6 +46,17 @@ const DEFAULT_EVICTION_LIMIT_BYTES: usize = 100 * 1024 * 1024;
 /// Default lock timeout: 10 seconds
 const DEFAULT_LOCK_TIMEOUT_SECS: u64 = 10;
 
+/// The longest freshness lifetime the cache applies, in seconds: 2^31, about
+/// 68 years.
+///
+/// A longer lifetime, from `max-age`, `s-maxage` or a route's
+/// `default-ttl-secs`, is applied as this one. RFC 9111 section 1.2.2 allows
+/// a cache to treat a delta-seconds value it cannot represent, or one whose
+/// calculations overflow, as 2147483648; the cache uses that value as its
+/// limit for every lifetime. A lifetime of `u64::MAX` seconds cannot be
+/// added to the current time.
+pub const MAX_FRESHNESS_LIFETIME_SECS: u64 = 2_147_483_648;
+
 /// Global cache configuration holder
 ///
 /// This should be set during proxy startup, before the cache is accessed.
@@ -510,19 +521,24 @@ impl CacheManager {
     }
 
     /// Parse max-age from Cache-Control header value
+    ///
+    /// A number too large for `u64` is read as `u64::MAX`. A value that is
+    /// not made of digits only (`-1`, `1.5`, `5s`) is ignored.
     pub fn parse_max_age(header_value: &str) -> Option<u64> {
         // Simple parsing of max-age directive
         for directive in header_value.split(',') {
             let directive = directive.trim();
-            if let Some(value) = directive.strip_prefix("max-age=") {
-                if let Ok(secs) = value.trim().parse::<u64>() {
-                    return Some(secs);
-                }
+            if let Some(secs) = directive
+                .strip_prefix("max-age=")
+                .and_then(parse_delta_seconds)
+            {
+                return Some(secs);
             }
-            if let Some(value) = directive.strip_prefix("s-maxage=") {
-                if let Ok(secs) = value.trim().parse::<u64>() {
-                    return Some(secs);
-                }
+            if let Some(secs) = directive
+                .strip_prefix("s-maxage=")
+                .and_then(parse_delta_seconds)
+            {
+                return Some(secs);
             }
         }
         None
@@ -535,6 +551,9 @@ impl CacheManager {
     }
 
     /// Calculate TTL from Cache-Control or use default
+    ///
+    /// The result is at most [`MAX_FRESHNESS_LIFETIME_SECS`], so it can always
+    /// be added to the current time.
     pub fn calculate_ttl(&self, route_id: &str, cache_control: Option<&str>) -> Duration {
         let config = self.get_route_config(route_id).unwrap_or_default();
 
@@ -546,12 +565,12 @@ impl CacheManager {
 
             // Use max-age if present
             if let Some(max_age) = Self::parse_max_age(cc) {
-                return Duration::from_secs(max_age);
+                return Duration::from_secs(max_age.min(MAX_FRESHNESS_LIFETIME_SECS));
             }
         }
 
         // Fall back to default TTL
-        Duration::from_secs(config.default_ttl_secs)
+        Duration::from_secs(config.default_ttl_secs.min(MAX_FRESHNESS_LIFETIME_SECS))
     }
 
     /// Determine if response should be served stale
@@ -819,6 +838,16 @@ impl Default for CacheManager {
     }
 }
 
+/// Parse a delta-seconds value: digits only. A number too large for `u64` is
+/// `u64::MAX`; anything else is `None`.
+fn parse_delta_seconds(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(value.parse::<u64>().unwrap_or(u64::MAX))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -940,6 +969,116 @@ mod tests {
         // No-store returns zero
         let ttl = manager.calculate_ttl("api", Some("no-store"));
         assert_eq!(ttl.as_secs(), 0);
+    }
+
+    /// 2^31 seconds, written out so the tests do not depend on the constant.
+    const LARGEST_LIFETIME: Duration = Duration::from_secs(2_147_483_648);
+
+    fn manager_with_default_ttl(default_ttl_secs: u64) -> CacheManager {
+        let manager = CacheManager::new();
+        manager.register_route(
+            "api",
+            CacheConfig {
+                enabled: true,
+                default_ttl_secs,
+                ..Default::default()
+            },
+        );
+        manager
+    }
+
+    #[test]
+    fn parse_max_age_reads_a_value_too_large_for_u64_as_the_largest_value() {
+        for value in [
+            "max-age=18446744073709551615",
+            "max-age=18446744073709551616",
+            "public, s-maxage=99999999999999999999999",
+        ] {
+            assert_eq!(
+                CacheManager::parse_max_age(value),
+                Some(u64::MAX),
+                "{value}"
+            );
+        }
+        // Values that are not a number are ignored, however long they are.
+        for value in [
+            "max-age=-1",
+            "max-age=1.5",
+            "max-age=",
+            "max-age=99999999999999999999999x",
+            "max-age=99999999999999999999999.5",
+        ] {
+            assert_eq!(CacheManager::parse_max_age(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn calculate_ttl_applies_a_longer_lifetime_as_2_pow_31_seconds() {
+        let manager = manager_with_default_ttl(600);
+        for cache_control in [
+            "max-age=18446744073709551615",
+            "s-maxage=18446744073709551615",
+            "max-age=9223372036854775807",
+            "max-age=2147483649",
+            "public, max-age=99999999999999999999999",
+        ] {
+            assert_eq!(
+                manager.calculate_ttl("api", Some(cache_control)),
+                LARGEST_LIFETIME,
+                "{cache_control}"
+            );
+        }
+    }
+
+    #[test]
+    fn calculate_ttl_leaves_lifetimes_up_to_2_pow_31_seconds_as_they_are() {
+        let manager = manager_with_default_ttl(600);
+        assert_eq!(
+            manager.calculate_ttl("api", Some("max-age=2147483648")),
+            LARGEST_LIFETIME
+        );
+        assert_eq!(
+            manager.calculate_ttl("api", Some("s-maxage=2147483647")),
+            Duration::from_secs(2_147_483_647)
+        );
+        assert_eq!(
+            manager.calculate_ttl("api", Some("max-age=31536000")),
+            Duration::from_secs(31_536_000)
+        );
+    }
+
+    #[test]
+    fn calculate_ttl_applies_a_longer_route_default_as_2_pow_31_seconds() {
+        for default_ttl_secs in [2_147_483_649, u64::MAX] {
+            let manager = manager_with_default_ttl(default_ttl_secs);
+            assert_eq!(manager.calculate_ttl("api", None), LARGEST_LIFETIME);
+            // A `Cache-Control` without `max-age` falls back to the same default.
+            assert_eq!(
+                manager.calculate_ttl("api", Some("public")),
+                LARGEST_LIFETIME
+            );
+        }
+    }
+
+    #[test]
+    fn a_calculated_lifetime_can_always_be_added_to_the_current_time() {
+        let now = std::time::SystemTime::now();
+        let manager = manager_with_default_ttl(u64::MAX);
+        for cache_control in [
+            None,
+            Some("max-age=18446744073709551615"),
+            Some("s-maxage=18446744073709551615"),
+            Some("max-age=9223372036854775807"),
+            Some("max-age=2147483648"),
+            Some("max-age=2147483649"),
+            Some("max-age=99999999999999999999999"),
+        ] {
+            let ttl = manager.calculate_ttl("api", cache_control);
+            assert!(
+                now.checked_add(ttl).is_some(),
+                "{cache_control:?} gave a lifetime of {ttl:?}, which does not fit after the current time"
+            );
+        }
     }
 
     // ========================================================================

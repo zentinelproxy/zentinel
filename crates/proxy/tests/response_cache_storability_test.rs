@@ -1,5 +1,6 @@
 //! Which responses the response cache stores and serves, end to end against
-//! the real binary: `Authorization`, `Set-Cookie` and `Vary`.
+//! the real binary: `Authorization`, `Set-Cookie` and `Vary`, and very long
+//! `Cache-Control` lifetimes.
 //!
 //! The backend counts the requests that reach it. A response counts as stored
 //! when a repeated request is answered without a new request reaching the
@@ -96,6 +97,26 @@ fn reply(
             format!("{lang}|{accept}"),
         ),
         "/vary-star" => (vec![("Vary", "*")], "star".into()),
+
+        // `u64::MAX` seconds cannot be added to the current time. The others
+        // are above 2^31 seconds, the longest lifetime the cache applies, and
+        // check that the response is still stored.
+        "/max-age-u64-max" => (
+            vec![("Cache-Control", "max-age=18446744073709551615")],
+            "lifetime".into(),
+        ),
+        "/s-maxage-u64-max" => (
+            vec![("Cache-Control", "public, s-maxage=18446744073709551615")],
+            "lifetime".into(),
+        ),
+        "/max-age-2-pow-31-plus-1" => (
+            vec![("Cache-Control", "max-age=2147483649")],
+            "lifetime".into(),
+        ),
+        "/max-age-beyond-u64" => (
+            vec![("Cache-Control", "max-age=99999999999999999999999")],
+            "lifetime".into(),
+        ),
         _ => (vec![], "unknown".into()),
     }
 }
@@ -610,4 +631,44 @@ fn responses_without_these_headers_are_stored() {
         get(&proxy, path, &[]);
         wait_until_stored(&proxy, &backend, path, &[]);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Very long lifetimes
+// ---------------------------------------------------------------------------
+
+/// `u64::MAX` seconds overflows when added to the current time, which used to
+/// panic in the request handler (and stops a release build). The other
+/// lifetimes are above 2^31 seconds, the longest the cache applies: they
+/// check the boundary.
+fn a_very_long_cache_lifetime_does_not_stop_the_proxy(storage: &str) {
+    let (mut proxy, backend) = start(storage);
+    for path in [
+        "/max-age-u64-max",
+        "/s-maxage-u64-max",
+        "/max-age-2-pow-31-plus-1",
+        "/max-age-beyond-u64",
+    ] {
+        // The first response is the one whose lifetime is calculated.
+        assert_eq!(get(&proxy, path, &[]), "lifetime");
+        // It is stored, and served from the cache.
+        wait_until_stored(&proxy, &backend, path, &[]);
+    }
+
+    // The proxy is still running and answers other requests.
+    assert!(
+        proxy.child.try_wait().unwrap().is_none(),
+        "the proxy exited"
+    );
+    assert_eq!(get(&proxy, "/plain", &[]), "plain");
+}
+
+#[test]
+fn a_very_long_cache_lifetime_does_not_stop_the_proxy_in_memory() {
+    a_very_long_cache_lifetime_does_not_stop_the_proxy("memory");
+}
+
+#[test]
+fn a_very_long_cache_lifetime_does_not_stop_the_proxy_on_disk() {
+    a_very_long_cache_lifetime_does_not_stop_the_proxy("disk");
 }

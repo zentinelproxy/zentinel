@@ -270,7 +270,7 @@ impl CacheManager {
 **Features:**
 - Per-route cache configuration
 - Cache-Control header parsing
-- TTL calculation with defaults
+- TTL calculation with defaults. A lifetime from `max-age`, `s-maxage` or `default-ttl-secs` is at most `MAX_FRESHNESS_LIFETIME_SECS` (2^31 seconds, the value RFC 9111 section 1.2.2 allows for a delta-seconds value a cache cannot represent); a longer one, or a `max-age` that is a number too large for `u64`, is applied as that. `calculate_ttl` returns the capped value, so `response_cache_filter` can add it to the current time
 - Stale-while-revalidate support
 - Stale-if-error support
 - Path and extension-based cache exclusions (`exclude-extensions`, `exclude-paths`)
