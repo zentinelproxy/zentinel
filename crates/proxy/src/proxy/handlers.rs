@@ -35,7 +35,12 @@ impl ZentinelProxy {
         route_match: &RouteMatch,
     ) -> Result<bool, Box<Error>> {
         ctx.route_id = Some(route_match.route_id.to_string());
-        ctx.trace_id = self.get_trace_id(session);
+        // The id the request got in `early_request_filter` stays: the route's
+        // agents were called under it, and a request without a trace header
+        // would otherwise get a new one here.
+        if ctx.trace_id.is_empty() {
+            ctx.trace_id = self.get_trace_id(session);
+        }
         let route_id = route_match.route_id.as_str();
 
         if let Some(static_server) = self.static_servers.get(route_id).await {
@@ -113,8 +118,14 @@ impl ZentinelProxy {
         let route_id = route_match.route_id.as_str();
 
         if let Some(handler) = route_match.config.builtin_handler {
-            let request_id = self.get_trace_id(session);
-            ctx.trace_id = request_id.clone();
+            // The id the request got in `early_request_filter` stays: the
+            // route's agents were called under it, and a request without a
+            // trace header would otherwise get a new one here, in the
+            // handler's `X-Request-Id` and the logs that follow.
+            if ctx.trace_id.is_empty() {
+                ctx.trace_id = self.get_trace_id(session);
+            }
+            let request_id = ctx.trace_id.clone();
 
             // Get current config for config dump handler
             let config = Some(self.config_manager.current());
@@ -1099,6 +1110,12 @@ impl ZentinelProxy {
         }
         if let Some(config) = ctx.config.clone() {
             super::filters::apply_response_filters(&mut resp_header, ctx, &config);
+        }
+        // Then the response-header changes agents asked for on the request,
+        // the last word as in `response_filter`.
+        if !ctx.agent_response_headers.is_empty() {
+            let ops = std::mem::take(&mut ctx.agent_response_headers);
+            apply_agent_response_header_ops(&mut resp_header, &ops);
         }
 
         session.set_keepalive(None);

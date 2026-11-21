@@ -106,10 +106,10 @@ impl ZentinelProxy {
     /// is one second, since in-flight requests usually finish quicker than
     /// that.
     ///
-    /// Called from `request_filter`, so builtin handlers (health, status,
-    /// metrics), which are answered in `early_request_filter`, are never
-    /// refused: a health check failing because the proxy is busy would take
-    /// a working proxy out of its load balancer.
+    /// Called from `request_filter` for every route except a builtin one, so
+    /// builtin handlers (health, status, metrics) are never refused, with
+    /// `filters` or without: a health check failing because the proxy is busy
+    /// would take a working proxy out of its load balancer.
     async fn refuse_over_in_flight_limit(
         &self,
         session: &mut Session,
@@ -259,6 +259,152 @@ impl ZentinelProxy {
             trusted,
         );
         ctx.client_ip = client.to_string();
+    }
+
+    /// The client as agents see it: the same address rate limiting and the
+    /// upstream's X-Forwarded-For use. This was the raw peer formatted as
+    /// "ip:port", and the port was always sent as 0. The port is now the
+    /// peer's when the peer is the client, and 0 when the client address
+    /// came from a trusted proxy's X-Forwarded-For (its port is unknown).
+    fn agent_client(session: &Session, ctx: &RequestContext) -> (String, u16) {
+        let peer = session.client_addr().and_then(to_socket_addr);
+        let client_addr = if ctx.client_ip.is_empty() {
+            "unknown".to_string()
+        } else {
+            ctx.client_ip.clone()
+        };
+        let client_port = peer
+            .filter(|p| super::listener_addr::canonical_ip(p.ip()).to_string() == client_addr)
+            .map(|p| p.port())
+            .unwrap_or(0);
+        (client_addr, client_port)
+    }
+
+    /// Refuse a request with more headers than `max-header-count`, or with
+    /// more header bytes than `max-header-size` (the namespace's or service's
+    /// limit, where smaller), by returning the error to answer it with.
+    ///
+    /// A proxied route runs this after the proxy has added its own
+    /// `X-Correlation-Id` and `X-Forwarded-By` to the request, so they are
+    /// counted; a static or builtin route runs it on the client's headers.
+    fn enforce_header_limits(
+        &self,
+        session: &Session,
+        ctx: &mut RequestContext,
+    ) -> Result<(), Box<Error>> {
+        let req_header = session.req_header();
+
+        // Use cached config (set in upstream_peer, or fetch now if needed)
+        let config = ctx
+            .config
+            .get_or_insert_with(|| self.config_manager.current());
+        let (global_header_count, global_header_size) = (
+            config.limits.max_header_count,
+            config.limits.max_header_size_bytes,
+        );
+        // The namespace's limits, where smaller, apply instead (#542).
+        let max_header_count = ctx.max_header_count(global_header_count);
+        let max_header_size = ctx.max_header_size(global_header_size);
+
+        // Enforce header limits (fast path: skip if limits are very high)
+        const HEADER_LIMIT_THRESHOLD: usize = 1024 * 1024; // 1MB = effectively unlimited
+
+        // Header count check - O(1)
+        let header_count = req_header.headers.len();
+        if max_header_count < HEADER_LIMIT_THRESHOLD && header_count > max_header_count {
+            warn!(
+                correlation_id = %ctx.trace_id,
+                header_count = header_count,
+                limit = max_header_count,
+                "Request blocked: exceeds header count limit"
+            );
+
+            self.metrics.record_blocked_request("header_count_exceeded");
+            return Err(Error::explain(ErrorType::InternalError, "Too many headers"));
+        }
+
+        // Header size check - O(n), skip if limit is very high
+        if max_header_size < HEADER_LIMIT_THRESHOLD {
+            let total_header_size: usize = req_header
+                .headers
+                .iter()
+                .map(|(k, v)| k.as_str().len() + v.len())
+                .sum();
+
+            if total_header_size > max_header_size {
+                warn!(
+                    correlation_id = %ctx.trace_id,
+                    header_size = total_header_size,
+                    limit = max_header_size,
+                    "Request blocked: exceeds header size limit"
+                );
+
+                self.metrics.record_blocked_request("header_size_exceeded");
+                return Err(Error::explain(
+                    ErrorType::InternalError,
+                    "Headers too large",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Answer a request an agent filter stopped, with an error from
+    /// [`Self::process_agents`] (or the body decision that follows it).
+    ///
+    /// An `HTTPStatus` error -- an agent's block, redirect or challenge, or a
+    /// fail-closed filter -- is written to the client as a response, and
+    /// `Ok(true)` tells `request_filter` the request is complete. Any other
+    /// error is returned as it is.
+    async fn answer_agent_refusal(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestContext,
+        e: Box<Error>,
+    ) -> Result<bool, Box<Error>> {
+        // Check if this is an HTTPStatus error (e.g., agent block or fail-closed)
+        // In that case, we need to send a proper HTTP response instead of just closing the connection
+        if let ErrorType::HTTPStatus(status) = e.etype() {
+            // Extract the message from the error (the context part after "HTTPStatus context:")
+            let error_msg = e.to_string();
+            let body = error_msg
+                .split("context:")
+                .nth(1)
+                .map(|s| s.trim())
+                .unwrap_or("Request blocked");
+            // An agent's own body is sent as it is: the agent chose what
+            // to tell the client. A block without one gets the route's
+            // error page for the status, when it has one (#557).
+            let default = handlers::ProxyError::text(*status, body);
+            match ctx.agent_block.take().filter(|b| b.status == *status) {
+                Some(block) => {
+                    debug!(
+                        correlation_id = %ctx.trace_id,
+                        status = status,
+                        "Sending the agent's block response"
+                    );
+                    let (header, body) = self.agent_block_response(ctx, &block, default).await?;
+                    session.set_keepalive(None);
+                    session
+                        .write_response_header(Box::new(header), false)
+                        .await?;
+                    session.write_response_body(Some(body), true).await?;
+                }
+                None => {
+                    debug!(
+                        correlation_id = %ctx.trace_id,
+                        status = status,
+                        body = %body,
+                        "Sending HTTP error response for agent block"
+                    );
+                    self.write_proxy_error(session, ctx, default).await?;
+                }
+            }
+            return Ok(true); // Request complete, don't continue to upstream
+        }
+        // For other errors, propagate them
+        Err(e)
     }
 }
 
@@ -538,8 +684,12 @@ impl ProxyHttp for ZentinelProxy {
             ctx.otel_span = Some(tracer.start_span(method, path, ctx.trace_context.as_ref()));
         }
 
-        // Check if this is a builtin handler route
-        if route_match.config.service_type == zentinel_config::ServiceType::Builtin {
+        // A builtin handler route without `filters` is answered here, ahead
+        // of `request_filter`. One with `filters` is answered in
+        // `request_filter`, after the route's filters have run.
+        if route_match.config.service_type == zentinel_config::ServiceType::Builtin
+            && route_match.config.filters.is_empty()
+        {
             trace!(
                 correlation_id = %ctx.trace_id,
                 route_id = %route_match.route_id,
@@ -1268,7 +1418,12 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
-        if self.refuse_over_in_flight_limit(session, ctx).await? {
+        // Builtin routes are not counted: see `refuse_over_in_flight_limit`.
+        let is_builtin = ctx
+            .route_config
+            .as_ref()
+            .is_some_and(|r| r.service_type == zentinel_config::ServiceType::Builtin);
+        if !is_builtin && self.refuse_over_in_flight_limit(session, ctx).await? {
             return Ok(true);
         }
 
@@ -1891,12 +2046,33 @@ impl ProxyHttp for ZentinelProxy {
         // Use cached route config from upstream_peer (avoids duplicate route matching)
         // Handle static file and builtin routes
         if let Some(route_config) = ctx.route_config.clone() {
+            // The header limits apply to a request these routes answer as they
+            // do to one that is proxied, before any agent is called.
+            if matches!(
+                route_config.service_type,
+                zentinel_config::ServiceType::Static | zentinel_config::ServiceType::Builtin
+            ) {
+                self.enforce_header_limits(session, ctx)?;
+            }
             if route_config.service_type == zentinel_config::ServiceType::Static {
                 trace!(
                     correlation_id = %ctx.trace_id,
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                     "Handling static file route"
                 );
+                // The route's agent filters decide before the file is served,
+                // as they do before a request is proxied. Only request headers
+                // are sent: the route serves GET and HEAD, and its body is
+                // never read. A route without filters pays nothing.
+                if !route_config.filters.is_empty() {
+                    let (client_addr, client_port) = Self::agent_client(session, ctx);
+                    if let Err(e) = self
+                        .process_agents(session, ctx, &client_addr, client_port)
+                        .await
+                    {
+                        return self.answer_agent_refusal(session, ctx, e).await;
+                    }
+                }
                 // Create a minimal RouteMatch for the handler
                 let route_match = crate::routing::RouteMatch {
                     route_id: zentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
@@ -1910,6 +2086,18 @@ impl ProxyHttp for ZentinelProxy {
                     builtin_handler = ?route_config.builtin_handler,
                     "Handling builtin route"
                 );
+                // The route's agent filters decide before the handler
+                // answers, as they do before a request is proxied: only
+                // request headers are sent, as on a static route.
+                if !route_config.filters.is_empty() {
+                    let (client_addr, client_port) = Self::agent_client(session, ctx);
+                    if let Err(e) = self
+                        .process_agents(session, ctx, &client_addr, client_port)
+                        .await
+                    {
+                        return self.answer_agent_refusal(session, ctx, e).await;
+                    }
+                }
                 // Create a minimal RouteMatch for the handler
                 let route_match = crate::routing::RouteMatch {
                     route_id: zentinel_common::RouteId::new(ctx.route_id.as_deref().unwrap_or("")),
@@ -1942,21 +2130,7 @@ impl ProxyHttp for ZentinelProxy {
             }
         }
 
-        // The client as agents see it: the same address rate limiting and the
-        // upstream's X-Forwarded-For use. This was the raw peer formatted as
-        // "ip:port", and the port was always sent as 0. The port is now the
-        // peer's when the peer is the client, and 0 when the client address
-        // came from a trusted proxy's X-Forwarded-For (its port is unknown).
-        let peer = session.client_addr().and_then(to_socket_addr);
-        let client_addr = if ctx.client_ip.is_empty() {
-            "unknown".to_string()
-        } else {
-            ctx.client_ip.clone()
-        };
-        let client_port = peer
-            .filter(|p| super::listener_addr::canonical_ip(p.ip()).to_string() == client_addr)
-            .map(|p| p.port())
-            .unwrap_or(0);
+        let (client_addr, client_port) = Self::agent_client(session, ctx);
 
         let req_header = session.req_header_mut();
 
@@ -1966,58 +2140,7 @@ impl ProxyHttp for ZentinelProxy {
             .ok();
         req_header.insert_header("X-Forwarded-By", "Zentinel").ok();
 
-        // Use cached config (set in upstream_peer, or fetch now if needed)
-        let config = ctx
-            .config
-            .get_or_insert_with(|| self.config_manager.current());
-        let (global_header_count, global_header_size) = (
-            config.limits.max_header_count,
-            config.limits.max_header_size_bytes,
-        );
-        // The namespace's limits, where smaller, apply instead (#542).
-        let max_header_count = ctx.max_header_count(global_header_count);
-        let max_header_size = ctx.max_header_size(global_header_size);
-
-        // Enforce header limits (fast path: skip if limits are very high)
-        const HEADER_LIMIT_THRESHOLD: usize = 1024 * 1024; // 1MB = effectively unlimited
-
-        // Header count check - O(1)
-        let header_count = req_header.headers.len();
-        if max_header_count < HEADER_LIMIT_THRESHOLD && header_count > max_header_count {
-            warn!(
-                correlation_id = %ctx.trace_id,
-                header_count = header_count,
-                limit = max_header_count,
-                "Request blocked: exceeds header count limit"
-            );
-
-            self.metrics.record_blocked_request("header_count_exceeded");
-            return Err(Error::explain(ErrorType::InternalError, "Too many headers"));
-        }
-
-        // Header size check - O(n), skip if limit is very high
-        if max_header_size < HEADER_LIMIT_THRESHOLD {
-            let total_header_size: usize = req_header
-                .headers
-                .iter()
-                .map(|(k, v)| k.as_str().len() + v.len())
-                .sum();
-
-            if total_header_size > max_header_size {
-                warn!(
-                    correlation_id = %ctx.trace_id,
-                    header_size = total_header_size,
-                    limit = max_header_size,
-                    "Request blocked: exceeds header size limit"
-                );
-
-                self.metrics.record_blocked_request("header_size_exceeded");
-                return Err(Error::explain(
-                    ErrorType::InternalError,
-                    "Headers too large",
-                ));
-            }
-        }
+        self.enforce_header_limits(session, ctx)?;
 
         // Process through external agents
         trace!(
@@ -2034,49 +2157,7 @@ impl ProxyHttp for ZentinelProxy {
             Err(e) => Err(e),
         };
         if let Err(e) = agents {
-            // Check if this is an HTTPStatus error (e.g., agent block or fail-closed)
-            // In that case, we need to send a proper HTTP response instead of just closing the connection
-            if let ErrorType::HTTPStatus(status) = e.etype() {
-                // Extract the message from the error (the context part after "HTTPStatus context:")
-                let error_msg = e.to_string();
-                let body = error_msg
-                    .split("context:")
-                    .nth(1)
-                    .map(|s| s.trim())
-                    .unwrap_or("Request blocked");
-                // An agent's own body is sent as it is: the agent chose what
-                // to tell the client. A block without one gets the route's
-                // error page for the status, when it has one (#557).
-                let default = handlers::ProxyError::text(*status, body);
-                match ctx.agent_block.take().filter(|b| b.status == *status) {
-                    Some(block) => {
-                        debug!(
-                            correlation_id = %ctx.trace_id,
-                            status = status,
-                            "Sending the agent's block response"
-                        );
-                        let (header, body) =
-                            self.agent_block_response(ctx, &block, default).await?;
-                        session.set_keepalive(None);
-                        session
-                            .write_response_header(Box::new(header), false)
-                            .await?;
-                        session.write_response_body(Some(body), true).await?;
-                    }
-                    None => {
-                        debug!(
-                            correlation_id = %ctx.trace_id,
-                            status = status,
-                            body = %body,
-                            "Sending HTTP error response for agent block"
-                        );
-                        self.write_proxy_error(session, ctx, default).await?;
-                    }
-                }
-                return Ok(true); // Request complete, don't continue to upstream
-            }
-            // For other errors, propagate them
-            return Err(e);
+            return self.answer_agent_refusal(session, ctx, e).await;
         }
 
         trace!(

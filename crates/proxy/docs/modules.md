@@ -330,6 +330,9 @@ impl StaticFileServer {
 - Directory listing
 - SPA fallback routing
 
+A static route's request is checked against `max-header-count` and
+`max-header-size` before the file is served, as a proxied request is.
+
 **Configuration:**
 
 ```kdl
@@ -778,6 +781,28 @@ Built-in endpoints for operations.
 - `/metrics` - Prometheus metrics
 - `/upstreams` - Upstream health status
 - `/config` - Current configuration
+
+**Route filters:** A builtin route with `filters` goes through
+`request_filter` like a proxied route, and every check there applies to it,
+even when its only filter is a response-header one:
+
+- rate limits: the route's own (a `rate-limit` filter or `policies { rate-limit }`),
+  `rate-limits { global }`, and `rate-limits { default-rps }` for a route with
+  no limit of its own;
+- geo, `redirect` and `cors` (preflight) filters, and agent filters (see
+  [Builtin Routes](agents.md#builtin-routes));
+- the declared request-body limit (413), the WebSocket upgrade check (403), and
+  `max-header-count` and `max-header-size`.
+
+Its response-header policy and response filters apply to the response. A
+builtin route a load balancer or orchestrator probes (health, ready) should
+have no `filters`, so none of this can refuse the probe.
+
+A builtin route without `filters` is answered first, before any of these
+checks, so none of them applies to it: not `policies { rate-limit }` or
+`max-body-size` on the route, nor `rate-limits { global }` or `default-rps`.
+No builtin route is refused by `limits { max-in-flight-requests }`, with
+`filters` or without.
 
 **Key Struct:** `BuiltinHandlerState`
 
