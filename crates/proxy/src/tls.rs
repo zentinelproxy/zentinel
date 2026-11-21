@@ -11,7 +11,7 @@
 //! - Default certificate fallback
 //! - Certificate validation at startup
 //! - mTLS client certificate verification
-//! - Certificate hot-reload on SIGHUP
+//! - Certificate hot-reload on SIGHUP and after an ACME renewal
 //! - OCSP stapling (fetched from the certificate's responder, refreshed in
 //!   the background, never fatal to a handshake; see `tls/ocsp.rs`)
 //!
@@ -76,6 +76,7 @@ use rustls::sign::CertifiedKey;
 use rustls::{RootCertStore, ServerConfig};
 use tracing::{debug, error, info, trace, warn};
 
+use zentinel_config::server::AcmeConfig;
 use zentinel_config::{SniCertFolder, SniCertificate, TlsConfig, UpstreamTlsConfig};
 
 mod ocsp;
@@ -132,6 +133,11 @@ pub struct SniResolver {
     sni_certs: HashMap<String, Arc<CertifiedKey>>,
     /// Wildcard certificates (e.g., "*.example.com" -> cert)
     wildcard_certs: HashMap<String, Arc<CertifiedKey>>,
+    /// ACME-managed `sni` certificates that were loaded, as (storage directory,
+    /// primary domain). A reload consults the previous resolver's set to tell
+    /// a certificate that is still pending issuance from one that was being
+    /// served and can no longer be read.
+    loaded_acme_sni: HashSet<(PathBuf, String)>,
 }
 
 /// The name used for the default certificate in reload diffs.
@@ -274,11 +280,28 @@ impl SniResolver {
                 .iter()
                 .map(|(name, cert)| (name.clone(), apply(cert)))
                 .collect(),
+            loaded_acme_sni: self.loaded_acme_sni.clone(),
         }
     }
 
     /// Create a new SNI resolver from TLS configuration
     pub fn from_config(config: &TlsConfig, listener_id: Option<&str>) -> Result<Self, TlsError> {
+        Self::build(config, listener_id, None)
+    }
+
+    /// Build a resolver, optionally as the replacement for `previous`.
+    ///
+    /// With no `previous` (the first load, when a listener starts) an ACME
+    /// `sni` certificate that is not on disk yet is skipped: it has not been
+    /// issued, and nothing was being served for it. With a `previous`, an ACME
+    /// `sni` certificate that it had loaded and that now cannot be loaded is an
+    /// error, so the caller keeps the previous resolver instead of dropping that
+    /// name to the default certificate.
+    fn build(
+        config: &TlsConfig,
+        listener_id: Option<&str>,
+        previous: Option<&SniResolver>,
+    ) -> Result<Self, TlsError> {
         let listener_id_str = listener_id.unwrap_or("unknown");
 
         // Get cert_file and key_file - manual certs or ACME-managed paths
@@ -314,6 +337,7 @@ impl SniResolver {
 
         let mut sni_certs = HashMap::new();
         let mut wildcard_certs = HashMap::new();
+        let mut loaded_acme_sni: HashSet<(PathBuf, String)> = HashSet::new();
 
         // Track which hostnames were registered with priority, so we can resolve
         // conflicts during build. These sets are not stored in the final resolver
@@ -364,6 +388,21 @@ impl SniResolver {
                             .first()
                             .map(|s| s.as_str())
                             .unwrap_or("unknown");
+
+                        // A certificate the previous resolver was serving is
+                        // not "not yet available": skipping it would switch its
+                        // names to the default certificate and report the
+                        // reload as a success.
+                        if previous.is_some_and(|p| {
+                            p.loaded_acme_sni
+                                .contains(&(acme.storage.clone(), primary.to_string()))
+                        }) {
+                            return Err(TlsError::CertificateLoad(format!(
+                                "ACME SNI certificate for '{}' was being served and cannot be loaded: {}",
+                                primary, e
+                            )));
+                        }
+
                         warn!(
                             listener_id = %listener_id_str,
                             sni_index = i,
@@ -383,6 +422,15 @@ impl SniResolver {
                     }
                 }
             };
+
+            // Remember ACME-managed entries that loaded, for the next reload.
+            if let Some(acme) = &sni_config.acme {
+                if sni_config.cert_file.is_none() || sni_config.key_file.is_none() {
+                    if let Some(primary) = acme.domains.first() {
+                        loaded_acme_sni.insert((acme.storage.clone(), primary.clone()));
+                    }
+                }
+            }
 
             // Build priority set for this cert (lowercased for consistent matching)
             let priority_set: HashSet<String> = sni_config
@@ -585,6 +633,7 @@ impl SniResolver {
             default_cert: Arc::new(default_cert),
             sni_certs,
             wildcard_certs,
+            loaded_acme_sni,
         })
     }
 
@@ -696,8 +745,14 @@ impl HotReloadableSniResolver {
 
     /// Reload certificates from disk
     ///
-    /// This is called on SIGHUP to pick up new certificates without restart.
-    /// If the reload fails, the old certificates continue to be used.
+    /// This is called on SIGHUP, and after an ACME renewal, to pick up new
+    /// certificates without restart. If the reload fails, the old certificates
+    /// continue to be used.
+    ///
+    /// A reload fails, rather than dropping the name to the default
+    /// certificate, when an ACME `sni` certificate the listener was serving can
+    /// no longer be loaded. An ACME `sni` certificate that was never loaded
+    /// (not yet issued) is still skipped.
     pub fn reload(&self) -> Result<(), TlsError> {
         let config = self.config.read();
 
@@ -716,15 +771,17 @@ impl HotReloadableSniResolver {
 
         // Try to load new certificates. A failure leaves the previous ones in
         // place, which is invisible in traffic -- hence the counter.
-        let new_resolver = match SniResolver::from_config(&config, Some(&self.listener_id)) {
-            Ok(resolver) => resolver,
-            Err(e) => {
-                if let Some(metrics) = crate::tls_metrics::get_tls_metrics() {
-                    metrics.record_reload(&self.listener_id, false);
+        let previous = self.loaded.read().clone();
+        let new_resolver =
+            match SniResolver::build(&config, Some(&self.listener_id), Some(&previous)) {
+                Ok(resolver) => resolver,
+                Err(e) => {
+                    if let Some(metrics) = crate::tls_metrics::get_tls_metrics() {
+                        metrics.record_reload(&self.listener_id, false);
+                    }
+                    return Err(e);
                 }
-                return Err(e);
-            }
-        };
+            };
 
         // Snapshot both sides before the swap. With `reload-mode "watch"` the
         // reload is unattended by design, so this log line is the only record an
@@ -776,6 +833,34 @@ impl HotReloadableSniResolver {
             "TLS configuration updated and certificates reloaded"
         );
         Ok(())
+    }
+
+    /// Whether this listener serves a certificate managed by `acme`.
+    ///
+    /// ACME certificates are identified by where they are stored: the storage
+    /// directory and the primary (first) domain, which together name the
+    /// `cert.pem` / `key.pem` pair a renewal replaces. The listener's root
+    /// `acme` block and the `acme` block of each `sni` certificate are both
+    /// considered.
+    pub fn serves_acme_certificate(&self, acme: &AcmeConfig) -> bool {
+        let Some(primary) = acme.domains.first() else {
+            return false;
+        };
+        let manages_same_certificate = |candidate: &AcmeConfig| {
+            candidate.storage == acme.storage && candidate.domains.first() == Some(primary)
+        };
+
+        let config = self.config.read();
+        config
+            .acme
+            .iter()
+            .chain(
+                config
+                    .additional_certs
+                    .iter()
+                    .filter_map(|c| c.acme.as_ref()),
+            )
+            .any(manages_same_certificate)
     }
 
     /// Install freshly loaded certificates, with current staples attached.
@@ -1044,6 +1129,38 @@ impl CertificateReloader {
                 error_count = errors.len(),
                 "Certificate reload completed with errors"
             );
+        }
+
+        (success_count, errors)
+    }
+
+    /// Reload the listeners that serve a certificate managed by `acme`.
+    ///
+    /// Called after a renewal has written the new certificate to the ACME
+    /// storage. Listeners that use a different certificate are left alone. A
+    /// failure reported here is a failed reload of a listener that uses the
+    /// renewed certificate; the cause can be another certificate of that
+    /// listener, because a reload loads all of them. A listener whose reload
+    /// fails keeps serving the certificates it had; the failure is counted in
+    /// `zentinel_tls_reload_total` by the listener's resolver and is returned
+    /// here for the caller to log.
+    ///
+    /// Returns the number of listeners that reloaded successfully and the
+    /// listeners that did not, with their errors. When no registered listener
+    /// serves the certificate, both are empty.
+    pub fn reload_acme_certificate(&self, acme: &AcmeConfig) -> (usize, Vec<(String, TlsError)>) {
+        let resolvers = self.resolvers.read();
+        let mut success_count = 0;
+        let mut errors = Vec::new();
+
+        for (listener_id, resolver) in resolvers.iter() {
+            if !resolver.serves_acme_certificate(acme) {
+                continue;
+            }
+            match resolver.reload() {
+                Ok(()) => success_count += 1,
+                Err(e) => errors.push((listener_id.clone(), e)),
+            }
         }
 
         (success_count, errors)

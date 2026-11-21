@@ -465,9 +465,14 @@ struct AcmeState {
 ///
 /// For HTTP-01 challenges during initial issuance, a temporary HTTP server is
 /// spawned to serve challenge responses (since Pingora isn't running yet).
+///
+/// `cert_reloader` is the registry the listeners add their certificate
+/// resolvers to once they are built, which happens after this function
+/// returns. Each renewal scheduler keeps a handle on it so that a renewed
+/// certificate reaches the listeners that serve it.
 async fn initialize_acme(
     config: &Config,
-    sni_resolver: Option<Arc<HotReloadableSniResolver>>,
+    cert_reloader: &Arc<CertificateReloader>,
 ) -> Result<Option<AcmeState>, AcmeError> {
     // Collect all ACME configurations from listeners and SNI blocks
     let mut acme_configs: Vec<(String, AcmeConfig)> = Vec::new();
@@ -526,7 +531,7 @@ async fn initialize_acme(
         let mut scheduler = RenewalScheduler::new(
             Arc::clone(&acme_client),
             Arc::clone(&challenge_manager),
-            sni_resolver.clone(),
+            Some(Arc::clone(cert_reloader)),
         );
 
         // If DNS-01, set up DNS challenge manager
@@ -940,9 +945,17 @@ fn run_server(
         config.server.graceful_shutdown_timeout_secs,
     );
 
+    // Tracks the certificate resolver of every TLS listener, so SIGHUP can
+    // refresh certificates from disk without restarting the process, and so
+    // an ACME renewal can apply its new certificate to the listeners serving
+    // it. It exists before ACME is initialized because the renewal schedulers
+    // are created there, while the listeners' resolvers are only built (and
+    // registered here) afterwards.
+    let cert_reloader = Arc::new(CertificateReloader::new());
+
     // Initialize ACME if any listener has it configured
     let acme_state = runtime
-        .block_on(async { initialize_acme(&config, None).await })
+        .block_on(async { initialize_acme(&config, &cert_reloader).await })
         .context("ACME initialization failed")?;
 
     // Wire ACME components into the proxy
@@ -1128,10 +1141,6 @@ fn run_server(
         listeners,
         connection_app,
     );
-
-    // Tracks the certificate resolver of every TLS listener, so SIGHUP can
-    // refresh certificates from disk without restarting the process.
-    let cert_reloader = Arc::new(CertificateReloader::new());
 
     // Configure listening addresses from config
     for listener in &config.listeners {
