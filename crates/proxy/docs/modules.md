@@ -674,6 +674,27 @@ Trace ID generation and propagation.
 3. `X-Request-Id`
 4. Auto-generate if missing
 
+The trace ID appears in logs, error pages, the `X-Correlation-Id` response
+header and the `X-Correlation-Id` header sent to agents. Two requests can
+carry the same client-supplied value, so agent calls are not matched by it.
+
+**Agent correlation ID:** every call the proxy makes to agents for a request
+(request headers, request and response body chunks, response headers,
+WebSocket frames, guardrail inspections, and the end-of-request
+notification) carries one `correlation_id`, a UUID v4 generated on the
+request's first agent call whatever `trace-id-format` is
+(`RequestContext::agent_correlation_id`). It is never taken from a request
+header, and a request that makes no agent call never gets one.
+
+The log lines where the proxy calls agents, or acts on an agent's answer
+(debug, info, warn and error), carry it as `agent_correlation_id` next to the
+trace ID. The `correlation_id` log field does not mean the same everywhere:
+in the request handling logs it is the trace ID, but in the logs of the agent
+manager, the agent clients, WebSocket frame inspection and guardrail
+inspection it is the agent correlation ID. To follow a request into those,
+take `agent_correlation_id` from a call-site line; searching them for the
+client's header value finds nothing.
+
 ---
 
 ## Error Handling

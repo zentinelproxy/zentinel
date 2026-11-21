@@ -359,10 +359,12 @@ impl ZentinelProxy {
             return Ok(());
         };
 
-        // Use cached config (or fetch if not yet cached)
-        let config = ctx
-            .config
-            .get_or_insert_with(|| self.config_manager.current());
+        // Use cached config (or fetch if not yet cached). Cloned, so that
+        // `ctx` can be read below while it is in use.
+        let config = std::sync::Arc::clone(
+            ctx.config
+                .get_or_insert_with(|| self.config_manager.current()),
+        );
 
         // The agents of the filter chain, each with its filter's failure mode
         // and timeout. `phase` is not read: the agent's own `events` decide
@@ -424,6 +426,7 @@ impl ZentinelProxy {
 
         debug!(
             correlation_id = %ctx.trace_id,
+            agent_correlation_id = %ctx.agent_correlation_id(),
             route_id = %route_id,
             agents = ?agent_ids,
             "Processing request through agents"
@@ -567,9 +570,9 @@ impl ZentinelProxy {
 
         // Create agent call context
         let agent_ctx = crate::agents::AgentCallContext {
-            correlation_id: CorrelationId::from_string(&ctx.trace_id),
+            correlation_id: CorrelationId::from_string(ctx.agent_correlation_id()),
             metadata: zentinel_agent_protocol::RequestMetadata {
-                correlation_id: ctx.trace_id.clone(),
+                correlation_id: ctx.agent_correlation_id().to_string(),
                 request_id: Uuid::new_v4().to_string(),
                 client_ip: client_addr.to_string(),
                 client_port,
@@ -628,6 +631,7 @@ impl ZentinelProxy {
 
                 debug!(
                     correlation_id = %ctx.trace_id,
+                    agent_correlation_id = %ctx.agent_correlation_id(),
                     "Agent processing completed, request allowed"
                 );
             }
@@ -644,6 +648,7 @@ impl ZentinelProxy {
                     .any(|agent| agent.failure_mode == zentinel_config::FailureMode::Closed);
                 error!(
                     correlation_id = %ctx.trace_id,
+                    agent_correlation_id = %ctx.agent_correlation_id(),
                     error = %e,
                     fail_closed = fail_closed,
                     "Agent processing failed"
@@ -739,6 +744,7 @@ impl ZentinelProxy {
             AgentAction::Block { body, .. } => {
                 warn!(
                     correlation_id = %ctx.trace_id,
+                    agent_correlation_id = %ctx.agent_correlation_id(),
                     agent_id = %agent_id,
                     phase = phase,
                     status = block.status,
@@ -754,6 +760,7 @@ impl ZentinelProxy {
             AgentAction::Redirect { url, status } => {
                 info!(
                     correlation_id = %ctx.trace_id,
+                    agent_correlation_id = %ctx.agent_correlation_id(),
                     agent_id = %agent_id,
                     phase = phase,
                     url = %url,
@@ -772,6 +779,7 @@ impl ZentinelProxy {
                 param_names.sort_unstable();
                 info!(
                     correlation_id = %ctx.trace_id,
+                    agent_correlation_id = %ctx.agent_correlation_id(),
                     agent_id = %agent_id,
                     phase = phase,
                     challenge_type = %challenge_type,
@@ -872,6 +880,7 @@ impl ZentinelProxy {
             .collect();
         debug!(
             correlation_id = %ctx.trace_id,
+            agent_correlation_id = %ctx.agent_correlation_id(),
             agents = ?decision.request_headers_from,
             headers = ?names,
             "Dropping request-header changes from the request-body phase"
@@ -959,6 +968,7 @@ impl ZentinelProxy {
             None => {
                 warn!(
                     correlation_id = %ctx.trace_id,
+                    agent_correlation_id = %ctx.agent_correlation_id(),
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                     agent_id = %agent_id,
                     filter_id = %filter_id,
@@ -974,6 +984,7 @@ impl ZentinelProxy {
             Some((bytes_sent, bytes_withheld)) => {
                 warn!(
                     correlation_id = %ctx.trace_id,
+                    agent_correlation_id = %ctx.agent_correlation_id(),
                     route_id = ctx.route_id.as_deref().unwrap_or("unknown"),
                     agent_id = %agent_id,
                     filter_id = %filter_id,

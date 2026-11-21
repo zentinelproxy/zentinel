@@ -128,6 +128,18 @@ deduplicated). This is independent of whether the agent's `events` list includes
 Failures are logged and do not affect the client response. Correlation affinity
 is released only after these notifications.
 
+### Correlation IDs
+
+The proxy generates one UUID v4 for each request and sends it as the
+`correlation_id` of every event of that request: in `metadata` for
+`RequestHeaders`, and as the event's own field for the body chunks,
+`ResponseHeaders`, `RequestComplete`, `WebSocketFrame` and `GuardrailInspect`.
+Agent responses are routed back by it, and the pool's connection affinity is
+keyed by it. It is not derived from the client's `X-Trace-Id`,
+`X-Correlation-Id` or `X-Request-Id` header, which two requests can share. The
+trace ID (the client's value, when present) is in the `X-Correlation-Id`
+header of the request headers an agent receives.
+
 ### Example Frame
 
 ```
