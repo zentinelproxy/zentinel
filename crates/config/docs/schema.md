@@ -36,6 +36,7 @@ Global server configuration.
 | `trace-id-format` | `string` | `"tinyflake"` | Trace ID format (`tinyflake` or `uuid`) |
 | `auto-reload` | `bool` | `false` | Auto-reload config on file changes |
 | `route-cache-size` | `u32` | `1000` | Max entries in the route-match cache (per route set); must be > 0. Evictions counted in `zentinel_route_cache_evictions_total` |
+| `client-ipv6-prefix-length` | `u8` | `64` | How many leading bits of an IPv6 client address identify one client in the per-client limits: `max-connections-per-client` (global, namespace and service) and every rate limit keyed on the client's address (`client-ip`, `client-ip-and-path`, `client-ip-and-mcp-tool`, and the per-client token rate limit and token budget of inference routes). The addresses of one prefix are counted as one client. A whole number from 1 to 128; anything else is a configuration error. `128` counts each IPv6 address on its own, which suits unrelated hosts that share one `/64` (a LAN, a hosting provider's subnet). IPv4 addresses, and IPv4-mapped IPv6 addresses (which are the IPv4 client), are always counted one by one. Read at startup |
 
 > **Hot reload caveat:** routes, upstreams, filters, and agents are applied by
 > hot reload (SIGHUP / auto-reload). Listener bindings and `system` settings
@@ -653,7 +654,7 @@ which a single-file config ignores.
 | `max-header-size` | `u64` | `8192` | Max header size |
 | `max-header-count` | `u32` | `100` | Max number of headers |
 | `max-body-size` | `u64` | `10485760` | Max request body size |
-| `max-connections-per-client` | `u32` | `100` | Max connections per client IP |
+| `max-connections-per-client` | `u32` | unlimited | Max connections per client (not set: no limit): per IPv4 address, or per IPv6 prefix (see `client-ipv6-prefix-length` in the Server block) |
 
 ---
 

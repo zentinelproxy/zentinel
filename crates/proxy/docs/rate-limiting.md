@@ -84,6 +84,32 @@ policies {
 }
 ```
 
+#### IPv6 clients
+
+The addresses of one IPv6 prefix usually belong to the same subscriber or
+site, so the prefix is counted as one client. A key that contains the client's
+address (`client-ip`, `client-ip-and-path`, `client-ip-and-mcp-tool`) uses the
+address truncated to its first `client-ipv6-prefix-length` bits (the `system`
+block; default `64`), so the addresses of one `/64` share one bucket. IPv4
+addresses, and IPv4-mapped IPv6 addresses, are keyed as the full IPv4 address.
+Where unrelated hosts share one `/64` (a LAN, a hosting provider's subnet), use
+`128`, or raise the limit.
+
+```kdl
+system {
+    // Key each IPv6 address on its own instead of by its /64.
+    client-ipv6-prefix-length 128
+}
+```
+
+The same prefix is used by `max-connections-per-client` and by the token rate
+limit and token budget of inference routes, so every per-client limit agrees on
+who a client is. Logs keep the client's own address; the `key` field of a rate limit log
+line is the truncated one. The value is read at startup: a reload that
+changes it warns that a restart is needed, and keeps the running value.
+Proxies that share a Redis or Memcached backend should use the same value, as
+the keys they write to it contain the truncated address.
+
 ### Algorithm
 
 Token bucket with 1-second sliding window:

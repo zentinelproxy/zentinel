@@ -64,7 +64,7 @@ let limits = Limits {
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `max_connections_per_client` | 100 | Per-client connection limit |
+| `max_connections_per_client` | unlimited (`None`) | Per-client connection limit. A client is counted by `client_key`: an IPv4 address, or an IPv6 address truncated to `Ipv6PrefixLen` bits (64 by default) |
 | `max_connections_per_route` | 1000 | Per-route connection limit |
 | `max_total_connections` | 10,000 | Total connection limit |
 | `max_idle_connections_per_upstream` | 100 | Idle pool size per upstream |
@@ -255,6 +255,37 @@ println!("Total: {}", stats.total);
 println!("Per-client: {}", stats.per_client_count);
 println!("Per-route: {}", stats.per_route_count);
 ```
+
+## Client Keys
+
+Per-client limits count a client by a key, not by its raw address. The
+addresses of one IPv6 prefix usually belong to the same subscriber or site, so
+the prefix is counted as one client. Where unrelated hosts share one `/64` (a
+LAN, a hosting provider's subnet), use a length of `128`, or raise the
+per-client limits.
+
+```rust
+use zentinel_common::limits::{client_key, client_key_str, Ipv6PrefixLen};
+
+let prefix = Ipv6PrefixLen::default(); // 64 bits; `Ipv6PrefixLen::new(128)` for none
+let key = client_key("2001:db8:0:1::7".parse()?, prefix);
+assert_eq!(key.to_string(), "2001:db8:0:1::");
+
+// The same for a client address held as text. Text that is not an IP
+// address (such as "unknown") is returned as it is.
+assert_eq!(client_key_str("2001:db8:0:1::7", prefix), "2001:db8:0:1::");
+```
+
+| Address | Key |
+|---------|-----|
+| IPv4 | The address |
+| IPv4-mapped IPv6 (`::ffff:a.b.c.d`) | The IPv4 address |
+| Other IPv6 | The address with all bits after the first `prefix` set to zero |
+
+A prefix length is a whole number from 1 to 128 (`Ipv6PrefixLen::new` rejects
+the rest). In the proxy it is `system { client-ipv6-prefix-length }`.
+`ConnectionLimiter::try_acquire` takes the key, and the permit it returns
+gives the slot back under the key it was taken with.
 
 ## Integration Example
 

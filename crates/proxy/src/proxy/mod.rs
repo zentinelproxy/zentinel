@@ -741,6 +741,9 @@ impl ZentinelProxy {
         } else {
             RateLimitManager::new()
         };
+        // A `system` setting: the manager built at startup keeps it, and
+        // `reconcile` of a reload does not take it from the new manager.
+        let manager = manager.with_client_ipv6_prefix(config.server.client_ipv6_prefix_length);
 
         let default_limit = Self::default_route_rate_limit(&config.rate_limits);
         if let Some(ref default) = default_limit {
@@ -1736,10 +1739,15 @@ mod default_rate_limit_tests {
     }
 
     fn config(rate_limits: &str) -> Config {
+        config_with_system("", rate_limits)
+    }
+
+    /// Like [`config`], with extra lines in the `system` block.
+    fn config_with_system(system: &str, rate_limits: &str) -> Config {
         let kdl = format!(
             r#"
             schema-version "1.0"
-            system {{ worker-threads 0 }}
+            system {{ worker-threads 0; {system} }}
             listeners {{
                 listener "http" {{ address "127.0.0.1:19290" protocol "http" }}
             }}
@@ -1846,6 +1854,157 @@ mod default_rate_limit_tests {
         );
         // Another path has its own bucket.
         assert!(check("198.51.100.1", "/y").await);
+    }
+
+    /// Whether a request from `ip` to `/` of the route `plain` is allowed.
+    async fn allowed(manager: &RateLimitManager, ip: &str) -> bool {
+        manager
+            .check("plain", ip, "/", Option::<&NoHeaders>::None)
+            .await
+            .allowed
+    }
+
+    /// The addresses of one IPv6 `/64` draw on one `client-ip` bucket.
+    #[tokio::test]
+    async fn ipv6_clients_in_one_64_share_a_client_ip_bucket() {
+        let manager = ZentinelProxy::initialize_rate_limiters(&config(
+            "rate-limits { default-rps 2; default-burst 2 }",
+        ));
+
+        assert!(allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(allowed(&manager, "2001:db8:0:1::2").await);
+        assert!(
+            !allowed(&manager, "2001:db8:0:1:ffff:ffff:ffff:ffff").await,
+            "a third address of the /64 had a bucket of its own"
+        );
+        // Another /64 has its own bucket.
+        assert!(allowed(&manager, "2001:db8:0:2::1").await);
+    }
+
+    #[tokio::test]
+    async fn ipv4_clients_keep_one_bucket_per_address() {
+        let manager = ZentinelProxy::initialize_rate_limiters(&config(
+            "rate-limits { default-rps 2; default-burst 2 }",
+        ));
+
+        assert!(allowed(&manager, "192.0.2.1").await);
+        assert!(allowed(&manager, "192.0.2.1").await);
+        assert!(!allowed(&manager, "192.0.2.1").await);
+        assert!(
+            allowed(&manager, "192.0.2.2").await,
+            "a neighbouring IPv4 address shared the bucket"
+        );
+    }
+
+    /// The global limit and the `client-ip-and-path` key group the client the
+    /// same way.
+    #[tokio::test]
+    async fn the_global_and_path_keyed_limits_group_ipv6_clients_too() {
+        let manager = ZentinelProxy::initialize_rate_limiters(&config(
+            "rate-limits { global { max-rps 1; burst 1 } }",
+        ));
+        assert!(allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(!allowed(&manager, "2001:db8:0:1::2").await);
+        assert!(allowed(&manager, "2001:db8:0:2::1").await);
+
+        let manager = ZentinelProxy::initialize_rate_limiters(&config(
+            "rate-limits { global { max-rps 1; burst 1; key \"client-ip-and-path\" } }",
+        ));
+        assert!(allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(!allowed(&manager, "2001:db8:0:1::2").await);
+        // Same client, another path.
+        let other_path = manager
+            .check(
+                "plain",
+                "2001:db8:0:1::3",
+                "/other",
+                Option::<&NoHeaders>::None,
+            )
+            .await;
+        assert!(other_path.allowed);
+    }
+
+    const TWO_PER_SECOND: &str = "rate-limits { default-rps 2; default-burst 2 }";
+
+    /// `client-ipv6-prefix-length 128` counts each IPv6 address on its own,
+    /// which is how every address was counted before the prefix existed.
+    #[tokio::test]
+    async fn a_prefix_length_of_128_gives_each_ipv6_address_its_own_bucket() {
+        let manager = ZentinelProxy::initialize_rate_limiters(&config_with_system(
+            "client-ipv6-prefix-length 128",
+            TWO_PER_SECOND,
+        ));
+
+        assert!(allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(!allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(
+            allowed(&manager, "2001:db8:0:1::2").await,
+            "a neighbouring address shared the bucket at /128"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shorter_prefix_shares_one_bucket_across_a_wider_network() {
+        let manager = ZentinelProxy::initialize_rate_limiters(&config_with_system(
+            "client-ipv6-prefix-length 48",
+            TWO_PER_SECOND,
+        ));
+
+        assert!(allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(allowed(&manager, "2001:db8:0:2::1").await);
+        assert!(!allowed(&manager, "2001:db8:0:3::1").await);
+        // Another /48.
+        assert!(allowed(&manager, "2001:db8:1:1::1").await);
+    }
+
+    /// Text that is not an IP address is keyed as it was, and an IPv4-mapped
+    /// address is the IPv4 client it carries (the request context already
+    /// holds the IPv4 form, so this is not a change for real requests).
+    #[tokio::test]
+    async fn non_ip_text_is_keyed_as_before_and_an_ipv4_mapped_address_is_the_ipv4_client() {
+        let manager = ZentinelProxy::initialize_rate_limiters(&config(TWO_PER_SECOND));
+
+        assert!(allowed(&manager, "unknown").await);
+        assert!(allowed(&manager, "unknown").await);
+        assert!(!allowed(&manager, "unknown").await);
+        assert!(allowed(&manager, "[2001:db8::1]:443").await);
+
+        assert!(allowed(&manager, "::ffff:192.0.2.1").await);
+        assert!(allowed(&manager, "192.0.2.1").await);
+        assert!(!allowed(&manager, "::ffff:192.0.2.1").await);
+        assert!(allowed(&manager, "::ffff:192.0.2.2").await);
+    }
+
+    /// `client-ipv6-prefix-length` is a `system` setting, so a reload leaves
+    /// the running manager's value alone: keys already counted under the old
+    /// one stay valid, and the reload warns that a restart is needed.
+    #[tokio::test]
+    async fn a_reload_does_not_change_the_prefix_length() {
+        let manager = ZentinelProxy::initialize_rate_limiters(&config_with_system(
+            "client-ipv6-prefix-length 128",
+            TWO_PER_SECOND,
+        ));
+        assert!(allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(allowed(&manager, "2001:db8:0:1::1").await);
+
+        // The reloaded config says 64, and changes the limit so that the
+        // limiter is replaced.
+        let changes = manager.reconcile(ZentinelProxy::initialize_rate_limiters(
+            &config_with_system(
+                "client-ipv6-prefix-length 64",
+                "rate-limits { default-rps 3; default-burst 3 }",
+            ),
+        ));
+        assert_eq!(changes.replaced, 1, "{changes:?}");
+        for _ in 0..3 {
+            assert!(allowed(&manager, "2001:db8:0:1::1").await);
+        }
+        assert!(!allowed(&manager, "2001:db8:0:1::1").await);
+        assert!(
+            allowed(&manager, "2001:db8:0:1::2").await,
+            "the reload changed how clients are keyed"
+        );
     }
 
     #[tokio::test]

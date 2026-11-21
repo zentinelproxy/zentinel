@@ -151,6 +151,7 @@ server {
     group "zentinel"
     trace-id-format "tinyflake"  // or "uuid"
     auto-reload #true
+    client-ipv6-prefix-length 64  // 1-128; 128 = count each IPv6 address on its own
 }
 ```
 

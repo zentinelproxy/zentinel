@@ -5,8 +5,9 @@
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -494,6 +495,117 @@ impl std::fmt::Display for ConnectionRefusal {
     }
 }
 
+/// How many leading bits of an IPv6 client address identify one client, from
+/// 1 to 128.
+///
+/// The addresses of one IPv6 prefix usually belong to the same subscriber or
+/// site, so the prefix is counted as one client instead of each address
+/// being a client of its own. A client is counted by its address truncated
+/// to this many bits; see [`client_key`]. Where unrelated hosts share one
+/// `/64` (a LAN, a hosting provider's subnet), use `128`, or raise the
+/// per-client limits.
+///
+/// The default is 64. `128` counts each address on its own, as IPv4 is
+/// counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct Ipv6PrefixLen(u8);
+
+/// An [`Ipv6PrefixLen`] outside 1 to 128.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("an IPv6 prefix length must be a whole number of bits from 1 to 128, not {0}")]
+pub struct InvalidIpv6PrefixLen(pub u8);
+
+impl Ipv6PrefixLen {
+    /// The default: one client per `/64`.
+    pub const DEFAULT: Self = Self(64);
+
+    /// `bits` leading bits, if that is from 1 to 128.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidIpv6PrefixLen`] for 0 and for anything above 128.
+    pub const fn new(bits: u8) -> Result<Self, InvalidIpv6PrefixLen> {
+        if bits == 0 || bits > 128 {
+            Err(InvalidIpv6PrefixLen(bits))
+        } else {
+            Ok(Self(bits))
+        }
+    }
+
+    /// The number of leading bits, from 1 to 128.
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for Ipv6PrefixLen {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl TryFrom<u8> for Ipv6PrefixLen {
+    type Error = InvalidIpv6PrefixLen;
+
+    fn try_from(bits: u8) -> Result<Self, Self::Error> {
+        Self::new(bits)
+    }
+}
+
+impl From<Ipv6PrefixLen> for u8 {
+    fn from(prefix: Ipv6PrefixLen) -> u8 {
+        prefix.0
+    }
+}
+
+/// The address a client is counted under in the per-client limits: the
+/// connection counts (`max-connections-per-client`, global, namespace and
+/// service) and every rate limit that keys on the client's address.
+///
+/// An IPv6 address is truncated to its first `prefix` bits (the rest are set
+/// to zero), so the addresses of one network are one client. An IPv4 address
+/// is its own key, and so is an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`),
+/// which is an IPv4 client reached over a dual-stack socket and is counted
+/// as that IPv4 address.
+///
+/// Every per-client count goes through this function, so that they cannot
+/// disagree about who a client is.
+pub fn client_key(ip: IpAddr, prefix: Ipv6PrefixLen) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                // `prefix` is at least 1, so the shift is at most 127.
+                let mask = u128::MAX << (128 - u32::from(prefix.get()));
+                IpAddr::V6(Ipv6Addr::from(u128::from(v6) & mask))
+            }
+        },
+    }
+}
+
+/// [`client_key`] for a client address held as text, as the request context
+/// holds it.
+///
+/// Text that is not an IP address (`unknown`, say) is returned as it is, as
+/// it was counted before. So is an address whose key is itself, which keeps
+/// the common cases (IPv4, and IPv6 with a prefix of 128) free of
+/// allocation.
+pub fn client_key_str(client: &str, prefix: Ipv6PrefixLen) -> Cow<'_, str> {
+    match client.parse::<IpAddr>() {
+        Ok(ip) => {
+            let key = client_key(ip, prefix);
+            if key == ip {
+                Cow::Borrowed(client)
+            } else {
+                Cow::Owned(key.to_string())
+            }
+        }
+        Err(_) => Cow::Borrowed(client),
+    }
+}
+
 #[derive(Default)]
 struct ConnectionCounts {
     total: usize,
@@ -527,7 +639,10 @@ impl ConnectionLimiter {
     /// Take a connection slot for `client`, or say which limit is full.
     ///
     /// `None` for a limit means unlimited. A `client` of `None` (a Unix socket
-    /// peer) counts toward the total only.
+    /// peer) counts toward the total only. `client` is the key a client is
+    /// counted under, not necessarily its address: pass it through
+    /// [`client_key`]. The permit gives the slot back under the key it was
+    /// taken with.
     pub fn try_acquire(
         self: &Arc<Self>,
         client: Option<IpAddr>,
@@ -560,7 +675,8 @@ impl ConnectionLimiter {
         self.counts.lock().total
     }
 
-    /// Connections `client` currently holds.
+    /// Connections currently held under the key `client` (see
+    /// [`client_key`]).
     pub fn for_client(&self, client: IpAddr) -> usize {
         self.counts
             .lock()
@@ -895,5 +1011,186 @@ mod tests {
 
         // Verify the new entries remain
         // (they were accessed recently so should still exist)
+    }
+
+    fn prefix(bits: u8) -> Ipv6PrefixLen {
+        Ipv6PrefixLen::new(bits).unwrap()
+    }
+
+    fn key(ip: &str, bits: u8) -> String {
+        client_key(ip.parse().unwrap(), prefix(bits)).to_string()
+    }
+
+    #[test]
+    fn a_prefix_length_is_from_1_to_128_bits() {
+        assert_eq!(Ipv6PrefixLen::default().get(), 64);
+        assert_eq!(Ipv6PrefixLen::new(1).unwrap().get(), 1);
+        assert_eq!(Ipv6PrefixLen::new(128).unwrap().get(), 128);
+        for bad in [0, 129, 255] {
+            assert_eq!(Ipv6PrefixLen::new(bad), Err(InvalidIpv6PrefixLen(bad)));
+        }
+        assert!(InvalidIpv6PrefixLen(0).to_string().contains("1 to 128"));
+    }
+
+    #[test]
+    fn a_prefix_length_is_checked_when_deserialized() {
+        assert_eq!(
+            serde_json::from_str::<Ipv6PrefixLen>("56").unwrap().get(),
+            56
+        );
+        for bad in ["0", "129", "-1", "300", "\"64\"", "64.5"] {
+            assert!(
+                serde_json::from_str::<Ipv6PrefixLen>(bad).is_err(),
+                "{bad} was accepted"
+            );
+        }
+        assert_eq!(serde_json::to_string(&prefix(48)).unwrap(), "48");
+    }
+
+    #[test]
+    fn client_key_truncates_ipv6_to_the_prefix() {
+        let addr = "2001:db8:1234:5678:9abc:def0:1122:3344";
+        assert_eq!(key(addr, 64), "2001:db8:1234:5678::");
+        assert_eq!(key(addr, 48), "2001:db8:1234::");
+        assert_eq!(key(addr, 32), "2001:db8::");
+        // Partial groups: 60 bits keep the first nibble of `5678`.
+        assert_eq!(key(addr, 60), "2001:db8:1234:5670::");
+        // 127 bits clear only the last one.
+        assert_eq!(key("2001:db8::3", 127), "2001:db8::2");
+        // The full address is its own key.
+        assert_eq!(key(addr, 128), addr);
+    }
+
+    #[test]
+    fn client_key_prefix_boundaries() {
+        // Neighbouring prefixes: a /63 holds two /64s, and a /65 splits one.
+        assert_eq!(key("2001:db8:0:2::1", 63), key("2001:db8:0:3::1", 63));
+        assert_ne!(key("2001:db8:0:1::1", 63), key("2001:db8:0:2::1", 63));
+        assert_eq!(key("2001:db8:0:1::1", 64), key("2001:db8:0:1:7fff::1", 64));
+        assert_ne!(key("2001:db8:0:1::1", 65), key("2001:db8:0:1:8000::1", 65));
+        assert_eq!(key("2001:db8:0:1:8000::1", 65), "2001:db8:0:1:8000::");
+        // Loopback is an IPv6 address like any other.
+        assert_eq!(key("::1", 64), "::");
+        assert_eq!(key("::1", 128), "::1");
+        // An IPv4-compatible address (`::a.b.c.d`, deprecated) is not an
+        // IPv4-mapped one: it is cut like any other IPv6 address.
+        assert_eq!(key("::192.0.2.1", 64), "::");
+        assert_eq!(key("::192.0.2.1", 128), "::c000:201");
+        // One bit keeps only the top bit of the address.
+        assert_eq!(key("ffff::1", 1), "8000::");
+        assert_eq!(key("7fff::1", 1), "::");
+        assert_eq!(key("2001:db8::1", 1), "::");
+        // The key is the same for every address of the prefix and for no
+        // address outside it.
+        assert_eq!(key("2001:db8:0:1::1", 64), key("2001:db8:0:1:ffff::9", 64));
+        assert_ne!(key("2001:db8:0:1::1", 64), key("2001:db8:0:2::1", 64));
+        assert_eq!(key("2001:db8:0:1::1", 48), key("2001:db8:0:2::1", 48));
+        assert_ne!(key("2001:db8:0:1::1", 128), key("2001:db8:0:1::2", 128));
+    }
+
+    #[test]
+    fn client_key_leaves_ipv4_and_ipv4_mapped_addresses_alone() {
+        for bits in [1, 64, 128] {
+            assert_eq!(key("192.0.2.1", bits), "192.0.2.1");
+            assert_eq!(key("192.0.2.2", bits), "192.0.2.2");
+            // A mapped address is the IPv4 client it carries, not an IPv6
+            // network: truncated, every IPv4 client would share `::`.
+            assert_eq!(key("::ffff:192.0.2.1", bits), "192.0.2.1");
+            assert_eq!(key("::ffff:192.0.2.2", bits), "192.0.2.2");
+        }
+    }
+
+    #[test]
+    fn client_key_str_is_borrowed_when_the_key_is_the_text() {
+        for (text, bits) in [
+            ("192.0.2.1", 64),
+            ("2001:db8::1", 128),
+            // Not an IP address: counted as it was.
+            ("unknown", 64),
+            ("[2001:db8::1]:443", 64),
+            ("", 64),
+        ] {
+            let got = client_key_str(text, prefix(bits));
+            assert_eq!(got, text);
+            assert!(matches!(got, Cow::Borrowed(_)), "{text} was copied");
+        }
+    }
+
+    #[test]
+    fn client_key_str_groups_ipv6_text() {
+        assert_eq!(
+            client_key_str("2001:db8:0:1::7", Ipv6PrefixLen::DEFAULT),
+            client_key_str("2001:db8:0:1:aaaa::1", Ipv6PrefixLen::DEFAULT),
+        );
+        assert_eq!(
+            client_key_str("2001:db8:0:1::7", Ipv6PrefixLen::DEFAULT),
+            "2001:db8:0:1::"
+        );
+        assert_eq!(
+            client_key_str("::ffff:192.0.2.1", Ipv6PrefixLen::DEFAULT),
+            "192.0.2.1"
+        );
+        assert_eq!(client_key_str("2001:db8:0:1::7", prefix(48)), "2001:db8::");
+    }
+
+    /// The per-client count is by key: two addresses of one prefix hold one
+    /// client's slots, and the slot comes back under the key it was taken
+    /// with.
+    #[test]
+    fn connections_are_counted_by_client_key() {
+        let limiter = ConnectionLimiter::new();
+        let by = |ip: &str, bits: u8| Some(client_key(ip.parse().unwrap(), prefix(bits)));
+
+        let first = limiter
+            .try_acquire(by("2001:db8:0:1::1", 64), None, Some(2))
+            .unwrap();
+        let second = limiter
+            .try_acquire(by("2001:db8:0:1::2", 64), None, Some(2))
+            .unwrap();
+        assert_eq!(limiter.tracked_clients(), 1);
+        assert_eq!(
+            limiter
+                .try_acquire(by("2001:db8:0:1::3", 64), None, Some(2))
+                .err(),
+            Some(ConnectionRefusal::PerClient { limit: 2 })
+        );
+        // Another prefix is another client.
+        let other = limiter
+            .try_acquire(by("2001:db8:0:2::1", 64), None, Some(2))
+            .unwrap();
+        assert_eq!(limiter.tracked_clients(), 2);
+
+        drop(first);
+        drop(second);
+        drop(other);
+        assert_eq!((limiter.total(), limiter.tracked_clients()), (0, 0));
+    }
+
+    /// A connection taken under one prefix length is given back under that
+    /// one even if later connections are counted under another, so the counts
+    /// return to zero whatever happened in between.
+    #[test]
+    fn a_permit_is_released_under_the_key_it_was_taken_with() {
+        let limiter = ConnectionLimiter::new();
+        let ip = "2001:db8:0:1::1";
+        let wide = limiter
+            .try_acquire(
+                Some(client_key(ip.parse().unwrap(), Ipv6PrefixLen::DEFAULT)),
+                None,
+                None,
+            )
+            .unwrap();
+        let narrow = limiter
+            .try_acquire(
+                Some(client_key(ip.parse().unwrap(), prefix(128))),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(limiter.tracked_clients(), 2);
+        drop(wide);
+        assert_eq!(limiter.tracked_clients(), 1);
+        drop(narrow);
+        assert_eq!((limiter.total(), limiter.tracked_clients()), (0, 0));
     }
 }

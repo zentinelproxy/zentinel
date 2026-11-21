@@ -18,11 +18,13 @@
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use prometheus::{register_int_counter_vec, register_int_gauge_vec, IntCounterVec, IntGaugeVec};
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, trace, warn};
 
+use zentinel_common::limits::{client_key_str, Ipv6PrefixLen};
 use zentinel_config::{RateLimitAction, RateLimitBackend, RateLimitKey};
 
 #[cfg(feature = "distributed-rate-limit-redis")]
@@ -596,6 +598,9 @@ impl RateLimiterPool {
     /// `mcp_tool` is the tool or resource resolved **from the request body** by
     /// the MCP policy engine, and is `None` before the body has been read. Only
     /// the MCP-keyed variants consult it; see [`Self::needs_request_body`].
+    ///
+    /// `client_ip` is the client as it is to be counted, from
+    /// [`RateLimitManager::client_key`], not the raw address.
     pub fn extract_key(
         &self,
         client_ip: &str,
@@ -796,6 +801,10 @@ pub struct RateLimitManager {
     route_limiters: DashMap<String, Arc<RateLimiterPool>>,
     /// Global rate limiter (optional)
     global_limiter: RwLock<Option<Arc<RateLimiterPool>>>,
+    /// How a client's IPv6 address is cut down to the key it is limited
+    /// under. Set when the manager is built and kept by [`Self::reconcile`],
+    /// so a reload does not change it (it is a `system` setting).
+    client_ipv6_prefix: Ipv6PrefixLen,
 }
 
 impl RateLimitManager {
@@ -804,7 +813,26 @@ impl RateLimitManager {
         Self {
             route_limiters: DashMap::new(),
             global_limiter: RwLock::new(None),
+            client_ipv6_prefix: Ipv6PrefixLen::DEFAULT,
         }
+    }
+
+    /// Limit an IPv6 client by the first `prefix` bits of its address, so the
+    /// addresses of one network share the buckets of every limiter keyed on
+    /// the client's address. The default is 64 bits.
+    pub fn with_client_ipv6_prefix(mut self, prefix: Ipv6PrefixLen) -> Self {
+        self.client_ipv6_prefix = prefix;
+        self
+    }
+
+    /// The client component of a rate limit key (and of any other per-client
+    /// bucket): `client_ip` as it is counted, which for an IPv6 address is
+    /// its network. Text that is not an IP address is returned unchanged.
+    ///
+    /// Everything keyed on the client's address goes through this, so that
+    /// they all count the same client.
+    pub fn client_key<'a>(&self, client_ip: &'a str) -> Cow<'a, str> {
+        client_key_str(client_ip, self.client_ipv6_prefix)
     }
 
     /// Create a new rate limit manager with a global rate limit keyed by
@@ -831,6 +859,7 @@ impl RateLimitManager {
             global_limiter: RwLock::new(Some(Arc::new(RateLimiterPool::with_scope(
                 config, "global",
             )))),
+            client_ipv6_prefix: Ipv6PrefixLen::DEFAULT,
         }
     }
 
@@ -936,8 +965,9 @@ impl RateLimitManager {
     ) -> Option<RateLimitResult> {
         let pool = self.route(route_id).filter(|p| p.needs_request_body())?;
 
+        let client_key = self.client_key(client_ip);
         let key = pool.extract_key(
-            client_ip,
+            &client_key,
             path,
             route_id,
             Option::<&NoHeaders>::None,
@@ -981,11 +1011,15 @@ impl RateLimitManager {
         // Track the most restrictive limit info for headers
         let mut best_limit_info: Option<RateLimitCheckInfo> = None;
 
+        // The client as it is counted: an IPv6 address by its network. The
+        // logs below keep the address itself.
+        let client_key = self.client_key(client_ip);
+
         // Check global limit first. A limiter keyed on the request body is
         // deferred to `check_body_keyed` -- evaluating it here would key on
         // "unknown" and burn the request's quota against the wrong bucket.
         if let Some(global) = self.global().filter(|g| !g.needs_request_body()) {
-            let key = global.extract_key(client_ip, path, route_id, headers, None);
+            let key = global.extract_key(&client_key, path, route_id, headers, None);
             let check_info = global.check_async(&key).await;
 
             if check_info.outcome == RateLimitOutcome::Limited {
@@ -1004,7 +1038,7 @@ impl RateLimitManager {
 
         // Check route-specific limit, same deferral as above.
         if let Some(pool) = self.route(route_id).filter(|p| !p.needs_request_body()) {
-            let key = pool.extract_key(client_ip, path, route_id, headers, None);
+            let key = pool.extract_key(&client_key, path, route_id, headers, None);
             let check_info = pool.check_async(&key).await;
 
             if check_info.outcome == RateLimitOutcome::Limited {
@@ -1682,6 +1716,45 @@ mod mcp_tool_key_tests {
             Some("search"),
         );
         assert_ne!(a, b, "two clients calling one tool must not share a bucket");
+    }
+
+    /// The client half of the combined key is the client as it is counted
+    /// everywhere else: the addresses of one IPv6 `/64` are one client.
+    #[tokio::test]
+    async fn the_combined_key_counts_the_addresses_of_an_ipv6_prefix_as_one_client() {
+        let manager = RateLimitManager::new();
+        manager.register_route(
+            "api",
+            RateLimitConfig {
+                max_rps: 1,
+                burst: 1,
+                key: RateLimitKey::ClientIpAndMcpTool,
+                action: RateLimitAction::Reject,
+                status_code: 429,
+                message: None,
+                backend: RateLimitBackend::Local,
+                max_delay_ms: 5000,
+                max_keys: DEFAULT_MAX_RATE_LIMIT_KEYS,
+            },
+        );
+        let limited = |ip: &'static str, tool: &'static str| {
+            let manager = &manager;
+            async move {
+                manager
+                    .check_body_keyed("api", ip, "/mcp", Some(tool))
+                    .await
+                    .is_some_and(|result| !result.allowed)
+            }
+        };
+
+        assert!(!limited("2001:db8:0:1::1", "search").await);
+        assert!(
+            limited("2001:db8:0:1::2", "search").await,
+            "another address of the /64 had its own quota"
+        );
+        // Another tool, and another /64, have a quota of their own.
+        assert!(!limited("2001:db8:0:1::2", "fetch").await);
+        assert!(!limited("2001:db8:0:2::1", "search").await);
     }
 
     #[test]

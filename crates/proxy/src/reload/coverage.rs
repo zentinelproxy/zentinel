@@ -238,6 +238,34 @@ mod tests {
         assert!(message.contains("'cache'") && message.contains("restart zentinel"));
     }
 
+    /// The prefix length that clients are counted by is read once at startup,
+    /// so changing it is reported as needing a restart.
+    #[test]
+    fn a_changed_client_ipv6_prefix_length_is_reported_as_needing_a_restart() {
+        let system = |extra: &str| {
+            Config::from_kdl(&format!(
+                r#"
+                system {{ worker-threads 1; {extra} }}
+                listeners {{ listener "l" {{ address "127.0.0.1:8080" }} }}
+                upstreams {{ upstream "u" {{ target "127.0.0.1:9000" }} }}
+                routes {{ route "r" {{ matches {{ path-prefix "/" }}
+                                     upstream "u" }} }}
+                "#
+            ))
+            .expect("parses")
+        };
+        let default = system("");
+        let explicit_default = system("client-ipv6-prefix-length 64");
+        let changed = system("client-ipv6-prefix-length 128");
+
+        assert_eq!(restart_required_changes(&default, &explicit_default), []);
+        let reported: Vec<_> = restart_required_changes(&default, &changed)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(reported, ["system"]);
+    }
+
     #[test]
     fn a_change_to_a_reconciled_block_needs_no_restart() {
         let old = config("");
