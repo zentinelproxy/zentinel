@@ -8,7 +8,7 @@ use pingora_load_balancing::{
     health_check::{HealthCheck as PingoraHealthCheck, HttpHealthCheck, TcpHealthCheck},
     Backends,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -466,34 +466,42 @@ impl HealthCheckRunner {
     /// health check get exactly one probe loop; a loop whose upstream is gone,
     /// or no longer has a health check, is stopped. A loop is restarted only
     /// when what it probes changed. Must be called within a Tokio runtime.
+    ///
+    /// This is [`Self::stop_unlisted`] followed by [`Self::start_listed`]. A
+    /// reload that swaps its routes in between calls the two separately.
     pub fn apply<I>(&self, upstreams: I) -> HealthCheckChanges
     where
         I: IntoIterator<Item = UpstreamConfig>,
     {
+        let upstreams: Vec<UpstreamConfig> = upstreams.into_iter().collect();
+        let stopped = self.stop_unlisted(&upstreams);
+        let mut changes = self.start_listed(&upstreams);
+        changes.stopped += stopped;
+        changes
+    }
+
+    /// Start the probe loop of each upstream in `upstreams` that has a health
+    /// check and no running loop, and restart the loop of one whose check
+    /// changed. A loop whose upstream is missing from `upstreams` keeps
+    /// running: the routes of the previous config may still use that upstream.
+    /// Stop those with [`Self::stop_unlisted`] once the new routes are live.
+    ///
+    /// Each upstream's `id` must already be its canonical id. `stopped` in
+    /// the result counts only a changed check that can no longer be built.
+    /// Must be called within a Tokio runtime.
+    pub fn start_listed(&self, upstreams: &[UpstreamConfig]) -> HealthCheckChanges {
         let mut changes = HealthCheckChanges::default();
-        let mut desired: HashMap<String, (String, UpstreamConfig)> = HashMap::new();
+        let mut desired: HashMap<&str, (String, &UpstreamConfig)> = HashMap::new();
         for config in upstreams {
-            if let Some(fp) = Self::fingerprint(&config) {
-                desired.insert(config.id.clone(), (fp, config));
+            if let Some(fp) = Self::fingerprint(config) {
+                desired.insert(config.id.as_str(), (fp, config));
             }
         }
 
         let mut checkers = self.checkers.lock();
 
-        let before = checkers.len();
-        checkers.retain(|id, _| {
-            let keep = desired.contains_key(id);
-            if !keep {
-                // No check any more: nothing may stay out of rotation on the
-                // strength of an old probe result.
-                self.view(id).reset();
-            }
-            keep
-        });
-        changes.stopped = before - checkers.len();
-
         for (id, (fingerprint, config)) in desired {
-            let existed = match checkers.get(&id) {
+            let existed = match checkers.get(id) {
                 Some(running) if running.fingerprint == fingerprint => {
                     changes.unchanged += 1;
                     continue;
@@ -505,11 +513,11 @@ impl HealthCheckRunner {
             // Remove (and so abort) the old loop before deciding about the
             // new one, so a check that can no longer be built stops probing.
             // Results of the old check do not carry over to the new one.
-            checkers.remove(&id);
-            let view = self.view(&id);
+            checkers.remove(id);
+            let view = self.view(id);
             view.reset();
 
-            let Some(checker) = ActiveHealthChecker::with_view(&config, view) else {
+            let Some(checker) = ActiveHealthChecker::with_view(config, view) else {
                 if existed {
                     changes.stopped += 1;
                 }
@@ -518,7 +526,7 @@ impl HealthCheckRunner {
             let checker = Arc::new(checker);
             let task = tokio::spawn(Self::probe_loop(checker.clone()));
             checkers.insert(
-                id,
+                id.to_string(),
                 RunningChecker {
                     fingerprint,
                     checker,
@@ -533,6 +541,32 @@ impl HealthCheckRunner {
         }
 
         changes
+    }
+
+    /// Stop the probe loops of upstreams that `upstreams`, the config now in
+    /// force, no longer gives a health check: those missing from it, and those
+    /// without a check. Returns how many.
+    ///
+    /// Each upstream's `id` must already be its canonical id.
+    pub fn stop_unlisted(&self, upstreams: &[UpstreamConfig]) -> usize {
+        let desired: HashSet<&str> = upstreams
+            .iter()
+            .filter(|config| Self::fingerprint(config).is_some())
+            .map(|config| config.id.as_str())
+            .collect();
+
+        let mut checkers = self.checkers.lock();
+        let before = checkers.len();
+        checkers.retain(|id, _| {
+            let keep = desired.contains(id.as_str());
+            if !keep {
+                // No check any more: nothing may stay out of rotation on the
+                // strength of an old probe result.
+                self.view(id).reset();
+            }
+            keep
+        });
+        before - checkers.len()
     }
 
     /// Probe one upstream on its own interval until aborted.
@@ -856,6 +890,36 @@ mod tests {
             after_stop,
             "a removed health check kept probing"
         );
+    }
+
+    /// A reload starts the checks it adds before its routes go live and stops
+    /// the ones it drops after them: `start_listed` leaves a check the new
+    /// config no longer lists running, and `stop_unlisted` stops it.
+    #[tokio::test]
+    async fn start_listed_keeps_unlisted_checks_until_stop_unlisted() {
+        init_crypto_provider();
+        let (mut old, _) = counting_backend(10).await;
+        old.id = "old".to_string();
+        let (mut added, _) = counting_backend(10).await;
+        added.id = "added".to_string();
+        let mut dropped_check = old.clone();
+        dropped_check.health_check = None;
+
+        let runner = HealthCheckRunner::new();
+        runner.apply([old.clone()]);
+
+        // The new config adds `added` and gives `old` no check.
+        let new = [added, dropped_check];
+        let changes = runner.start_listed(&new);
+        assert_eq!((changes.started, changes.stopped), (1, 0));
+        assert_eq!(
+            runner.upstream_ids(),
+            vec!["added".to_string(), "old".to_string()]
+        );
+
+        assert_eq!(runner.stop_unlisted(&new), 1);
+        assert_eq!(runner.upstream_ids(), vec!["added".to_string()]);
+        assert_eq!(runner.stop_unlisted(&new), 0);
     }
 
     /// Each upstream probes on its own interval. The old single loop ticked at

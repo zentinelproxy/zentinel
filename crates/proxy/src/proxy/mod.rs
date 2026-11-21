@@ -566,6 +566,12 @@ impl ZentinelProxy {
                         }
                     };
 
+                    // Build the upstream pools the new routes will use. They go in
+                    // before the routes do, and a service-discovery lookup can take
+                    // a while, so this happens before the reload lock is taken.
+                    let new_pools =
+                        Self::build_upstream_pools(&new_config, &health_check_runner).await;
+
                     // From here the handler changes shared state, so it must not
                     // interleave with a newer reload: that reload's hook loads
                     // its agents and stores its configuration, and this event's
@@ -613,6 +619,48 @@ impl ZentinelProxy {
                         "Route components reloaded"
                     );
 
+                    // Everything the new routes refer to goes in before them, and
+                    // what the new configuration no longer lists comes out after
+                    // them: a route the reload added, or whose limit, health
+                    // check or upstream it changed, is never served without them,
+                    // and a route of the previous configuration keeps what it
+                    // uses until the swap.
+                    //
+                    // Rate limiters were built once at startup, so a changed,
+                    // added or removed limit (route filter or policy, `global`,
+                    // `default-rps`) only took effect after a restart. Unchanged
+                    // limiters keep their buckets.
+                    let new_limiters = Self::initialize_rate_limiters(&new_config);
+                    let mut limiter_changes = rate_limit_manager.add_listed(&new_limiters);
+
+                    // Start added health checks and restart changed ones. They
+                    // run whether or not the pools below could be built, so a
+                    // pool-build timeout cannot leave the old probes in place.
+                    let health_upstreams: Vec<_> =
+                        Self::health_check_upstreams(&new_config).collect();
+                    let mut health_changes = health_check_runner.start_listed(&health_upstreams);
+
+                    // Install the new pools. A pool replaces the one of the same
+                    // id; the old one drains.
+                    let mut drained = match &new_pools {
+                        Some(new_pools) => {
+                            upstream_pools
+                                .with_write(|pools| {
+                                    new_pools
+                                        .iter()
+                                        .filter_map(|(id, pool)| {
+                                            pools
+                                                .insert(id.clone(), Arc::clone(pool))
+                                                .map(|old| (id.clone(), old))
+                                        })
+                                        .collect::<HashMap<_, _>>()
+                                })
+                                .await
+                        }
+                        None => HashMap::new(),
+                    };
+                    let pools_replaced = drained.len();
+
                     *route_matcher.write() = new_matcher;
                     info!(
                         routes = global_route_count,
@@ -630,74 +678,97 @@ impl ZentinelProxy {
                     if removed > 0 {
                         info!(removed, "Agents removed");
                     }
-                    drop(reload_guard);
 
-                    // Rebuild rate limiters. They were built once at startup, so a
-                    // changed, added or removed limit (route filter or policy,
-                    // `global`, `default-rps`) only took effect after a restart.
-                    // Unchanged limiters keep their buckets.
-                    let changes =
-                        rate_limit_manager.reconcile(Self::initialize_rate_limiters(&new_config));
+                    limiter_changes.removed = rate_limit_manager.remove_unlisted(&new_limiters);
                     info!(
-                        added = changes.added,
-                        replaced = changes.replaced,
-                        removed = changes.removed,
-                        unchanged = changes.unchanged,
+                        added = limiter_changes.added,
+                        replaced = limiter_changes.replaced,
+                        removed = limiter_changes.removed,
+                        unchanged = limiter_changes.unchanged,
                         "Rate limiters reloaded"
                     );
 
-                    // Reconcile active health checks with the new config:
-                    // start added checks, restart changed ones, stop removed
-                    // ones. Done before the pool update so a pool-build
-                    // timeout cannot leave the old probes in place.
-                    let changes =
-                        health_check_runner.apply(Self::health_check_upstreams(&new_config));
+                    health_changes.stopped += health_check_runner.stop_unlisted(&health_upstreams);
                     info!(
-                        started = changes.started,
-                        restarted = changes.restarted,
-                        stopped = changes.stopped,
-                        unchanged = changes.unchanged,
+                        started = health_changes.started,
+                        restarted = health_changes.restarted,
+                        stopped = health_changes.stopped,
+                        unchanged = health_changes.unchanged,
                         "Health checks reloaded"
                     );
 
-                    // Update upstream pools with timeout to avoid blocking
-                    // the reload handler on DNS resolution / connection attempts
-                    let pool_update = async {
-                        let mut new_pools = HashMap::new();
-                        for (upstream_id, upstream_config) in &new_config.upstreams {
-                            let mut config_with_id = upstream_config.clone();
-                            config_with_id.id = upstream_id.clone();
-                            match UpstreamPool::new(config_with_id).await {
-                                Ok(pool) => {
-                                    let pool = pool
-                                        .with_active_health(health_check_runner.view(upstream_id));
-                                    new_pools.insert(upstream_id.clone(), Arc::new(pool));
-                                }
-                                Err(e) => {
-                                    error!("Failed to create upstream pool {}: {}", upstream_id, e);
-                                }
-                            }
-                        }
-                        new_pools
-                    };
+                    if let Some(new_pools) = &new_pools {
+                        let removed_pools = upstream_pools
+                            .with_write(|pools| {
+                                let (kept, removed): (HashMap<_, _>, HashMap<_, _>) =
+                                    std::mem::take(pools)
+                                        .into_iter()
+                                        .partition(|(id, _)| new_pools.contains_key(id));
+                                *pools = kept;
+                                removed
+                            })
+                            .await;
+                        info!(
+                            added = new_pools.len() - pools_replaced,
+                            replaced = pools_replaced,
+                            removed = removed_pools.len(),
+                            "Upstream pools reloaded"
+                        );
+                        drained.extend(removed_pools);
+                    }
+                    drop(reload_guard);
 
-                    match tokio::time::timeout(Duration::from_secs(10), pool_update).await {
-                        Ok(new_pools) => {
-                            let old_pools = upstream_pools.replace(new_pools).await;
-
-                            // Track drain lifecycle for old pools
-                            tokio::spawn(async move {
-                                let tracker = crate::upstream::drain::DrainTracker::default();
-                                tracker.track_pools(old_pools).await;
-                            });
-                        }
-                        Err(_) => {
-                            warn!("Upstream pool update timed out after 10s, routes still updated");
-                        }
+                    // Track drain lifecycle for the old pools
+                    if !drained.is_empty() {
+                        tokio::spawn(async move {
+                            let tracker = crate::upstream::drain::DrainTracker::default();
+                            tracker.track_pools(drained).await;
+                        });
                     }
                 }
             }
         });
+    }
+
+    /// Build a pool for every upstream of `config`, each attached to its
+    /// upstream's health results. An upstream whose pool cannot be built is
+    /// left out and logged.
+    ///
+    /// Building can wait on service discovery, so the whole step is
+    /// bounded by 10 s. Returns `None` if that runs out, in which case the
+    /// reload goes on with the pools it has.
+    async fn build_upstream_pools(
+        config: &Config,
+        health_check_runner: &HealthCheckRunner,
+    ) -> Option<HashMap<String, Arc<UpstreamPool>>> {
+        let build = async {
+            let mut pools = HashMap::new();
+            for (upstream_id, upstream_config) in &config.upstreams {
+                let mut config_with_id = upstream_config.clone();
+                config_with_id.id = upstream_id.clone();
+                match UpstreamPool::new(config_with_id).await {
+                    Ok(pool) => {
+                        let pool = pool.with_active_health(health_check_runner.view(upstream_id));
+                        pools.insert(upstream_id.clone(), Arc::new(pool));
+                    }
+                    Err(e) => {
+                        error!("Failed to create upstream pool {}: {}", upstream_id, e);
+                    }
+                }
+            }
+            pools
+        };
+
+        match tokio::time::timeout(Duration::from_secs(10), build).await {
+            Ok(pools) => Some(pools),
+            Err(_) => {
+                warn!(
+                    "Upstream pool update timed out after 10s; the new routes still go \
+                     live and the previous pools stay"
+                );
+                None
+            }
+        }
     }
 
     /// Every upstream with its id set, which is what the health check
@@ -1894,6 +1965,63 @@ mod default_rate_limit_tests {
         assert_eq!(statuses(&manager, "plain", 3).await, vec![200, 200, 429]);
     }
 
+    /// A reload registers and changes limiters before its routes go live and
+    /// removes them after: until `remove_unlisted`, the limiters the new
+    /// config drops stay, since the previous routes still use them.
+    #[tokio::test]
+    async fn limiters_are_added_before_and_removed_after_the_routes_change() {
+        // `plain` has the default limit, `own` its filter's.
+        let manager =
+            ZentinelProxy::initialize_rate_limiters(&config("rate-limits { default-rps 100 }"));
+        let new = ZentinelProxy::initialize_rate_limiters(&config(
+            "rate-limits { global { max-rps 1; burst 1 } }",
+        ));
+
+        // The new config adds a global limit and drops `plain`'s default.
+        let changes = manager.add_listed(&new);
+        assert_eq!(
+            (
+                changes.added,
+                changes.replaced,
+                changes.removed,
+                changes.unchanged
+            ),
+            (1, 0, 0, 1)
+        );
+        assert!(manager.has_route_specific_limiter("plain"));
+        assert_eq!(statuses(&manager, "own", 2).await, vec![200, 429]);
+
+        assert_eq!(manager.remove_unlisted(&new), 1);
+        assert!(!manager.has_route_specific_limiter("plain"));
+        assert!(manager.has_route_specific_limiter("own"));
+    }
+
+    /// The same for the global limit: `add_listed` leaves one the new config
+    /// drops, and replaces a changed route limit at once.
+    #[tokio::test]
+    async fn a_dropped_global_limit_stays_until_remove_unlisted() {
+        let manager = ZentinelProxy::initialize_rate_limiters(&config(
+            "rate-limits { default-rps 100; global { max-rps 1000; burst 1000 } }",
+        ));
+        let new = ZentinelProxy::initialize_rate_limiters(&config(
+            "rate-limits { default-rps 1; default-burst 1 }",
+        ));
+
+        let changes = manager.add_listed(&new);
+        assert_eq!(
+            (changes.added, changes.replaced, changes.removed),
+            (0, 1, 0),
+            "{changes:?}"
+        );
+        // `plain` is limited by its new limit, and still by the global one.
+        assert_eq!(statuses(&manager, "plain", 2).await, vec![200, 429]);
+        assert!(manager.has_route_limiter("unlisted"));
+
+        assert_eq!(manager.remove_unlisted(&new), 1);
+        assert!(!manager.has_route_limiter("unlisted"));
+        assert_eq!(manager.remove_unlisted(&new), 0);
+    }
+
     /// Reloading an unrelated part of the config must not refill every
     /// bucket: a client at its limit stays there.
     #[tokio::test]
@@ -1969,6 +2097,8 @@ mod reload_rollback_tests {
         limits: Arc<RateLimitManager>,
         agents: Arc<AgentManager>,
         components: RouteComponents,
+        pools: Registry<UpstreamPool>,
+        health: Arc<HealthCheckRunner>,
     }
 
     impl Harness {
@@ -2012,12 +2142,25 @@ mod reload_rollback_tests {
             ));
             let limits = Arc::new(ZentinelProxy::initialize_rate_limiters(&config));
             let components = RouteComponents::from_config(&config);
+            let health = Arc::new(HealthCheckRunner::new());
+            let mut initial_pools = HashMap::new();
+            for (id, upstream) in &config.upstreams {
+                let mut upstream = upstream.clone();
+                upstream.id = id.clone();
+                let pool = UpstreamPool::new(upstream)
+                    .await
+                    .expect("initial pool builds")
+                    .with_active_health(health.view(id));
+                initial_pools.insert(id.clone(), Arc::new(pool));
+            }
+            health.apply(ZentinelProxy::health_check_upstreams(&config));
+            let pools = Registry::from_map(initial_pools);
             ZentinelProxy::setup_reload_handler(
                 Arc::clone(&manager),
                 Arc::clone(&routes),
                 listeners,
-                Registry::from_map(HashMap::new()),
-                Arc::new(HealthCheckRunner::new()),
+                pools.clone(),
+                Arc::clone(&health),
                 Arc::clone(&limits),
                 Arc::clone(&agents),
                 components.clone(),
@@ -2031,11 +2174,36 @@ mod reload_rollback_tests {
                 limits,
                 agents,
                 components,
+                pools,
+                health,
             }
         }
 
         fn write(&self, kdl: &str) {
             std::fs::write(&self.path, kdl).expect("write config");
+        }
+
+        /// Read-lock the route matcher. The reload handler takes the write
+        /// lock only to swap the routes, so it parks there until the guard is
+        /// dropped.
+        fn hold_the_swap(&self) -> parking_lot::RwLockReadGuard<'_, RouteMatcher> {
+            let guard = self.routes.read();
+            // `parked_at_the_swap` relies on this: a second reader is let in
+            // unless a writer is waiting.
+            assert!(
+                self.routes.try_read().is_some(),
+                "a reader was refused with no writer waiting"
+            );
+            guard
+        }
+
+        /// Wait until the reload handler is blocked on the write lock of the
+        /// route matcher, which the caller holds through `hold_the_swap`. That
+        /// lock is taken only to swap the routes, so everything the handler
+        /// does before the swap is done by then. A reader that comes while a
+        /// writer waits is refused, which is how this tells.
+        async fn parked_at_the_swap(&self) -> bool {
+            within_5s(async || self.routes.try_read().is_none()).await
         }
 
         /// The route the global matcher picks for `path`.
@@ -2259,5 +2427,254 @@ mod reload_rollback_tests {
             h.agents.is_loaded("one").await
         })
         .await;
+    }
+
+    struct NoHeaders;
+    impl crate::rate_limit::HeaderAccessor for NoHeaders {
+        fn get_header(&self, _name: &str) -> Option<String> {
+            None
+        }
+    }
+
+    /// Routes `(id, upstream)` on the path prefix `/<id>`, followed by the
+    /// given `rate-limits` and `upstreams` blocks. A route with an empty
+    /// upstream is served by the built-in status handler.
+    fn kdl_routes(routes: &[(&str, &str)], rate_limits: &str, upstreams: &str) -> String {
+        let routes: String = routes
+            .iter()
+            .map(|(id, upstream)| {
+                let target = if upstream.is_empty() {
+                    r#"builtin-handler "status""#.to_string()
+                } else {
+                    format!(r#"upstream "{upstream}""#)
+                };
+                format!(
+                    r#"route "{id}" {{
+                        matches {{ path-prefix "/{id}" }}
+                        {target}
+                    }}
+                    "#
+                )
+            })
+            .collect();
+        format!(
+            r#"
+            schema-version "1.0"
+            system {{ worker-threads 0 }}
+            listeners {{
+                listener "http" {{ address "127.0.0.1:19291" protocol "http" }}
+            }}
+            {rate_limits}
+            routes {{ {routes} }}
+            {upstreams}
+            "#
+        )
+    }
+
+    /// An `upstreams` block with one upstream, `id`, that has a health check.
+    fn upstream_with_check(id: &str) -> String {
+        format!(
+            r#"upstreams {{
+                upstream "{id}" {{
+                    target "127.0.0.1:9"
+                    health-check {{
+                        type "http" {{ path "/health" }}
+                        interval-secs 1
+                        healthy-threshold 1
+                        unhealthy-threshold 1
+                    }}
+                }}
+            }}"#
+        )
+    }
+
+    /// Poll `cond` for up to 5 s.
+    async fn within_5s(mut cond: impl AsyncFnMut() -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if cond().await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cond().await
+    }
+
+    /// The reload handler registered rate limiters only after it had swapped
+    /// in the new route matcher. From the swap until the limiters followed, a
+    /// route the reload added had no limit, and a route whose limit the
+    /// reload changed kept its old one.
+    ///
+    /// The handler cannot swap while this test holds a read lock on the
+    /// route matcher, so whatever the test sees under that lock was done
+    /// before the swap. A limiter the new configuration drops is still
+    /// needed by the previous routes, which serve until the swap, so it must
+    /// still be there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // `multi_thread`: the parked handler blocks its worker thread in
+    // `RwLock::write`, and the test needs another one to go on.
+    // The lock is held across awaits on purpose: it is what parks the
+    // handler at the swap. Nothing else locks the matcher meanwhile.
+    #[allow(clippy::await_holding_lock)]
+    async fn rate_limiters_are_in_place_before_the_routes_swap() {
+        let h = Harness::start_with(
+            true,
+            &kdl_routes(
+                &[("a", ""), ("c", "")],
+                "rate-limits { default-rps 100 }",
+                "",
+            ),
+        )
+        .await;
+        assert!(h.limits.has_route_specific_limiter("a"));
+        assert!(h.limits.has_route_specific_limiter("c"));
+
+        let at_the_swap = h.hold_the_swap();
+        h.write(&kdl_routes(
+            &[("a", ""), ("b", "")],
+            "rate-limits { default-rps 1; default-burst 1 }",
+            "",
+        ));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("the reload applies");
+
+        assert!(
+            h.parked_at_the_swap().await,
+            "the reload handler never reached the route swap"
+        );
+        assert!(
+            h.limits.has_route_specific_limiter("b"),
+            "route b, added by the reload, had no rate limiter when the route \
+             matcher was swapped"
+        );
+        let first = h
+            .limits
+            .check("a", "203.0.113.7", "/a", Option::<&NoHeaders>::None)
+            .await;
+        let second = h
+            .limits
+            .check("a", "203.0.113.7", "/a", Option::<&NoHeaders>::None)
+            .await;
+        assert!(
+            first.allowed && !second.allowed,
+            "route a kept its old limit when the route matcher was swapped"
+        );
+        assert!(
+            h.limits.has_route_specific_limiter("c"),
+            "the limiter of route c was removed before the route matcher was \
+             swapped, while the previous routes still serve"
+        );
+
+        drop(at_the_swap);
+        assert!(
+            within_5s(async || !h.limits.has_route_specific_limiter("c")).await,
+            "the limiter of the removed route c was not removed after the swap"
+        );
+        assert_eq!(h.routed("/b").as_deref(), Some("b"));
+    }
+
+    /// The reload handler built the upstream pools and started the health
+    /// checks only after it had swapped in the new route matcher, so a route
+    /// the reload added to a new upstream failed with "Upstream pool not
+    /// found" until they followed. The previous upstream stays until the
+    /// swap, as the previous routes still use it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // As above: the read lock holds the handler at the swap, and the parked
+    // handler blocks a worker thread.
+    #[allow(clippy::await_holding_lock)]
+    async fn upstream_pools_and_health_checks_are_in_place_before_the_routes_swap() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let h = Harness::start_with(
+            true,
+            &kdl_routes(&[("a", "up-a")], "", &upstream_with_check("up-a")),
+        )
+        .await;
+        assert!(h.pools.contains("up-a").await);
+        assert_eq!(h.health.upstream_ids(), ["up-a"]);
+
+        let at_the_swap = h.hold_the_swap();
+        h.write(&kdl_routes(
+            &[("b", "up-b")],
+            "",
+            &upstream_with_check("up-b"),
+        ));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("the reload applies");
+
+        assert!(
+            h.parked_at_the_swap().await,
+            "the reload handler never reached the route swap"
+        );
+        assert!(
+            h.pools.contains("up-b").await && h.health.upstream_ids().contains(&"up-b".into()),
+            "upstream up-b, added by the reload, had no pool or no health check \
+             when the route matcher was swapped"
+        );
+        assert!(
+            h.pools.contains("up-a").await && h.health.upstream_ids().contains(&"up-a".into()),
+            "upstream up-a was removed before the route matcher was swapped, \
+             while the previous routes still use it"
+        );
+
+        drop(at_the_swap);
+        assert!(
+            within_5s(async || {
+                !h.pools.contains("up-a").await && h.health.upstream_ids() == ["up-b"]
+            })
+            .await,
+            "the removed upstream up-a kept its pool or health check after the swap"
+        );
+        assert_eq!(h.routed("/b").as_deref(), Some("b"));
+    }
+
+    /// A rollback puts the previous configuration's upstream pool and health
+    /// check back and takes the ones of the rolled-back configuration out.
+    #[tokio::test]
+    async fn a_rollback_restores_the_pools_and_health_checks_of_the_previous_config() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let h = Harness::start_with(
+            true,
+            &kdl_routes(&[("a", "up-a")], "", &upstream_with_check("up-a")),
+        )
+        .await;
+
+        h.write(&kdl_routes(
+            &[("b", "up-b")],
+            "",
+            &upstream_with_check("up-b"),
+        ));
+        h.manager
+            .reload(ReloadTrigger::Manual)
+            .await
+            .expect("the reload applies");
+        assert!(
+            within_5s(async || {
+                !h.pools.contains("up-a").await
+                    && h.pools.contains("up-b").await
+                    && h.health.upstream_ids() == ["up-b"]
+            })
+            .await,
+            "the reload did not replace up-a with up-b"
+        );
+
+        h.manager
+            .rollback("test".to_string())
+            .await
+            .expect("rollback");
+        assert!(
+            within_5s(async || {
+                h.pools.contains("up-a").await
+                    && !h.pools.contains("up-b").await
+                    && h.health.upstream_ids() == ["up-a"]
+            })
+            .await,
+            "after the rollback the pools are {:?} and the health checks {:?}",
+            h.pools.keys().await,
+            h.health.upstream_ids()
+        );
     }
 }

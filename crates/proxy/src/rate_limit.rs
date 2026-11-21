@@ -869,53 +869,85 @@ impl RateLimitManager {
     /// keeps its pool, and so its buckets and backend connection: reloading
     /// an unrelated part of the config must not hand every client a fresh
     /// burst. Changed limiters start with full buckets, as at startup.
+    ///
+    /// This is [`Self::add_listed`] followed by [`Self::remove_unlisted`]. A
+    /// reload that swaps its routes in between calls the two separately.
     pub fn reconcile(&self, new: RateLimitManager) -> RateLimitReconcile {
+        let mut changes = self.add_listed(&new);
+        changes.removed = self.remove_unlisted(&new);
+        changes
+    }
+
+    /// Register the limiters `new` lists that this manager does not have, and
+    /// replace the ones whose config changed. Limiters missing from `new` stay
+    /// in place, and so does a global limit that `new` lacks: the routes of the
+    /// previous config may still be serving, and they are still limited by
+    /// them. Drop them with [`Self::remove_unlisted`] once the new routes are
+    /// live.
+    ///
+    /// Run this before the new routes go live, so a route the reload added,
+    /// or whose limit it changed, is never served without its new limit. The
+    /// returned counts have `removed` at zero.
+    pub fn add_listed(&self, new: &RateLimitManager) -> RateLimitReconcile {
         let mut changes = RateLimitReconcile::default();
 
-        let new_global = new.global_limiter.into_inner();
-        {
+        if let Some(new_global) = new.global() {
             let mut global = self.global_limiter.write();
-            match (global.as_ref(), new_global) {
-                (Some(old), Some(new)) if old.config() == new.config() => changes.unchanged += 1,
-                (old, new) => {
-                    match (old.is_some(), new.is_some()) {
-                        (true, true) => changes.replaced += 1,
-                        (false, true) => changes.added += 1,
-                        (true, false) => changes.removed += 1,
-                        (false, false) => {}
-                    }
-                    *global = new;
+            match global.as_ref() {
+                Some(old) if old.config() == new_global.config() => changes.unchanged += 1,
+                Some(_) => {
+                    changes.replaced += 1;
+                    *global = Some(new_global);
+                }
+                None => {
+                    changes.added += 1;
+                    *global = Some(new_global);
                 }
             }
         }
 
-        // Drop routes that no longer have a limiter before adding new ones,
-        // so the map never holds both a stale and a fresh limit for a route.
-        self.route_limiters.retain(|route_id, _| {
-            let keep = new.route_limiters.contains_key(route_id);
-            if !keep {
-                changes.removed += 1;
-            }
-            keep
-        });
-        for (route_id, pool) in new.route_limiters {
+        for entry in new.route_limiters.iter() {
+            let (route_id, pool) = (entry.key(), entry.value());
             let unchanged = self
-                .route(&route_id)
+                .route(route_id)
                 .map(|old| old.config() == pool.config());
             match unchanged {
                 Some(true) => changes.unchanged += 1,
                 Some(false) => {
                     changes.replaced += 1;
-                    self.route_limiters.insert(route_id, pool);
+                    self.route_limiters.insert(route_id.clone(), pool.clone());
                 }
                 None => {
                     changes.added += 1;
-                    self.route_limiters.insert(route_id, pool);
+                    self.route_limiters.insert(route_id.clone(), pool.clone());
                 }
             }
         }
 
         changes
+    }
+
+    /// Remove the limiters `new` no longer lists: those of routes that have
+    /// none in `new`, and the global limit if `new` has none. Returns how many.
+    ///
+    /// Run this once the new routes are live, with the routes that were
+    /// limited by them gone.
+    pub fn remove_unlisted(&self, new: &RateLimitManager) -> usize {
+        let mut removed = 0;
+
+        if new.global().is_none() && self.global_limiter.write().take().is_some() {
+            removed += 1;
+        }
+
+        self.route_limiters.retain(|route_id, _| {
+            let keep = new.route_limiters.contains_key(route_id);
+            if !keep {
+                removed += 1;
+            }
+            keep
+        });
+
+        removed
     }
 
     /// Evaluate the limiters that key on something only the body supplies.
