@@ -2642,7 +2642,7 @@ impl ProxyHttp for ZentinelProxy {
                 resp_headers_map
                     .entry(name.as_str().to_string())
                     .or_default()
-                    .push(value.to_str().unwrap_or("").to_string());
+                    .push(crate::http_helpers::header_value_to_string(value).into_owned());
             }
 
             let agent_ctx = crate::agents::AgentCallContext {

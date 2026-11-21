@@ -4,16 +4,18 @@
 //! - Extracting request information from Pingora sessions
 //! - Writing HTTP responses to Pingora sessions
 //! - Trace ID extraction from headers
+//! - Converting header values to the text agents are sent
 //!
 //! These helpers reduce boilerplate in the main proxy logic and ensure
 //! consistent handling of HTTP operations.
 
 use bytes::Bytes;
-use http::Response;
+use http::{HeaderValue, Response};
 use http_body_util::{BodyExt, Full};
 use pingora::http::{RequestHeader, ResponseHeader};
 use pingora::prelude::*;
 use pingora::proxy::Session;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::routing::RequestInfo;
@@ -57,6 +59,26 @@ pub fn extract_request_host(req_header: &RequestHeader) -> &str {
         .get("host")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
+}
+
+/// The text an agent is sent for a header value.
+///
+/// A header value is bytes, not necessarily text, and `HeaderValue::to_str`
+/// fails on any byte outside visible ASCII. A value that is valid UTF-8 is
+/// returned as it is. Any other value is returned with each byte as the
+/// Unicode code point of the same value (U+0000..=U+00FF, as if read as
+/// ISO-8859-1), so that no byte is lost or replaced by a placeholder.
+/// The choice is made for the value as a whole: a value that mixes valid
+/// UTF-8 sequences with a stray byte is converted byte by byte.
+///
+/// Values that are visible ASCII, nearly all of them, are borrowed as they
+/// are, so a caller that needs a `String` allocates exactly once.
+pub(crate) fn header_value_to_string(value: &HeaderValue) -> Cow<'_, str> {
+    let bytes = value.as_bytes();
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => Cow::Owned(bytes.iter().map(|&byte| char::from(byte)).collect()),
+    }
 }
 
 /// Extract request info from a Pingora session
@@ -359,6 +381,64 @@ mod tests {
         // Simulates the HTTP/2 case where Pingora parses :authority into uri.
         let h = req("http://api.example.com/v1", None);
         assert_eq!(extract_request_host(&h), "api.example.com");
+    }
+
+    fn value(bytes: &[u8]) -> HeaderValue {
+        HeaderValue::from_bytes(bytes).unwrap()
+    }
+
+    #[test]
+    fn header_value_to_string_borrows_visible_ascii() {
+        let v = value(b"text/html; charset=utf-8");
+        let text = header_value_to_string(&v);
+        assert_eq!(text, "text/html; charset=utf-8");
+        assert!(matches!(text, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn header_value_to_string_keeps_tab_and_spaces() {
+        assert_eq!(header_value_to_string(&value(b"a \tb")), "a \tb");
+    }
+
+    #[test]
+    fn header_value_to_string_returns_empty_for_empty_value() {
+        let v = value(b"");
+        let text = header_value_to_string(&v);
+        assert_eq!(text, "");
+        assert!(matches!(text, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn header_value_to_string_keeps_valid_utf8_as_text() {
+        let v = value("caf\u{e9}".as_bytes());
+        let text = header_value_to_string(&v);
+        assert_eq!(text, "caf\u{e9}");
+        assert!(matches!(text, Cow::Borrowed(_)));
+        assert_eq!(
+            header_value_to_string(&value("\u{65e5}\u{672c}".as_bytes())),
+            "\u{65e5}\u{672c}"
+        );
+    }
+
+    #[test]
+    fn header_value_to_string_maps_invalid_utf8_byte_by_byte() {
+        // 0xE9 alone is not UTF-8: it becomes U+00E9.
+        assert_eq!(header_value_to_string(&value(b"caf\xe9")), "caf\u{e9}");
+        // Every byte keeps its own value; none collapses into a placeholder.
+        assert_eq!(header_value_to_string(&value(b"a\xffb")), "a\u{ff}b");
+        assert_eq!(header_value_to_string(&value(b"\x80\xff")), "\u{80}\u{ff}");
+        // A truncated UTF-8 sequence.
+        assert_eq!(header_value_to_string(&value(b"\xc3(")), "\u{c3}(");
+    }
+
+    #[test]
+    fn header_value_to_string_converts_a_mixed_value_as_a_whole() {
+        // "caf" + UTF-8 for U+00E9 + a stray 0xFF is not valid UTF-8, so the
+        // two bytes of the valid sequence are mapped one by one as well.
+        assert_eq!(
+            header_value_to_string(&value(b"caf\xc3\xa9\xff")),
+            "caf\u{c3}\u{a9}\u{ff}"
+        );
     }
 
     // Trace ID generation tests are in crate::trace_id module.
