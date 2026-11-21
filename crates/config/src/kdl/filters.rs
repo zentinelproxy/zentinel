@@ -8,9 +8,17 @@ use crate::filters::*;
 use crate::routes::FailureMode;
 use crate::FilterConfig;
 
-use super::helpers::{get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry};
+use super::helpers::{
+    get_bool_entry, get_bool_entry_or, get_first_arg_string, get_int_entry, get_int_entry_or,
+    get_string_entry, get_unique, get_unique_child, reject_repeated_header_names,
+};
 
 /// Parse top-level filter definitions block
+///
+/// # Errors
+///
+/// Fails when two filters in the block share an ID; the later one used to
+/// replace the earlier without a word.
 pub fn parse_filter_definitions(node: &kdl::KdlNode) -> Result<HashMap<String, FilterConfig>> {
     trace!("Parsing filter definitions block");
     let mut filters = HashMap::new();
@@ -27,6 +35,12 @@ pub fn parse_filter_definitions(node: &kdl::KdlNode) -> Result<HashMap<String, F
                 trace!(filter_id = %id, "Parsing filter definition");
 
                 let filter = parse_single_filter_definition(child)?;
+                if filters.contains_key(&id) {
+                    return Err(anyhow::anyhow!(
+                        "Duplicate filter ID '{}' found. Each filter ID must be unique.",
+                        id
+                    ));
+                }
                 filters.insert(id.clone(), FilterConfig::new(id, filter));
             }
         }
@@ -41,7 +55,7 @@ pub fn parse_filter_definitions(node: &kdl::KdlNode) -> Result<HashMap<String, F
 
 /// Parse a single filter definition
 pub fn parse_single_filter_definition(node: &kdl::KdlNode) -> Result<Filter> {
-    let filter_type = get_string_entry(node, "type").ok_or_else(|| {
+    let filter_type = get_string_entry(node, "type")?.ok_or_else(|| {
         anyhow::anyhow!(
             "Filter definition requires a 'type' field. Valid types: rate-limit, agent, headers, compress, cors, timeout, log, geo"
         )
@@ -101,15 +115,17 @@ pub(crate) const RECOGNIZED_RATE_LIMIT_FILTER_KEYS: &[&str] = &[
 ];
 
 fn parse_rate_limit_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let max_rps = get_int_entry(node, "max-rps")
+    let max_rps = get_int_entry(node, "max-rps")?
         .map(|v| v as u32)
         .unwrap_or(100);
-    let burst = get_int_entry(node, "burst").map(|v| v as u32).unwrap_or(10);
-    let status_code = get_int_entry(node, "status-code")
+    let burst = get_int_entry(node, "burst")?
+        .map(|v| v as u32)
+        .unwrap_or(10);
+    let status_code = get_int_entry(node, "status-code")?
         .map(|v| v as u16)
         .unwrap_or(429);
 
-    let key = get_string_entry(node, "key")
+    let key = get_string_entry(node, "key")?
         .map(|s| match s.as_str() {
             "client-ip" => RateLimitKey::ClientIp,
             "path" => RateLimitKey::Path,
@@ -124,7 +140,7 @@ fn parse_rate_limit_filter(node: &kdl::KdlNode) -> Result<Filter> {
         })
         .unwrap_or(RateLimitKey::ClientIp);
 
-    let on_limit = get_string_entry(node, "on-limit")
+    let on_limit = get_string_entry(node, "on-limit")?
         .map(|s| match s.as_str() {
             "reject" => RateLimitAction::Reject,
             "delay" => RateLimitAction::Delay,
@@ -142,12 +158,12 @@ fn parse_rate_limit_filter(node: &kdl::KdlNode) -> Result<Filter> {
         key,
         on_limit,
         status_code,
-        limit_message: get_string_entry(node, "message"),
+        limit_message: get_string_entry(node, "message")?,
         backend,
-        max_delay_ms: get_int_entry(node, "max-delay-ms")
+        max_delay_ms: get_int_entry(node, "max-delay-ms")?
             .map(|v| v as u64)
             .unwrap_or(5000),
-        max_keys: get_int_entry(node, "max-keys")
+        max_keys: get_int_entry(node, "max-keys")?
             .map(|v| v as usize)
             .unwrap_or_else(crate::filters::default_max_keys),
     }))
@@ -155,29 +171,28 @@ fn parse_rate_limit_filter(node: &kdl::KdlNode) -> Result<Filter> {
 
 /// Parse rate limit backend configuration
 fn parse_rate_limit_backend(node: &kdl::KdlNode) -> Result<RateLimitBackend> {
-    let backend_type = get_string_entry(node, "backend").unwrap_or_else(|| "local".to_string());
+    let backend_type = get_string_entry(node, "backend")?.unwrap_or_else(|| "local".to_string());
 
     match backend_type.as_str() {
         "local" => Ok(RateLimitBackend::Local),
         "redis" => {
             // Look for redis configuration node
-            let redis_url = get_string_entry(node, "redis-url")
+            let redis_url = get_string_entry(node, "redis-url")?
                 .unwrap_or_else(|| "redis://127.0.0.1:6379".to_string());
-            let key_prefix = get_string_entry(node, "redis-prefix")
+            let key_prefix = get_string_entry(node, "redis-prefix")?
                 .unwrap_or_else(|| "zentinel:ratelimit:".to_string());
-            let pool_size = get_int_entry(node, "redis-pool-size")
+            let pool_size = get_int_entry(node, "redis-pool-size")?
                 .map(|v| v as u32)
                 .unwrap_or(10);
-            let timeout_ms = get_int_entry(node, "redis-timeout-ms")
+            let timeout_ms = get_int_entry(node, "redis-timeout-ms")?
                 .map(|v| v as u64)
                 .unwrap_or(50);
             // Every config writes `redis-fallback-local`; this read only
             // `redis-fallback`. It looked correct because the default is also
             // true, so the discarded setting matched intent by coincidence —
             // until someone wrote `#false`, which was silently ignored.
-            let fallback_local = get_bool_entry(node, "redis-fallback-local")
-                .or_else(|| get_bool_entry(node, "redis-fallback"))
-                .unwrap_or(true);
+            let fallback_local =
+                get_bool_entry_or(node, "redis-fallback-local", "redis-fallback")?.unwrap_or(true);
 
             Ok(RateLimitBackend::Redis(RedisBackendConfig {
                 url: redis_url,
@@ -189,24 +204,23 @@ fn parse_rate_limit_backend(node: &kdl::KdlNode) -> Result<RateLimitBackend> {
         }
         "memcached" | "memcache" => {
             // Look for memcached configuration
-            let memcached_url = get_string_entry(node, "memcached-url")
+            let memcached_url = get_string_entry(node, "memcached-url")?
                 .unwrap_or_else(|| "memcache://127.0.0.1:11211".to_string());
-            let key_prefix = get_string_entry(node, "memcached-prefix")
+            let key_prefix = get_string_entry(node, "memcached-prefix")?
                 .unwrap_or_else(|| "zentinel:ratelimit:".to_string());
-            let pool_size = get_int_entry(node, "memcached-pool-size")
+            let pool_size = get_int_entry(node, "memcached-pool-size")?
                 .map(|v| v as u32)
                 .unwrap_or(10);
-            let timeout_ms = get_int_entry(node, "memcached-timeout-ms")
+            let timeout_ms = get_int_entry(node, "memcached-timeout-ms")?
                 .map(|v| v as u64)
                 .unwrap_or(50);
             // Same mismatch as the Redis branch above, plus the TTL: configs
             // write `memcached-ttl-secs`, this read `memcached-ttl`, and the
             // default of 2 matched what the examples asked for.
-            let fallback_local = get_bool_entry(node, "memcached-fallback-local")
-                .or_else(|| get_bool_entry(node, "memcached-fallback"))
-                .unwrap_or(true);
-            let ttl_secs = get_int_entry(node, "memcached-ttl-secs")
-                .or_else(|| get_int_entry(node, "memcached-ttl"))
+            let fallback_local =
+                get_bool_entry_or(node, "memcached-fallback-local", "memcached-fallback")?
+                    .unwrap_or(true);
+            let ttl_secs = get_int_entry_or(node, "memcached-ttl-secs", "memcached-ttl")?
                 .map(|v| v as u32)
                 .unwrap_or(2);
 
@@ -235,11 +249,16 @@ fn parse_rate_limit_backend(node: &kdl::KdlNode) -> Result<RateLimitBackend> {
 /// setup that has been failing closed into one that fails open, so the
 /// fallback stays; the value is logged at load and reported by `zentinel lint`
 /// through `validate::unknown_keys`.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `failure-mode` is
+/// written more than once.
 pub(crate) fn resolve_agent_filter_failure_mode(
     node: &kdl::KdlNode,
     filter_id: &str,
-) -> (Option<FailureMode>, Option<String>) {
-    match get_string_entry(node, "failure-mode").as_deref() {
+) -> Result<(Option<FailureMode>, Option<String>)> {
+    Ok(match get_string_entry(node, "failure-mode")?.as_deref() {
         None => (None, None),
         Some("open") => (Some(FailureMode::Open), None),
         Some("closed") => (Some(FailureMode::Closed), None),
@@ -252,7 +271,7 @@ pub(crate) fn resolve_agent_filter_failure_mode(
                 other, filter_id
             )),
         ),
-    }
+    })
 }
 
 /// Read an agent filter's `timeout-ms`, and whether its value was ignored.
@@ -264,18 +283,20 @@ pub(crate) fn resolve_agent_filter_failure_mode(
 /// that is not a positive number of milliseconds used to be read as a
 /// timeout too (zero failed every call, a negative one wrapped to years);
 /// it is now ignored and reported.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `timeout-ms` is
+/// written more than once.
 pub(crate) fn resolve_agent_filter_timeout(
     node: &kdl::KdlNode,
     filter_id: &str,
-) -> (Option<u64>, Option<String>) {
-    let Some(entry) = node
-        .children()
-        .and_then(|c| c.get("timeout-ms"))
-        .and_then(|n| n.entries().first())
+) -> Result<(Option<u64>, Option<String>)> {
+    let Some(entry) = get_unique_child(node, "timeout-ms")?.and_then(|n| n.entries().first())
     else {
-        return (None, None);
+        return Ok((None, None));
     };
-    match entry.value().as_integer() {
+    Ok(match entry.value().as_integer() {
         Some(v) if v > 0 => (Some(v.min(u64::MAX as i128) as u64), None),
         _ => (
             None,
@@ -286,7 +307,7 @@ pub(crate) fn resolve_agent_filter_timeout(
                 filter_id
             )),
         ),
-    }
+    })
 }
 
 /// Read an agent filter's `inspect-body`, and whether its value was ignored.
@@ -296,18 +317,20 @@ pub(crate) fn resolve_agent_filter_timeout(
 /// `events` do not ask for; that case is reported by `zentinel lint`, which
 /// knows the agent. A value that is not a boolean used to be read as `false`
 /// and nothing read it either way, so it is ignored and reported.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `inspect-body` is
+/// written more than once.
 pub(crate) fn resolve_agent_filter_inspect_body(
     node: &kdl::KdlNode,
     filter_id: &str,
-) -> (Option<bool>, Option<String>) {
-    let Some(entry) = node
-        .children()
-        .and_then(|c| c.get("inspect-body"))
-        .and_then(|n| n.entries().first())
+) -> Result<(Option<bool>, Option<String>)> {
+    let Some(entry) = get_unique_child(node, "inspect-body")?.and_then(|n| n.entries().first())
     else {
-        return (None, None);
+        return Ok((None, None));
     };
-    match entry.value().as_bool() {
+    Ok(match entry.value().as_bool() {
         Some(v) => (Some(v), None),
         None => (
             None,
@@ -318,7 +341,7 @@ pub(crate) fn resolve_agent_filter_inspect_body(
                 filter_id
             )),
         ),
-    }
+    })
 }
 
 /// Read an agent filter's `max-body-bytes`, and whether its value was ignored.
@@ -329,18 +352,20 @@ pub(crate) fn resolve_agent_filter_inspect_body(
 /// closed). It cannot widen the agent's limit; `zentinel lint` reports a
 /// larger value. A value that is not a positive number of bytes is ignored
 /// and reported: `inspect-body #false` is the way to send no body at all.
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `max-body-bytes` is
+/// written more than once.
 pub(crate) fn resolve_agent_filter_max_body_bytes(
     node: &kdl::KdlNode,
     filter_id: &str,
-) -> (Option<usize>, Option<String>) {
-    let Some(entry) = node
-        .children()
-        .and_then(|c| c.get("max-body-bytes"))
-        .and_then(|n| n.entries().first())
+) -> Result<(Option<usize>, Option<String>)> {
+    let Some(entry) = get_unique_child(node, "max-body-bytes")?.and_then(|n| n.entries().first())
     else {
-        return (None, None);
+        return Ok((None, None));
     };
-    match entry.value().as_integer() {
+    Ok(match entry.value().as_integer() {
         Some(v) if v > 0 => (Some(v.min(usize::MAX as i128) as usize), None),
         _ => (
             None,
@@ -352,7 +377,7 @@ pub(crate) fn resolve_agent_filter_max_body_bytes(
                 filter_id
             )),
         ),
-    }
+    })
 }
 
 /// Whether an agent filter's `phase` is set, which nothing reads.
@@ -363,47 +388,60 @@ pub(crate) fn resolve_agent_filter_max_body_bytes(
 /// `phase "response"` on a security agent would stop it seeing request
 /// headers, so it would stop blocking requests without any other sign. The
 /// value is kept in the model and reported instead.
-pub(crate) fn agent_filter_phase_problem(node: &kdl::KdlNode, filter_id: &str) -> Option<String> {
-    let value = node.children()?.get("phase")?.entries().first()?.value();
+///
+/// # Errors
+///
+/// A [`DuplicateNode`](super::helpers::DuplicateNode) when `phase` is written
+/// more than once.
+pub(crate) fn agent_filter_phase_problem(
+    node: &kdl::KdlNode,
+    filter_id: &str,
+) -> Result<Option<String>> {
+    let Some(value) = get_unique_child(node, "phase")?
+        .and_then(|n| n.entries().first())
+        .map(|e| e.value())
+    else {
+        return Ok(None);
+    };
     let phase = match value.as_string() {
         Some(s) => format!("\"{s}\""),
         None => value.to_string(),
     };
-    Some(format!(
+    Ok(Some(format!(
         "'phase {}' on filter '{}' is being ignored: the events an agent receives are set by \
          the agent block's 'events' (request-headers, request-body, response-headers, \
          response-body, ...), not by the filter.",
         phase, filter_id
-    ))
+    )))
 }
 
 fn parse_agent_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let agent = get_string_entry(node, "agent").ok_or_else(|| {
+    let agent = get_string_entry(node, "agent")?.ok_or_else(|| {
         anyhow::anyhow!("Agent filter requires an 'agent' field referencing an agent definition")
     })?;
 
     let filter_id = get_first_arg_string(node).unwrap_or_default();
-    let (timeout_ms, problem) = resolve_agent_filter_timeout(node, &filter_id);
+    let (timeout_ms, problem) = resolve_agent_filter_timeout(node, &filter_id)?;
     if let Some(problem) = problem {
         warn!("{}", problem);
     }
-    if let Some(problem) = agent_filter_phase_problem(node, &filter_id) {
+    if let Some(problem) = agent_filter_phase_problem(node, &filter_id)? {
         warn!("{}", problem);
     }
-    let (failure_mode, problem) = resolve_agent_filter_failure_mode(node, &filter_id);
+    let (failure_mode, problem) = resolve_agent_filter_failure_mode(node, &filter_id)?;
     if let Some(problem) = problem {
         warn!("{}", problem);
     }
-    let (inspect_body, problem) = resolve_agent_filter_inspect_body(node, &filter_id);
+    let (inspect_body, problem) = resolve_agent_filter_inspect_body(node, &filter_id)?;
     if let Some(problem) = problem {
         warn!("{}", problem);
     }
-    let (max_body_bytes, problem) = resolve_agent_filter_max_body_bytes(node, &filter_id);
+    let (max_body_bytes, problem) = resolve_agent_filter_max_body_bytes(node, &filter_id)?;
     if let Some(problem) = problem {
         warn!("{}", problem);
     }
 
-    let phase = get_string_entry(node, "phase").and_then(|s| match s.as_str() {
+    let phase = get_string_entry(node, "phase")?.and_then(|s| match s.as_str() {
         "request" => Some(FilterPhase::Request),
         "response" => Some(FilterPhase::Response),
         "both" => Some(FilterPhase::Both),
@@ -427,8 +465,9 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
     let mut remove = Vec::new();
 
     if let Some(node_children) = node.children() {
-        if let Some(rename_node) = node_children.get("rename") {
+        if let Some(rename_node) = get_unique(node_children, "rename")? {
             if let Some(rename_children) = rename_node.children() {
+                reject_repeated_header_names(rename_children)?;
                 for entry_node in rename_children.nodes() {
                     let old_name = entry_node.name().value().to_string();
                     if let Some(new_name) = get_first_arg_string(entry_node) {
@@ -437,8 +476,9 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
                 }
             }
         }
-        if let Some(set_node) = node_children.get("set") {
+        if let Some(set_node) = get_unique(node_children, "set")? {
             if let Some(set_children) = set_node.children() {
+                reject_repeated_header_names(set_children)?;
                 for entry_node in set_children.nodes() {
                     let name = entry_node.name().value().to_string();
                     if let Some(value) = get_first_arg_string(entry_node) {
@@ -447,8 +487,9 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
                 }
             }
         }
-        if let Some(add_node) = node_children.get("add") {
+        if let Some(add_node) = get_unique(node_children, "add")? {
             if let Some(add_children) = add_node.children() {
+                reject_repeated_header_names(add_children)?;
                 for entry_node in add_children.nodes() {
                     let name = entry_node.name().value().to_string();
                     if let Some(value) = get_first_arg_string(entry_node) {
@@ -457,7 +498,7 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
                 }
             }
         }
-        if let Some(remove_node) = node_children.get("remove") {
+        if let Some(remove_node) = get_unique(node_children, "remove")? {
             for entry in remove_node.entries() {
                 if let Some(name) = entry.value().as_string() {
                     remove.push(name.to_string());
@@ -466,7 +507,7 @@ fn parse_headers_filter(node: &kdl::KdlNode) -> Result<Filter> {
         }
     }
 
-    let phase = get_string_entry(node, "phase")
+    let phase = get_string_entry(node, "phase")?
         .and_then(|s| match s.as_str() {
             "request" => Some(FilterPhase::Request),
             "response" => Some(FilterPhase::Response),
@@ -493,9 +534,11 @@ pub(crate) const RECOGNIZED_COMPRESS_FILTER_KEYS: &[&str] =
 /// Both `algorithms "gzip" "br"` (the documented form) and the older
 /// `algorithms "gzip,br"` are accepted. Only the first argument used to be
 /// read, so the documented form silently dropped all but one entry.
-fn get_string_list(node: &kdl::KdlNode, name: &str) -> Option<Vec<String>> {
-    let child = node.children()?.get(name)?;
-    Some(
+fn get_string_list(node: &kdl::KdlNode, name: &str) -> Result<Option<Vec<String>>> {
+    let Some(child) = get_unique_child(node, name)? else {
+        return Ok(None);
+    };
+    Ok(Some(
         child
             .entries()
             .iter()
@@ -505,7 +548,7 @@ fn get_string_list(node: &kdl::KdlNode, name: &str) -> Option<Vec<String>> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
-    )
+    ))
 }
 
 fn parse_compression_algorithm(name: &str) -> Result<CompressionAlgorithm> {
@@ -523,7 +566,7 @@ fn parse_compression_algorithm(name: &str) -> Result<CompressionAlgorithm> {
 }
 
 fn parse_compress_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let algorithms = match get_string_list(node, "algorithms") {
+    let algorithms = match get_string_list(node, "algorithms")? {
         None => vec![CompressionAlgorithm::Gzip],
         Some(names) => {
             let mut algorithms = Vec::new();
@@ -537,11 +580,11 @@ fn parse_compress_filter(node: &kdl::KdlNode) -> Result<Filter> {
         }
     };
 
-    let min_size = get_int_entry(node, "min-size")
+    let min_size = get_int_entry(node, "min-size")?
         .map(|v| v as usize)
         .unwrap_or(1024);
 
-    let content_types = get_string_list(node, "content-types").unwrap_or_else(|| {
+    let content_types = get_string_list(node, "content-types")?.unwrap_or_else(|| {
         vec![
             "text/html".into(),
             "text/css".into(),
@@ -550,7 +593,7 @@ fn parse_compress_filter(node: &kdl::KdlNode) -> Result<Filter> {
         ]
     });
 
-    let level = match get_int_entry(node, "level") {
+    let level = match get_int_entry(node, "level")? {
         None => 6,
         // Out-of-range values are kept out of range so that validation
         // reports them instead of a wrapped `u8`.
@@ -567,32 +610,32 @@ fn parse_compress_filter(node: &kdl::KdlNode) -> Result<Filter> {
 
 fn parse_timeout_filter(node: &kdl::KdlNode) -> Result<Filter> {
     Ok(Filter::Timeout(TimeoutFilter {
-        request_timeout_secs: get_int_entry(node, "request-timeout-secs").map(|v| v as u64),
-        upstream_timeout_secs: get_int_entry(node, "upstream-timeout-secs").map(|v| v as u64),
-        connect_timeout_secs: get_int_entry(node, "connect-timeout-secs").map(|v| v as u64),
+        request_timeout_secs: get_int_entry(node, "request-timeout-secs")?.map(|v| v as u64),
+        upstream_timeout_secs: get_int_entry(node, "upstream-timeout-secs")?.map(|v| v as u64),
+        connect_timeout_secs: get_int_entry(node, "connect-timeout-secs")?.map(|v| v as u64),
     }))
 }
 
 fn parse_log_filter(node: &kdl::KdlNode) -> Result<Filter> {
     Ok(Filter::Log(LogFilter {
-        log_request: get_bool_entry(node, "log-request").unwrap_or(true),
-        log_response: get_bool_entry(node, "log-response").unwrap_or(true),
-        log_body: get_bool_entry(node, "log-body").unwrap_or(false),
-        max_body_log_size: get_int_entry(node, "max-body-log-size")
+        log_request: get_bool_entry(node, "log-request")?.unwrap_or(true),
+        log_response: get_bool_entry(node, "log-response")?.unwrap_or(true),
+        log_body: get_bool_entry(node, "log-body")?.unwrap_or(false),
+        max_body_log_size: get_int_entry(node, "max-body-log-size")?
             .map(|v| v as usize)
             .unwrap_or(4096),
         fields: vec![],
-        level: get_string_entry(node, "level").unwrap_or_else(|| "info".to_string()),
+        level: get_string_entry(node, "level")?.unwrap_or_else(|| "info".to_string()),
     }))
 }
 
 fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let database_path = get_string_entry(node, "database-path").ok_or_else(|| {
+    let database_path = get_string_entry(node, "database-path")?.ok_or_else(|| {
         anyhow::anyhow!("Geo filter requires 'database-path' pointing to a GeoIP database file")
     })?;
 
     // Auto-detect database type from file extension if not specified
-    let database_type = get_string_entry(node, "database-type")
+    let database_type = get_string_entry(node, "database-type")?
         .and_then(|s| match s.as_str() {
             "maxmind" => Some(GeoDatabaseType::MaxMind),
             "ip2location" => Some(GeoDatabaseType::Ip2Location),
@@ -608,7 +651,7 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
             }
         });
 
-    let action = get_string_entry(node, "action")
+    let action = get_string_entry(node, "action")?
         .map(|s| match s.as_str() {
             "block" => GeoFilterAction::Block,
             "allow" => GeoFilterAction::Allow,
@@ -618,7 +661,7 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
         .unwrap_or_default();
 
     // Parse countries - comma-separated list of ISO 3166-1 alpha-2 codes
-    let countries = get_string_entry(node, "countries")
+    let countries = get_string_entry(node, "countries")?
         .map(|s| {
             s.split(',')
                 .map(|c| c.trim().to_uppercase())
@@ -627,7 +670,7 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
         })
         .unwrap_or_default();
 
-    let on_failure = get_string_entry(node, "on-failure")
+    let on_failure = get_string_entry(node, "on-failure")?
         .map(|s| match s.as_str() {
             "open" => GeoFailureMode::Open,
             "closed" => GeoFailureMode::Closed,
@@ -635,17 +678,17 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
         })
         .unwrap_or_default();
 
-    let status_code = get_int_entry(node, "status-code")
+    let status_code = get_int_entry(node, "status-code")?
         .map(|v| v as u16)
         .unwrap_or(403);
 
-    let block_message = get_string_entry(node, "block-message");
+    let block_message = get_string_entry(node, "block-message")?;
 
-    let cache_ttl_secs = get_int_entry(node, "cache-ttl-secs")
+    let cache_ttl_secs = get_int_entry(node, "cache-ttl-secs")?
         .map(|v| v as u64)
         .unwrap_or(3600);
 
-    let add_country_header = get_bool_entry(node, "add-country-header").unwrap_or(true);
+    let add_country_header = get_bool_entry(node, "add-country-header")?.unwrap_or(true);
 
     Ok(Filter::Geo(GeoFilter {
         database_path,
@@ -661,13 +704,13 @@ fn parse_geo_filter(node: &kdl::KdlNode) -> Result<Filter> {
 }
 
 fn parse_redirect_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let status_code = get_int_entry(node, "status-code")
+    let status_code = get_int_entry(node, "status-code")?
         .map(|v| v as u16)
         .unwrap_or(302);
-    let hostname = get_string_entry(node, "hostname");
-    let scheme = get_string_entry(node, "scheme");
-    let port = get_int_entry(node, "port").map(|v| v as u16);
-    let path = parse_path_modifier(node);
+    let hostname = get_string_entry(node, "hostname")?;
+    let scheme = get_string_entry(node, "scheme")?;
+    let port = get_int_entry(node, "port")?.map(|v| v as u16);
+    let path = parse_path_modifier(node)?;
 
     Ok(Filter::Redirect(RedirectFilter {
         hostname,
@@ -679,18 +722,18 @@ fn parse_redirect_filter(node: &kdl::KdlNode) -> Result<Filter> {
 }
 
 fn parse_url_rewrite_filter(node: &kdl::KdlNode) -> Result<Filter> {
-    let hostname = get_string_entry(node, "hostname");
-    let path = parse_path_modifier(node);
+    let hostname = get_string_entry(node, "hostname")?;
+    let path = parse_path_modifier(node)?;
 
     Ok(Filter::UrlRewrite(UrlRewriteFilter { hostname, path }))
 }
 
-fn parse_path_modifier(node: &kdl::KdlNode) -> Option<PathModifier> {
-    if let Some(full) = get_string_entry(node, "replace-full-path") {
-        Some(PathModifier::ReplaceFullPath { value: full })
+fn parse_path_modifier(node: &kdl::KdlNode) -> Result<Option<PathModifier>> {
+    if let Some(full) = get_string_entry(node, "replace-full-path")? {
+        Ok(Some(PathModifier::ReplaceFullPath { value: full }))
     } else {
-        get_string_entry(node, "replace-prefix-match")
-            .map(|prefix| PathModifier::ReplacePrefixMatch { value: prefix })
+        Ok(get_string_entry(node, "replace-prefix-match")?
+            .map(|prefix| PathModifier::ReplacePrefixMatch { value: prefix }))
     }
 }
 

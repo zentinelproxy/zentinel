@@ -17,7 +17,9 @@ use crate::server::{
 };
 use std::time::Duration;
 
-use super::helpers::{get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry};
+use super::helpers::{
+    get_bool_entry, get_first_arg_string, get_int_entry, get_string_entry, get_unique_child,
+};
 
 /// Parse server configuration block
 /// Every key `parse_server_config` reads.
@@ -72,10 +74,11 @@ pub(crate) const RECOGNIZED_LISTENER_KEYS: &[&str] = &[
 /// load and reported by `zentinel lint` through `validate::unknown_keys`.
 pub(crate) fn unapplied_system_settings(node: &kdl::KdlNode, block: &str) -> Vec<String> {
     let mut problems = Vec::new();
-    if node
-        .children()
-        .is_some_and(|c| c.get("max-connections").is_some())
-    {
+    if node.children().is_some_and(|c| {
+        c.nodes()
+            .iter()
+            .any(|n| n.name().value() == "max-connections")
+    }) {
         problems.push(format!(
             "'max-connections' in the '{block}' block is not applied and is being ignored: \
              Zentinel does not limit client connections. Bound load with rate limits, or \
@@ -187,28 +190,28 @@ pub fn parse_server_config(node: &kdl::KdlNode) -> Result<ServerConfig> {
         warn!("{}", problem);
     }
 
-    let trace_id_format = get_string_entry(node, "trace-id-format")
+    let trace_id_format = get_string_entry(node, "trace-id-format")?
         .map(|s| TraceIdFormat::from_str_loose(&s))
         .unwrap_or_default();
 
     let config = ServerConfig {
-        worker_threads: get_int_entry(node, "worker-threads")
+        worker_threads: get_int_entry(node, "worker-threads")?
             .map(|v| v as usize)
             .unwrap_or_else(default_worker_threads),
-        max_connections: get_int_entry(node, "max-connections")
+        max_connections: get_int_entry(node, "max-connections")?
             .map(|v| v as usize)
             .unwrap_or_else(default_max_connections),
-        graceful_shutdown_timeout_secs: get_int_entry(node, "graceful-shutdown-timeout-secs")
+        graceful_shutdown_timeout_secs: get_int_entry(node, "graceful-shutdown-timeout-secs")?
             .map(|v| v as u64)
             .unwrap_or_else(default_graceful_shutdown_timeout),
-        daemon: get_bool_entry(node, "daemon").unwrap_or(false),
-        pid_file: get_string_entry(node, "pid-file").map(PathBuf::from),
-        user: get_string_entry(node, "user"),
-        group: get_string_entry(node, "group"),
-        working_directory: get_string_entry(node, "working-directory").map(PathBuf::from),
+        daemon: get_bool_entry(node, "daemon")?.unwrap_or(false),
+        pid_file: get_string_entry(node, "pid-file")?.map(PathBuf::from),
+        user: get_string_entry(node, "user")?,
+        group: get_string_entry(node, "group")?,
+        working_directory: get_string_entry(node, "working-directory")?.map(PathBuf::from),
         trace_id_format,
-        auto_reload: get_bool_entry(node, "auto-reload").unwrap_or(false),
-        route_cache_size: get_int_entry(node, "route-cache-size")
+        auto_reload: get_bool_entry(node, "auto-reload")?.unwrap_or(false),
+        route_cache_size: get_int_entry(node, "route-cache-size")?
             .map(|v| v as usize)
             .unwrap_or_else(crate::server::default_route_cache_size),
         client_ipv6_prefix_length: parse_client_ipv6_prefix_length(node)?,
@@ -242,7 +245,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
 
                 trace!(listener_id = %id, "Parsing listener");
 
-                let address = get_string_entry(child, "address").ok_or_else(|| {
+                let address = get_string_entry(child, "address")?.ok_or_else(|| {
                     anyhow::anyhow!(
                         "Listener '{}' requires an 'address' field, e.g., address \"0.0.0.0:8080\"",
                         id
@@ -250,7 +253,7 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                 })?;
 
                 let protocol_str =
-                    get_string_entry(child, "protocol").unwrap_or_else(|| "http".to_string());
+                    get_string_entry(child, "protocol")?.unwrap_or_else(|| "http".to_string());
                 let protocol = match protocol_str.to_lowercase().as_str() {
                     "http" => ListenerProtocol::Http,
                     "https" => ListenerProtocol::Https,
@@ -267,16 +270,9 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                 };
 
                 // Parse TLS configuration if present
-                let tls = if let Some(children) = child.children() {
-                    children
-                        .nodes()
-                        .iter()
-                        .find(|n| n.name().value() == "tls")
-                        .map(|tls_node| parse_tls_config(tls_node, &id))
-                        .transpose()?
-                } else {
-                    None
-                };
+                let tls = get_unique_child(child, "tls")?
+                    .map(|tls_node| parse_tls_config(tls_node, &id))
+                    .transpose()?;
 
                 check_listener_tls(&id, protocol, tls.is_some())?;
 
@@ -296,18 +292,18 @@ pub fn parse_listeners(node: &kdl::KdlNode) -> Result<Vec<ListenerConfig>> {
                     address,
                     protocol,
                     tls,
-                    default_route: get_string_entry(child, "default-route"),
-                    namespace: get_string_entry(child, "namespace"),
-                    request_timeout_secs: get_int_entry(child, "request-timeout-secs")
+                    default_route: get_string_entry(child, "default-route")?,
+                    namespace: get_string_entry(child, "namespace")?,
+                    request_timeout_secs: get_int_entry(child, "request-timeout-secs")?
                         .map(|v| v as u64)
                         .unwrap_or_else(default_request_timeout),
-                    keepalive_timeout_secs: get_int_entry(child, "keepalive-timeout-secs")
+                    keepalive_timeout_secs: get_int_entry(child, "keepalive-timeout-secs")?
                         .map(|v| v as u64)
                         .unwrap_or_else(default_keepalive_timeout),
-                    max_concurrent_streams: get_int_entry(child, "max-concurrent-streams")
+                    max_concurrent_streams: get_int_entry(child, "max-concurrent-streams")?
                         .map(|v| v as u32)
                         .unwrap_or_else(default_max_concurrent_streams),
-                    keepalive_max_requests: get_int_entry(child, "keepalive-max-requests")
+                    keepalive_max_requests: get_int_entry(child, "keepalive-max-requests")?
                         .map(|v| v as u32),
                     trusted_proxies,
                 });
@@ -357,20 +353,13 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
     reject_unknown_nodes(node, KNOWN_TLS_NODES, "tls", listener_id)?;
 
     // Parse ACME configuration if present
-    let acme = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "acme")
-            .map(|acme_node| parse_acme_config(acme_node, listener_id))
-            .transpose()?
-    } else {
-        None
-    };
+    let acme = get_unique_child(node, "acme")?
+        .map(|acme_node| parse_acme_config(acme_node, listener_id))
+        .transpose()?;
 
     // cert-file and key-file are required unless ACME is configured
-    let cert_file = get_string_entry(node, "cert-file").map(PathBuf::from);
-    let key_file = get_string_entry(node, "key-file").map(PathBuf::from);
+    let cert_file = get_string_entry(node, "cert-file")?.map(PathBuf::from);
+    let key_file = get_string_entry(node, "key-file")?.map(PathBuf::from);
 
     // Validate that either manual certs or ACME is configured
     if acme.is_none() && (cert_file.is_none() || key_file.is_none()) {
@@ -381,21 +370,21 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
     }
 
     // Optional CA file for client verification (mTLS)
-    let ca_file = get_string_entry(node, "ca-file").map(PathBuf::from);
+    let ca_file = get_string_entry(node, "ca-file")?.map(PathBuf::from);
 
     // TLS version configuration
-    let min_version = get_string_entry(node, "min-version")
+    let min_version = get_string_entry(node, "min-version")?
         .map(|s| parse_tls_version(&s))
         .unwrap_or(TlsVersion::Tls12);
 
-    let max_version = get_string_entry(node, "max-version").map(|s| parse_tls_version(&s));
+    let max_version = get_string_entry(node, "max-version")?.map(|s| parse_tls_version(&s));
 
     // Client authentication (mTLS)
-    let client_auth = get_bool_entry(node, "client-auth").unwrap_or(false);
+    let client_auth = get_bool_entry(node, "client-auth")?.unwrap_or(false);
 
     // OCSP and session options
-    let ocsp_stapling = get_bool_entry(node, "ocsp-stapling").unwrap_or(true);
-    let session_resumption = get_bool_entry(node, "session-resumption").unwrap_or(true);
+    let ocsp_stapling = get_bool_entry(node, "ocsp-stapling")?.unwrap_or(true);
+    let session_resumption = get_bool_entry(node, "session-resumption")?.unwrap_or(true);
 
     // Cipher suites
     let cipher_suites = if let Some(children) = node.children() {
@@ -433,7 +422,7 @@ pub fn parse_tls_config(node: &kdl::KdlNode, listener_id: &str) -> Result<TlsCon
         Vec::new()
     };
 
-    let allow_sni_overlaps = get_bool_entry(node, "allow-sni-overlaps").unwrap_or(false);
+    let allow_sni_overlaps = get_bool_entry(node, "allow-sni-overlaps")?.unwrap_or(false);
 
     debug!(
         listener_id = %listener_id,
@@ -562,7 +551,7 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     debug!(listener_id = %listener_id, "Parsing ACME configuration");
 
     // Required: email
-    let email = get_string_entry(node, "email").ok_or_else(|| {
+    let email = get_string_entry(node, "email")?.ok_or_else(|| {
         anyhow::anyhow!(
             "ACME configuration for listener '{}' requires 'email'",
             listener_id
@@ -593,39 +582,32 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     }
 
     // Optional with defaults
-    let server_url = get_string_entry(node, "server-url");
-    let staging = get_bool_entry(node, "staging").unwrap_or(false);
+    let server_url = get_string_entry(node, "server-url")?;
+    let staging = get_bool_entry(node, "staging")?.unwrap_or(false);
     // Parse EAB if present
-    let eab = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "eab")
-            .map(|eab_node| -> Result<ExternalAccountBinding> {
-                let kid = get_string_entry(eab_node, "kid")
-                    .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'kid'"))?;
-                let hmac_key = get_string_entry(eab_node, "hmac-key")
-                    .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'hmac-key'"))?;
-                Ok(ExternalAccountBinding { kid, hmac_key })
-            })
-            .transpose()?
-    } else {
-        None
-    };
-    let storage = get_string_entry(node, "storage")
+    let eab = get_unique_child(node, "eab")?
+        .map(|eab_node| -> Result<ExternalAccountBinding> {
+            let kid = get_string_entry(eab_node, "kid")?
+                .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'kid'"))?;
+            let hmac_key = get_string_entry(eab_node, "hmac-key")?
+                .ok_or_else(|| anyhow::anyhow!("ACME EAB configuration requires 'hmac-key'"))?;
+            Ok(ExternalAccountBinding { kid, hmac_key })
+        })
+        .transpose()?;
+    let storage = get_string_entry(node, "storage")?
         .map(PathBuf::from)
         .unwrap_or_else(default_acme_storage);
-    let renew_before_days = get_int_entry(node, "renew-before-days")
+    let renew_before_days = get_int_entry(node, "renew-before-days")?
         .map(|v| v as u32)
         .unwrap_or_else(default_renewal_days);
 
     // Parse challenge type
-    let challenge_type = get_string_entry(node, "challenge-type")
+    let challenge_type = get_string_entry(node, "challenge-type")?
         .map(|s| parse_challenge_type(&s))
         .unwrap_or_default();
 
     // Parse key type
-    let key_type = if let Some(s) = get_string_entry(node, "key-type") {
+    let key_type = if let Some(s) = get_string_entry(node, "key-type")? {
         AcmeKeyType::from_str_loose(&s).ok_or_else(|| {
             anyhow::anyhow!(
                 "Invalid key-type '{}' for listener '{}'. Valid types: ecdsa-p256, ecdsa-p384",
@@ -638,16 +620,9 @@ fn parse_acme_config(node: &kdl::KdlNode, listener_id: &str) -> Result<AcmeConfi
     };
 
     // Parse DNS provider configuration if present
-    let dns_provider = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "dns-provider")
-            .map(|dns_node| parse_dns_provider_config(dns_node, listener_id))
-            .transpose()?
-    } else {
-        None
-    };
+    let dns_provider = get_unique_child(node, "dns-provider")?
+        .map(|dns_node| parse_dns_provider_config(dns_node, listener_id))
+        .transpose()?;
 
     // Validate: DNS-01 requires dns-provider
     if challenge_type.is_dns01() && dns_provider.is_none() {
@@ -723,7 +698,7 @@ fn parse_dns_provider_config(node: &kdl::KdlNode, listener_id: &str) -> Result<D
     debug!(listener_id = %listener_id, "Parsing DNS provider configuration");
 
     // Required: type
-    let provider_type = get_string_entry(node, "type").ok_or_else(|| {
+    let provider_type = get_string_entry(node, "type")?.ok_or_else(|| {
         anyhow::anyhow!(
             "DNS provider configuration for listener '{}' requires 'type'",
             listener_id
@@ -733,8 +708,8 @@ fn parse_dns_provider_config(node: &kdl::KdlNode, listener_id: &str) -> Result<D
     let provider = parse_dns_provider_type(&provider_type, node, listener_id)?;
 
     // Credentials (at least one required)
-    let credentials_file = get_string_entry(node, "credentials-file").map(PathBuf::from);
-    let credentials_env = get_string_entry(node, "credentials-env");
+    let credentials_file = get_string_entry(node, "credentials-file")?.map(PathBuf::from);
+    let credentials_env = get_string_entry(node, "credentials-env")?;
 
     if credentials_file.is_none() && credentials_env.is_none() {
         return Err(anyhow::anyhow!(
@@ -744,21 +719,15 @@ fn parse_dns_provider_config(node: &kdl::KdlNode, listener_id: &str) -> Result<D
     }
 
     // API timeout
-    let api_timeout_secs = get_int_entry(node, "api-timeout-secs")
+    let api_timeout_secs = get_int_entry(node, "api-timeout-secs")?
         .map(|v| v as u64)
         .unwrap_or(30);
 
     // Propagation configuration
-    let propagation = if let Some(children) = node.children() {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "propagation")
-            .map(parse_propagation_config)
-            .unwrap_or_default()
-    } else {
-        PropagationCheckConfig::default()
-    };
+    let propagation = get_unique_child(node, "propagation")?
+        .map(parse_propagation_config)
+        .transpose()?
+        .unwrap_or_default();
 
     debug!(
         listener_id = %listener_id,
@@ -788,13 +757,13 @@ fn parse_dns_provider_type(
         "hetzner" => Ok(DnsProviderType::Hetzner),
         "cloudflare" => Ok(DnsProviderType::Cloudflare),
         "webhook" => {
-            let url = get_string_entry(node, "url").ok_or_else(|| {
+            let url = get_string_entry(node, "url")?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "DNS provider 'webhook' for listener '{}' requires 'url'",
                     listener_id
                 )
             })?;
-            let auth_header = get_string_entry(node, "auth-header");
+            let auth_header = get_string_entry(node, "auth-header")?;
             Ok(DnsProviderType::Webhook { url, auth_header })
         }
         other => Err(anyhow::anyhow!(
@@ -806,16 +775,16 @@ fn parse_dns_provider_type(
 }
 
 /// Parse propagation check configuration
-fn parse_propagation_config(node: &kdl::KdlNode) -> PropagationCheckConfig {
-    let initial_delay_secs = get_int_entry(node, "initial-delay-secs")
+fn parse_propagation_config(node: &kdl::KdlNode) -> Result<PropagationCheckConfig> {
+    let initial_delay_secs = get_int_entry(node, "initial-delay-secs")?
         .map(|v| v as u64)
         .unwrap_or(10);
 
-    let check_interval_secs = get_int_entry(node, "check-interval-secs")
+    let check_interval_secs = get_int_entry(node, "check-interval-secs")?
         .map(|v| v as u64)
         .unwrap_or(5);
 
-    let timeout_secs = get_int_entry(node, "timeout-secs")
+    let timeout_secs = get_int_entry(node, "timeout-secs")?
         .map(|v| v as u64)
         .unwrap_or(120);
 
@@ -835,12 +804,12 @@ fn parse_propagation_config(node: &kdl::KdlNode) -> PropagationCheckConfig {
         Vec::new()
     };
 
-    PropagationCheckConfig {
+    Ok(PropagationCheckConfig {
         initial_delay_secs,
         check_interval_secs,
         timeout_secs,
         nameservers,
-    }
+    })
 }
 
 /// Parse an SNI certificate configuration
@@ -915,19 +884,12 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
     }
 
     // Parse acme configuration if present
-    let acme = if let Some(children) = children {
-        children
-            .nodes()
-            .iter()
-            .find(|n| n.name().value() == "acme")
-            .map(|n| parse_acme_config(n, listener_id))
-            .transpose()?
-    } else {
-        None
-    };
+    let acme = get_unique_child(node, "acme")?
+        .map(|n| parse_acme_config(n, listener_id))
+        .transpose()?;
 
-    let cert_file = get_string_entry(node, "cert-file").map(PathBuf::from);
-    let key_file = get_string_entry(node, "key-file").map(PathBuf::from);
+    let cert_file = get_string_entry(node, "cert-file")?.map(PathBuf::from);
+    let key_file = get_string_entry(node, "key-file")?.map(PathBuf::from);
 
     // Validate mutual exclusion and completeness
     match (&acme, &cert_file, &key_file) {
@@ -999,7 +961,7 @@ fn parse_sni_certificate(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
 /// }
 /// ```
 fn parse_sni_cert_folder(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCertFolder> {
-    let cert_folder = get_string_entry(node, "cert-folder")
+    let cert_folder = get_string_entry(node, "cert-folder")?
         .map(PathBuf::from)
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -1009,7 +971,7 @@ fn parse_sni_cert_folder(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
             )
         })?;
 
-    let reload_mode = match get_string_entry(node, "reload-mode") {
+    let reload_mode = match get_string_entry(node, "reload-mode")? {
         None => CertFolderReloadMode::Off,
         Some(mode) => match mode.to_ascii_lowercase().as_str() {
             "off" => CertFolderReloadMode::Off,
@@ -1026,7 +988,7 @@ fn parse_sni_cert_folder(node: &kdl::KdlNode, listener_id: &str) -> Result<SniCe
         },
     };
 
-    let reload_interval = match get_string_entry(node, "reload-interval") {
+    let reload_interval = match get_string_entry(node, "reload-interval")? {
         None => Duration::from_secs(30),
         Some(text) => crate::kdl::upstreams::parse_duration_string(&text)
             .map(Duration::from_secs)

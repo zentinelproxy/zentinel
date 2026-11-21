@@ -1,10 +1,15 @@
 use anyhow::Result;
 use zentinel_common::types::RetryPolicy;
 
-use crate::kdl::helpers::extract_u32_with_limits;
+use crate::kdl::helpers::{extract_u32_with_limits, reject_repeated_names};
 
 pub fn parse_retry_policy(node: &kdl::KdlNode) -> Result<RetryPolicy> {
     let default_config = RetryPolicy::default();
+
+    // Each key sets one value; a repeated key would silently keep the last.
+    if let Some(children) = node.children() {
+        reject_repeated_names(children)?;
+    }
 
     fn rp_config_map(mut cfg: RetryPolicy, node: &kdl::KdlNode) -> Result<RetryPolicy> {
         match node.name().to_string().as_str() {
