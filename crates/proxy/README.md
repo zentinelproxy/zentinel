@@ -92,6 +92,7 @@ Detailed documentation is available in the [`docs/`](./docs/) directory:
 - [Inference](./docs/inference.md) - LLM/AI routing features
 - [Agents](./docs/agents.md) - External processing integration
 - [Rate Limiting](./docs/rate-limiting.md) - Rate limiting and circuit breakers
+- [Forwarded Headers](./docs/forwarded-headers.md) - `X-Forwarded-*`, trusted proxies, headers removed from untrusted peers
 - [Examples](./docs/examples.md) - Configuration patterns
 
 ## Feature Flags

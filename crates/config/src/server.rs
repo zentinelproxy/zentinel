@@ -152,13 +152,18 @@ pub struct ListenerConfig {
     /// is replaced by the TCP peer's address, and `X-Forwarded-Proto` /
     /// `X-Forwarded-Host` by what this listener itself observed. Anything else
     /// would let any client choose the IP address that backends and agents (IP
-    /// reputation, rate limiting) see.
+    /// reputation, rate limiting) see. The other headers that carry the same
+    /// kind of information (`Forwarded`, `X-Real-IP`, `True-Client-IP`,
+    /// `X-Forwarded-Port`, `X-Original-URL`, ...) are removed from such a
+    /// request; the full list is in the proxy crate's `docs/forwarded-headers.md`.
     ///
     /// When the peer is inside one of these networks (a load balancer or CDN
     /// in front of Zentinel), the peer's address is appended to the incoming
-    /// `X-Forwarded-For`, incoming `X-Forwarded-Proto`/`-Host` are kept, and the
-    /// client IP Zentinel itself uses is the right-most chain entry that is not
-    /// a trusted proxy.
+    /// `X-Forwarded-For` (which then starts at the client IP; entries to its
+    /// left are left out), incoming `X-Forwarded-Proto`/`-Host` are kept when
+    /// they are a scheme (`http` or `https`) and a host and replaced otherwise,
+    /// `X-Real-IP` is rewritten to the client IP, and the client IP Zentinel
+    /// itself uses is the right-most chain entry that is not a trusted proxy.
     ///
     /// This is per listener because trust is a property of who can connect to
     /// a socket: an internal port behind a load balancer and a public port on
