@@ -353,18 +353,18 @@ dependencies = [
 
 [[package]]
 name = "async-memcached"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1b80b3085d43b4736615d4645d43fe0f8f093cb8ab3aea852baff6d5493821d"
+checksum = "2f345f73fb9099bf16d97f44c958551952ef46ba14ff297e223cb80cdcec6c8a"
 dependencies = [
  "async-stream",
  "btoi",
  "bytes",
  "dsn",
  "futures",
- "fxhash",
  "nom 8.0.0",
  "pin-project",
+ "rustc-hash",
  "tokio",
  "url",
 ]
@@ -725,12 +725,6 @@ name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
-
-[[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
@@ -2016,15 +2010,6 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "fxhash"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
-dependencies = [
- "byteorder",
 ]
 
 [[package]]
