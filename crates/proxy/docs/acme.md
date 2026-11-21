@@ -286,6 +286,32 @@ if let Some(ref challenge_manager) = self.acme_challenges {
 }
 ```
 
+### Startup
+
+Before ACME is initialized, every TLS listener that does not take its default
+certificate from ACME is built, and startup stops if one cannot be (for
+example a `cert-file` that does not exist). That check makes no request to the
+CA.
+
+ACME is then initialized, for listeners with protocol `https` only. A
+listener's certificate is read from
+`<storage>/domains/<first domain>/cert.pem` and `key.pem`.
+
+- When the first certificate cannot be issued, startup stops there with the
+  ACME error. The exception is an error ACME treats as retryable while a
+  certificate already exists: startup continues with it and the renewal is
+  retried in the background.
+- A start that stops during ACME initialization runs it again on the next
+  start, at the pace the service manager restarts the process.
+- If the files are still missing when the listener is built, startup fails
+  with an error naming the listener, its address and the missing file. An `h2`
+  listener with an `acme` block ends up here, since ACME is not initialized
+  for it. The proxy does not skip the listener and keep running.
+
+`zentinel test` does not check the default certificate of an `https` listener
+that ACME manages: it is issued while the proxy starts, so it need not exist
+yet.
+
 ### TLS Hot-Reload
 
 After successful certificate renewal, the scheduler triggers reload:
