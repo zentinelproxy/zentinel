@@ -128,6 +128,27 @@ filters {
 }
 ```
 
+### Static Routes
+
+A route with `service-type "static"` runs its agent filters before the file
+is served, as a proxied route runs them before the request is forwarded.
+The agents' decisions apply as they do on a proxied route:
+
+- `Block`, `Redirect` and `Challenge` answer the request instead of the file.
+- An `Allow` decision's response-header changes are applied to the file's
+  response.
+- A filter's `failure-mode` decides what happens when its agent cannot be
+  reached or does not answer in time.
+
+The agents get the `request-headers` event, and the request-complete
+notice when the request ends, as on any route. The route serves `GET` and
+`HEAD` and does not read the request body, so `request-body` events are not
+sent; and there is no upstream response, so `response-headers` and
+`response-body` events are not sent either. An `Allow` decision's
+request-header changes are applied to the request, but the route reads only
+its method and URI to find the file, so they do not change the file that is
+served. A static route without `filters` calls no agent.
+
 ## Event Model
 
 ### Event Types
