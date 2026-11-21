@@ -24,7 +24,7 @@ use super::challenge::ChallengeManager;
 use super::client::AcmeClient;
 use super::dns::Dns01ChallengeManager;
 use super::error::{is_retryable_acme_error, AcmeError};
-use crate::tls::HotReloadableSniResolver;
+use crate::tls::CertificateReloader;
 
 /// Startup delay before initial check (10 seconds)
 const STARTUP_DELAY: Duration = Duration::from_secs(10);
@@ -51,8 +51,8 @@ pub struct RenewalScheduler {
     challenge_manager: Arc<ChallengeManager>,
     /// DNS-01 challenge manager (optional, for DNS-01 challenges)
     dns_challenge_manager: Option<Arc<Dns01ChallengeManager>>,
-    /// SNI resolver for hot-reload after renewal
-    sni_resolver: Option<Arc<HotReloadableSniResolver>>,
+    /// Reloads the listeners that serve a certificate once it has been renewed
+    certificate_reloader: Option<Arc<CertificateReloader>>,
     /// Check interval for fallback polling
     check_interval: Duration,
     /// In-memory ARI tracking state
@@ -66,17 +66,18 @@ impl RenewalScheduler {
     ///
     /// * `client` - ACME client instance
     /// * `challenge_manager` - Challenge manager for HTTP-01 challenges
-    /// * `sni_resolver` - Optional SNI resolver for triggering hot-reload
+    /// * `certificate_reloader` - Optional registry of the listeners' certificate
+    ///   resolvers, used to apply a renewed certificate
     pub fn new(
         client: Arc<AcmeClient>,
         challenge_manager: Arc<ChallengeManager>,
-        sni_resolver: Option<Arc<HotReloadableSniResolver>>,
+        certificate_reloader: Option<Arc<CertificateReloader>>,
     ) -> Self {
         Self {
             client,
             challenge_manager,
             dns_challenge_manager: None,
-            sni_resolver,
+            certificate_reloader,
             check_interval: DEFAULT_CHECK_INTERVAL,
             ari_state: Mutex::new(AriSchedulerState::default()),
         }
@@ -572,18 +573,7 @@ impl RenewalScheduler {
                 Ok(()) => {
                     info!(domain = %domain, "Certificate renewed successfully");
 
-                    // Trigger TLS hot-reload
-                    if let Some(ref resolver) = self.sni_resolver {
-                        if let Err(e) = resolver.reload() {
-                            error!(
-                                domain = %domain,
-                                error = %e,
-                                "Failed to reload TLS configuration"
-                            );
-                        } else {
-                            info!("TLS configuration reloaded with new certificate");
-                        }
-                    }
+                    self.apply_renewed_certificate();
                 }
                 Err(e) => {
                     error!(
@@ -599,6 +589,51 @@ impl RenewalScheduler {
         }
 
         Ok(())
+    }
+
+    /// Make a renewed certificate live on the listeners that serve it.
+    ///
+    /// Call this once the renewed certificate is in the ACME storage. It
+    /// reloads the listeners whose TLS block uses this scheduler's ACME
+    /// configuration (as the root `acme` block or as an `sni` certificate's),
+    /// so connections that start afterwards are served the new certificate
+    /// without a SIGHUP. Listeners using other certificates are not reloaded.
+    ///
+    /// A listener that cannot load the renewed files keeps serving its previous
+    /// certificates: the failure is logged here and counted in
+    /// `zentinel_tls_reload_total{result="failure"}`. The reload is not retried:
+    /// the next check finds a valid certificate and does not renew again, so the
+    /// previous certificates stay in use until a SIGHUP or restart loads the
+    /// files.
+    pub fn apply_renewed_certificate(&self) {
+        let Some(ref reloader) = self.certificate_reloader else {
+            return;
+        };
+        let acme = self.client.config();
+        let domain = acme.domains.first().map(String::as_str).unwrap_or_default();
+
+        let (reloaded, failures) = reloader.reload_acme_certificate(acme);
+        for (listener_id, e) in &failures {
+            error!(
+                domain = %domain,
+                listener_id = %listener_id,
+                error = %e,
+                "Failed to reload TLS certificates after renewal; keeping the previous certificates until a reload succeeds"
+            );
+        }
+        if reloaded > 0 {
+            info!(
+                domain = %domain,
+                listeners = reloaded,
+                "TLS configuration reloaded with new certificate"
+            );
+        } else if failures.is_empty() {
+            warn!(
+                domain = %domain,
+                "Certificate renewed, but no TLS listener is configured to use it; \
+                 no listener was reloaded"
+            );
+        }
     }
 
     /// Extract predecessor certificate identifier if valid, existing, and ARI is supported.
@@ -918,7 +953,10 @@ impl std::fmt::Debug for RenewalScheduler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenewalScheduler")
             .field("check_interval", &self.check_interval)
-            .field("has_sni_resolver", &self.sni_resolver.is_some())
+            .field(
+                "has_certificate_reloader",
+                &self.certificate_reloader.is_some(),
+            )
             .field("ari_state", &self.ari_state.lock())
             .finish()
     }

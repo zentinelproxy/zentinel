@@ -223,7 +223,7 @@ Key methods:
 
 ### `acme/scheduler.rs`
 
-The `RenewalScheduler` runs as a background task orchestrating renewal timing, ARI refresh scheduling, fallback policy, and TLS hot-reload:
+The `RenewalScheduler` runs as a background task orchestrating renewal timing, ARI refresh scheduling, fallback policy, and applying renewed certificates to the listeners (TLS hot-reload):
 
 - **Event-Driven Deadline Loop**: Uses dynamic sleep intervals (`next_wakeup`) to trigger at the earliest of the effective ARI renewal deadline, the next ARI refresh deadline, or the fallback polling interval (default 12 hours, minimum 1 hour).
 - **ARI Renewal Windows (RFC 9773 §4.2)**: When supported by the CA, renewal timing is selected uniformly at random across the full CA-suggested renewal window (`[suggestedWindow.start, suggestedWindow.end]`), without intersecting it with any previous window. If the selected renewal time is already in the past (e.g., when the suggested window has fully elapsed or the sampled time falls before the current moment), renewal becomes immediately due; otherwise, renewal remains scheduled for the selected future time. An unchanged window preserves its existing selection while that selection remains in the future.
@@ -288,15 +288,42 @@ if let Some(ref challenge_manager) = self.acme_challenges {
 
 ### TLS Hot-Reload
 
-After successful certificate renewal, the scheduler triggers reload:
+After a successful renewal, the scheduler applies the new certificate to the
+running listeners; no `SIGHUP` is needed.
+
+The renewal schedulers are created while ACME is initialized, before any
+listener has built its certificate resolver. They are therefore given the
+`CertificateReloader`, the registry that each HTTPS listener adds its
+`HotReloadableSniResolver` to as it starts (the registry `SIGHUP` also uses),
+rather than a resolver:
 
 ```rust
-if let Some(ref resolver) = self.sni_resolver {
-    resolver.reload()?;
-}
+// RenewalScheduler::apply_renewed_certificate()
+let (reloaded, failures) = reloader.reload_acme_certificate(self.client.config());
 ```
 
-This uses the existing `HotReloadableSniResolver` infrastructure.
+`reload_acme_certificate` reloads the listeners whose TLS block uses the
+renewed certificate: those with an `acme` block, at the root of `tls` or in a
+`sni` entry, that names the same `storage` directory and the same primary
+(first) domain. Other listeners are not re-read. A failure reported at renewal
+time is a failed reload of a listener that uses the renewed certificate; the
+cause can be another certificate of that listener, because a reload loads all of
+its certificates.
+
+A reload fails, instead of switching a name to the default certificate, when an
+ACME `sni` certificate that the listener was serving cannot be loaded. An ACME
+`sni` certificate that was never loaded (not yet issued) is still skipped when
+the listener starts and when it reloads. This also applies to a `SIGHUP`
+reload.
+
+If a listener cannot load the renewed files, it keeps serving the certificates it
+had. The scheduler logs an error naming the listener and the domain, and
+`zentinel_tls_reload_total{listener,result="failure"}` is incremented. The reload
+is not retried: the next check finds a valid certificate and does not renew
+again, so the previous certificates stay in use until a `SIGHUP` or a restart
+loads the files. Alert on `zentinel_tls_reload_total{result="failure"}`. If no
+listener is configured to use the certificate, the scheduler logs a warning
+instead.
 
 ### ZentinelProxy Fields
 
