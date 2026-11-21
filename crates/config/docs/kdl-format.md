@@ -261,8 +261,26 @@ The routes served on one listener are matched together, by priority and then
 specificity, as if they were one `routes` block. Inside a namespace or service,
 a route's `upstream`, `filters` and agent references resolve in the scope
 first, then the namespace, then other namespaces' exports, then the top level;
-`ns:name` and `ns:svc:name` name a resource directly. Scoped routes appear in
-logs and metrics under their qualified id (`api:main`, `api:users:list`).
+`ns:name` and `ns:svc:name` name a resource of that scope directly, whether or
+not it is exported. The resource must be of the kind the reference expects.
+These references must resolve:
+
+- every upstream a route names: `upstream`, `shadow`, each `fallback-upstream`,
+  each entry of `mcp` `upstreams`, and each upstream of `model-routing`;
+- each entry of a route's `filters`, which must be a filter;
+- the agent of each enabled `guardrails` entry (`prompt-injection`,
+  `pii-detection`), and the `agent` of an agent filter of the namespace or
+  service. A guardrail that is not enabled is not checked.
+
+A configuration where one of them does not resolve, including a qualified name
+that is the id of a resource of another kind (a filter named as an upstream, an
+upstream named as an agent, a route named as either), is rejected when it is
+loaded. The top-level routes are checked for the upstreams of `shadow`,
+`fallback-upstream`, `mcp` and `model-routing` and for the agents of
+`guardrails` too. There a reference resolves to a top-level id, to a qualified
+id, or to an id a namespace exports; a top-level route's own `upstream` accepts
+only a literal top-level id. Scoped routes appear in logs and metrics under
+their qualified id (`api:main`, `api:users:list`).
 
 ### Routes Block
 

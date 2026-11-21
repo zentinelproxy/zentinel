@@ -3,19 +3,153 @@
 //! These filters are applied per-request based on the route configuration.
 //! Each filter type hooks into the appropriate phase of the request lifecycle.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use pingora::http::ResponseHeader;
 use pingora_core::protocols::http::compression::{Algorithm, ResponseCompressionCtx};
 use pingora_proxy::Session;
-use tracing::{debug, trace};
+use prometheus::{register_int_counter_vec, IntCounterVec};
+use tracing::{debug, trace, warn};
 use zentinel_config::{
-    CompressFilter, CompressionAlgorithm, Config, CorsFilter, Filter, FilterPhase,
-    HeaderModifications, HeadersFilter, LogFilter, PathModifier, RedirectFilter, TimeoutFilter,
-    UrlRewriteFilter,
+    CompressFilter, CompressionAlgorithm, Config, CorsFilter, FailureMode, Filter, FilterPhase,
+    HeaderModifications, HeadersFilter, LogFilter, PathModifier, RedirectFilter, RouteConfig,
+    TimeoutFilter, UrlRewriteFilter,
 };
 
 use super::context::RequestContext;
+use crate::routing::RouteMatch;
+
+/// Requests whose route lists filters that the configuration they were served
+/// under does not define, by how they were handled (`refused` or `continued`).
+static UNDEFINED_ROUTE_FILTERS: LazyLock<Option<IntCounterVec>> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "zentinel_route_filters_undefined_total",
+        "Requests whose route lists filters the active configuration does not define, by action",
+        &["action"]
+    )
+    .ok()
+});
+
+/// How a request whose route lists undefined filters was handled: the
+/// `action` label of `zentinel_route_filters_undefined_total`.
+#[derive(Debug, Clone, Copy)]
+enum UndefinedFiltersAction {
+    Refused,
+    Continued,
+}
+
+impl UndefinedFiltersAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Refused => "refused",
+            Self::Continued => "continued",
+        }
+    }
+
+    fn count(self) {
+        if let Some(counter) = UNDEFINED_ROUTE_FILTERS.as_ref() {
+            counter.with_label_values(&[self.label()]).inc();
+        }
+    }
+}
+
+/// The result of checking a route's filter ids against a configuration
+/// snapshot (see [`check_route_filters`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum RouteFilterCheck<'a> {
+    /// Every filter id the route lists is defined in the snapshot.
+    Resolved,
+    /// Some are not, and the route's `failure-mode` is `closed`.
+    Refuse { undefined: Vec<&'a str> },
+    /// Some are not, and the route's `failure-mode` is `open`.
+    ContinueWithout { undefined: Vec<&'a str> },
+}
+
+/// Check the filter ids `route` lists against `config`, the configuration
+/// snapshot the request is served under.
+///
+/// The route comes from the route matcher and the snapshot from the config
+/// manager, and a reload replaces them one after the other: the configuration
+/// is stored first, the matcher swapped once the new routes' agents and
+/// components are ready. A request that arrives in between holds a route that
+/// lists filters the snapshot may no longer define, which the lookups below
+/// can only skip. Configuration validation rejects such a pair, so outside
+/// that interval every id resolves.
+///
+/// One map lookup per listed id, and no allocation unless an id is undefined.
+pub(super) fn check_route_filters<'a>(
+    route: &'a RouteConfig,
+    config: &Config,
+) -> RouteFilterCheck<'a> {
+    let undefined: Vec<&str> = route
+        .filters
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !config.filters.contains_key(*id))
+        .collect();
+    if undefined.is_empty() {
+        return RouteFilterCheck::Resolved;
+    }
+    match route.policies.failure_mode {
+        FailureMode::Closed => RouteFilterCheck::Refuse { undefined },
+        FailureMode::Open => RouteFilterCheck::ContinueWithout { undefined },
+    }
+}
+
+/// Decide the route of a request: record it in `ctx`, bind `config` as the
+/// snapshot every later lookup of the request's filters reads, and apply the
+/// route's `failure-mode` if the route lists a filter the snapshot does not
+/// define.
+///
+/// Called where a route is matched, with the configuration taken right after
+/// the route matcher was read. Replaces a snapshot taken earlier in the
+/// request, which may be older than the route. An id the snapshot does not
+/// define is skipped by the lookups of the filters below, so for `open` the
+/// request continues with the filters that are defined.
+///
+/// # Errors
+///
+/// Returns a 503 error when a filter is undefined and the route's
+/// `failure-mode` is `closed`: the request cannot be handled as configured.
+pub(super) fn decide_route(
+    ctx: &mut RequestContext,
+    route: &RouteMatch,
+    config: Arc<Config>,
+) -> pingora::Result<()> {
+    ctx.route_id = Some(route.route_id.to_string());
+    ctx.route_config = Some(Arc::clone(&route.config));
+    let check = check_route_filters(&route.config, &config);
+    ctx.config = Some(config);
+
+    match check {
+        RouteFilterCheck::Resolved => Ok(()),
+        RouteFilterCheck::Refuse { undefined } => {
+            warn!(
+                correlation_id = %ctx.trace_id,
+                route_id = %route.route_id,
+                undefined_filters = %undefined.join(", "),
+                failure_mode = "closed",
+                "Route lists filters the active configuration does not define, refusing the request"
+            );
+            UndefinedFiltersAction::Refused.count();
+            Err(pingora::Error::explain(
+                pingora::ErrorType::HTTPStatus(503),
+                "Route lists filters the active configuration does not define",
+            ))
+        }
+        RouteFilterCheck::ContinueWithout { undefined } => {
+            warn!(
+                correlation_id = %ctx.trace_id,
+                route_id = %route.route_id,
+                undefined_filters = %undefined.join(", "),
+                failure_mode = "open",
+                "Route lists filters the active configuration does not define, continuing without them"
+            );
+            UndefinedFiltersAction::Continued.count();
+            Ok(())
+        }
+    }
+}
 
 /// Apply request-phase filters (CORS preflight, Timeout, Log, Headers).
 ///
@@ -1493,6 +1627,222 @@ mod tests {
         assert_eq!(
             replace_matched_prefix("/api/v1/users", &ctx, "/v2"),
             "/v2/v1/users"
+        );
+    }
+
+    // =========================================================================
+    // A route's filters against the configuration snapshot
+    // =========================================================================
+
+    /// A route as the route matcher knew it before a reload: it lists
+    /// `listed`, and its `failure-mode` is `mode`.
+    fn route_listing(listed: &[&str], mode: zentinel_config::FailureMode) -> RouteConfig {
+        let mut route = Config::default_for_testing().routes[0].clone();
+        route.filters = listed.iter().map(|id| id.to_string()).collect();
+        route.policies.failure_mode = mode;
+        route
+    }
+
+    /// The match the route matcher returns for `route`.
+    fn matched(route: RouteConfig) -> RouteMatch {
+        RouteMatch {
+            route_id: zentinel_common::RouteId::new("matched"),
+            config: Arc::new(route),
+        }
+    }
+
+    /// A configuration, as a reload stored it, that defines each of
+    /// `defined` as a response-phase headers filter setting `X-Defined`.
+    fn config_defining(defined: &[&str]) -> Arc<Config> {
+        let mut config = Config::default_for_testing();
+        for id in defined {
+            let filter = HeadersFilter {
+                phase: FilterPhase::Response,
+                rename: HashMap::new(),
+                set: HashMap::from([("X-Defined".to_string(), id.to_string())]),
+                add: HashMap::new(),
+                remove: vec![],
+            };
+            config.filters.insert(
+                id.to_string(),
+                FilterConfig::new(*id, Filter::Headers(filter)),
+            );
+        }
+        Arc::new(config)
+    }
+
+    /// Requests counted so far by `zentinel_route_filters_undefined_total`
+    /// for `action`.
+    fn undefined_route_filters_count(action: UndefinedFiltersAction) -> u64 {
+        UNDEFINED_ROUTE_FILTERS.as_ref().map_or(0, |counter| {
+            counter.with_label_values(&[action.label()]).get()
+        })
+    }
+
+    #[test]
+    fn route_filters_all_defined_resolve() {
+        let route = route_listing(&["a", "b"], zentinel_config::FailureMode::Closed);
+        let config = config_defining(&["a", "b", "unused"]);
+
+        assert_eq!(
+            check_route_filters(&route, &config),
+            RouteFilterCheck::Resolved
+        );
+    }
+
+    #[test]
+    fn route_without_filters_resolves() {
+        let route = route_listing(&[], zentinel_config::FailureMode::Closed);
+        let config = config_defining(&[]);
+
+        assert_eq!(
+            check_route_filters(&route, &config),
+            RouteFilterCheck::Resolved
+        );
+    }
+
+    #[test]
+    fn route_filter_missing_from_newer_snapshot_is_refused_when_closed() {
+        // The route matcher still serves the route as it was; the snapshot
+        // is the configuration a reload has since stored, which no longer
+        // defines the filter the route lists.
+        let route = route_listing(&["renamed-away"], zentinel_config::FailureMode::Closed);
+        let config = config_defining(&["renamed-to"]);
+
+        assert_eq!(
+            check_route_filters(&route, &config),
+            RouteFilterCheck::Refuse {
+                undefined: vec!["renamed-away"]
+            }
+        );
+    }
+
+    #[test]
+    fn route_filter_missing_from_newer_snapshot_continues_when_open() {
+        let route = route_listing(&["renamed-away"], zentinel_config::FailureMode::Open);
+        let config = config_defining(&["renamed-to"]);
+
+        assert_eq!(
+            check_route_filters(&route, &config),
+            RouteFilterCheck::ContinueWithout {
+                undefined: vec!["renamed-away"]
+            }
+        );
+    }
+
+    #[test]
+    fn route_filter_check_names_every_undefined_id_in_route_order() {
+        let route = route_listing(
+            &["gone-1", "kept", "gone-2"],
+            zentinel_config::FailureMode::Closed,
+        );
+        let config = config_defining(&["kept"]);
+
+        assert_eq!(
+            check_route_filters(&route, &config),
+            RouteFilterCheck::Refuse {
+                undefined: vec!["gone-1", "gone-2"]
+            }
+        );
+    }
+
+    #[test]
+    fn deciding_a_route_refuses_with_503_when_closed_and_a_filter_is_undefined() {
+        let route = matched(route_listing(
+            &["renamed-away"],
+            zentinel_config::FailureMode::Closed,
+        ));
+        let newer = config_defining(&["renamed-to"]);
+        let mut ctx = RequestContext::new();
+        let refused_before = undefined_route_filters_count(UndefinedFiltersAction::Refused);
+
+        let err = decide_route(&mut ctx, &route, Arc::clone(&newer))
+            .expect_err("a route with an undefined filter is not served when closed");
+
+        assert!(
+            matches!(err.etype(), pingora::ErrorType::HTTPStatus(503)),
+            "expected a 503, got {:?}",
+            err.etype()
+        );
+        assert!(undefined_route_filters_count(UndefinedFiltersAction::Refused) > refused_before);
+    }
+
+    #[test]
+    fn deciding_a_route_continues_when_open_and_a_filter_is_undefined() {
+        let route = matched(route_listing(
+            &["renamed-away"],
+            zentinel_config::FailureMode::Open,
+        ));
+        let newer = config_defining(&["renamed-to"]);
+        let mut ctx = RequestContext::new();
+        let continued_before = undefined_route_filters_count(UndefinedFiltersAction::Continued);
+
+        decide_route(&mut ctx, &route, Arc::clone(&newer))
+            .expect("a route with an undefined filter is served when open");
+
+        assert!(
+            undefined_route_filters_count(UndefinedFiltersAction::Continued) > continued_before
+        );
+    }
+
+    #[test]
+    fn deciding_a_route_records_it_with_the_snapshot_it_was_checked_against() {
+        let route = matched(route_listing(&["a"], zentinel_config::FailureMode::Closed));
+        let current = config_defining(&["a"]);
+        let mut ctx = RequestContext::new();
+        // A snapshot taken earlier in the request, before the route was
+        // matched, which does not define the route's filter.
+        ctx.config = Some(config_defining(&[]));
+
+        decide_route(&mut ctx, &route, Arc::clone(&current)).expect("filters are defined");
+
+        assert_eq!(ctx.route_id.as_deref(), Some("matched"));
+        assert!(Arc::ptr_eq(
+            ctx.route_config.as_ref().expect("the route is recorded"),
+            &route.config
+        ));
+        assert!(Arc::ptr_eq(
+            ctx.config.as_ref().expect("a snapshot is bound"),
+            &current
+        ));
+    }
+
+    #[test]
+    fn deciding_a_refused_route_still_records_it_and_the_snapshot() {
+        // The error response and the access log read both.
+        let route = matched(route_listing(
+            &["renamed-away"],
+            zentinel_config::FailureMode::Closed,
+        ));
+        let newer = config_defining(&["renamed-to"]);
+        let mut ctx = RequestContext::new();
+
+        decide_route(&mut ctx, &route, Arc::clone(&newer)).expect_err("refused");
+
+        assert_eq!(ctx.route_id.as_deref(), Some("matched"));
+        assert!(ctx.route_config.is_some());
+        assert!(Arc::ptr_eq(
+            ctx.config.as_ref().expect("a snapshot is bound"),
+            &newer
+        ));
+    }
+
+    #[test]
+    fn open_route_applies_the_filters_that_are_defined() {
+        let route = matched(route_listing(
+            &["renamed-away", "kept"],
+            zentinel_config::FailureMode::Open,
+        ));
+        let newer = config_defining(&["kept"]);
+        let mut ctx = RequestContext::new();
+        decide_route(&mut ctx, &route, Arc::clone(&newer)).expect("open continues");
+
+        let mut resp = ResponseHeader::build(200, None).unwrap();
+        apply_response_filters(&mut resp, &mut ctx, &newer);
+
+        assert_eq!(
+            resp.headers.get("X-Defined").map(|v| v.to_str().unwrap()),
+            Some("kept")
         );
     }
 }

@@ -536,6 +536,8 @@ mod tests {
             route "global" {
                 matches { path-prefix "/global"; }
                 upstream "shared"
+                shadow { upstream "infra:db"; }
+                fallback { fallback-upstream "redis"; }
             }
         }
         agents {
@@ -566,11 +568,24 @@ mod tests {
                     matches { path-prefix "/api/"; }
                     upstream "backend"
                     filters "auth" "rl"
+                    shadow { upstream "backend"; }
                 }
                 route "to-global" {
                     matches { path-prefix "/auth/"; }
                     upstream "shared"
                     filters "waf"
+                    service-type "inference"
+                    inference {
+                        provider "generic"
+                        model-routing {
+                            model "m*" upstream="redis"
+                            default-upstream "shared"
+                        }
+                        guardrails {
+                            prompt-injection { enabled #true; agent "auth"; }
+                            pii-detection { enabled #true; agent "waf"; }
+                        }
+                    }
                 }
                 route "to-infra" {
                     matches { path-prefix "/cache/"; }
@@ -579,21 +594,27 @@ mod tests {
                 route "qualified" {
                     matches { path-prefix "/q/"; }
                     upstream "infra:db"
+                    mcp { upstreams { upstream "infra:db" prefix="db"; } }
                 }
             }
             service "users" {
                 upstreams {
                     upstream "backend" { target "127.0.0.1:3002"; }
                 }
+                filters {
+                    filter "scan" { type "agent"; agent "auth"; }
+                }
                 routes {
                     route "main" {
                         matches { path-prefix "/users/"; }
                         upstream "backend"
+                        fallback { fallback-upstream "backend"; }
                     }
                     route "parent" {
                         matches { path-prefix "/parent/"; }
                         upstream "shared"
                         filters "rl"
+                        shadow { upstream "shared"; }
                     }
                 }
             }
@@ -722,6 +743,39 @@ mod tests {
         };
         assert_eq!(agent_of("api:auth"), "api:auth");
         assert_eq!(agent_of("api:waf"), "waf");
+        assert_eq!(agent_of("api:users:scan"), "api:auth");
+
+        // So do the other upstreams and agents a route names, which the
+        // lowered configuration validates as top-level references.
+        let shadow = |id: &str| route(&config, id).shadow.as_ref().unwrap().upstream.clone();
+        assert_eq!(shadow("global"), "infra:db");
+        assert_eq!(shadow("api:main"), "api:backend");
+        assert_eq!(shadow("api:users:parent"), "shared");
+        let fallback = |id: &str| {
+            let upstreams = &route(&config, id).fallback.as_ref().unwrap().upstreams;
+            upstreams
+                .iter()
+                .map(|u| u.upstream.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fallback("global"), ["infra:redis"]);
+        assert_eq!(fallback("api:users:main"), ["api:users:backend"]);
+        let mcp = &route(&config, "api:qualified")
+            .mcp
+            .as_ref()
+            .unwrap()
+            .upstreams;
+        assert_eq!(mcp[0].upstream, "infra:db");
+        let inference = route(&config, "api:to-global").inference.as_ref().unwrap();
+        let model_routing = inference.model_routing.as_ref().unwrap();
+        assert_eq!(model_routing.mappings[0].upstream, "infra:redis");
+        assert_eq!(model_routing.default_upstream.as_deref(), Some("shared"));
+        let guardrails = inference.guardrails.as_ref().unwrap();
+        assert_eq!(
+            guardrails.prompt_injection.as_ref().unwrap().agent,
+            "api:auth"
+        );
+        assert_eq!(guardrails.pii_detection.as_ref().unwrap().agent, "waf");
     }
 
     /// #548: which listeners serve which routes.
@@ -797,7 +851,9 @@ mod tests {
     }
 
     /// The lowered configuration is what `ConfigManager::apply_change`
-    /// validates, so it has to pass.
+    /// validates, and what a rollback validates again, so it has to pass. The
+    /// fixture names upstreams and agents in every place a route or filter of
+    /// a namespace, a service and the top level can.
     #[test]
     fn the_lowered_configuration_validates() {
         lowered().validate().expect("lowered config validates");
